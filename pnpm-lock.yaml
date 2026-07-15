@@ -19,6 +19,9 @@ importers:
       fastify:
         specifier: 5.10.0
         version: 5.10.0
+      jose:
+        specifier: 6.2.3
+        version: 6.2.3
       reflect-metadata:
         specifier: 0.2.2
         version: 0.2.2
@@ -1200,6 +1203,12 @@ packages:
         integrity: sha512-RKYVTCjAnRthyJes037NX/IiqeidgN1xc3j1RjFfECFp28A1GVwK9nA+i0rJPaHqSZwygLzRnFlzUuHFoWWy+Q==,
       }
     engines: { node: '>=6' }
+
+  jose@6.2.3:
+    resolution:
+      {
+        integrity: sha512-YYVDInQKFJfR/xa3ojUTl8c2KoTwiL1R5Wg9YCydwH0x0B9grbzlg5HC7mMjCtUJjbQ/YnGEZIhI5tCgfTb4Hw==,
+      }
 
   js-yaml@4.3.0:
     resolution:
@@ -2662,6 +2671,8 @@ snapshots:
   isexe@2.0.0: {}
 
   iterare@1.2.1: {}
+
+  jose@6.2.3: {}
 
   js-yaml@4.3.0:
     dependencies:
