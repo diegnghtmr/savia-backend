@@ -1,0 +1,29 @@
+openapi: 3.1.1
+info:
+  title: Savia Backend Executable API
+  version: 0.1.0
+servers:
+  - url: http://127.0.0.1:3000
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Read service health
+      security: []
+      responses:
+        '200':
+          description: Service health
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status, time]
+                properties:
+                  status:
+                    const: ok
+                  time:
+                    type: string
+                    format: date-time
+        '503':
+          description: Reserved for an actual unavailable state; this service does not simulate it.

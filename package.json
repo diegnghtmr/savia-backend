@@ -15,7 +15,9 @@
     "test": "vitest run",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+    "openapi:verify": "node scripts/verify-openapi.mjs",
+    "openapi:lint": "redocly lint openapi/savia.openapi.yaml",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm openapi:verify && pnpm openapi:lint"
   },
   "dependencies": {
     "@nestjs/common": "11.1.28",
@@ -32,6 +34,7 @@
     "eslint": "9.39.1",
     "eslint-config-prettier": "10.1.8",
     "prettier": "3.6.2",
+    "@redocly/cli": "2.39.0",
     "typescript": "5.9.3",
     "typescript-eslint": "8.52.0",
     "vitest": "4.1.10"

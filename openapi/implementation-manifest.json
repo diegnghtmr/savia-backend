@@ -1,0 +1,11 @@
+{
+  "executableContract": "openapi/savia.openapi.yaml",
+  "clientGenerationInput": "openapi/savia.openapi.yaml",
+  "implementedOperations": [
+    {
+      "operationId": "getHealth",
+      "method": "GET",
+      "path": "/health"
+    }
+  ]
+}
