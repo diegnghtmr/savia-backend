@@ -3,9 +3,33 @@ import {
   FastifyAdapter,
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
+
+const authEnvironment = {
+  JWT_ISSUER: 'https://issuer.example.test',
+  JWT_AUDIENCE: 'savia-api',
+  JWT_JWKS_URI: 'https://issuer.example.test/jwks',
+  JWT_ALGORITHMS: 'RS256',
+};
+const authEnvironmentKeys = Object.keys(authEnvironment);
+let originalEnvironment: Record<string, string | undefined>;
+
+beforeEach(() => {
+  originalEnvironment = Object.fromEntries(
+    authEnvironmentKeys.map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, authEnvironment);
+});
+
+afterEach(() => {
+  for (const key of authEnvironmentKeys) {
+    const value = originalEnvironment[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
 
 describe('health endpoint', () => {
   it('exposes only GET /health with the documented health payload', async () => {
