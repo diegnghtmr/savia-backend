@@ -15,4 +15,8 @@ pnpm check
 pnpm start
 ```
 
-`GET /health` returns a JSON health response. Other routes are not implemented.
+`GET /health` is the only executable OpenAPI operation; unknown routes return `404`.
+
+`openapi/savia.openapi.yaml` is the client-generation input. Its provenance records
+the local planning source constants. Backend CI cannot access, authenticate, or independently
+re-hash that local source; it validates only committed constants and executable contract identity.

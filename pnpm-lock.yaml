@@ -32,6 +32,9 @@ importers:
       '@nestjs/testing':
         specifier: 11.1.28
         version: 11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2))
+      '@redocly/cli':
+        specifier: 2.39.0
+        version: 2.39.0
       '@types/node':
         specifier: 24.10.1
         version: 24.10.1
@@ -329,6 +332,14 @@ packages:
       {
         integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==,
       }
+
+  '@redocly/cli@2.39.0':
+    resolution:
+      {
+        integrity: sha512-xA0Z9YMEhlzbpn/BVErlE2UzuKfahp9llBwEnVtAYuhWdF8UCIm+cgYX8f/gHQIJ/TKwB93awAewTOgEsbZFZw==,
+      }
+    engines: { node: '>=22.12.0 || >=20.19.0 <21.0.0', npm: '>=10' }
+    hasBin: true
 
   '@rolldown/binding-android-arm64@1.1.5':
     resolution:
@@ -2142,6 +2153,8 @@ snapshots:
   '@oxc-project/types@0.139.0': {}
 
   '@pinojs/redact@0.4.0': {}
+
+  '@redocly/cli@2.39.0': {}
 
   '@rolldown/binding-android-arm64@1.1.5':
     optional: true
