@@ -1,0 +1,39 @@
+{
+  "name": "savia-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Savia backend health service.",
+  "engines": {
+    "node": "24.18.0",
+    "pnpm": "11.13.0"
+  },
+  "packageManager": "pnpm@11.13.0",
+  "scripts": {
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "dependencies": {
+    "@nestjs/common": "11.1.28",
+    "@nestjs/core": "11.1.28",
+    "@nestjs/platform-fastify": "11.1.28",
+    "fastify": "5.10.0",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@nestjs/testing": "11.1.28",
+    "@types/node": "24.10.1",
+    "eslint": "9.39.1",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.52.0",
+    "vitest": "4.1.10"
+  }
+}
