@@ -20,3 +20,24 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - name: database RLS contract
+        shell: bash
+        run: |
+          workdir="$(mktemp -d)"
+          project_id="savia-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            pnpm exec supabase --workdir "$workdir" stop --no-backup || true
+            rm -rf "$workdir"
+          }
+          trap cleanup EXIT
+          mkdir -p "$workdir/supabase/migrations" "$workdir/supabase/tests/database"
+          cp supabase/config.toml "$workdir/supabase/config.toml"
+          cp supabase/migrations/*.sql "$workdir/supabase/migrations/"
+          cp supabase/tests/database/identity_rls.test.sql "$workdir/supabase/tests/database/"
+          sed -i "s/^project_id = .*/project_id = \"$project_id\"/" "$workdir/supabase/config.toml"
+          pnpm exec supabase --workdir "$workdir" start
+          eval "$(pnpm exec supabase --workdir "$workdir" status -o env)"
+          : "${DB_URL:?Supabase status did not export DB_URL}"
+          pnpm exec supabase --workdir "$workdir" db reset --no-seed
+          pnpm exec supabase --workdir "$workdir" test db --local \
+            "$workdir/supabase/tests/database/identity_rls.test.sql"
