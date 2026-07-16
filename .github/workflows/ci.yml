@@ -41,3 +41,38 @@ jobs:
           pnpm exec supabase --workdir "$workdir" db reset --no-seed
           pnpm exec supabase --workdir "$workdir" test db --local \
             "$workdir/supabase/tests/database/identity_rls.test.sql"
+      - name: database bootstrap contract
+        shell: bash
+        run: |
+          workdir="$(mktemp -d)"
+          project_id="savia-bootstrap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            pnpm exec supabase --workdir "$workdir" stop --no-backup || true
+            rm -rf "$workdir"
+          }
+          trap cleanup EXIT
+          mkdir -p "$workdir/supabase/migrations" "$workdir/supabase/tests/database"
+          cp supabase/config.toml "$workdir/supabase/config.toml"
+          cp supabase/migrations/20260715000[12]_*.sql "$workdir/supabase/migrations/"
+          cp supabase/tests/database/identity_bootstrap_rls.test.sql "$workdir/supabase/tests/database/"
+          sed -i "s/^project_id = .*/project_id = \"$project_id\"/" "$workdir/supabase/config.toml"
+          pnpm exec supabase --workdir "$workdir" start
+          eval "$(pnpm exec supabase --workdir "$workdir" status -o env)"
+          : "${DB_URL:?Supabase status did not export DB_URL}"
+          pnpm exec supabase --workdir "$workdir" db reset --no-seed
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -c "insert into auth.users (id, email) values ('00000000-0000-0000-0000-000000000104', 'preflight@example.test'); insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency) values ('00000000-0000-0000-0000-000000000104', 'preflight@example.test', 'Preflight', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,000.00', 'USD');"
+          cp supabase/migrations/202607150003_identity_bootstrap_rls.sql "$workdir/supabase/migrations/"
+          if output="$(pnpm exec supabase --workdir "$workdir" db push --local 2>&1)"; then exit 1; fi
+          printf '%s\n' "$output"
+          case "$output" in *'existing profile bootstrap aggregate is incomplete'*) ;; *) exit 1;; esac
+          rm "$workdir/supabase/migrations/202607150003_identity_bootstrap_rls.sql"
+          pnpm exec supabase --workdir "$workdir" db reset --no-seed
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -c "insert into auth.users (id, email) values ('00000000-0000-0000-0000-000000000104', 'preflight@example.test'); insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency) values ('00000000-0000-0000-0000-000000000104', 'preflight@example.test', 'Preflight', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,000.00', 'USD');"
+          sed '/^do \$\$/, /^\$\$;/d' supabase/migrations/202607150003_identity_bootstrap_rls.sql > "$workdir/supabase/migrations/202607150003_identity_bootstrap_rls.sql"
+          pnpm exec supabase --workdir "$workdir" db push --local
+          test "$(psql "$DB_URL" -Atc "select count(*) from public.profiles where id = '00000000-0000-0000-0000-000000000104'")" = 1
+          pnpm exec supabase --workdir "$workdir" db reset --no-seed
+          cp supabase/migrations/202607150003_identity_bootstrap_rls.sql "$workdir/supabase/migrations/"
+          pnpm exec supabase --workdir "$workdir" db reset --no-seed
+          pnpm exec supabase --workdir "$workdir" test db --local \
+            "$workdir/supabase/tests/database/identity_bootstrap_rls.test.sql"
