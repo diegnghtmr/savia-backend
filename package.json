@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:database": "supabase test db --local supabase/tests/database/identity_rls.test.sql",
+    "test:database:bootstrap": "supabase test db --local supabase/tests/database/identity_bootstrap_rls.test.sql",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "openapi:verify": "node scripts/verify-openapi.mjs",
