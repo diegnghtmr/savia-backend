@@ -76,3 +76,6 @@ jobs:
           pnpm exec supabase --workdir "$workdir" db reset --no-seed
           pnpm exec supabase --workdir "$workdir" test db --local \
             "$workdir/supabase/tests/database/identity_bootstrap_rls.test.sql"
+      - name: postgres pool integration
+        shell: bash
+        run: pnpm test:integration:postgres-pool
