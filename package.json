@@ -16,6 +16,7 @@
     "test:database": "supabase test db --local supabase/tests/database/identity_rls.test.sql",
     "test:database:bootstrap": "supabase test db --local supabase/tests/database/identity_bootstrap_rls.test.sql",
     "test:integration:postgres-pool": "bash scripts/run-disposable-database-suite.sh test/identity/postgres-pool.integration-spec.ts",
+    "test:integration:transaction": "bash scripts/run-disposable-database-suite.sh test/identity/pg-transaction.integration-spec.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "openapi:verify": "node scripts/verify-openapi.mjs",

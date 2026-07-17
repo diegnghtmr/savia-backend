@@ -79,3 +79,6 @@ jobs:
       - name: postgres pool integration
         shell: bash
         run: pnpm test:integration:postgres-pool
+      - name: transaction integration
+        shell: bash
+        run: pnpm test:integration:transaction
