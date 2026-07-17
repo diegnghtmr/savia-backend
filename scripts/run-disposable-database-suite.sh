@@ -8,6 +8,7 @@ fi
 spec="$1"
 case "$spec" in
   test/identity/postgres-pool.integration-spec.ts) ;;
+  test/identity/pg-transaction.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
