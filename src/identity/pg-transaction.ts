@@ -1,3 +1,5 @@
+import type { OnApplicationShutdown } from '@nestjs/common';
+
 import type { PgClient, PgPool } from './postgres-pool.js';
 const TIMEOUTS = {
   checkoutTimeoutMs: 1_000,
@@ -31,9 +33,13 @@ export class CommitOutcomeUnknownError extends Error {
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // prettier-ignore
-export class PgTransaction {
-  private readonly timeouts: Required<TransactionTimeoutOptions>;
-  public constructor(private readonly pool: PgPool, timeouts: TransactionTimeoutOptions = {}) { this.timeouts = { ...TIMEOUTS, ...timeouts }; }
+export class PgTransaction implements OnApplicationShutdown {
+  // Timeouts may arrive as a thunk for the same reason the pool configuration
+  // does: their value comes from that configuration, which must not be resolved
+  // while the module graph is being built. See PostgresPool.
+  private resolvedTimeouts: Required<TransactionTimeoutOptions> | undefined;
+  public constructor(private readonly pool: PgPool, private readonly timeoutOptions: TransactionTimeoutOptions | (() => TransactionTimeoutOptions) = {}) {}
+  private get timeouts(): Required<TransactionTimeoutOptions> { return (this.resolvedTimeouts ??= { ...TIMEOUTS, ...(typeof this.timeoutOptions === 'function' ? this.timeoutOptions() : this.timeoutOptions) }); }
   public async run<T>(subject: string, callback: (client: TransactionClient) => Promise<T>): Promise<T> {
     if (!UUID.test(subject)) throw new Error('subject must be a valid UUID.');
     const client = await this.acquire();
@@ -74,6 +80,7 @@ export class PgTransaction {
   }
 
   public close(): Promise<void> { return this.pool.end(); }
+  public onApplicationShutdown(): Promise<void> { return this.close(); }
   private async acquire(): Promise<PgClient> {
     try {
       return await this.pool.connect();

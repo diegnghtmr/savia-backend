@@ -11,6 +11,7 @@ async function bootstrap(): Promise<void> {
     AppModule,
     new FastifyAdapter({ exposeHeadRoutes: false }),
   );
+  app.enableShutdownHooks();
 
   await app.listen({
     host: '0.0.0.0',
