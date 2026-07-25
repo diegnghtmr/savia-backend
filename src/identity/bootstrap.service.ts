@@ -7,7 +7,10 @@ import {
   type BootstrapOutcome,
   type BootstrapPort,
 } from './bootstrap.port.js';
-import type { TransactionClient } from './pg-transaction.js';
+import {
+  CommitOutcomeUnknownError,
+  type TransactionClient,
+} from './pg-transaction.js';
 import {
   BOOTSTRAP_CLASSIFICATIONS,
   classifyBootstrap,
@@ -33,7 +36,20 @@ export class BootstrapService implements BootstrapPort {
     private readonly store: BootstrapStore,
   ) {}
 
-  public execute(command: BootstrapCommand): Promise<BootstrapOutcome> {
+  public async execute(command: BootstrapCommand): Promise<BootstrapOutcome> {
+    try {
+      return await this.attempt(command);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.constructor === CommitOutcomeUnknownError
+      )
+        return this.attempt(command);
+      throw error;
+    }
+  }
+
+  private attempt(command: BootstrapCommand): Promise<BootstrapOutcome> {
     return this.transaction.run(command.subject, async (client) => {
       const evidence = await this.store.read(client, command.subject);
       const classification = classifyBootstrap(command, evidence);
