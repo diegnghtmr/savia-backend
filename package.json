@@ -18,6 +18,7 @@
     "test:integration:postgres-pool": "bash scripts/run-disposable-database-suite.sh test/identity/postgres-pool.integration-spec.ts",
     "test:integration:transaction": "bash scripts/run-disposable-database-suite.sh test/identity/pg-transaction.integration-spec.ts",
     "test:integration:transaction-resilience": "bash scripts/run-disposable-database-suite.sh test/identity/pg-transaction-resilience.integration-spec.ts",
+    "test:integration:bootstrap": "bash scripts/run-disposable-database-suite.sh test/identity/bootstrap.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",

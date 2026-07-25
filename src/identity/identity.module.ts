@@ -1,11 +1,14 @@
 import { Module } from '@nestjs/common';
 
 import { AuthConfig } from './auth-config.js';
+import { BOOTSTRAP_PORT } from './bootstrap.port.js';
+import { BootstrapService } from './bootstrap.service.js';
 import { JoseJwtVerifier } from './jose-jwt-verifier.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { PgTransaction } from './pg-transaction.js';
 import { PostgresConfig } from './postgres-config.js';
 import { PostgresPool } from './postgres-pool.js';
+import { PostgresBootstrapAdapter } from './postgres-bootstrap.adapter.js';
 
 @Module({
   providers: [
@@ -34,8 +37,18 @@ import { PostgresPool } from './postgres-pool.js';
       // prettier-ignore
       useFactory: (pool: PostgresPool): PgTransaction => new PgTransaction(pool, () => ({ checkoutTimeoutMs: pool.checkoutTimeoutMs })),
     },
+    PostgresBootstrapAdapter,
+    {
+      provide: BootstrapService,
+      inject: [PgTransaction, PostgresBootstrapAdapter],
+      useFactory: (
+        transaction: PgTransaction,
+        adapter: PostgresBootstrapAdapter,
+      ) => new BootstrapService(transaction, adapter),
+    },
+    { provide: BOOTSTRAP_PORT, useExisting: BootstrapService },
   ],
-  exports: [JoseJwtVerifier, JwtAuthGuard, PgTransaction],
+  exports: [JoseJwtVerifier, JwtAuthGuard, PgTransaction, BOOTSTRAP_PORT],
 })
 export class IdentityModule {
   public constructor(authConfig: AuthConfig) {
