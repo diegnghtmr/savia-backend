@@ -5,12 +5,14 @@ import { BOOTSTRAP_PORT } from './bootstrap.port.js';
 import { BootstrapService } from './bootstrap.service.js';
 import { JoseJwtVerifier } from './jose-jwt-verifier.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { OnboardingController } from './onboarding.controller.js';
 import { PgTransaction } from './pg-transaction.js';
 import { PostgresConfig } from './postgres-config.js';
 import { PostgresPool } from './postgres-pool.js';
 import { PostgresBootstrapAdapter } from './postgres-bootstrap.adapter.js';
 
 @Module({
+  controllers: [OnboardingController],
   providers: [
     {
       provide: AuthConfig,

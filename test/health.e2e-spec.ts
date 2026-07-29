@@ -73,7 +73,7 @@ describe('health endpoint', () => {
 
     const unknown = await app.inject({ method: 'GET', url: '/unknown' });
     expect(unknown.statusCode).toBe(404);
-    expect(routes).toEqual(['GET /health']);
+    expect(routes).toEqual(['GET /health', 'POST /v1/onboarding']);
 
     await app.close();
   });
