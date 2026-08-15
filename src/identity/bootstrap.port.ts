@@ -1,4 +1,5 @@
 import type { BootstrapCommand } from './bootstrap-command.js';
+export const BOOTSTRAP_PORT = Symbol('BootstrapPort');
 export const BOOTSTRAP_RESULT_KINDS = {
   CREATED: 'created',
   REPLAYED: 'replayed',

@@ -82,3 +82,9 @@ jobs:
       - name: transaction integration
         shell: bash
         run: pnpm test:integration:transaction
+      - name: transaction resilience integration
+        shell: bash
+        run: pnpm test:integration:transaction-resilience
+      - name: transaction mutation
+        shell: bash
+        run: pnpm test:mutation:transaction

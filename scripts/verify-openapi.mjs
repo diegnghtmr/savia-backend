@@ -87,20 +87,31 @@ const operations = Object.entries(document.paths ?? {}).flatMap(
         path,
       })),
 );
-const health = operations[0];
+const health = operations.find(
+  (entry) => entry.path === '/health' && entry.method === 'GET',
+);
 
+// Health stays pinned by name and must stay unauthenticated. The operationId
+// requirement on every other operation is what keeps an undocumented path from
+// being appended to the contract: with no id it cannot appear in the manifest,
+// so the agreement check below would never notice it.
 if (
   document.openapi !== '3.1.1' ||
-  Object.keys(document.paths ?? {}).length !== 1 ||
-  operations.length !== 1 ||
-  health?.path !== '/health' ||
-  health.method !== 'GET' ||
+  !health ||
   health.operation?.operationId !== 'getHealth' ||
   !Array.isArray(health.operation?.security) ||
-  health.operation.security.length !== 0
+  health.operation.security.length !== 0 ||
+  operations.some(({ operation }) => !operation?.operationId) ||
+  // Every declared path must contribute a real operation. Without this a path
+  // item holding only `description`, `parameters`, or a vendor extension adds
+  // contract surface that yields no operation, so it reaches neither the
+  // operationId check above nor the manifest agreement check below.
+  Object.keys(document.paths ?? {}).some((declared) =>
+    operations.every(({ path }) => path !== declared),
+  )
 ) {
   fail(
-    'must publish exactly GET /health with operationId getHealth and no operation security',
+    'must publish exactly GET /health with operationId getHealth and no operation security, and an operationId on every published operation',
   );
 }
 if (
@@ -129,16 +140,32 @@ if (
 ) {
   fail('manifest must use the executable contract as its sole client input');
 }
+// Both directions matter. A published operation absent from the manifest is
+// undocumented; a manifest entry absent from the contract claims an operation
+// no generated client can call. Compare as sets so entry order is free.
+const canonical = (entries) =>
+  JSON.stringify(
+    [...entries]
+      .map(({ operationId, method, path }) => ({ operationId, method, path }))
+      .sort((left, right) => left.operationId.localeCompare(right.operationId)),
+  );
 if (
-  JSON.stringify(manifest.implementedOperations) !==
-  JSON.stringify([{ operationId: 'getHealth', method: 'GET', path: '/health' }])
+  !Array.isArray(manifest.implementedOperations) ||
+  canonical(manifest.implementedOperations) !==
+    canonical(
+      operations.map(({ operation, method, path }) => ({
+        operationId: operation.operationId,
+        method,
+        path,
+      })),
+    )
 ) {
-  fail('manifest must contain only GET /health');
+  fail('manifest must list exactly the published operations');
 }
 if (
   provenance.executableContract?.path !== contractPath ||
   provenance.executableContract?.sha256 !== digest ||
-  provenance.executableContract?.operationCount !== 1
+  provenance.executableContract?.operationCount !== operations.length
 ) {
   fail('executable contract identity drifted');
 }

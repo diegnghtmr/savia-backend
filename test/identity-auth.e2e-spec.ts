@@ -20,6 +20,7 @@ const authEnvironment = {
   JWT_AUDIENCE: 'savia-api',
   JWT_JWKS_URI: 'https://issuer.example.test/jwks',
   JWT_ALGORITHMS: 'RS256',
+  DATABASE_URL: 'postgresql://user:secret@unreachable.invalid:5432/savia',
 };
 const authEnvironmentKeys = Object.keys(authEnvironment);
 let originalEnvironment: Record<string, string | undefined>;

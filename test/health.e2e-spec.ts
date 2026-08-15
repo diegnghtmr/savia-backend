@@ -15,11 +15,17 @@ const authEnvironment = {
 };
 const authEnvironmentKeys = Object.keys(authEnvironment);
 let originalEnvironment: Record<string, string | undefined>;
+let originalDatabaseUrl: string | undefined;
 
 beforeEach(() => {
   originalEnvironment = Object.fromEntries(
     authEnvironmentKeys.map((key) => [key, process.env[key]]),
   );
+  // Removing DATABASE_URL proves the module graph builds and serves health
+  // without a reachable database. Dropping these two lines would silently
+  // remove that regression coverage.
+  originalDatabaseUrl = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
   Object.assign(process.env, authEnvironment);
 });
 
@@ -29,6 +35,8 @@ afterEach(() => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+  if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = originalDatabaseUrl;
 });
 
 describe('health endpoint', () => {
@@ -65,7 +73,7 @@ describe('health endpoint', () => {
 
     const unknown = await app.inject({ method: 'GET', url: '/unknown' });
     expect(unknown.statusCode).toBe(404);
-    expect(routes).toEqual(['GET /health']);
+    expect(routes).toEqual(['GET /health', 'POST /v1/onboarding']);
 
     await app.close();
   });

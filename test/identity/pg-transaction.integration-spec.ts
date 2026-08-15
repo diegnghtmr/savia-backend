@@ -38,7 +38,7 @@ describe('PgTransaction', () => {
     const client = await source.connect(); await expect(client.query("select current_setting('app.subject_id', true) as value")).resolves.toMatchObject({ rows: [{ value: '' }] }); client.release(); await tx.close();
   });
   it('recovers bounded checkout without entering callback', async () => {
-    const pool = new PostgresPool(() => PostgresConfig.fromEnvironment({ DATABASE_URL: url, DATABASE_POOL_MAX: '1', DATABASE_CHECKOUT_TIMEOUT_MS: '50' })); const tx = new PgTransaction(pool, { checkoutTimeoutMs: 50 }); const holder = await pool.connect(); let entered = false;
+    const pool = new PostgresPool(PostgresConfig.fromEnvironment({ DATABASE_URL: url, DATABASE_POOL_MAX: '1', DATABASE_CHECKOUT_TIMEOUT_MS: '50' })); const tx = new PgTransaction(pool, { checkoutTimeoutMs: 50 }); const holder = await pool.connect(); let entered = false;
     await expect(tx.run(subject, async () => { entered = true; })).rejects.toMatchObject({ name: 'TransactionAcquisitionTimeoutError', connectionTimeoutMillis: 50, cause: expect.any(Error) }); expect(entered).toBe(false); holder.release(); await expect(tx.run(subject, async client => client.query('select 1 as ready'))).resolves.toMatchObject({ rows: [{ ready: 1 }] }); await tx.close();
   });
   it('bounds callback, lock, statement, idle configuration, and late queries', async () => {

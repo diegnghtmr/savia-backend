@@ -105,16 +105,14 @@ describe('PostgresPool', () => {
     await pool.end();
     pools.splice(pools.indexOf(pool), 1);
 
-    await expect(pool.connect()).rejects.toThrow(
-      'Cannot use a pool after calling end on the pool',
-    );
+    await expect(pool.connect()).rejects.toThrow('PostgreSQL pool has ended.');
   });
 });
 
 function createPool(overrides: NodeJS.ProcessEnv = {}): PostgresPool {
   if (!databaseUrl)
     throw new Error('DATABASE_URL is required for integration tests.');
-  const pool = new PostgresPool(() =>
+  const pool = new PostgresPool(
     PostgresConfig.fromEnvironment({ DATABASE_URL: databaseUrl, ...overrides }),
   );
   pools.push(pool);

@@ -6,6 +6,11 @@
       "operationId": "getHealth",
       "method": "GET",
       "path": "/health"
+    },
+    {
+      "operationId": "createOnboarding",
+      "method": "POST",
+      "path": "/v1/onboarding"
     }
   ]
 }
