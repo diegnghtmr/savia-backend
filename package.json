@@ -11,7 +11,7 @@
   "scripts": {
     "format:check": "prettier --check .",
     "lint": "eslint .",
-    "architecture:check": "depcruise --config .dependency-cruiser.cjs --output-type err src && node scripts/verify-migration-tests.mjs && node scripts/verify-financial-tables.mjs && node scripts/verify-financial-idempotency.mjs && node scripts/verify-test-gates.mjs",
+    "architecture:check": "depcruise --config .dependency-cruiser.cjs --output-type err src && node scripts/verify-migration-tests.mjs && node scripts/verify-financial-tables.mjs && node scripts/verify-financial-idempotency.mjs && node scripts/verify-test-gates.mjs && node scripts/verify-test-script-reachability.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:database": "supabase test db --local supabase/tests/database/identity_rls.test.sql",

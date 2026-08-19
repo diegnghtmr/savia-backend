@@ -11,7 +11,7 @@ function escapeRegex(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function stripHashComments(source) {
+export function stripHashComments(source) {
   return source
     .split('\n')
     .map((line) => {
