@@ -23,3 +23,4 @@ export function analyzeTestGates(
 export function isFixturePath(filePath: string): boolean;
 export function collectTestSources(root: string): FileSource[];
 export function collectSetterSources(root: string): FileSource[];
+export function stripHashComments(source: string): string;
