@@ -2,13 +2,13 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
-// Upper bound on `supabase stop` during cleanup. Well under the 300s test
+// Upper bound on `supabase stop` during cleanup. Well under the 600s test
 // budget so a wedged CLI still leaves time for the workdir removal below.
 const CLEANUP_TIMEOUT_MS = 60_000;
 const runSupabase = (workdir: string, ...args: string[]) =>
@@ -53,7 +53,6 @@ const queryPostgres = (port: number, query: string) =>
     { env: { ...process.env, PGPASSWORD: 'postgres' } },
   );
 const sourceRoot = process.cwd();
-const schemaContractEnabled = process.env.RUN_SCHEMA_CONTRACT === '1';
 const schemaInputs = [
   'supabase/config.toml',
   'supabase/migrations/202607150001_identity_tables.sql',
@@ -74,7 +73,7 @@ const schemaInputs = [
 ] as const;
 const targetInputs = [
   ...schemaInputs.slice(1),
-  'test/schema/identity-tables.spec.ts',
+  relative(sourceRoot, __filename),
 ];
 const acceptedMigrationHashes = [
   'b05414027a8e7869953540927027dd13b4109026dd921b30c5e1801401b0d511',
@@ -259,11 +258,7 @@ const executeSchemaContract = async () => {
 };
 
 describe('identity tables database contract', () => {
-  it.skipIf(!schemaContractEnabled)(
-    'enforces personal ownership and existing table invariants with live writes',
-    async () => {
-      return executeSchemaContract();
-    },
-    300_000,
-  );
+  it('enforces personal ownership and existing table invariants with live writes', async () => {
+    return executeSchemaContract();
+  }, 600_000);
 });
