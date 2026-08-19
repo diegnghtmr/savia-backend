@@ -20,5 +20,6 @@ export function analyzeTestGates(
   setterSources: FileSource[],
 ): GateAnalysis;
 
+export function isFixturePath(filePath: string): boolean;
 export function collectTestSources(root: string): FileSource[];
 export function collectSetterSources(root: string): FileSource[];

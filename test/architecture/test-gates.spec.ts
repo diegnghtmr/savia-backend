@@ -4,6 +4,7 @@ import {
   analyzeTestGates,
   collectSetterSources,
   collectTestSources,
+  isFixturePath,
 } from '../../scripts/verify-test-gates.mjs';
 
 const root = resolve(process.cwd());
@@ -118,5 +119,49 @@ describe('x', () => {
 
     expect(analysis.violations).toHaveLength(1);
     expect(analysis.violations[0]).toContain('RUN_SCHEMA_CONTRACT');
+  });
+
+  it('excludes only exact test/architecture/fixtures path segments (defect 3: substring fixture exclusion)', () => {
+    expect(isFixturePath('test/architecture/fixtures/x.spec.ts')).toBe(true);
+    expect(isFixturePath('test/architecture/fixtures-extra/x.spec.ts')).toBe(
+      false,
+    );
+    expect(isFixturePath('test/architecture/fixtures2/x.spec.ts')).toBe(false);
+  });
+
+  it('detects un-set env variable gated via nested process.env alias (defect 4: nested alias)', () => {
+    const source = `
+describe('x', () => {
+  const env = process.env;
+  it.skipIf(env.NESTED_ALIAS_ONLY !== '1')('dead gate', () => {});
+});
+`;
+    const testSources = [{ path: 'test/nested-alias.spec.ts', source }];
+    const setterSources: { path: string; source: string }[] = [];
+
+    const analysis = analyzeTestGates(testSources, setterSources);
+
+    expect(analysis.violations).toHaveLength(1);
+    expect(analysis.violations[0]).toContain('NESTED_ALIAS_ONLY');
+  });
+
+  it('ignores setters inside block comments within template interpolations (defect 5: template block comment)', () => {
+    const source = `
+describe('x', () => {
+  it.skipIf(process.env.TEMPLATE_COMMENT_ONLY !== '1')('dead gate', () => {});
+});
+`;
+    const testSources = [{ path: 'test/template-comment.spec.ts', source }];
+    const setterSources = [
+      {
+        path: 'scripts/pr28-defect-1-setter.mjs',
+        source: `const rendered = \`\${/*\nTEMPLATE_COMMENT_ONLY=1\n*/ ''}\`;\nexport { rendered };\n`,
+      },
+    ];
+
+    const analysis = analyzeTestGates(testSources, setterSources);
+
+    expect(analysis.violations).toHaveLength(1);
+    expect(analysis.violations[0]).toContain('TEMPLATE_COMMENT_ONLY');
   });
 });

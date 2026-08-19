@@ -42,84 +42,38 @@ function stripHashComments(source) {
 }
 
 function stripJsComments(source) {
-  let result = '';
-  let inSingle = false;
-  let inDouble = false;
-  let inTemplate = false;
-  let inLineComment = false;
-  let inBlockComment = false;
-  let escaped = false;
+  const sourceFile = ts.createSourceFile(
+    'inline.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const ranges = [];
 
-  for (let i = 0; i < source.length; i++) {
-    const char = source[i];
-    const nextChar = source[i + 1];
-
-    if (inLineComment) {
-      if (char === '\n') {
-        inLineComment = false;
-        result += char;
-      }
-      continue;
-    }
-
-    if (inBlockComment) {
-      if (char === '*' && nextChar === '/') {
-        inBlockComment = false;
-        i++;
-      }
-      continue;
-    }
-
-    if (escaped) {
-      escaped = false;
-      result += char;
-      continue;
-    }
-
-    if (char === '\\') {
-      escaped = true;
-      result += char;
-      continue;
-    }
-
-    if (inSingle) {
-      if (char === "'") inSingle = false;
-      result += char;
-      continue;
-    }
-
-    if (inDouble) {
-      if (char === '"') inDouble = false;
-      result += char;
-      continue;
-    }
-
-    if (inTemplate) {
-      if (char === '`') inTemplate = false;
-      result += char;
-      continue;
-    }
-
-    if (char === "'") {
-      inSingle = true;
-      result += char;
-    } else if (char === '"') {
-      inDouble = true;
-      result += char;
-    } else if (char === '`') {
-      inTemplate = true;
-      result += char;
-    } else if (char === '/' && nextChar === '/') {
-      inLineComment = true;
-      i++;
-    } else if (char === '/' && nextChar === '*') {
-      inBlockComment = true;
-      i++;
-    } else {
-      result += char;
-    }
+  function visit(node) {
+    const leading = ts.getLeadingCommentRanges(source, node.pos);
+    if (leading) ranges.push(...leading);
+    const trailing = ts.getTrailingCommentRanges(source, node.end);
+    if (trailing) ranges.push(...trailing);
+    ts.forEachChild(node, visit);
   }
 
+  visit(sourceFile);
+
+  const seen = new Set();
+  const sorted = ranges
+    .filter((r) => {
+      const key = `${r.pos}:${r.end}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => b.pos - a.pos);
+
+  let result = source;
+  for (const r of sorted) {
+    result = result.slice(0, r.pos) + result.slice(r.end);
+  }
   return result;
 }
 
@@ -171,19 +125,18 @@ function isProcessEnv(node) {
 
 function findEnvAliases(sourceFile) {
   const aliases = new Set();
-  for (const statement of sourceFile.statements) {
-    if (ts.isVariableStatement(statement)) {
-      for (const decl of statement.declarationList.declarations) {
-        if (
-          decl.initializer &&
-          isProcessEnv(decl.initializer) &&
-          ts.isIdentifier(decl.name)
-        ) {
-          aliases.add(decl.name.text);
-        }
-      }
+  function visit(node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.initializer &&
+      isProcessEnv(node.initializer) &&
+      ts.isIdentifier(node.name)
+    ) {
+      aliases.add(node.name.text);
     }
+    ts.forEachChild(node, visit);
   }
+  visit(sourceFile);
   return aliases;
 }
 
@@ -385,11 +338,26 @@ function collectFilesRecursively(
   return collected;
 }
 
+export function isFixturePath(filePath) {
+  const segments = (filePath || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean);
+  for (let i = 0; i <= segments.length - 3; i++) {
+    if (
+      segments[i] === 'test' &&
+      segments[i + 1] === 'architecture' &&
+      segments[i + 2] === 'fixtures'
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function collectTestSources(root) {
   const testDir = resolve(root, 'test');
-  const files = collectFilesRecursively(testDir, ['.ts'], (fullPath) =>
-    fullPath.includes('test/architecture/fixtures'),
-  );
+  const files = collectFilesRecursively(testDir, ['.ts'], isFixturePath);
   return files.map((file) => ({
     path: relative(root, file).replace(/\\/g, '/'),
     source: readFileSync(file, 'utf8'),
