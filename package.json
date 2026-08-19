@@ -11,6 +11,7 @@
   "scripts": {
     "format:check": "prettier --check .",
     "lint": "eslint .",
+    "architecture:check": "depcruise --config .dependency-cruiser.cjs --output-type err src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:database": "supabase test db --local supabase/tests/database/identity_rls.test.sql",
@@ -24,7 +25,7 @@
     "start": "node dist/main.js",
     "openapi:verify": "node scripts/verify-openapi.mjs",
     "openapi:lint": "redocly lint openapi/savia.openapi.yaml",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm openapi:verify && pnpm openapi:lint"
+    "check": "pnpm format:check && pnpm lint && pnpm architecture:check && pnpm typecheck && pnpm test && pnpm build && pnpm openapi:verify && pnpm openapi:lint"
   },
   "dependencies": {
     "@nestjs/common": "11.1.28",
@@ -42,6 +43,7 @@
     "@redocly/cli": "2.39.0",
     "@types/node": "24.10.1",
     "@types/pg": "8.20.0",
+    "dependency-cruiser": "^18.2.0",
     "eslint": "9.39.1",
     "eslint-config-prettier": "10.1.8",
     "prettier": "3.6.2",
