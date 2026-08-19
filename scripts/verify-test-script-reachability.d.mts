@@ -23,5 +23,6 @@ export function analyzeTestScriptReachability(
   allowList: AllowListEntry[],
 ): ReachabilityAnalysis;
 
+export function extractRunBlocks(workflowSource: string): string[];
 export function collectPackageScripts(root: string): Record<string, string>;
 export function collectWorkflowSources(root: string): FileSource[];

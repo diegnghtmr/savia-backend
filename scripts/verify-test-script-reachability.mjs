@@ -1,3 +1,14 @@
+/**
+ * Known limitations (deliberately bounded):
+ * 1. A '#' inside a quoted YAML string can strip a real invocation. Failure
+ *    direction is a loud false positive, never a silent miss.
+ * 2. A quoted invocation such as `pnpm "test:database"` is not recognised, so a
+ *    stale allow-list entry can survive. The script is still genuinely covered;
+ *    this is hygiene, not a coverage hole.
+ * 3. The guard is reachability-only, not inventory protection: it does not
+ *    assert a minimum script count at runtime.
+ */
+
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import process from 'node:process';
@@ -29,6 +40,49 @@ function matchScriptInvocation(text, scriptName) {
   return regex.test(text);
 }
 
+function getLeadingSpaces(line) {
+  const match = line.match(/^(\s*)/);
+  return match ? match[1].length : 0;
+}
+
+export function extractRunBlocks(workflowSource) {
+  const lines = (workflowSource || '').split('\n');
+  const runBlocks = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const match = line.match(/^(\s*)(?:-\s+)?run:\s*(.*)$/);
+    if (!match) continue;
+
+    const indent = match[1].length;
+    const rest = match[2].trim();
+    const isBlockScalar = /^([|>][-+]?)?$/.test(rest);
+
+    if (isBlockScalar) {
+      const blockLines = [];
+      let j = i + 1;
+      while (j < lines.length) {
+        const nextLine = lines[j];
+        if (nextLine.trim() === '') {
+          blockLines.push(nextLine);
+          j++;
+        } else if (getLeadingSpaces(nextLine) > indent) {
+          blockLines.push(nextLine);
+          j++;
+        } else {
+          break;
+        }
+      }
+      runBlocks.push(blockLines.join('\n'));
+      i = j - 1;
+    } else {
+      runBlocks.push(rest);
+    }
+  }
+
+  return runBlocks;
+}
+
 export function analyzeTestScriptReachability(
   scripts,
   workflowSources,
@@ -44,11 +98,15 @@ export function analyzeTestScriptReachability(
     source: stripHashComments(wf.source || ''),
   }));
 
+  const workflowRunBlocks = cleanWorkflowSources.flatMap((wf) =>
+    extractRunBlocks(wf.source),
+  );
+
   // Directly invoked scripts from workflows
   const directlyInvoked = new Set();
   for (const name of allScriptNames) {
-    const isDirect = cleanWorkflowSources.some((wf) =>
-      matchScriptInvocation(wf.source, name),
+    const isDirect = workflowRunBlocks.some((block) =>
+      matchScriptInvocation(block, name),
     );
     if (isDirect) {
       directlyInvoked.add(name);

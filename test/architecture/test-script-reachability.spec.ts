@@ -222,4 +222,48 @@ describe('unreachable test script recurrence guard (unreachable-test-script-gate
     expect(analysis.checkedScripts.length).toBeGreaterThanOrEqual(9);
     expect(analysis.checkedScripts).toContain('test:integration:bootstrap');
   });
+
+  it('does not let a step name mentioning a script count as an invocation', () => {
+    const scripts = { 'test:ghost': 'vitest run ghost.spec.ts' };
+    const workflowSources = [
+      {
+        path: '.github/workflows/ci.yml',
+        source:
+          '      - name: remember to run pnpm test:ghost someday\n' +
+          '        shell: bash\n' +
+          '        run: echo noop\n',
+      },
+    ];
+    const analysis = analyzeTestScriptReachability(
+      scripts,
+      workflowSources,
+      [],
+    );
+    expect(analysis.violations).toHaveLength(1);
+    expect(analysis.violations[0]).toContain('test:ghost');
+  });
+
+  it('finds an invocation inside a run block scalar', () => {
+    const scripts = { 'test:blocky': 'vitest run blocky.spec.ts' };
+    const workflowSources = [
+      {
+        path: '.github/workflows/ci.yml',
+        source:
+          '      - name: something\n' +
+          '        shell: bash\n' +
+          '        run: |\n' +
+          '          echo starting\n' +
+          '          pnpm test:blocky\n' +
+          '      - name: next step\n' +
+          '        run: echo done\n',
+      },
+    ];
+    const analysis = analyzeTestScriptReachability(
+      scripts,
+      workflowSources,
+      [],
+    );
+    expect(analysis.violations).toHaveLength(0);
+    expect(analysis.reachable).toContain('test:blocky');
+  });
 });
