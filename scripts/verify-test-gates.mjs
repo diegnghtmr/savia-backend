@@ -195,7 +195,7 @@ function isEnvObject(node, envAliases) {
   return false;
 }
 
-function extractDirectEnvReads(node, envAliases) {
+function collectEnvReads(node, envAliases, topLevelEnvMap = null) {
   const envVars = new Set();
 
   function visit(n) {
@@ -212,19 +212,11 @@ function extractDirectEnvReads(node, envAliases) {
       ts.isStringLiteral(n.argumentExpression)
     ) {
       envVars.add(n.argumentExpression.text);
-    } else if (
-      ts.isVariableDeclaration(n) &&
-      n.initializer &&
-      isEnvObject(n.initializer, envAliases) &&
-      ts.isObjectBindingPattern(n.name)
-    ) {
-      for (const element of n.name.elements) {
-        if (ts.isBindingElement(element)) {
-          if (element.propertyName && ts.isIdentifier(element.propertyName)) {
-            envVars.add(element.propertyName.text);
-          } else if (ts.isIdentifier(element.name)) {
-            envVars.add(element.name.text);
-          }
+    } else if (topLevelEnvMap && ts.isIdentifier(n)) {
+      const mapped = topLevelEnvMap.get(n.text);
+      if (mapped) {
+        for (const v of mapped) {
+          envVars.add(v);
         }
       }
     }
@@ -242,31 +234,24 @@ function buildTopLevelEnvMap(sourceFile, envAliases) {
   for (const statement of sourceFile.statements) {
     if (ts.isVariableStatement(statement)) {
       for (const decl of statement.declarationList.declarations) {
-        if (decl.initializer) {
-          const directEnv = extractDirectEnvReads(decl.initializer, envAliases);
-          if (ts.isIdentifier(decl.name)) {
-            if (directEnv.length > 0) {
-              map.set(decl.name.text, directEnv);
-            }
-          } else if (ts.isObjectBindingPattern(decl.name)) {
-            if (isEnvObject(decl.initializer, envAliases)) {
-              for (const element of decl.name.elements) {
-                if (ts.isBindingElement(element)) {
-                  const envName =
-                    element.propertyName &&
-                    ts.isIdentifier(element.propertyName)
-                      ? element.propertyName.text
-                      : ts.isIdentifier(element.name)
-                        ? element.name.text
-                        : null;
-                  const localName = ts.isIdentifier(element.name)
-                    ? element.name.text
-                    : null;
-                  if (envName && localName) {
-                    map.set(localName, [envName]);
-                  }
-                }
-              }
+        if (!decl.initializer) continue;
+
+        if (ts.isIdentifier(decl.name)) {
+          const directEnv = collectEnvReads(decl.initializer, envAliases);
+          if (directEnv.length > 0) {
+            map.set(decl.name.text, directEnv);
+          }
+        } else if (
+          ts.isObjectBindingPattern(decl.name) &&
+          isEnvObject(decl.initializer, envAliases)
+        ) {
+          for (const element of decl.name.elements) {
+            if (ts.isBindingElement(element) && ts.isIdentifier(element.name)) {
+              const envName =
+                element.propertyName && ts.isIdentifier(element.propertyName)
+                  ? element.propertyName.text
+                  : element.name.text;
+              map.set(element.name.text, [envName]);
             }
           }
         }
@@ -296,39 +281,6 @@ function getRootIdentifier(node) {
   return null;
 }
 
-function collectEnvVarsInExpression(expr, topLevelEnvMap, envAliases) {
-  const vars = new Set();
-
-  function visit(node) {
-    if (
-      ts.isPropertyAccessExpression(node) &&
-      isEnvObject(node.expression, envAliases) &&
-      ts.isIdentifier(node.name)
-    ) {
-      vars.add(node.name.text);
-    } else if (
-      ts.isElementAccessExpression(node) &&
-      isEnvObject(node.expression, envAliases) &&
-      node.argumentExpression &&
-      ts.isStringLiteral(node.argumentExpression)
-    ) {
-      vars.add(node.argumentExpression.text);
-    } else if (ts.isIdentifier(node)) {
-      const mapped = topLevelEnvMap.get(node.text);
-      if (mapped) {
-        for (const v of mapped) {
-          vars.add(v);
-        }
-      }
-    }
-
-    ts.forEachChild(node, visit);
-  }
-
-  visit(expr);
-  return Array.from(vars);
-}
-
 export function analyzeTestGates(testSources, setterSources) {
   const gates = [];
   const violations = [];
@@ -354,10 +306,10 @@ export function analyzeTestGates(testSources, setterSources) {
           if (rootName && GATE_ROOT_NAMES.has(rootName)) {
             const envVars = new Set();
             for (const arg of node.arguments) {
-              const varsInArg = collectEnvVarsInExpression(
+              const varsInArg = collectEnvReads(
                 arg,
-                topLevelEnvMap,
                 envAliases,
+                topLevelEnvMap,
               );
               for (const v of varsInArg) {
                 envVars.add(v);
@@ -399,7 +351,12 @@ export function analyzeTestGates(testSources, setterSources) {
   return { gates, violations };
 }
 
-function collectTestFiles(dir, collected = []) {
+function collectFilesRecursively(
+  dir,
+  extensions,
+  isExcluded = null,
+  collected = [],
+) {
   if (!dir) return collected;
   let entries;
   try {
@@ -413,43 +370,11 @@ function collectTestFiles(dir, collected = []) {
       continue;
     }
     const fullPath = join(dir, entry.name);
-    if (fullPath.includes('test/architecture/fixtures')) {
+    if (isExcluded && isExcluded(fullPath, entry)) {
       continue;
     }
     if (entry.isDirectory()) {
-      collectTestFiles(fullPath, collected);
-    } else if (entry.isFile() && entry.name.endsWith('.ts')) {
-      collected.push(fullPath);
-    }
-  }
-  return collected;
-}
-
-export function collectTestSources(root) {
-  const testDir = resolve(root, 'test');
-  const files = collectTestFiles(testDir);
-  return files.map((file) => ({
-    path: relative(root, file).replace(/\\/g, '/'),
-    source: readFileSync(file, 'utf8'),
-  }));
-}
-
-function collectFilesRecursively(dir, extensions, collected = []) {
-  if (!dir) return collected;
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return collected;
-  }
-
-  for (const entry of entries) {
-    if (['.git', 'node_modules', 'dist'].includes(entry.name)) {
-      continue;
-    }
-    const fullPath = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      collectFilesRecursively(fullPath, extensions, collected);
+      collectFilesRecursively(fullPath, extensions, isExcluded, collected);
     } else if (
       entry.isFile() &&
       extensions.some((ext) => entry.name.endsWith(ext))
@@ -458,6 +383,17 @@ function collectFilesRecursively(dir, extensions, collected = []) {
     }
   }
   return collected;
+}
+
+export function collectTestSources(root) {
+  const testDir = resolve(root, 'test');
+  const files = collectFilesRecursively(testDir, ['.ts'], (fullPath) =>
+    fullPath.includes('test/architecture/fixtures'),
+  );
+  return files.map((file) => ({
+    path: relative(root, file).replace(/\\/g, '/'),
+    source: readFileSync(file, 'utf8'),
+  }));
 }
 
 export function collectSetterSources(root) {
@@ -490,12 +426,12 @@ export function collectSetterSources(root) {
 
   const workflowsDir = resolve(root, '.github/workflows');
   if (existsSync(workflowsDir)) {
-    collectFilesRecursively(workflowsDir, ['.yml', '.yaml'], filePaths);
+    collectFilesRecursively(workflowsDir, ['.yml', '.yaml'], null, filePaths);
   }
 
   const scriptsDir = resolve(root, 'scripts');
   if (existsSync(scriptsDir)) {
-    collectFilesRecursively(scriptsDir, ['.mjs', '.sh'], filePaths);
+    collectFilesRecursively(scriptsDir, ['.mjs', '.sh'], null, filePaths);
   }
 
   const vitestConfig = resolve(root, 'vitest.config.ts');
