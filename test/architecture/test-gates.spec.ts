@@ -82,4 +82,41 @@ describe('x', () => {
     );
     expect(resilienceGate).toBeDefined();
   });
+
+  it('ignores commented-out setters (defect 1: commented setter)', () => {
+    const source = `
+const enabled = process.env.COMMENTED_OUT_VAR === '1';
+describe('x', () => {
+  it.skipIf(!enabled)('does a thing', async () => {});
+});
+`;
+    const testSources = [{ path: 'test/gated.spec.ts', source }];
+    const setterSources = [
+      {
+        path: 'scripts/example.sh',
+        source: `#!/usr/bin/env bash\n# COMMENTED_OUT_VAR=1   # left here as an example\necho hello\n`,
+      },
+    ];
+
+    const analysis = analyzeTestGates(testSources, setterSources);
+
+    expect(analysis.violations).toHaveLength(1);
+    expect(analysis.violations[0]).toContain('COMMENTED_OUT_VAR');
+  });
+
+  it('detects un-set env variable gated via process.env object alias (defect 2: env alias)', () => {
+    const source = `
+const env = process.env;
+describe('x', () => {
+  it.skipIf(env.RUN_SCHEMA_CONTRACT !== '1')('...', () => {});
+});
+`;
+    const testSources = [{ path: 'test/alias.spec.ts', source }];
+    const setterSources: { path: string; source: string }[] = [];
+
+    const analysis = analyzeTestGates(testSources, setterSources);
+
+    expect(analysis.violations).toHaveLength(1);
+    expect(analysis.violations[0]).toContain('RUN_SCHEMA_CONTRACT');
+  });
 });

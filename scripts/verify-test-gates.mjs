@@ -11,12 +11,153 @@ function escapeRegex(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function stripHashComments(source) {
+  return source
+    .split('\n')
+    .map((line) => {
+      let inSingle = false;
+      let inDouble = false;
+      let escaped = false;
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (char === "'" && !inDouble) {
+          inSingle = !inSingle;
+        } else if (char === '"' && !inSingle) {
+          inDouble = !inDouble;
+        } else if (char === '#' && !inSingle && !inDouble) {
+          return line.slice(0, i);
+        }
+      }
+      return line;
+    })
+    .join('\n');
+}
+
+function stripJsComments(source) {
+  let result = '';
+  let inSingle = false;
+  let inDouble = false;
+  let inTemplate = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let escaped = false;
+
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    const nextChar = source[i + 1];
+
+    if (inLineComment) {
+      if (char === '\n') {
+        inLineComment = false;
+        result += char;
+      }
+      continue;
+    }
+
+    if (inBlockComment) {
+      if (char === '*' && nextChar === '/') {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      escaped = false;
+      result += char;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      result += char;
+      continue;
+    }
+
+    if (inSingle) {
+      if (char === "'") inSingle = false;
+      result += char;
+      continue;
+    }
+
+    if (inDouble) {
+      if (char === '"') inDouble = false;
+      result += char;
+      continue;
+    }
+
+    if (inTemplate) {
+      if (char === '`') inTemplate = false;
+      result += char;
+      continue;
+    }
+
+    if (char === "'") {
+      inSingle = true;
+      result += char;
+    } else if (char === '"') {
+      inDouble = true;
+      result += char;
+    } else if (char === '`') {
+      inTemplate = true;
+      result += char;
+    } else if (char === '/' && nextChar === '/') {
+      inLineComment = true;
+      i++;
+    } else if (char === '/' && nextChar === '*') {
+      inBlockComment = true;
+      i++;
+    } else {
+      result += char;
+    }
+  }
+
+  return result;
+}
+
+function stripComments(path, source) {
+  const lower = (path || '').toLowerCase();
+  if (
+    lower.endsWith('.sh') ||
+    lower.endsWith('.yml') ||
+    lower.endsWith('.yaml') ||
+    lower.endsWith('makefile') ||
+    lower.includes('.env') ||
+    lower.includes('docker-compose') ||
+    lower.includes('compose')
+  ) {
+    return stripHashComments(source);
+  }
+  if (
+    lower.endsWith('.js') ||
+    lower.endsWith('.mjs') ||
+    lower.endsWith('.cjs') ||
+    lower.endsWith('.ts') ||
+    lower.endsWith('.mts') ||
+    lower.endsWith('.cts')
+  ) {
+    return stripJsComments(source);
+  }
+  return source;
+}
+
 function hasSetter(variable, setterSources) {
   const setterRegex = new RegExp(
     `(^|[^A-Z0-9_])${escapeRegex(variable)}\\s*[:=]`,
     'm',
   );
-  return setterSources.some((s) => setterRegex.test(s.source));
+  return setterSources.some((s) => {
+    const cleanSource = stripComments(s.path, s.source);
+    return setterRegex.test(cleanSource);
+  });
 }
 
 function isProcessEnv(node) {
@@ -28,19 +169,45 @@ function isProcessEnv(node) {
   );
 }
 
-function extractDirectEnvReads(node) {
+function findEnvAliases(sourceFile) {
+  const aliases = new Set();
+  for (const statement of sourceFile.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const decl of statement.declarationList.declarations) {
+        if (
+          decl.initializer &&
+          isProcessEnv(decl.initializer) &&
+          ts.isIdentifier(decl.name)
+        ) {
+          aliases.add(decl.name.text);
+        }
+      }
+    }
+  }
+  return aliases;
+}
+
+function isEnvObject(node, envAliases) {
+  if (isProcessEnv(node)) return true;
+  if (ts.isIdentifier(node) && envAliases && envAliases.has(node.text)) {
+    return true;
+  }
+  return false;
+}
+
+function extractDirectEnvReads(node, envAliases) {
   const envVars = new Set();
 
   function visit(n) {
     if (
       ts.isPropertyAccessExpression(n) &&
-      isProcessEnv(n.expression) &&
+      isEnvObject(n.expression, envAliases) &&
       ts.isIdentifier(n.name)
     ) {
       envVars.add(n.name.text);
     } else if (
       ts.isElementAccessExpression(n) &&
-      isProcessEnv(n.expression) &&
+      isEnvObject(n.expression, envAliases) &&
       n.argumentExpression &&
       ts.isStringLiteral(n.argumentExpression)
     ) {
@@ -48,7 +215,7 @@ function extractDirectEnvReads(node) {
     } else if (
       ts.isVariableDeclaration(n) &&
       n.initializer &&
-      isProcessEnv(n.initializer) &&
+      isEnvObject(n.initializer, envAliases) &&
       ts.isObjectBindingPattern(n.name)
     ) {
       for (const element of n.name.elements) {
@@ -69,20 +236,20 @@ function extractDirectEnvReads(node) {
   return Array.from(envVars);
 }
 
-function buildTopLevelEnvMap(sourceFile) {
+function buildTopLevelEnvMap(sourceFile, envAliases) {
   const map = new Map();
 
   for (const statement of sourceFile.statements) {
     if (ts.isVariableStatement(statement)) {
       for (const decl of statement.declarationList.declarations) {
         if (decl.initializer) {
-          const directEnv = extractDirectEnvReads(decl.initializer);
+          const directEnv = extractDirectEnvReads(decl.initializer, envAliases);
           if (ts.isIdentifier(decl.name)) {
             if (directEnv.length > 0) {
               map.set(decl.name.text, directEnv);
             }
           } else if (ts.isObjectBindingPattern(decl.name)) {
-            if (isProcessEnv(decl.initializer)) {
+            if (isEnvObject(decl.initializer, envAliases)) {
               for (const element of decl.name.elements) {
                 if (ts.isBindingElement(element)) {
                   const envName =
@@ -129,19 +296,19 @@ function getRootIdentifier(node) {
   return null;
 }
 
-function collectEnvVarsInExpression(expr, topLevelEnvMap) {
+function collectEnvVarsInExpression(expr, topLevelEnvMap, envAliases) {
   const vars = new Set();
 
   function visit(node) {
     if (
       ts.isPropertyAccessExpression(node) &&
-      isProcessEnv(node.expression) &&
+      isEnvObject(node.expression, envAliases) &&
       ts.isIdentifier(node.name)
     ) {
       vars.add(node.name.text);
     } else if (
       ts.isElementAccessExpression(node) &&
-      isProcessEnv(node.expression) &&
+      isEnvObject(node.expression, envAliases) &&
       node.argumentExpression &&
       ts.isStringLiteral(node.argumentExpression)
     ) {
@@ -173,7 +340,8 @@ export function analyzeTestGates(testSources, setterSources) {
       ts.ScriptTarget.Latest,
       true,
     );
-    const topLevelEnvMap = buildTopLevelEnvMap(sourceFile);
+    const envAliases = findEnvAliases(sourceFile);
+    const topLevelEnvMap = buildTopLevelEnvMap(sourceFile, envAliases);
 
     function visit(node) {
       if (
@@ -186,7 +354,11 @@ export function analyzeTestGates(testSources, setterSources) {
           if (rootName && GATE_ROOT_NAMES.has(rootName)) {
             const envVars = new Set();
             for (const arg of node.arguments) {
-              const varsInArg = collectEnvVarsInExpression(arg, topLevelEnvMap);
+              const varsInArg = collectEnvVarsInExpression(
+                arg,
+                topLevelEnvMap,
+                envAliases,
+              );
               for (const v of varsInArg) {
                 envVars.add(v);
               }
@@ -237,7 +409,7 @@ function collectTestFiles(dir, collected = []) {
   }
 
   for (const entry of entries) {
-    if (['.git', 'node_modules', 'dist', 'fixtures'].includes(entry.name)) {
+    if (['.git', 'node_modules', 'dist'].includes(entry.name)) {
       continue;
     }
     const fullPath = join(dir, entry.name);
@@ -293,6 +465,28 @@ export function collectSetterSources(root) {
 
   const pkgPath = resolve(root, 'package.json');
   if (existsSync(pkgPath)) filePaths.push(pkgPath);
+
+  const makefile = resolve(root, 'Makefile');
+  if (existsSync(makefile)) filePaths.push(makefile);
+
+  let rootEntries = [];
+  try {
+    rootEntries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    // ignore
+  }
+
+  for (const entry of rootEntries) {
+    if (!entry.isFile()) continue;
+    const name = entry.name;
+    if (
+      name.startsWith('.env') ||
+      ((name.startsWith('docker-compose') || name.startsWith('compose')) &&
+        (name.endsWith('.yml') || name.endsWith('.yaml')))
+    ) {
+      filePaths.push(join(root, name));
+    }
+  }
 
   const workflowsDir = resolve(root, '.github/workflows');
   if (existsSync(workflowsDir)) {
