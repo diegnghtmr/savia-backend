@@ -41,6 +41,12 @@ cleanup() {
   # label instead, which is scoped to this run and cannot touch another project.
   docker ps -aq --filter "label=com.supabase.cli.project=$project_id" | xargs -r timeout -k 5 30 docker rm -f >/dev/null 2>&1 || true
   timeout -k 5 30 docker rm -f "$project_id" >/dev/null 2>&1 || true
+  # The stack owns a bridge network too, and a killed teardown leaks it. Docker's
+  # default address pool is finite, so accumulated networks exhaust it and a later
+  # run fails to allocate a subnet -- observed after four consecutive runs. A
+  # network only detaches once its containers are gone, so this must follow the
+  # container reaping above.
+  docker network ls -q --filter "label=com.supabase.cli.project=$project_id" | xargs -r timeout -k 5 30 docker network rm >/dev/null 2>&1 || true
   rm -rf "$workdir"
   if [[ -n "$diagnostic_dir" ]]; then
     { ! docker ps -aq --filter "label=com.supabase.cli.project=$project_id" | grep -q . && [[ ! -e "$workdir" ]]; } \
