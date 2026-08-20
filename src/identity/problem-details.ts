@@ -10,6 +10,7 @@ export const PROBLEM_TYPES = {
   ONBOARDING_CONFLICT: `${BASE_URI}/onboarding-conflict`,
   INTERNAL: `${BASE_URI}/internal`,
   OUTCOME_UNKNOWN: `${BASE_URI}/outcome-unknown`,
+  BAD_REQUEST: `${BASE_URI}/bad-request`,
 } as const;
 export interface Problem {
   readonly type: string;

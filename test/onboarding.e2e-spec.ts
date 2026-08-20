@@ -13,6 +13,7 @@ import {
 import { IdentityModule } from '../src/identity/identity.module.js';
 import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
 import { CommitOutcomeUnknownError } from '../src/identity/pg-transaction.js';
+import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 
 const SUBJECT = '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d';
 const TOKEN = 'accepted-token';
@@ -84,6 +85,7 @@ async function createApplication(
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
   );
+  registerProblemFilter(app);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
   return app;
@@ -168,6 +170,38 @@ describe('POST /v1/onboarding', () => {
         },
       ],
     });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 problem+json for a malformed JSON request body', async () => {
+    const execute = vi.fn<BootstrapPort['execute']>();
+    const application = await createApplication(execute);
+
+    const response = await application.inject({
+      method: 'POST',
+      url: '/v1/onboarding',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+      },
+      payload: '{ not valid json',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(typeof body.type).toBe('string');
+    expect(body.type.length).toBeGreaterThan(0);
+    expect(typeof body.title).toBe('string');
+    expect(body.title.length).toBeGreaterThan(0);
+    expect(typeof body.code).toBe('string');
+    expect(body.code.length).toBeGreaterThan(0);
+    expect(typeof body.traceId).toBe('string');
+    expect(body.traceId.length).toBeGreaterThan(0);
+    expect(response.payload).not.toContain('{ not valid json');
+    expect(response.payload).not.toContain('Body is not valid JSON');
     expect(execute).not.toHaveBeenCalled();
   });
 

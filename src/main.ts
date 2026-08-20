@@ -5,12 +5,14 @@ import {
 } from '@nestjs/platform-fastify';
 
 import { AppModule } from './app.module.js';
+import { registerProblemFilter } from './identity/onboarding-problem.filter.js';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter({ exposeHeadRoutes: false }),
   );
+  registerProblemFilter(app);
   app.enableShutdownHooks();
 
   await app.listen({

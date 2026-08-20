@@ -1,10 +1,13 @@
 import {
   type ArgumentsHost,
+  BadRequestException,
   Catch,
   type ExceptionFilter,
+  HttpException,
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import type { FastifyReply } from 'fastify';
 
 import type { AuthenticatedRequest } from './authenticated-request.js';
@@ -55,6 +58,20 @@ export class OnboardingProblemFilter implements ExceptionFilter {
         status: 503,
       });
     }
+    if (
+      exception instanceof BadRequestException ||
+      (exception instanceof HttpException && exception.getStatus() === 400)
+    ) {
+      this.logger.error(
+        'Request validation or parsing failed.',
+        exception instanceof Error ? exception.stack : String(exception),
+      );
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Bad request',
+        status: 400,
+      });
+    }
     // Anything unclassified is a server-side defect whose detail could carry
     // connection strings or row contents, so only the log receives it.
     this.logger.error(
@@ -67,4 +84,8 @@ export class OnboardingProblemFilter implements ExceptionFilter {
       status: 500,
     });
   }
+}
+
+export function registerProblemFilter(app: NestFastifyApplication): void {
+  app.useGlobalFilters(new OnboardingProblemFilter());
 }
