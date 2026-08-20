@@ -17,6 +17,7 @@ import {
   type BootstrapPort,
 } from '../src/identity/bootstrap.port.js';
 import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
+import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 
 interface OpenApiOperation {
   operationId?: string;
@@ -173,7 +174,7 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
     const fastifyApp = moduleRef.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter({ exposeHeadRoutes: false }),
     );
-
+    registerProblemFilter(fastifyApp);
     await fastifyApp.init();
     await fastifyApp.getHttpAdapter().getInstance().ready();
     return fastifyApp;
