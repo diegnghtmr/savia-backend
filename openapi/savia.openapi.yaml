@@ -136,6 +136,32 @@ components:
           type: boolean
           default: false
       additionalProperties: true
+    UserProfile:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - email
+        - displayName
+        - locale
+        - timezone
+        - defaultCurrency
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        locale:
+          type: string
+        timezone:
+          type: string
+        defaultCurrency:
+          type: string
+          pattern: '^[A-Za-z]{3}$'
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -226,6 +252,31 @@ paths:
               schema:
                 type: integer
                 minimum: 0
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /v1/me:
+    get:
+      operationId: getCurrentUser
+      tags:
+        - Profile
+      summary: Read the authenticated user profile
+      responses:
+        '200':
+          description: Authenticated user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Profile not found
           content:
             application/problem+json:
               schema:

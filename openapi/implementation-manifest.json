@@ -11,6 +11,11 @@
       "operationId": "createOnboarding",
       "method": "POST",
       "path": "/v1/onboarding"
+    },
+    {
+      "operationId": "getCurrentUser",
+      "method": "GET",
+      "path": "/v1/me"
     }
   ]
 }

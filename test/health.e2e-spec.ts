@@ -76,7 +76,11 @@ describe('health endpoint', () => {
     // Shaped route-miss answer is 500 pending a deliberate decision.
     const unknown = await app.inject({ method: 'GET', url: '/unknown' });
     expect(unknown.statusCode).toBe(500);
-    expect(routes).toEqual(['GET /health', 'POST /v1/onboarding']);
+    expect(routes).toEqual([
+      'GET /health',
+      'POST /v1/onboarding',
+      'GET /v1/me',
+    ]);
 
     await app.close();
   });

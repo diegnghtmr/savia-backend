@@ -10,9 +10,13 @@ import { PgTransaction } from './pg-transaction.js';
 import { PostgresConfig } from './postgres-config.js';
 import { PostgresPool } from './postgres-pool.js';
 import { PostgresBootstrapAdapter } from './postgres-bootstrap.adapter.js';
+import { PostgresProfileAdapter } from './postgres-profile.adapter.js';
+import { ProfileController } from './profile.controller.js';
+import { PROFILE_PORT } from './profile.port.js';
+import { ProfileService } from './profile.service.js';
 
 @Module({
-  controllers: [OnboardingController],
+  controllers: [OnboardingController, ProfileController],
   providers: [
     {
       provide: AuthConfig,
@@ -49,8 +53,24 @@ import { PostgresBootstrapAdapter } from './postgres-bootstrap.adapter.js';
       ) => new BootstrapService(transaction, adapter),
     },
     { provide: BOOTSTRAP_PORT, useExisting: BootstrapService },
+    PostgresProfileAdapter,
+    {
+      provide: ProfileService,
+      inject: [PgTransaction, PostgresProfileAdapter],
+      useFactory: (
+        transaction: PgTransaction,
+        adapter: PostgresProfileAdapter,
+      ) => new ProfileService(transaction, adapter),
+    },
+    { provide: PROFILE_PORT, useExisting: ProfileService },
   ],
-  exports: [JoseJwtVerifier, JwtAuthGuard, PgTransaction, BOOTSTRAP_PORT],
+  exports: [
+    JoseJwtVerifier,
+    JwtAuthGuard,
+    PgTransaction,
+    BOOTSTRAP_PORT,
+    PROFILE_PORT,
+  ],
 })
 export class IdentityModule {
   public constructor(authConfig: AuthConfig) {
