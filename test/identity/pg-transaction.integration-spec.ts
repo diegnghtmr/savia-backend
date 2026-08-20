@@ -55,6 +55,27 @@ describe('PgTransaction', () => {
     const faulty = new FaultPool(transactionPool()); const tx = new PgTransaction(faulty); await expect(tx.run(subject, async () => undefined)).rejects.toBeInstanceOf(CommitOutcomeUnknownError); await tx.run(subject, async () => undefined); expect(faulty.rolledBack).toBe(true); expect(faulty.releasedWithError).toBe(true); expect(faulty.pids[0]).not.toBe(faulty.pids[1]); await tx.close();
     const failed = fakePool('ROLLBACK'); await expect(new PgTransaction(failed).run(subject, async () => { throw Error(); })).rejects.toThrow(); expect(failed.releases).toEqual([expect.any(Error)]);
   });
+  it('takes no advisory lock during runRead and sets session context', async () => {
+    const tx = transaction(); const probe = "select count(*)::int as count from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()";
+    await tx.run(subject, async client => { await expect(client.query<{ count: number }>(probe)).resolves.toMatchObject({ rows: [{ count: 1 }] }); });
+    await tx.runRead(subject, async client => {
+      await expect(client.query<{ role: string; value: string }>("select current_user as role, current_setting('app.subject_id', true) as value")).resolves.toMatchObject({ rows: [{ role: 'savia_application', value: subject }] });
+      await expect(client.query<{ count: number }>(probe)).resolves.toMatchObject({ rows: [{ count: 0 }] });
+    });
+    const client = await source.connect(); await expect(client.query("select current_setting('app.subject_id', true) as value")).resolves.toMatchObject({ rows: [{ value: '' }] }); client.release(); await tx.close();
+  });
+  it('bounds a hung read callback and its late queries', async () => {
+    const tx = transaction({ callbackTimeoutMs: 30, statementTimeoutMs: 30 }); let late!: TransactionClient;
+    await expect(tx.runRead(subject, async client => { late = client; return new Promise<never>(() => undefined); })).rejects.toBeInstanceOf(TransactionTimeoutError); await expect(late.query('select 1')).rejects.toBeInstanceOf(TransactionTimeoutError);
+    await expect(tx.runRead(subject, async client => client.query('select pg_sleep(0.1)'))).rejects.toBeInstanceOf(TransactionTimeoutError); await tx.close();
+  });
+  it('rejects writes inside read-only transaction', async () => {
+    const tx = transaction();
+    await tx.runRead(subject, async client => {
+      await expect(client.query('create temporary table read_only_probe (value integer)')).rejects.toMatchObject({ code: '25006' });
+    });
+    await tx.close();
+  });
 });
 
 // prettier-ignore

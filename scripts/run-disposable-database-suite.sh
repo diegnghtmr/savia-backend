@@ -28,8 +28,19 @@ has_credentials() { local status=0; grep -R -Eiqi 'eyJ[A-Za-z0-9_-]+\.|sb_secret
 owned_realtime_running() { docker ps --filter "label=com.supabase.cli.project=$project_id" --format '{{.Names}} {{.Label "com.supabase.cli.service"}}' | grep -Eq "^supabase_realtime_${project_id} |^[^[:space:]]+ realtime$"; }
 cleanup() {
   [[ -z "${realtime_guard_pid:-}" ]] || { kill "$realtime_guard_pid" 2>/dev/null || true; wait "$realtime_guard_pid" 2>/dev/null || true; }
-  [[ "${SAVIA_DISPOSABLE_CLEANUP_PROBE:-}" == 1 ]] || timeout 30 pnpm exec supabase --workdir "$workdir" stop --no-backup || true
-  timeout 30 docker rm -f "$project_id" >/dev/null 2>&1 || true
+  # -k escalates to SIGKILL. Plain `timeout` sends SIGTERM plus SIGCONT, which
+  # frees an ordinary stopped child -- but a child that stops itself again on
+  # resume (a background process looping on SIGTTOU while touching the tty) is
+  # never released, and the bound silently stops bounding: an observed local run
+  # sat in this line for over eleven minutes. SIGKILL cannot be caught, blocked,
+  # or re-stopped, so it is the only escalation that makes the 30s a real limit.
+  [[ "${SAVIA_DISPOSABLE_CLEANUP_PROBE:-}" == 1 ]] || timeout -k 5 30 pnpm exec supabase --workdir "$workdir" stop --no-backup || true
+  # A killed `supabase stop` leaves its containers running, so removing only
+  # "$project_id" would leak the whole stack -- which then holds port 54322 and
+  # fails the next run's start with status 70. Reap by the CLI's own project
+  # label instead, which is scoped to this run and cannot touch another project.
+  docker ps -aq --filter "label=com.supabase.cli.project=$project_id" | xargs -r timeout -k 5 30 docker rm -f >/dev/null 2>&1 || true
+  timeout -k 5 30 docker rm -f "$project_id" >/dev/null 2>&1 || true
   rm -rf "$workdir"
   if [[ -n "$diagnostic_dir" ]]; then
     { ! docker ps -aq --filter "label=com.supabase.cli.project=$project_id" | grep -q . && [[ ! -e "$workdir" ]]; } \
