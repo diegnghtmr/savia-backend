@@ -64,6 +64,11 @@ describe('PgTransaction', () => {
     });
     const client = await source.connect(); await expect(client.query("select current_setting('app.subject_id', true) as value")).resolves.toMatchObject({ rows: [{ value: '' }] }); client.release(); await tx.close();
   });
+  it('bounds a hung read callback and its late queries', async () => {
+    const tx = transaction({ callbackTimeoutMs: 30, statementTimeoutMs: 30 }); let late!: TransactionClient;
+    await expect(tx.runRead(subject, async client => { late = client; return new Promise<never>(() => undefined); })).rejects.toBeInstanceOf(TransactionTimeoutError); await expect(late.query('select 1')).rejects.toBeInstanceOf(TransactionTimeoutError);
+    await expect(tx.runRead(subject, async client => client.query('select pg_sleep(0.1)'))).rejects.toBeInstanceOf(TransactionTimeoutError); await tx.close();
+  });
   it('rejects writes inside read-only transaction', async () => {
     const tx = transaction();
     await tx.runRead(subject, async client => {
