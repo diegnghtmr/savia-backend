@@ -8,3 +8,8 @@ supabase/.temp/
 # Per-checkout CodeGraph index. Its root and indexed bytes are specific to
 # this working tree, so it must never be shared between checkouts.
 .codegraph/
+
+# Coding-agent and MCP scratch directories. They are tool state, not source,
+# and prettier scans everything it is not told to skip.
+.atl/
+.playwright-mcp/
