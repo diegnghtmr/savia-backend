@@ -79,6 +79,36 @@ export class PgTransaction implements OnApplicationShutdown {
     }
   }
 
+  public async runRead<T>(subject: string, callback: (client: TransactionClient) => Promise<T>): Promise<T> {
+    if (!UUID.test(subject)) throw new Error('subject must be a valid UUID.');
+    const client = await this.acquire();
+    let began = false;
+    try {
+      await client.query('BEGIN READ ONLY');
+      began = true;
+      await client.query('SET LOCAL ROLE savia_application');
+      await client.query("select set_config('app.subject_id', $1, true)", [subject.toLowerCase()]);
+      await this.configureTimeouts(client);
+      const callbackDeadline = monotonicDeadline(this.timeouts.callbackTimeoutMs);
+      let active = true;
+      const transactionClient: TransactionClient = { query: async <Row extends Record<string, unknown>>(text: string, values?: readonly unknown[]) => {
+        const remaining = remainingMilliseconds(callbackDeadline);
+        if (!active || remaining < 1) throw deadlineError();
+        await client.query('select set_config($1, $2::text, true)', ['statement_timeout', `${Math.min(this.timeouts.statementTimeoutMs, remaining)}ms`]);
+        if (!active || remainingMilliseconds(callbackDeadline) < 1) throw deadlineError();
+        return client.query<Row>(text, values);
+      } };
+      const result = await deadline(callback(transactionClient), remainingMilliseconds(callbackDeadline), () => (active = false)).finally(() => (active = false));
+      await client.query('ROLLBACK');
+      client.release();
+      return result;
+    } catch (error) {
+      const rollbackError = began ? await client.query('ROLLBACK').catch(asError) : asError(error);
+      client.release(rollbackError instanceof Error ? rollbackError : undefined);
+      throw databaseTimeout(error);
+    }
+  }
+
   public close(): Promise<void> { return this.pool.end(); }
   public onApplicationShutdown(): Promise<void> { return this.close(); }
   private async acquire(): Promise<PgClient> {
