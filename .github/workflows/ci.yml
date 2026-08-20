@@ -92,6 +92,9 @@ jobs:
       - name: bootstrap integration
         shell: bash
         run: pnpm test:integration:bootstrap
+      - name: profile integration
+        shell: bash
+        run: pnpm test:integration:profile
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
