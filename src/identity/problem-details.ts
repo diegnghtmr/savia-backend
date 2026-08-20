@@ -10,14 +10,16 @@ export const PROBLEM_TYPES = {
   ONBOARDING_CONFLICT: `${BASE_URI}/onboarding-conflict`,
   INTERNAL: `${BASE_URI}/internal`,
   OUTCOME_UNKNOWN: `${BASE_URI}/outcome-unknown`,
+  BAD_REQUEST: `${BASE_URI}/bad-request`,
 } as const;
 export interface Problem {
   readonly type: string;
   readonly title: string;
   readonly status: number;
-  readonly violations?: readonly FieldViolation[];
+  readonly errors?: readonly FieldViolation[];
 }
 export function sendProblem(reply: FastifyReply, problem: Problem): void {
+  const code = problem.type.substring(problem.type.lastIndexOf('/') + 1);
   void reply
     .status(problem.status)
     .type(PROBLEM_CONTENT_TYPE)
@@ -25,9 +27,9 @@ export function sendProblem(reply: FastifyReply, problem: Problem): void {
       type: problem.type,
       title: problem.title,
       status: problem.status,
+      code,
+      traceId: reply.request.id,
       instance: reply.request.url,
-      ...(problem.violations === undefined
-        ? {}
-        : { violations: problem.violations }),
+      ...(problem.errors === undefined ? {} : { errors: problem.errors }),
     });
 }

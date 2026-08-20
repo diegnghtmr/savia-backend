@@ -86,38 +86,56 @@ components:
         workspaceId:
           type: string
           format: uuid
+    FieldViolation:
+      type: object
+      required:
+        - field
+        - code
+        - message
+      properties:
+        field:
+          type: string
+        code:
+          type: string
+        message:
+          type: string
+      additionalProperties: false
     ProblemDetails:
       type: object
-      description: RFC 9457 problem details.
-      required: [type, title, status, instance]
+      required:
+        - type
+        - title
+        - status
+        - code
+        - traceId
       properties:
         type:
           type: string
-          format: uri
+          format: uri-reference
         title:
           type: string
         status:
           type: integer
+          minimum: 100
+          maximum: 599
+        detail:
+          type: string
         instance:
           type: string
-    ValidationProblemDetails:
-      allOf:
-        - $ref: '#/components/schemas/ProblemDetails'
-        - type: object
-          required: [violations]
-          properties:
-            violations:
-              type: array
-              description: Client-actionable field failures, sorted by field then message.
-              items:
-                type: object
-                additionalProperties: false
-                required: [field, message]
-                properties:
-                  field:
-                    type: string
-                  message:
-                    type: string
+          format: uri-reference
+        code:
+          type: string
+        traceId:
+          type: string
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldViolation'
+          default: []
+        retryable:
+          type: boolean
+          default: false
+      additionalProperties: true
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -176,7 +194,7 @@ paths:
           content:
             application/problem+json:
               schema:
-                $ref: '#/components/schemas/ValidationProblemDetails'
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: The bearer token is missing or unusable.
           content:
