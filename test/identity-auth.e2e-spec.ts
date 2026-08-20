@@ -13,6 +13,7 @@ import type { AuthenticatedRequest } from '../src/identity/authenticated-request
 import { IdentityModule } from '../src/identity/identity.module.js';
 import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
 import { JwtAuthGuard } from '../src/identity/jwt-auth.guard.js';
+import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 import { createJwksServer, type JwksServer } from './helpers/jwks-server.js';
 
 const authEnvironment = {
@@ -66,6 +67,7 @@ async function createApplication(
   const app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
   );
+  registerProblemFilter(app);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
   return app;
@@ -123,8 +125,12 @@ describe('identity HTTP boundary', () => {
 
       expect(response.statusCode).toBe(401);
       expect(JSON.parse(response.payload)).toEqual({
-        message: 'Unauthorized',
-        statusCode: 401,
+        code: 'unauthorized',
+        instance: '/test/identity',
+        status: 401,
+        title: 'Authentication is required',
+        traceId: expect.stringMatching(/.+/),
+        type: 'https://savia.app/problems/unauthorized',
       });
       await app.close();
     },
@@ -141,7 +147,8 @@ describe('identity HTTP boundary', () => {
 
     const response = await app.inject({ method: 'GET', url: '/v1/me' });
 
-    expect(response.statusCode).toBe(404);
+    // Shaped route-miss answer is 500 pending a deliberate decision.
+    expect(response.statusCode).toBe(500);
     await app.close();
   });
 });

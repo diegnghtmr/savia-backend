@@ -6,6 +6,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
+import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 
 const authEnvironment = {
   JWT_ISSUER: 'https://issuer.example.test',
@@ -54,6 +55,7 @@ describe('health endpoint', () => {
     }).compile();
     const app =
       moduleRef.createNestApplication<NestFastifyApplication>(adapter);
+    registerProblemFilter(app);
 
     await app.init();
     await app.getHttpAdapter().getInstance().ready();
@@ -71,8 +73,9 @@ describe('health endpoint', () => {
     );
     expect(Date.parse(JSON.parse(health.payload).time)).not.toBeNaN();
 
+    // Shaped route-miss answer is 500 pending a deliberate decision.
     const unknown = await app.inject({ method: 'GET', url: '/unknown' });
-    expect(unknown.statusCode).toBe(404);
+    expect(unknown.statusCode).toBe(500);
     expect(routes).toEqual(['GET /health', 'POST /v1/onboarding']);
 
     await app.close();

@@ -1,9 +1,9 @@
 {
   "planningSource": {
-    "revision": "f9f2a9489088d1bce7eeeedf4dd57b002ecaa883",
+    "revision": "0a4c58d58b2effe2bea7a7ec2e3f0ec8d67525ca",
     "path": "docs/savia-openapi.yaml",
-    "sha256": "17aacf0dd0aab143d0fbaf8055d5f352c9af0895ffdeff523b0b53d8f3c69a69",
-    "bytes": 160243,
+    "sha256": "f591e81effa7d25dac3970407f31962140187ed3bb4d28a3ac9264d8c899b85a",
+    "bytes": 160308,
     "operationCount": 93
   },
   "backendCi": {
