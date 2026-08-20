@@ -28,6 +28,7 @@ export interface BootstrapCommand {
 }
 export interface FieldViolation {
   readonly field: string;
+  readonly code: string;
   readonly message: string;
 }
 export class BootstrapCommandValidationError extends Error {
@@ -86,13 +87,13 @@ function readBody(
   violations: FieldViolation[],
 ): Readonly<Record<string, unknown>> {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
-    add(violations, 'body', 'must be an object');
+    add(violations, 'body', 'invalid-type', 'must be an object');
     return {};
   }
   const body = input as Record<string, unknown>;
   for (const key of Object.keys(body))
     if (!ALL_FIELDS.includes(key as never))
-      add(violations, key, 'is not allowed');
+      add(violations, key, 'not-allowed', 'is not allowed');
   return body;
 }
 function stringValue(
@@ -101,13 +102,13 @@ function stringValue(
   violations: FieldViolation[],
 ): string {
   if (typeof value === 'string' && value.trim()) return value.trim();
-  add(violations, field, 'must be a non-empty string');
+  add(violations, field, 'required', 'must be a non-empty string');
   return '';
 }
 function emailValue(value: unknown, violations: FieldViolation[]): string {
   const email = stringValue(value, 'email', violations).toLowerCase();
   // prettier-ignore
-  if (email.length > 254 || email.indexOf('@') > 64 || !EMAIL_PATTERN.test(email)) add(violations, 'email', 'must be a valid email address');
+  if (email.length > 254 || email.indexOf('@') > 64 || !EMAIL_PATTERN.test(email)) add(violations, 'email', 'invalid-email', 'must be a valid email address');
   return email;
 }
 function nameValue(
@@ -117,7 +118,7 @@ function nameValue(
 ): string {
   const name = stringValue(value, field, violations);
   if (name.length > 120)
-    add(violations, field, 'must be at most 120 characters');
+    add(violations, field, 'max-length', 'must be at most 120 characters');
   return name;
 }
 function localeValue(value: unknown, violations: FieldViolation[]): string {
@@ -128,14 +129,19 @@ function localeValue(value: unknown, violations: FieldViolation[]): string {
     if (!canonical || !Intl.DateTimeFormat.supportedLocalesOf([canonical]).length) throw new Error();
     return canonical;
   } catch {
-    add(violations, 'locale', 'must be a supported locale');
+    add(violations, 'locale', 'invalid-locale', 'must be a supported locale');
     return '';
   }
 }
 function countryValue(value: unknown, violations: FieldViolation[]): string {
   const country = stringValue(value, 'countryCode', violations).toUpperCase();
   if (!ISO_COUNTRIES.has(country))
-    add(violations, 'countryCode', 'must be an ISO 3166-1 alpha-2 code');
+    add(
+      violations,
+      'countryCode',
+      'invalid-country-code',
+      'must be an ISO 3166-1 alpha-2 code',
+    );
   return country;
 }
 function timezoneValue(value: unknown, violations: FieldViolation[]): string {
@@ -145,7 +151,7 @@ function timezoneValue(value: unknown, violations: FieldViolation[]): string {
       timeZone: timezone,
     }).resolvedOptions().timeZone;
   } catch {
-    add(violations, 'timezone', 'must be an IANA timezone');
+    add(violations, 'timezone', 'invalid-timezone', 'must be an IANA timezone');
     return '';
   }
 }
@@ -156,7 +162,12 @@ function currencyValue(
 ): string {
   const currency = stringValue(value, field, violations).toUpperCase();
   if (!ACTIVE_CURRENCIES.has(currency))
-    add(violations, field, 'must be an active ISO 4217 currency');
+    add(
+      violations,
+      field,
+      'invalid-currency',
+      'must be an active ISO 4217 currency',
+    );
   return currency;
 }
 function enumValue<T extends readonly string[]>(
@@ -167,7 +178,7 @@ function enumValue<T extends readonly string[]>(
 ): T[number] {
   const candidate = stringValue(value, field, violations);
   if (!values.includes(candidate as T[number]))
-    add(violations, field, 'is unsupported');
+    add(violations, field, 'unsupported', 'is unsupported');
   return candidate as T[number];
 }
 function weekStart(value: unknown, violations: FieldViolation[]): number {
@@ -176,18 +187,24 @@ function weekStart(value: unknown, violations: FieldViolation[]): number {
     (value as number) < 0 ||
     (value as number) > 6
   )
-    add(violations, 'weekStartsOn', 'must be an integer from 0 through 6');
+    add(
+      violations,
+      'weekStartsOn',
+      'invalid-range',
+      'must be an integer from 0 through 6',
+    );
   return value as number;
 }
 function booleanValue(value: unknown, violations: FieldViolation[]): boolean {
   if (value === undefined || typeof value === 'boolean') return value ?? false;
-  add(violations, 'privacyModeEnabled', 'must be a boolean');
+  add(violations, 'privacyModeEnabled', 'invalid-type', 'must be a boolean');
   return false;
 }
 function add(
   violations: FieldViolation[],
   field: string,
+  code: string,
   message: string,
 ): void {
-  violations.push(Object.freeze({ field, message }));
+  violations.push(Object.freeze({ field, code, message }));
 }

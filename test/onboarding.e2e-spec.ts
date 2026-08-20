@@ -152,11 +152,18 @@ describe('POST /v1/onboarding', () => {
       type: 'https://savia.app/problems/validation-failed',
       title: 'Request validation failed',
       status: 400,
+      code: 'validation-failed',
+      traceId: expect.stringMatching(/.+/),
       instance: '/v1/onboarding',
-      violations: [
-        { field: 'email', message: 'must be a valid email address' },
+      errors: [
+        {
+          field: 'email',
+          code: expect.stringMatching(/.+/),
+          message: 'must be a valid email address',
+        },
         {
           field: 'weekStartsOn',
+          code: expect.stringMatching(/.+/),
           message: 'must be an integer from 0 through 6',
         },
       ],
@@ -174,8 +181,9 @@ describe('POST /v1/onboarding', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.payload).violations).toContainEqual({
+    expect(JSON.parse(response.payload).errors).toContainEqual({
       field: 'subject',
+      code: expect.stringMatching(/.+/),
       message: 'is not allowed',
     });
     expect(execute).not.toHaveBeenCalled();
@@ -197,6 +205,8 @@ describe('POST /v1/onboarding', () => {
         type: 'https://savia.app/problems/unauthorized',
         title: 'Authentication is required',
         status: 401,
+        code: 'unauthorized',
+        traceId: expect.stringMatching(/.+/),
         instance: '/v1/onboarding',
       });
       expect(execute).not.toHaveBeenCalled();
@@ -218,6 +228,8 @@ describe('POST /v1/onboarding', () => {
       type: 'https://savia.app/problems/onboarding-conflict',
       title: 'Onboarding already exists with different data',
       status: 409,
+      code: 'onboarding-conflict',
+      traceId: expect.stringMatching(/.+/),
       instance: '/v1/onboarding',
     });
   });
@@ -240,6 +252,8 @@ describe('POST /v1/onboarding', () => {
       type: 'https://savia.app/problems/internal',
       title: 'Internal server error',
       status: 500,
+      code: 'internal',
+      traceId: expect.stringMatching(/.+/),
       instance: '/v1/onboarding',
     });
     expect(response.payload).not.toContain('incomplete-aggregate');
@@ -270,6 +284,8 @@ describe('POST /v1/onboarding', () => {
       type: 'https://savia.app/problems/outcome-unknown',
       title: 'Onboarding outcome is unknown',
       status: 503,
+      code: 'outcome-unknown',
+      traceId: expect.stringMatching(/.+/),
       instance: '/v1/onboarding',
     });
     expect(response.payload).not.toContain('connection reset by peer');
@@ -300,6 +316,8 @@ describe('POST /v1/onboarding', () => {
       type: 'https://savia.app/problems/internal',
       title: 'Internal server error',
       status: 500,
+      code: 'internal',
+      traceId: expect.stringMatching(/.+/),
       instance: '/v1/onboarding',
     });
     expect(response.payload).not.toContain('hunter2');

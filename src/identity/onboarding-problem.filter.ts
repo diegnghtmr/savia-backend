@@ -25,7 +25,7 @@ export class OnboardingProblemFilter implements ExceptionFilter {
         type: PROBLEM_TYPES.VALIDATION_FAILED,
         title: 'Request validation failed',
         status: 400,
-        violations: exception.violations,
+        errors: exception.violations,
       });
     if (exception instanceof UnauthorizedException)
       return sendProblem(reply, {
