@@ -6,6 +6,7 @@ import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IdentityModule } from '../src/identity/identity.module.js';
+import { ProfileService } from '../src/identity/profile.service.js';
 import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
 import {
   PROFILE_PORT,
@@ -179,5 +180,22 @@ describe('GET /v1/me', () => {
       instance: '/v1/me',
     });
     expect(read).not.toHaveBeenCalled();
+  });
+});
+
+// The cases above override PROFILE_PORT, so every one of them proves the route's
+// shape against a mock. None of them proves the route is wired to the real
+// collaborator -- a controller delegating somewhere else entirely would pass all
+// of them. This resolves the token from the unmodified module graph instead.
+describe('GET /v1/me wiring', () => {
+  it('resolves PROFILE_PORT to the real ProfileService', async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [IdentityModule],
+    })
+      .overrideProvider(JoseJwtVerifier)
+      .useValue(verifier)
+      .compile();
+    expect(moduleRef.get(PROFILE_PORT)).toBeInstanceOf(ProfileService);
+    await moduleRef.close();
   });
 });
