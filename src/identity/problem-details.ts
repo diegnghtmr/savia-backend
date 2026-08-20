@@ -11,6 +11,7 @@ export const PROBLEM_TYPES = {
   INTERNAL: `${BASE_URI}/internal`,
   OUTCOME_UNKNOWN: `${BASE_URI}/outcome-unknown`,
   BAD_REQUEST: `${BASE_URI}/bad-request`,
+  NOT_FOUND: `${BASE_URI}/not-found`,
 } as const;
 export interface Problem {
   readonly type: string;

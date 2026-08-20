@@ -141,14 +141,4 @@ describe('identity HTTP boundary', () => {
 
     await expect(createApplication()).rejects.toThrow(/JWT configuration/i);
   });
-
-  it('does not expose /v1/me before persisted profile behavior exists', async () => {
-    const app = await createApplication();
-
-    const response = await app.inject({ method: 'GET', url: '/v1/me' });
-
-    // Shaped route-miss answer is 500 pending a deliberate decision.
-    expect(response.statusCode).toBe(500);
-    await app.close();
-  });
 });

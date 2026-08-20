@@ -16,6 +16,10 @@ import {
   BOOTSTRAP_PORT,
   type BootstrapPort,
 } from '../src/identity/bootstrap.port.js';
+import {
+  PROFILE_PORT,
+  type ProfilePort,
+} from '../src/identity/profile.port.js';
 import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 
@@ -100,6 +104,7 @@ function compileResponseValidator(
   path: string,
   method: string,
   statusCode: string,
+  contentType = 'application/json',
 ): ValidateFunction {
   const ajv = new Ajv2020({ allErrors: true });
   addFormats(ajv);
@@ -112,7 +117,7 @@ function compileResponseValidator(
 
   const operation = document.paths?.[path]?.[method.toLowerCase()];
   const response = operation?.responses?.[statusCode];
-  const schema = response?.content?.['application/json']?.schema;
+  const schema = response?.content?.[contentType]?.schema;
 
   if (schema === undefined) {
     throw new Error(
@@ -156,6 +161,9 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
         aggregate: TEST_AGGREGATE,
       }),
     };
+    const profileMock: ProfilePort = {
+      read: vi.fn<ProfilePort['read']>().mockResolvedValue(undefined),
+    };
 
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -169,6 +177,8 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
       })
       .overrideProvider(BOOTSTRAP_PORT)
       .useValue(bootstrapMock)
+      .overrideProvider(PROFILE_PORT)
+      .useValue(profileMock)
       .compile();
 
     const fastifyApp = moduleRef.createNestApplication<NestFastifyApplication>(
@@ -222,6 +232,31 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
 
     const isValid = validateOnboardingResponse(payload);
     expect(validateOnboardingResponse.errors).toBeNull();
+    expect(isValid).toBe(true);
+  });
+
+  it('validates live GET /v1/me 404 response body against its declared ProblemDetails schema', async () => {
+    const document = loadBundledContract();
+    const validateProfileNotFound = compileResponseValidator(
+      document,
+      '/v1/me',
+      'GET',
+      '404',
+      'application/problem+json',
+    );
+
+    app = await createApplication();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/me',
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+    });
+
+    expect(response.statusCode).toBe(404);
+    const payload = JSON.parse(response.payload);
+
+    const isValid = validateProfileNotFound(payload);
+    expect(validateProfileNotFound.errors).toBeNull();
     expect(isValid).toBe(true);
   });
 
