@@ -67,15 +67,17 @@ describe('PostgresConfig', () => {
 
 describe('PostgresPool', () => {
   it('rejects an occupied finite pool checkout, then recovers after release', async () => {
+    // connectionTimeoutMillis governs both slot contention and initial TCP/auth
+    // establishment on an empty pool. Size for the slower operation on loaded CI runners.
     const pool = createPool({
       DATABASE_POOL_MAX: '1',
-      DATABASE_CHECKOUT_TIMEOUT_MS: '50',
+      DATABASE_CHECKOUT_TIMEOUT_MS: '1000',
     });
     const holder = await pool.connect();
     const started = performance.now();
 
     await expect(pool.connect()).rejects.toThrow('timeout exceeded');
-    expect(performance.now() - started).toBeLessThan(500);
+    expect(performance.now() - started).toBeLessThan(3000);
 
     holder.release();
     const recovered = await pool.connect();
