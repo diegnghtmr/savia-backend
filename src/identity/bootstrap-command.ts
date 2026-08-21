@@ -96,7 +96,7 @@ function readBody(
       add(violations, key, 'not-allowed', 'is not allowed');
   return body;
 }
-function stringValue(
+export function stringValue(
   value: unknown,
   field: string,
   violations: FieldViolation[],
@@ -111,7 +111,7 @@ function emailValue(value: unknown, violations: FieldViolation[]): string {
   if (email.length > 254 || email.indexOf('@') > 64 || !EMAIL_PATTERN.test(email)) add(violations, 'email', 'invalid-email', 'must be a valid email address');
   return email;
 }
-function nameValue(
+export function nameValue(
   value: unknown,
   field: string,
   violations: FieldViolation[],
@@ -121,7 +121,10 @@ function nameValue(
     add(violations, field, 'max-length', 'must be at most 120 characters');
   return name;
 }
-function localeValue(value: unknown, violations: FieldViolation[]): string {
+export function localeValue(
+  value: unknown,
+  violations: FieldViolation[],
+): string {
   const locale = stringValue(value, 'locale', violations);
   try {
     const [canonical] = Intl.getCanonicalLocales(locale);
@@ -144,7 +147,10 @@ function countryValue(value: unknown, violations: FieldViolation[]): string {
     );
   return country;
 }
-function timezoneValue(value: unknown, violations: FieldViolation[]): string {
+export function timezoneValue(
+  value: unknown,
+  violations: FieldViolation[],
+): string {
   const timezone = stringValue(value, 'timezone', violations);
   try {
     return new Intl.DateTimeFormat('en', {
@@ -155,7 +161,7 @@ function timezoneValue(value: unknown, violations: FieldViolation[]): string {
     return '';
   }
 }
-function currencyValue(
+export function currencyValue(
   value: unknown,
   field: string,
   violations: FieldViolation[],
@@ -200,7 +206,7 @@ function booleanValue(value: unknown, violations: FieldViolation[]): boolean {
   add(violations, 'privacyModeEnabled', 'invalid-type', 'must be a boolean');
   return false;
 }
-function add(
+export function add(
   violations: FieldViolation[],
   field: string,
   code: string,

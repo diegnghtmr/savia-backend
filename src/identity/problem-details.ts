@@ -12,6 +12,8 @@ export const PROBLEM_TYPES = {
   OUTCOME_UNKNOWN: `${BASE_URI}/outcome-unknown`,
   BAD_REQUEST: `${BASE_URI}/bad-request`,
   NOT_FOUND: `${BASE_URI}/not-found`,
+  UNPROCESSABLE: `${BASE_URI}/unprocessable`,
+  PRECONDITION_FAILED: `${BASE_URI}/precondition-failed`,
 } as const;
 export interface Problem {
   readonly type: string;
