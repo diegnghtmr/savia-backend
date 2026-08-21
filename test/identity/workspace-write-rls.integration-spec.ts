@@ -1,4 +1,4 @@
-// Migration under test: 202607150007_workspace_write_rls.sql
+// Migrations under test: 202607150007_workspace_write_rls.sql, 202607150008_workspace_created_by.sql, 202607150009_workspace_claim_binding.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -8,7 +8,7 @@ if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 const subject = (number: number) =>
   `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
 
-describe('Workspace write RLS, grants, and unclaimed helper (202607150007_workspace_write_rls.sql)', () => {
+describe('Workspace write RLS, grants, and claim binding (202607150007_workspace_write_rls.sql, 202607150008_workspace_created_by.sql, 202607150009_workspace_claim_binding.sql)', () => {
   let admin: Pool;
 
   const subjectA = subject(901);
@@ -84,9 +84,9 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
 
     // Seed wsClaimedId (claimed by Subject A as active owner)
     await admin.query(
-      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
-       values ($1, 'Claimed Shared Workspace', 'shared', 'USD', null)`,
-      [wsClaimedId],
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Claimed Shared Workspace', 'shared', 'USD', null, $2)`,
+      [wsClaimedId, subjectA],
     );
     await admin.query(
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
@@ -94,25 +94,25 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
       [wsClaimedId, subjectA],
     );
 
-    // Seed wsUnclaimedId (shared, no memberships)
+    // Seed wsUnclaimedId (shared, created by Subject A, no memberships)
     await admin.query(
-      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
-       values ($1, 'Unclaimed Shared Workspace', 'shared', 'USD', null)`,
-      [wsUnclaimedId],
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Unclaimed Shared Workspace', 'shared', 'USD', null, $2)`,
+      [wsUnclaimedId, subjectA],
     );
 
-    // Seed wsUnclaimedId2 (shared, no memberships)
+    // Seed wsUnclaimedId2 (shared, created by Subject A, no memberships)
     await admin.query(
-      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
-       values ($1, 'Unclaimed Shared Workspace 2', 'shared', 'USD', null)`,
-      [wsUnclaimedId2],
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Unclaimed Shared Workspace 2', 'shared', 'USD', null, $2)`,
+      [wsUnclaimedId2, subjectA],
     );
 
     // Seed wsUpdateId (shared with Subject A as owner, Subject Editor as editor)
     await admin.query(
-      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
-       values ($1, 'Update Shared Workspace', 'shared', 'USD', null)`,
-      [wsUpdateId],
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Update Shared Workspace', 'shared', 'USD', null, $2)`,
+      [wsUpdateId, subjectA],
     );
     await admin.query(
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
@@ -123,9 +123,9 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
 
     // Seed wsSuspendedUpdateId (shared with Subject Suspended as suspended owner)
     await admin.query(
-      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
-       values ($1, 'Suspended Update Shared Workspace', 'shared', 'USD', null)`,
-      [wsSuspendedUpdateId],
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Suspended Update Shared Workspace', 'shared', 'USD', null, $2)`,
+      [wsSuspendedUpdateId, subjectSuspended],
     );
     await admin.query(
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
@@ -135,9 +135,9 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
 
     // Seed wsDeleteSharedId (shared with Subject A as active owner)
     await admin.query(
-      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
-       values ($1, 'Delete Shared Workspace', 'shared', 'USD', null)`,
-      [wsDeleteSharedId],
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Delete Shared Workspace', 'shared', 'USD', null, $2)`,
+      [wsDeleteSharedId, subjectA],
     );
     await admin.query(
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
@@ -161,9 +161,9 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
 
     // Seed wsAdminDeleteId (shared with Subject A as owner, Subject Admin as administrator)
     await admin.query(
-      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
-       values ($1, 'Admin Delete Shared Workspace', 'shared', 'USD', null)`,
-      [wsAdminDeleteId],
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Admin Delete Shared Workspace', 'shared', 'USD', null, $2)`,
+      [wsAdminDeleteId, subjectA],
     );
     await admin.query(
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
@@ -174,9 +174,9 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
 
     // Seed wsSuspendedDeleteId (shared with Subject Suspended as suspended owner)
     await admin.query(
-      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
-       values ($1, 'Suspended Delete Shared Workspace', 'shared', 'USD', null)`,
-      [wsSuspendedDeleteId],
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Suspended Delete Shared Workspace', 'shared', 'USD', null, $2)`,
+      [wsSuspendedDeleteId, subjectSuspended],
     );
     await admin.query(
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
@@ -190,22 +190,26 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
   });
 
   describe('workspaces INSERT', () => {
-    it('subject A inserts kind=shared -> INSERT 0 1', async () => {
+    it('subject A inserts kind=shared with created_by=subject A -> INSERT 0 1', async () => {
       const newWsId = crypto.randomUUID();
       const result = await asSubject(subjectA, (client) =>
         client.query(
-          `insert into public.workspaces (id, name, kind, base_currency) values ($1, 'A Shared WS', 'shared', 'USD')`,
-          [newWsId],
+          `insert into public.workspaces (id, name, kind, base_currency, created_by) values ($1, 'A Shared WS', 'shared', 'USD', $2)`,
+          [newWsId, subjectA],
         ),
       );
       expect(result.rowCount).toBe(1);
 
-      const check = await admin.query<{ kind: string; name: string }>(
-        'select kind, name from public.workspaces where id = $1',
-        [newWsId],
-      );
+      const check = await admin.query<{
+        kind: string;
+        name: string;
+        created_by: string;
+      }>('select kind, name, created_by from public.workspaces where id = $1', [
+        newWsId,
+      ]);
       expect(check.rows[0]?.kind).toBe('shared');
       expect(check.rows[0]?.name).toBe('A Shared WS');
+      expect(check.rows[0]?.created_by).toBe(subjectA);
     });
 
     it('subject A inserting kind=personal naming subject B is refused with 42501', async () => {
@@ -219,6 +223,28 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
         ),
       ).rejects.toMatchObject({ code: '42501' });
     });
+
+    it('subject A inserting collaborative workspace with forged created_by=subject B is refused with 42501; with created_by=subject A succeeds (positive control)', async () => {
+      const forgedWsId = crypto.randomUUID();
+      await expect(
+        asSubject(subjectA, (client) =>
+          client.query(
+            `insert into public.workspaces (id, name, kind, base_currency, created_by) values ($1, 'Forged WS', 'shared', 'USD', $2)`,
+            [forgedWsId, subjectB],
+          ),
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+
+      // Positive control: identical insert with created_by = subjectA succeeds
+      const validWsId = crypto.randomUUID();
+      const validResult = await asSubject(subjectA, (client) =>
+        client.query(
+          `insert into public.workspaces (id, name, kind, base_currency, created_by) values ($1, 'Valid WS', 'shared', 'USD', $2)`,
+          [validWsId, subjectA],
+        ),
+      );
+      expect(validResult.rowCount).toBe(1);
+    });
   });
 
   describe('memberships INSERT', () => {
@@ -226,8 +252,8 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
       const wsId = crypto.randomUUID();
       await asSubject(subjectA, async (client) => {
         const wsRes = await client.query(
-          `insert into public.workspaces (id, name, kind, base_currency) values ($1, 'Atomic Shared WS', 'shared', 'USD')`,
-          [wsId],
+          `insert into public.workspaces (id, name, kind, base_currency, created_by) values ($1, 'Atomic Shared WS', 'shared', 'USD', $2)`,
+          [wsId, subjectA],
         );
         expect(wsRes.rowCount).toBe(1);
 
@@ -243,6 +269,36 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
         [wsId, subjectA],
       );
       expect(memCheck.rows[0]).toEqual({ role: 'owner', status: 'active' });
+    });
+
+    it('victim A commits collaborative workspace with created_by=A and no membership; attacker B claiming it is refused with 42501; creator A claiming it succeeds (positive control)', async () => {
+      const wsId = crypto.randomUUID();
+      // Step 1: Victim A commits collaborative workspace stamping created_by = subjectA and NO membership
+      await asSubject(subjectA, (client) =>
+        client.query(
+          `insert into public.workspaces (id, name, kind, base_currency, created_by) values ($1, 'Victim WS', 'shared', 'USD', $2)`,
+          [wsId, subjectA],
+        ),
+      );
+
+      // Step 2: Attacker B attempts owner claim -> refused 42501
+      await expect(
+        asSubject(subjectB, (client) =>
+          client.query(
+            `insert into public.workspace_memberships (workspace_id, profile_id, role, status) values ($1, $2, 'owner', 'active')`,
+            [wsId, subjectB],
+          ),
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+
+      // Step 3 (Positive control): Creator A claims the same workspace -> INSERT 0 1
+      const claimResult = await asSubject(subjectA, (client) =>
+        client.query(
+          `insert into public.workspace_memberships (workspace_id, profile_id, role, status) values ($1, $2, 'owner', 'active')`,
+          [wsId, subjectA],
+        ),
+      );
+      expect(claimResult.rowCount).toBe(1);
     });
 
     it("subject B self-inserting owner/active into A's already-claimed workspace is refused with 42501", async () => {
@@ -279,31 +335,39 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
     });
   });
 
-  describe('helper public.collaborative_workspace_is_unclaimed direct assertions', () => {
-    it('returns false for claimed workspace, true for unclaimed workspace, and false for nonexistent workspace as savia_application', async () => {
-      const claimedRes = await asSubject(subjectA, (client) =>
-        client.query<{ unclaimed: boolean }>(
-          'select public.collaborative_workspace_is_unclaimed($1) as unclaimed',
-          [wsClaimedId],
+  describe('helper public.collaborative_workspace_is_claimable_by direct assertions', () => {
+    it('returns true for creator on unclaimed, false for non-creator on unclaimed, false for claimed workspace, and false for nonexistent workspace as savia_application', async () => {
+      const claimableByCreator = await asSubject(subjectA, (client) =>
+        client.query<{ claimable: boolean }>(
+          'select public.collaborative_workspace_is_claimable_by($1, $2) as claimable',
+          [wsUnclaimedId, subjectA],
         ),
       );
-      expect(claimedRes.rows[0]?.unclaimed).toBe(false);
+      expect(claimableByCreator.rows[0]?.claimable).toBe(true);
 
-      const unclaimedRes = await asSubject(subjectA, (client) =>
-        client.query<{ unclaimed: boolean }>(
-          'select public.collaborative_workspace_is_unclaimed($1) as unclaimed',
-          [wsUnclaimedId],
+      const claimableByNonCreator = await asSubject(subjectB, (client) =>
+        client.query<{ claimable: boolean }>(
+          'select public.collaborative_workspace_is_claimable_by($1, $2) as claimable',
+          [wsUnclaimedId, subjectB],
         ),
       );
-      expect(unclaimedRes.rows[0]?.unclaimed).toBe(true);
+      expect(claimableByNonCreator.rows[0]?.claimable).toBe(false);
+
+      const claimedRes = await asSubject(subjectA, (client) =>
+        client.query<{ claimable: boolean }>(
+          'select public.collaborative_workspace_is_claimable_by($1, $2) as claimable',
+          [wsClaimedId, subjectA],
+        ),
+      );
+      expect(claimedRes.rows[0]?.claimable).toBe(false);
 
       const nonexistentRes = await asSubject(subjectA, (client) =>
-        client.query<{ unclaimed: boolean }>(
-          'select public.collaborative_workspace_is_unclaimed($1) as unclaimed',
-          [crypto.randomUUID()],
+        client.query<{ claimable: boolean }>(
+          'select public.collaborative_workspace_is_claimable_by($1, $2) as claimable',
+          [crypto.randomUUID(), subjectA],
         ),
       );
-      expect(nonexistentRes.rows[0]?.unclaimed).toBe(false);
+      expect(nonexistentRes.rows[0]?.claimable).toBe(false);
     });
   });
 
@@ -341,7 +405,8 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
       expect(updateRes.rowCount).toBe(0);
     });
 
-    it('suspended owner updating workspace returns UPDATE 0', async () => {
+    it("suspended owner cannot update: the read policy already hides the row, so the write policy's status clause is unobservable defense in depth", async () => {
+      // This test asserts combined read+write policy behavior; the read policy already hides the row from a suspended member, so this case cannot isolate the write policy's status = 'active' clause (see administrator DELETE case for write policy role clause isolation).
       const updateRes = await asSubject(subjectSuspended, (client) =>
         client.query(
           `update public.workspaces set name = 'Suspended Update', version = version + 1 where id = $1`,
@@ -409,7 +474,8 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
       expect(check.rows).toHaveLength(1);
     });
 
-    it('suspended owner deleting workspace returns DELETE 0 and row is still present', async () => {
+    it("suspended owner cannot delete: the read policy already hides the row, so the write policy's status clause is unobservable defense in depth", async () => {
+      // This test asserts combined read+write policy behavior; the read policy already hides the row from a suspended member, so this case cannot isolate the write policy's status = 'active' clause (see administrator DELETE case for write policy role clause isolation).
       const deleteRes = await asSubject(subjectSuspended, (client) =>
         client.query(`delete from public.workspaces where id = $1`, [
           wsSuspendedDeleteId,
