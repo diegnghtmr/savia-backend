@@ -16,6 +16,11 @@
       "operationId": "getCurrentUser",
       "method": "GET",
       "path": "/v1/me"
+    },
+    {
+      "operationId": "updateCurrentUser",
+      "method": "PATCH",
+      "path": "/v1/me"
     }
   ]
 }

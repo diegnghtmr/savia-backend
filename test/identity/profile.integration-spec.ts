@@ -20,6 +20,8 @@ describe('PostgresProfileAdapter database boundary', () => {
 
   const subjectA = subject(600);
   const subjectB = subject(601);
+  const subjectC = subject(602);
+  const subjectD = subject(603);
 
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
@@ -27,13 +29,24 @@ describe('PostgresProfileAdapter database boundary', () => {
     transaction = new PgTransaction(pool, { callbackTimeoutMs: 3_000 });
 
     await admin.query(
-      `insert into auth.users (id, email) values ($1, $2), ($3, $4)`,
-      [subjectA, 'subject-a@example.test', subjectB, 'subject-b@example.test'],
+      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8)`,
+      [
+        subjectA,
+        'subject-a@example.test',
+        subjectB,
+        'subject-b@example.test',
+        subjectC,
+        'subject-c@example.test',
+        subjectD,
+        'subject-d@example.test',
+      ],
     );
     await admin.query(
       `insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency, privacy_mode_enabled)
-       values ($1, 'subject-a@example.test', 'Subject A', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', true)`,
-      [subjectA],
+       values ($1, 'subject-a@example.test', 'Subject A', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', true),
+              ($2, 'subject-c@example.test', 'Subject C', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', true),
+              ($3, 'subject-d@example.test', 'Subject D', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', true)`,
+      [subjectA, subjectC, subjectD],
     );
   });
 
@@ -160,5 +173,62 @@ describe('PostgresProfileAdapter database boundary', () => {
       id: subjectA,
       email: 'subject-a@example.test',
     });
+  });
+
+  it('adapter.update with matching version writes exactly once and version becomes 2', async () => {
+    const updateResult = await transaction.run(subjectC, (client) =>
+      adapter.update(
+        client,
+        subjectC,
+        { displayName: 'Subject C Updated', locale: 'es' },
+        1,
+      ),
+    );
+    expect(updateResult).toBeDefined();
+    expect(updateResult?.version).toBe(2);
+    expect(updateResult?.displayName).toBe('Subject C Updated');
+    expect(updateResult?.locale).toBe('es');
+
+    const adminCheck = await admin.query<{
+      version: number;
+      display_name: string;
+      locale: string;
+    }>(
+      'select version, display_name, locale from public.profiles where id = $1',
+      [subjectC],
+    );
+    expect(adminCheck.rows[0]?.version).toBe(2);
+    expect(adminCheck.rows[0]?.display_name).toBe('Subject C Updated');
+    expect(adminCheck.rows[0]?.locale).toBe('es');
+  });
+
+  it('adapter.update with stale version writes nothing: row is byte-for-byte unchanged AND version is unchanged', async () => {
+    const before = await admin.query(
+      'select * from public.profiles where id = $1',
+      [subjectD],
+    );
+    expect(before.rows[0]?.version).toBe(1);
+
+    const updateResult = await transaction.run(subjectD, (client) =>
+      adapter.update(
+        client,
+        subjectD,
+        { displayName: 'Subject D Stale Update' },
+        99,
+      ),
+    );
+    expect(updateResult).toBeUndefined();
+
+    const after = await admin.query(
+      'select * from public.profiles where id = $1',
+      [subjectD],
+    );
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    expect(after.rows[0]?.version).toBe(1);
+
+    const versionCheck = await transaction.runRead(subjectD, (client) =>
+      adapter.readVersion(client, subjectD),
+    );
+    expect(versionCheck).toBe(1);
   });
 });
