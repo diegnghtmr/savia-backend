@@ -125,32 +125,38 @@ describe('PostgresProfileAdapter database boundary', () => {
     expect(after.rows[0]).toEqual(before.rows[0]);
   });
 
-  // Every case above only proves a row outside the caller's scope is invisible.
-  // None proves a visible row cannot be moved OUT of that scope, which is a
-  // different guarantee and the one an update policy exists to provide.
+  // The cases above prove which ROW may be updated. This proves which COLUMNS
+  // may be updated at all, which is a separate guarantee and the one that does
+  // not depend on application code remembering the contract: the grant names
+  // six columns, so email, id and created_at are unwritable by this role no
+  // matter what a future controller asks for. Rejection is by privilege
+  // (SQLSTATE 42501), before any policy is consulted.
   //
-  // Measured, because the obvious reading is wrong: deleting `with check` from
-  // the policy does NOT break this test. PostgreSQL applies the `using`
-  // expression as the check expression when a policy declares no `with check`,
-  // and here the two are identical -- so the explicit clause documents intent
-  // rather than adding enforcement. What is enforced is verified below.
-  //
-  // Subject B exists in auth.users and owns no profile row, so moving A's row
-  // onto B's id collides with neither the primary key nor the foreign key. The
-  // policy is the only thing that can reject it.
-  it("subject A cannot move its own row onto another subject's id (with check)", async () => {
-    await expect(
-      transaction.run(subjectA, (client) =>
-        client.query('update public.profiles set id = $2 where id = $1', [
-          subjectA,
-          subjectB,
-        ]),
-      ),
-    ).rejects.toMatchObject({ code: '42501' });
-    const rows = await admin.query(
-      'select id from public.profiles where id = $1',
-      [subjectB],
+  // Because id is among the ungranted columns, a row also cannot be moved out
+  // of the caller's scope -- so the policy's `with check` is belt-and-braces
+  // here. Worth stating plainly, since it is tempting to read that clause as
+  // the thing doing the work: PostgreSQL applies the `using` expression as the
+  // check expression when a policy declares none, and the two are identical
+  // here, so the explicit clause documents intent rather than adding
+  // enforcement. Measured, not assumed -- removing it changed no result.
+  it('cannot update a column outside the update grant', async () => {
+    for (const statement of [
+      'update public.profiles set email = $2 where id = $1',
+      'update public.profiles set id = $2 where id = $1',
+    ]) {
+      await expect(
+        transaction.run(subjectA, (client) =>
+          client.query(statement, [subjectA, subjectB]),
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+    }
+    const row = await admin.query(
+      'select id, email from public.profiles where id = $1',
+      [subjectA],
     );
-    expect(rows.rowCount).toBe(0);
+    expect(row.rows[0]).toEqual({
+      id: subjectA,
+      email: 'subject-a@example.test',
+    });
   });
 });
