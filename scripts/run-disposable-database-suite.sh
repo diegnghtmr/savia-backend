@@ -11,6 +11,7 @@ case "$spec" in
   test/identity/pg-transaction.integration-spec.ts) ;;
   test/identity/pg-transaction-resilience.integration-spec.ts) ;;
   test/identity/bootstrap.integration-spec.ts) ;;
+  test/identity/profile.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
