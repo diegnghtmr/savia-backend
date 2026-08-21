@@ -5,8 +5,8 @@ begin;
 -- At the moment the creator inserts their owner membership no membership exists
 -- yet, and an inline `not exists` over OTHER users' memberships is blind, which
 -- turns the anti-escalation guard into a no-op. Hence one narrow security-definer
--- predicate owned by savia_elevated (a nobypassrls role created unused in
--- 202607150002:9-15, which postgres is already a member of).
+-- Temporary `create` is granted to savia_elevated for the `alter function ... owner to`
+-- below and is revoked immediately after ownership transfer.
 grant usage, create on schema public to savia_elevated;
 grant select on public.workspaces, public.workspace_memberships to savia_elevated;
 
@@ -44,6 +44,11 @@ $$;
 
 alter function public.collaborative_workspace_is_unclaimed(uuid)
   owner to savia_elevated;
+
+-- `create` was needed only for the ownership transfer above. Revoke it now so
+-- savia_elevated keeps exactly two capabilities: reading the two tables its
+-- security-definer predicate needs, and owning that predicate.
+revoke create on schema public from savia_elevated;
 revoke execute on function public.collaborative_workspace_is_unclaimed(uuid) from public;
 grant execute on function public.collaborative_workspace_is_unclaimed(uuid)
   to savia_application;

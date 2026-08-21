@@ -424,4 +424,29 @@ describe('Workspace write RLS, grants, and unclaimed helper (202607150007_worksp
       expect(check.rows).toHaveLength(1);
     });
   });
+
+  describe('savia_elevated privilege narrowing', () => {
+    it('savia_elevated can select workspaces (positive control) but cannot create tables in schema public (negative)', async () => {
+      const client = await admin.connect();
+      try {
+        await client.query('begin');
+        await client.query('set local role savia_elevated');
+
+        // Positive control: savia_elevated can select from public.workspaces
+        const selectRes = await client.query(
+          'select count(*)::int from public.workspaces',
+        );
+        expect(selectRes.rows).toHaveLength(1);
+
+        // Negative: savia_elevated cannot create tables in schema public (create privilege was revoked)
+        await expect(
+          client.query('create table public.elevated_probe (x int)'),
+        ).rejects.toMatchObject({ code: '42501' });
+
+        await client.query('rollback');
+      } finally {
+        client.release();
+      }
+    });
+  });
 });
