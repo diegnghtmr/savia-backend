@@ -98,6 +98,9 @@ jobs:
       - name: workspace integration
         shell: bash
         run: pnpm test:integration:workspace
+      - name: workspace write rls integration
+        shell: bash
+        run: pnpm test:integration:workspace-write-rls
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
