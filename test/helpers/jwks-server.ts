@@ -18,7 +18,19 @@ export async function createJwksServer(initialResponse: JwksResponse) {
   const server = createServer((_request, reply) => {
     requestCount += 1;
     if (response.kind === 'delay') {
-      setTimeout(() => reply.end(), response.milliseconds ?? 0);
+      // Captured, so a later setResponse cannot change what this in-flight
+      // request eventually sends. With a body, the delayed reply is a VALID
+      // JWKS: that is what lets a caller prove its own fetch timeout fired,
+      // because without the timeout the verification would simply succeed.
+      const delayed = response;
+      setTimeout(() => {
+        if (delayed.body === undefined) {
+          reply.end();
+          return;
+        }
+        reply.writeHead(200, { 'content-type': 'application/json' });
+        reply.end(JSON.stringify(delayed.body));
+      }, delayed.milliseconds ?? 0);
       return;
     }
     if (response.kind === 'close') {

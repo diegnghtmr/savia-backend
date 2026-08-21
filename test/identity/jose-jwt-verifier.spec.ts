@@ -29,7 +29,7 @@ async function verifierFor(keys: unknown[]): Promise<JoseJwtVerifier> {
   return new JoseJwtVerifier(config, {
     cooldownDuration: 30,
     fetch: (_input, init) => fetch(server?.uri ?? '', init),
-    timeoutDuration: 25,
+    timeoutDuration: 500,
   });
 }
 async function token(
@@ -100,8 +100,26 @@ describe('JoseJwtVerifier', () => {
     await expectUnauthorized(verifier.verify(hmacToken));
     await expectUnauthorized(verifier.verify(await token(signingKey)));
   });
+  // Previously this lived in the fails-closed table as a `delay` with no body,
+  // so the empty reply was itself invalid JWKS and the case passed whether or
+  // not the timeout ever fired -- it would have passed with no timeout at all.
+  // The delayed reply is now a VALID JWKS, so the only way to stay unauthorized
+  // is for the client's own timeout to fire, and the elapsed time proves the
+  // rejection did not come from waiting the server out.
+  it('fails closed when the JWKS fetch exceeds its timeout', async () => {
+    const signingKey = await key();
+    const verifier = await verifierFor([]);
+    server?.setResponse({
+      kind: 'delay',
+      milliseconds: 4_000,
+      body: { keys: [await publicJwk(signingKey, 'key-1')] },
+    });
+    const signedToken = await token(signingKey);
+    const started = performance.now();
+    await expectUnauthorized(verifier.verify(signedToken));
+    expect(performance.now() - started).toBeLessThan(3_000);
+  });
   it.each([
-    ['timeout', { kind: 'delay', milliseconds: 50 }],
     ['network failure', { kind: 'close' }],
     [
       'non-200 response',
