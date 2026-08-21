@@ -60,6 +60,71 @@ export type WorkspaceAccess =
   | WorkspaceAccessForbidden
   | WorkspaceAccessNotFound;
 
+export interface PageInfo {
+  readonly hasNextPage: boolean;
+  readonly nextCursor: string | null;
+}
+
+export interface WorkspacePage {
+  readonly items: readonly Workspace[];
+  readonly pageInfo: PageInfo;
+}
+
+export interface WorkspaceCursor {
+  readonly createdAt: string;
+  readonly id: string;
+}
+
+export interface WorkspaceListQuery {
+  readonly cursor?: WorkspaceCursor;
+  readonly limit: number;
+}
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
+const ISO_TIMESTAMP_PATTERN =
+  /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+export function encodeCursor(cursor: WorkspaceCursor): string {
+  return Buffer.from(JSON.stringify([cursor.createdAt, cursor.id])).toString(
+    'base64url',
+  );
+}
+
+export function decodeCursor(raw: string): WorkspaceCursor | undefined {
+  if (
+    typeof raw !== 'string' ||
+    raw.length === 0 ||
+    !BASE64URL_PATTERN.test(raw)
+  ) {
+    return undefined;
+  }
+  try {
+    const json = Buffer.from(raw, 'base64url').toString('utf8');
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed) || parsed.length !== 2) return undefined;
+    const [createdAt, id] = parsed;
+    if (typeof createdAt !== 'string' || typeof id !== 'string') {
+      return undefined;
+    }
+    // Date.parse alone is insufficient because it accepts instants outside PostgreSQL's
+    // timestamptz text-input range (e.g. extended years, year 0000), which would surface
+    // as an unhandled 500 from a client-supplied query parameter.
+    if (
+      !ISO_TIMESTAMP_PATTERN.test(createdAt) ||
+      new Date(createdAt).toISOString() !== createdAt
+    ) {
+      return undefined;
+    }
+    if (!UUID_PATTERN.test(id)) return undefined;
+    return { createdAt, id };
+  } catch {
+    return undefined;
+  }
+}
+
 export interface WorkspacePort {
   read(subject: string, workspaceId: string): Promise<WorkspaceAccess>;
+  list(subject: string, query: WorkspaceListQuery): Promise<WorkspacePage>;
 }

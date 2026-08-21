@@ -1,10 +1,15 @@
 import type { TransactionClient } from './pg-transaction.js';
 import {
+  encodeCursor,
   WORKSPACE_ACCESS_KINDS,
   WORKSPACE_MEMBER_STATUS,
+  type Workspace,
   type WorkspaceAccess,
+  type WorkspaceCursor,
   type WorkspaceKind,
+  type WorkspaceListQuery,
   type WorkspaceMemberStatus,
+  type WorkspacePage,
   type WorkspacePort,
   type WorkspaceRole,
 } from './workspace.port.js';
@@ -40,6 +45,12 @@ export interface WorkspaceStore {
     client: TransactionClient,
     workspaceId: string,
   ): Promise<WorkspaceRecord | undefined>;
+  listWorkspaces(
+    client: TransactionClient,
+    subject: string,
+    cursor: WorkspaceCursor | undefined,
+    limit: number,
+  ): Promise<readonly Workspace[]>;
 }
 
 export class WorkspaceService implements WorkspacePort {
@@ -82,6 +93,34 @@ export class WorkspaceService implements WorkspacePort {
           role: membership.role,
           createdAt: workspace.createdAt,
           version: workspace.version,
+        },
+      };
+    });
+  }
+
+  public list(
+    subject: string,
+    query: WorkspaceListQuery,
+  ): Promise<WorkspacePage> {
+    return this.transaction.runRead(subject, async (client) => {
+      const rows = await this.store.listWorkspaces(
+        client,
+        subject,
+        query.cursor,
+        query.limit + 1,
+      );
+      const hasNextPage = rows.length > query.limit;
+      const items = hasNextPage ? rows.slice(0, query.limit) : rows;
+      const lastItem = items[items.length - 1];
+      const nextCursor =
+        hasNextPage && lastItem !== undefined
+          ? encodeCursor({ createdAt: lastItem.createdAt, id: lastItem.id })
+          : null;
+      return {
+        items,
+        pageInfo: {
+          hasNextPage,
+          nextCursor,
         },
       };
     });

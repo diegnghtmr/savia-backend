@@ -3,6 +3,7 @@ import {
   Get,
   Inject,
   Param,
+  Query,
   Req,
   Res,
   UseGuards,
@@ -13,8 +14,10 @@ import type { AuthenticatedRequest } from './authenticated-request.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { PROBLEM_TYPES, sendProblem } from './problem-details.js';
 import {
+  decodeCursor,
   WORKSPACE_ACCESS_KINDS,
   WORKSPACE_PORT,
+  type WorkspaceCursor,
   type WorkspacePort,
 } from './workspace.port.js';
 
@@ -27,6 +30,55 @@ export class WorkspaceController {
   public constructor(
     @Inject(WORKSPACE_PORT) private readonly workspace: WorkspacePort,
   ) {}
+
+  @Get()
+  public async listWorkspaces(
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Query('cursor') cursorParam?: string,
+    @Query('limit') limitParam?: string,
+  ): Promise<void> {
+    let limit = 50;
+    if (limitParam !== undefined) {
+      if (!/^\d+$/.test(limitParam)) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid limit parameter',
+          status: 400,
+        });
+        return;
+      }
+      limit = Number(limitParam);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid limit parameter',
+          status: 400,
+        });
+        return;
+      }
+    }
+
+    let cursor: WorkspaceCursor | undefined;
+    if (cursorParam !== undefined) {
+      cursor = decodeCursor(cursorParam);
+      if (cursor === undefined) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid cursor parameter',
+          status: 400,
+        });
+        return;
+      }
+    }
+
+    const page = await this.workspace.list(request.identity.subject, {
+      cursor,
+      limit,
+    });
+
+    void reply.status(200).send(page);
+  }
 
   @Get(':workspaceId')
   public async getWorkspace(

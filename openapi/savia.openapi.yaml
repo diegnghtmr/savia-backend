@@ -222,6 +222,18 @@ components:
         version:
           type: integer
           minimum: 1
+    PageInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - hasNextPage
+      properties:
+        nextCursor:
+          type:
+            - string
+            - 'null'
+        hasNextPage:
+          type: boolean
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -445,6 +457,64 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Workspace not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /v1/workspaces:
+    get:
+      operationId: listWorkspaces
+      tags:
+        - Workspaces
+      summary: List workspaces for the authenticated user
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Paginated list of workspaces
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - items
+                  - pageInfo
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Workspace'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+        '400':
+          description: The query parameters failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
           content:
             application/problem+json:
               schema:
