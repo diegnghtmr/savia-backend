@@ -5,8 +5,10 @@ begin;
 -- At the moment the creator inserts their owner membership no membership exists
 -- yet, and an inline `not exists` over OTHER users' memberships is blind, which
 -- turns the anti-escalation guard into a no-op. Hence one narrow security-definer
--- Temporary `create` is granted to savia_elevated for the `alter function ... owner to`
--- below and is revoked immediately after ownership transfer.
+-- predicate owned by savia_elevated (a nobypassrls role created unused in
+-- 202607150002:9-15, which postgres is already a member of).
+-- `create` is granted here only for the `alter function ... owner to` below and is
+-- revoked immediately after the ownership transfer.
 grant usage, create on schema public to savia_elevated;
 grant select on public.workspaces, public.workspace_memberships to savia_elevated;
 
