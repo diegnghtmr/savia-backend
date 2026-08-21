@@ -83,6 +83,8 @@ export interface WorkspaceListQuery {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
+const ISO_TIMESTAMP_PATTERN =
+  /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export function encodeCursor(cursor: WorkspaceCursor): string {
   return Buffer.from(JSON.stringify([cursor.createdAt, cursor.id])).toString(
@@ -106,7 +108,15 @@ export function decodeCursor(raw: string): WorkspaceCursor | undefined {
     if (typeof createdAt !== 'string' || typeof id !== 'string') {
       return undefined;
     }
-    if (Number.isNaN(Date.parse(createdAt))) return undefined;
+    // Date.parse alone is insufficient because it accepts instants outside PostgreSQL's
+    // timestamptz text-input range (e.g. extended years, year 0000), which would surface
+    // as an unhandled 500 from a client-supplied query parameter.
+    if (
+      !ISO_TIMESTAMP_PATTERN.test(createdAt) ||
+      new Date(createdAt).toISOString() !== createdAt
+    ) {
+      return undefined;
+    }
     if (!UUID_PATTERN.test(id)) return undefined;
     return { createdAt, id };
   } catch {

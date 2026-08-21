@@ -398,6 +398,73 @@ describe('GET /v1/workspaces', () => {
     expect(list).not.toHaveBeenCalled();
   });
 
+  it.each([
+    '-271821-04-20T00:00:00.000Z',
+    '+275760-09-13T00:00:00.000Z',
+    '0000-01-01T00:00:00.000Z',
+    '2026-02-30T00:00:00.000Z',
+    '2026-07-15T00:00:00Z',
+    '2026-07-15T00:00:00.000+02:00',
+  ])(
+    'answers 400 problem+json for non-canonical or out-of-range cursor timestamp %s with the port never called',
+    async (badTimestamp) => {
+      const list = vi.fn<WorkspacePort['list']>();
+      const application = await createApplication(undefined, list);
+      const cursor = Buffer.from(
+        JSON.stringify([badTimestamp, WORKSPACE_ID]),
+      ).toString('base64url');
+
+      const response = await listWorkspaces(
+        application,
+        { cursor },
+        { token: TOKEN },
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(response.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      expect(JSON.parse(response.payload)).toEqual({
+        type: 'https://savia.app/problems/bad-request',
+        title: 'Invalid cursor parameter',
+        status: 400,
+        code: 'bad-request',
+        traceId: expect.stringMatching(/.+/),
+        instance: expect.stringContaining('/v1/workspaces'),
+      });
+      expect(list).not.toHaveBeenCalled();
+    },
+  );
+
+  it('positive control: answers 200 and passes canonical in-range cursor to the port', async () => {
+    const list = vi.fn<WorkspacePort['list']>().mockResolvedValue({
+      items: [WORKSPACE],
+      pageInfo: {
+        hasNextPage: false,
+        nextCursor: null,
+      },
+    });
+    const application = await createApplication(undefined, list);
+    const validCursor = Buffer.from(
+      JSON.stringify(['2026-07-15T00:00:00.000Z', WORKSPACE_ID]),
+    ).toString('base64url');
+
+    const response = await listWorkspaces(
+      application,
+      { cursor: validCursor },
+      { token: TOKEN },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(list).toHaveBeenCalledWith(SUBJECT, {
+      cursor: {
+        createdAt: '2026-07-15T00:00:00.000Z',
+        id: WORKSPACE_ID,
+      },
+      limit: 50,
+    });
+  });
+
   it.each(['0', '201', 'abc', '-1', '1.5'])(
     'answers 400 problem+json for invalid limit %s with the port never called',
     async (badLimit) => {
