@@ -32,7 +32,7 @@ describe('PostgresProfileAdapter database boundary', () => {
     );
     await admin.query(
       `insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency, privacy_mode_enabled)
-       values ($1, 'subject-a@example.test', 'Subject A', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', false)`,
+       values ($1, 'subject-a@example.test', 'Subject A', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', true)`,
       [subjectA],
     );
   });
@@ -42,7 +42,7 @@ describe('PostgresProfileAdapter database boundary', () => {
     await admin.end();
   });
 
-  it('returns exactly the six UserProfile keys and no extras under PgTransaction.runRead', async () => {
+  it('returns exactly the seven UserProfile keys and no extras under PgTransaction.runRead', async () => {
     const profile = await transaction.runRead(subjectA, (client) =>
       adapter.read(client, subjectA),
     );
@@ -55,6 +55,7 @@ describe('PostgresProfileAdapter database boundary', () => {
         'locale',
         'timezone',
         'defaultCurrency',
+        'privacyModeEnabled',
       ].sort(),
     );
   });
@@ -77,6 +78,7 @@ describe('PostgresProfileAdapter database boundary', () => {
       locale: 'en',
       timezone: 'UTC',
       defaultCurrency: 'USD',
+      privacyModeEnabled: true,
     });
   });
 

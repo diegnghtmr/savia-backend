@@ -24,6 +24,7 @@ const PROFILE: UserProfile = {
   locale: 'en-US',
   timezone: 'America/Bogota',
   defaultCurrency: 'USD',
+  privacyModeEnabled: false,
 };
 
 const authEnvironment = {
@@ -96,7 +97,7 @@ function getProfile(
 }
 
 describe('GET /v1/me', () => {
-  it('answers 200 with exactly the six UserProfile keys when profile exists', async () => {
+  it('answers 200 with exactly the seven UserProfile keys when profile exists', async () => {
     const read = vi.fn<ProfilePort['read']>().mockResolvedValue(PROFILE);
     const application = await createApplication(read);
 
@@ -114,6 +115,7 @@ describe('GET /v1/me', () => {
         'locale',
         'timezone',
         'defaultCurrency',
+        'privacyModeEnabled',
       ].sort(),
     );
     expect(read).toHaveBeenCalledWith(SUBJECT);
