@@ -396,6 +396,37 @@ describe('PATCH /v1/me', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  // Both of these reached the port before, and the oversized one reached
+  // PostgreSQL, where `version` is an integer column: it answered SQLSTATE
+  // 22003 ("value \"100000000000000000000\" is out of range for type integer"),
+  // which escaped to the filter's catch-all and became a 500. A client-supplied
+  // header must never be able to do that. "007" is rejected for a different
+  // reason: RFC 9110 compares entity-tags by octet equality, so it is simply not
+  // the tag "7" and must not be parsed into one.
+  it.each([
+    ['an out-of-range version', '"99999999999999999999"'],
+    ['a zero-padded version', '"007"'],
+  ])(
+    'answers 412 on %s in If-Match without reaching the port',
+    async (_name, ifMatch) => {
+      const update = vi.fn<ProfilePort['update']>();
+      const application = await createApplication(undefined, update);
+
+      const response = await patchProfile(
+        application,
+        { displayName: 'Ada Lovelace Updated' },
+        { token: TOKEN, ifMatch },
+      );
+
+      expect(response.statusCode).toBe(412);
+      expect(JSON.parse(response.payload)).toMatchObject({
+        code: 'precondition-failed',
+        status: 412,
+      });
+      expect(update).not.toHaveBeenCalled();
+    },
+  );
+
   it('answers 404 when the profile is absent', async () => {
     const update = vi.fn<ProfilePort['update']>().mockResolvedValue({
       kind: PROFILE_UPDATE_OUTCOMES.NOT_FOUND,
