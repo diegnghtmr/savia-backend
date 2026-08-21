@@ -6,6 +6,7 @@ export interface UserProfile {
   readonly locale: string;
   readonly timezone: string;
   readonly defaultCurrency: string;
+  readonly privacyModeEnabled: boolean;
 }
 export interface ProfilePort {
   read(subject: string): Promise<UserProfile | undefined>;

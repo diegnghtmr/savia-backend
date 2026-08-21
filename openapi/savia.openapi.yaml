@@ -146,6 +146,7 @@ components:
         - locale
         - timezone
         - defaultCurrency
+        - privacyModeEnabled
       properties:
         id:
           type: string
@@ -162,6 +163,8 @@ components:
         defaultCurrency:
           type: string
           pattern: '^[A-Za-z]{3}$'
+        privacyModeEnabled:
+          type: boolean
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:

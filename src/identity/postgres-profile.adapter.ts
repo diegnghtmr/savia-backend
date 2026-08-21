@@ -7,7 +7,7 @@ export class PostgresProfileAdapter {
     subject: string,
   ): Promise<UserProfile | undefined> {
     const result = await client.query<UserProfileRow>(
-      'select id::text, email, display_name as "displayName", locale, timezone, default_currency as "defaultCurrency" from public.profiles where id = $1',
+      'select id::text, email, display_name as "displayName", locale, timezone, default_currency as "defaultCurrency", privacy_mode_enabled as "privacyModeEnabled" from public.profiles where id = $1',
       [subject],
     );
     return result.rows[0];

@@ -44,6 +44,7 @@ describe('ProfileService', () => {
       locale: 'en-US',
       timezone: 'America/Bogota',
       defaultCurrency: 'USD',
+      privacyModeEnabled: false,
     };
     const fakeTransaction: ProfileReadTransaction = {
       runRead: vi.fn(async (_subject, callback) => callback(dummyClient)),
