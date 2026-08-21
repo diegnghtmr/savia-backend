@@ -62,6 +62,13 @@ export class WorkspaceService implements WorkspacePort {
         return { kind: WORKSPACE_ACCESS_KINDS.FORBIDDEN };
       }
       const workspace = await this.store.readWorkspace(client, workspaceId);
+      // Not dead code, and not reachable by any test: the transaction is READ
+      // COMMITTED, so this statement takes a newer snapshot than the membership
+      // read above. A membership suspended or removed in between makes the
+      // hardened policy withhold the row here even though it was active a
+      // moment ago. Answering not-found is the right outcome for access revoked
+      // mid-request, and it is what keeps the race from dereferencing undefined
+      // and becoming a 500.
       if (workspace === undefined) {
         return { kind: WORKSPACE_ACCESS_KINDS.NOT_FOUND };
       }
