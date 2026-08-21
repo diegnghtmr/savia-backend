@@ -95,6 +95,9 @@ jobs:
       - name: profile integration
         shell: bash
         run: pnpm test:integration:profile
+      - name: workspace integration
+        shell: bash
+        run: pnpm test:integration:workspace
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
