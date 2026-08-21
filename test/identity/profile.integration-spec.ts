@@ -79,4 +79,78 @@ describe('PostgresProfileAdapter database boundary', () => {
       defaultCurrency: 'USD',
     });
   });
+
+  it('a freshly inserted profile has version = 1 (202607150005_profile_version.sql)', async () => {
+    const result = await admin.query<{ version: number }>(
+      'select version from public.profiles where id = $1',
+      [subjectA],
+    );
+    expect(result.rows[0]?.version).toBe(1);
+  });
+
+  it("savia_application inside PgTransaction.run for subject A can update A's own row and version becomes 2", async () => {
+    const updateResult = await transaction.run(subjectA, (client) =>
+      client.query(
+        `update public.profiles set display_name = 'Subject A Updated', version = version + 1 where id = $1`,
+        [subjectA],
+      ),
+    );
+    expect(updateResult.rowCount).toBe(1);
+
+    const result = await admin.query<{ version: number; display_name: string }>(
+      'select version, display_name from public.profiles where id = $1',
+      [subjectA],
+    );
+    expect(result.rows[0]?.version).toBe(2);
+    expect(result.rows[0]?.display_name).toBe('Subject A Updated');
+  });
+
+  it("inside run for subject B, an update targeting A's row affects zero rows (RLS filters)", async () => {
+    const before = await admin.query(
+      'select * from public.profiles where id = $1',
+      [subjectA],
+    );
+    const updateResult = await transaction.run(subjectB, (client) =>
+      client.query(
+        `update public.profiles set display_name = 'Subject A Hacked', version = version + 1 where id = $1`,
+        [subjectA],
+      ),
+    );
+    expect(updateResult.rowCount).toBe(0);
+
+    const after = await admin.query(
+      'select * from public.profiles where id = $1',
+      [subjectA],
+    );
+    expect(after.rows[0]).toEqual(before.rows[0]);
+  });
+
+  // Every case above only proves a row outside the caller's scope is invisible.
+  // None proves a visible row cannot be moved OUT of that scope, which is a
+  // different guarantee and the one an update policy exists to provide.
+  //
+  // Measured, because the obvious reading is wrong: deleting `with check` from
+  // the policy does NOT break this test. PostgreSQL applies the `using`
+  // expression as the check expression when a policy declares no `with check`,
+  // and here the two are identical -- so the explicit clause documents intent
+  // rather than adding enforcement. What is enforced is verified below.
+  //
+  // Subject B exists in auth.users and owns no profile row, so moving A's row
+  // onto B's id collides with neither the primary key nor the foreign key. The
+  // policy is the only thing that can reject it.
+  it("subject A cannot move its own row onto another subject's id (with check)", async () => {
+    await expect(
+      transaction.run(subjectA, (client) =>
+        client.query('update public.profiles set id = $2 where id = $1', [
+          subjectA,
+          subjectB,
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: '42501' });
+    const rows = await admin.query(
+      'select id from public.profiles where id = $1',
+      [subjectB],
+    );
+    expect(rows.rowCount).toBe(0);
+  });
 });
