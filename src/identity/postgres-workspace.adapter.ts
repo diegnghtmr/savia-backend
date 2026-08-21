@@ -1,5 +1,10 @@
 import type { TransactionClient } from './pg-transaction.js';
 import type {
+  Workspace,
+  WorkspaceCursor,
+  WorkspaceRole,
+} from './workspace.port.js';
+import type {
   WorkspaceMembershipRecord,
   WorkspaceRecord,
   WorkspaceStore,
@@ -40,6 +45,34 @@ export class PostgresWorkspaceAdapter implements WorkspaceStore {
       version: row.version,
     };
   }
+
+  public async listWorkspaces(
+    client: TransactionClient,
+    subject: string,
+    cursor: WorkspaceCursor | undefined,
+    limit: number,
+  ): Promise<readonly Workspace[]> {
+    const result = await client.query<WorkspaceListRow>(
+      cursor === undefined
+        ? 'select w.id::text, w.name, w.kind, w.base_currency as "baseCurrency", m.role, w.created_at as "createdAt", w.version from public.workspaces w join public.workspace_memberships m on m.workspace_id = w.id and m.profile_id = $1 order by w.created_at, w.id limit $2'
+        : 'select w.id::text, w.name, w.kind, w.base_currency as "baseCurrency", m.role, w.created_at as "createdAt", w.version from public.workspaces w join public.workspace_memberships m on m.workspace_id = w.id and m.profile_id = $1 where (w.created_at, w.id) > ($2, $3) order by w.created_at, w.id limit $4',
+      cursor === undefined
+        ? [subject, limit]
+        : [subject, cursor.createdAt, cursor.id, limit],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      kind: row.kind,
+      baseCurrency: row.baseCurrency,
+      role: row.role,
+      createdAt:
+        row.createdAt instanceof Date
+          ? row.createdAt.toISOString()
+          : String(row.createdAt),
+      version: row.version,
+    }));
+  }
 }
 
 interface WorkspaceMembershipRow
@@ -51,6 +84,16 @@ interface WorkspaceRow extends Record<string, unknown> {
   readonly name: string;
   readonly kind: WorkspaceRecord['kind'];
   readonly baseCurrency: string;
+  readonly createdAt: Date | string;
+  readonly version: number;
+}
+
+interface WorkspaceListRow extends Record<string, unknown> {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: WorkspaceRecord['kind'];
+  readonly baseCurrency: string;
+  readonly role: WorkspaceRole;
   readonly createdAt: Date | string;
   readonly version: number;
 }

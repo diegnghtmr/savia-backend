@@ -71,6 +71,13 @@ async function createApplication(
     kind: 'ok',
     workspace: WORKSPACE,
   } satisfies WorkspaceAccess),
+  list: WorkspacePort['list'] = vi.fn().mockResolvedValue({
+    items: [WORKSPACE],
+    pageInfo: {
+      hasNextPage: false,
+      nextCursor: null,
+    },
+  }),
 ): Promise<NestFastifyApplication> {
   const moduleRef = await Test.createTestingModule({
     imports: [IdentityModule],
@@ -78,7 +85,7 @@ async function createApplication(
     .overrideProvider(JoseJwtVerifier)
     .useValue(verifier)
     .overrideProvider(WORKSPACE_PORT)
-    .useValue({ read })
+    .useValue({ read, list })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -97,6 +104,25 @@ function getWorkspace(
   return application.inject({
     method: 'GET',
     url: `/v1/workspaces/${workspaceId}`,
+    ...(options.token === undefined
+      ? {}
+      : { headers: { authorization: `Bearer ${options.token}` } }),
+  });
+}
+
+function listWorkspaces(
+  application: NestFastifyApplication,
+  query: { cursor?: string; limit?: number | string } = {},
+  options: { token?: string } = {},
+) {
+  const params = new URLSearchParams();
+  if (query.cursor !== undefined) params.set('cursor', query.cursor);
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  const queryString = params.toString();
+  const url = `/v1/workspaces${queryString ? `?${queryString}` : ''}`;
+  return application.inject({
+    method: 'GET',
+    url,
     ...(options.token === undefined
       ? {}
       : { headers: { authorization: `Bearer ${options.token}` } }),
@@ -249,6 +275,201 @@ describe('GET /v1/workspaces/:workspaceId', () => {
       instance: `/v1/workspaces/${WORKSPACE_ID}`,
     });
     expect(read).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /v1/workspaces', () => {
+  it('answers 200 with items and pageInfo (hasNextPage: false, nextCursor: null) when page is not full and defaults limit to 50', async () => {
+    const list = vi.fn<WorkspacePort['list']>().mockResolvedValue({
+      items: [WORKSPACE],
+      pageInfo: {
+        hasNextPage: false,
+        nextCursor: null,
+      },
+    });
+    const application = await createApplication(undefined, list);
+
+    const response = await listWorkspaces(application, {}, { token: TOKEN });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('application/json');
+    expect(JSON.parse(response.payload)).toEqual({
+      items: [WORKSPACE],
+      pageInfo: {
+        hasNextPage: false,
+        nextCursor: null,
+      },
+    });
+    expect(list).toHaveBeenCalledWith(SUBJECT, {
+      cursor: undefined,
+      limit: 50,
+    });
+  });
+
+  it('answers 200 with items and pageInfo (hasNextPage: true, nextCursor: string) when hasNextPage is true', async () => {
+    const list = vi.fn<WorkspacePort['list']>().mockResolvedValue({
+      items: [WORKSPACE],
+      pageInfo: {
+        hasNextPage: true,
+        nextCursor: 'next-page-token',
+      },
+    });
+    const application = await createApplication(undefined, list);
+
+    const response = await listWorkspaces(application, {}, { token: TOKEN });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.payload)).toEqual({
+      items: [WORKSPACE],
+      pageInfo: {
+        hasNextPage: true,
+        nextCursor: 'next-page-token',
+      },
+    });
+  });
+
+  it('passes decoded cursor and custom limit to the port', async () => {
+    const list = vi.fn<WorkspacePort['list']>().mockResolvedValue({
+      items: [WORKSPACE],
+      pageInfo: {
+        hasNextPage: false,
+        nextCursor: null,
+      },
+    });
+    const application = await createApplication(undefined, list);
+    const rawCursor = Buffer.from(
+      JSON.stringify(['2026-07-15T00:00:00.000Z', WORKSPACE_ID]),
+    ).toString('base64url');
+
+    const response = await listWorkspaces(
+      application,
+      { cursor: rawCursor, limit: 10 },
+      { token: TOKEN },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(list).toHaveBeenCalledWith(SUBJECT, {
+      cursor: {
+        createdAt: '2026-07-15T00:00:00.000Z',
+        id: WORKSPACE_ID,
+      },
+      limit: 10,
+    });
+  });
+
+  it('answers 400 problem+json for malformed cursor with the port never called', async () => {
+    const list = vi.fn<WorkspacePort['list']>();
+    const application = await createApplication(undefined, list);
+
+    for (const badCursor of [
+      'not-base64-!@#$',
+      Buffer.from('not-json').toString('base64url'),
+      Buffer.from(JSON.stringify({ not: 'an-array' })).toString('base64url'),
+      Buffer.from(JSON.stringify(['bad-date', WORKSPACE_ID])).toString(
+        'base64url',
+      ),
+      Buffer.from(
+        JSON.stringify(['2026-07-15T00:00:00.000Z', 'bad-uuid']),
+      ).toString('base64url'),
+      Buffer.from(JSON.stringify(['2026-07-15T00:00:00.000Z'])).toString(
+        'base64url',
+      ),
+    ]) {
+      const response = await listWorkspaces(
+        application,
+        { cursor: badCursor },
+        { token: TOKEN },
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(response.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      expect(JSON.parse(response.payload)).toEqual({
+        type: 'https://savia.app/problems/bad-request',
+        title: 'Invalid cursor parameter',
+        status: 400,
+        code: 'bad-request',
+        traceId: expect.stringMatching(/.+/),
+        instance: expect.stringContaining('/v1/workspaces'),
+      });
+    }
+
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it.each(['0', '201', 'abc', '-1', '1.5'])(
+    'answers 400 problem+json for invalid limit %s with the port never called',
+    async (badLimit) => {
+      const list = vi.fn<WorkspacePort['list']>();
+      const application = await createApplication(undefined, list);
+
+      const response = await listWorkspaces(
+        application,
+        { limit: badLimit },
+        { token: TOKEN },
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(response.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      expect(JSON.parse(response.payload)).toEqual({
+        type: 'https://savia.app/problems/bad-request',
+        title: 'Invalid limit parameter',
+        status: 400,
+        code: 'bad-request',
+        traceId: expect.stringMatching(/.+/),
+        instance: expect.stringContaining('/v1/workspaces'),
+      });
+      expect(list).not.toHaveBeenCalled();
+    },
+  );
+
+  it('answers 401 problem+json with no bearer token', async () => {
+    const list = vi.fn<WorkspacePort['list']>();
+    const application = await createApplication(undefined, list);
+
+    const response = await listWorkspaces(application);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/unauthorized',
+      title: 'Authentication is required',
+      status: 401,
+      code: 'unauthorized',
+      traceId: expect.stringMatching(/.+/),
+      instance: '/v1/workspaces',
+    });
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 problem+json with an invalid bearer token', async () => {
+    const list = vi.fn<WorkspacePort['list']>();
+    const application = await createApplication(undefined, list);
+
+    const response = await listWorkspaces(
+      application,
+      {},
+      { token: 'invalid-token' },
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/unauthorized',
+      title: 'Authentication is required',
+      status: 401,
+      code: 'unauthorized',
+      traceId: expect.stringMatching(/.+/),
+      instance: '/v1/workspaces',
+    });
+    expect(list).not.toHaveBeenCalled();
   });
 });
 
