@@ -163,6 +163,9 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
     };
     const profileMock: ProfilePort = {
       read: vi.fn<ProfilePort['read']>().mockResolvedValue(undefined),
+      update: vi.fn<ProfilePort['update']>().mockResolvedValue({
+        kind: 'version-conflict',
+      }),
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -257,6 +260,61 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
 
     const isValid = validateProfileNotFound(payload);
     expect(validateProfileNotFound.errors).toBeNull();
+    expect(isValid).toBe(true);
+  });
+
+  it('validates live PATCH /v1/me 412 response body against its declared ProblemDetails schema', async () => {
+    const document = loadBundledContract();
+    const validatePreconditionFailed = compileResponseValidator(
+      document,
+      '/v1/me',
+      'PATCH',
+      '412',
+      'application/problem+json',
+    );
+
+    app = await createApplication();
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/v1/me',
+      headers: {
+        authorization: `Bearer ${TEST_TOKEN}`,
+        'if-match': '"1"',
+      },
+      payload: { displayName: 'Ada Lovelace' },
+    });
+
+    expect(response.statusCode).toBe(412);
+    const payload = JSON.parse(response.payload);
+
+    const isValid = validatePreconditionFailed(payload);
+    expect(validatePreconditionFailed.errors).toBeNull();
+    expect(isValid).toBe(true);
+  });
+
+  it('validates live PATCH /v1/me 422 response body against its declared ProblemDetails schema', async () => {
+    const document = loadBundledContract();
+    const validateUnprocessable = compileResponseValidator(
+      document,
+      '/v1/me',
+      'PATCH',
+      '422',
+      'application/problem+json',
+    );
+
+    app = await createApplication();
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/v1/me',
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(422);
+    const payload = JSON.parse(response.payload);
+
+    const isValid = validateUnprocessable(payload);
+    expect(validateUnprocessable.errors).toBeNull();
     expect(isValid).toBe(true);
   });
 

@@ -136,6 +136,29 @@ components:
           type: boolean
           default: false
       additionalProperties: true
+    UpdateUserProfileRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        locale:
+          type: string
+          description: BCP 47 language tag supported by the runtime.
+          examples: [en-US]
+        timezone:
+          type: string
+          description: IANA timezone identifier.
+          examples: [America/Bogota]
+        defaultCurrency:
+          type: string
+          description: Active ISO 4217 currency code.
+          pattern: '^[A-Za-z]{3}$'
+        privacyModeEnabled:
+          type: boolean
     UserProfile:
       type: object
       additionalProperties: false
@@ -280,6 +303,64 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Profile not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+    patch:
+      operationId: updateCurrentUser
+      tags:
+        - Profile
+      summary: Update the authenticated user profile
+      parameters:
+        - name: If-Match
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserProfileRequest'
+      responses:
+        '200':
+          description: Authenticated user profile
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          description: The request body failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Profile not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '412':
+          description: Precondition failed
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Unprocessable entity
           content:
             application/problem+json:
               schema:
