@@ -1,9 +1,27 @@
-import { Controller, Get, Inject, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Inject,
+  Patch,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 
 import type { AuthenticatedRequest } from './authenticated-request.js';
 import { PROBLEM_TYPES, sendProblem } from './problem-details.js';
-import { PROFILE_PORT, type ProfilePort } from './profile.port.js';
+import {
+  PROFILE_PORT,
+  PROFILE_UPDATE_OUTCOMES,
+  type ProfilePort,
+} from './profile.port.js';
+import {
+  createProfileUpdateCommand,
+  ProfileUpdateValidationError,
+  type ProfileUpdateCommand,
+} from './profile-update-command.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 
 @Controller('v1/me')
@@ -28,5 +46,107 @@ export class ProfileController {
       return;
     }
     void reply.status(200).send(userProfile);
+  }
+
+  @Patch()
+  public async updateProfile(
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Body() body: unknown,
+  ): Promise<void> {
+    let command: ProfileUpdateCommand;
+    try {
+      command = createProfileUpdateCommand(body);
+    } catch (error) {
+      if (error instanceof ProfileUpdateValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Unprocessable entity',
+          status: 422,
+          errors: error.violations,
+        });
+        return;
+      }
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Bad request',
+        status: 400,
+      });
+      return;
+    }
+
+    const ifMatch = request.headers['if-match'];
+    let expectedVersion: number | undefined;
+
+    if (ifMatch !== undefined) {
+      if (typeof ifMatch !== 'string') {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.PRECONDITION_FAILED,
+          title: 'Precondition failed',
+          status: 412,
+        });
+        return;
+      }
+
+      const trimmed = ifMatch.trim();
+      if (trimmed === '*') {
+        // RFC 9110 makes `*` false when no current representation exists, which
+        // would be a 412. This route answers 404 there instead, deliberately:
+        // the resource identity is the authenticated subject, so "you have no
+        // profile" is the actual problem, while 412 would invite a retry with a
+        // fresh validator that will never exist.
+        expectedVersion = undefined;
+      } else {
+        // Leading zeros are rejected because RFC 9110 compares entity-tags by
+        // octet equality: "007" is simply not "7", and parsing it as 7 would let
+        // a client match a version it was never given. The int32 ceiling is not
+        // cosmetic -- `version` is an integer column, and a larger value reaches
+        // PostgreSQL as `value "100000000000000000000" is out of range for type
+        // integer` (SQLSTATE 22003), which escapes to the filter's catch-all and
+        // answers 500. A client-supplied header must never be able to do that.
+        const match = /^"(0|[1-9][0-9]*)"$/.exec(trimmed);
+        if (!match || Number(match[1]) > 2_147_483_647) {
+          sendProblem(reply, {
+            type: PROBLEM_TYPES.PRECONDITION_FAILED,
+            title: 'Precondition failed',
+            status: 412,
+          });
+          return;
+        }
+        expectedVersion = Number.parseInt(match[1], 10);
+      }
+    }
+
+    const outcome = await this.profile.update(
+      request.identity.subject,
+      command,
+      expectedVersion,
+    );
+
+    if (outcome.kind === PROFILE_UPDATE_OUTCOMES.OK) {
+      void reply
+        .header('ETag', `"${outcome.version}"`)
+        .status(200)
+        .send(outcome.profile);
+      return;
+    }
+
+    if (outcome.kind === PROFILE_UPDATE_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Profile not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === PROFILE_UPDATE_OUTCOMES.VERSION_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+      return;
+    }
   }
 }

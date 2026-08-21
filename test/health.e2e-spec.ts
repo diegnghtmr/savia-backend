@@ -80,6 +80,7 @@ describe('health endpoint', () => {
       'GET /health',
       'POST /v1/onboarding',
       'GET /v1/me',
+      'PATCH /v1/me',
     ]);
 
     await app.close();
