@@ -22,6 +22,7 @@ describe('PostgresProfileAdapter database boundary', () => {
   const subjectB = subject(601);
   const subjectC = subject(602);
   const subjectD = subject(603);
+  const subjectE = subject(604);
 
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
@@ -29,7 +30,7 @@ describe('PostgresProfileAdapter database boundary', () => {
     transaction = new PgTransaction(pool, { callbackTimeoutMs: 3_000 });
 
     await admin.query(
-      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8)`,
+      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10)`,
       [
         subjectA,
         'subject-a@example.test',
@@ -39,14 +40,17 @@ describe('PostgresProfileAdapter database boundary', () => {
         'subject-c@example.test',
         subjectD,
         'subject-d@example.test',
+        subjectE,
+        'subject-e@example.test',
       ],
     );
     await admin.query(
       `insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency, privacy_mode_enabled)
        values ($1, 'subject-a@example.test', 'Subject A', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', true),
               ($2, 'subject-c@example.test', 'Subject C', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', true),
-              ($3, 'subject-d@example.test', 'Subject D', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', true)`,
-      [subjectA, subjectC, subjectD],
+              ($3, 'subject-d@example.test', 'Subject D', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', true),
+              ($4, 'subject-e@example.test', 'Subject E', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', true)`,
+      [subjectA, subjectC, subjectD, subjectE],
     );
   });
 
@@ -230,5 +234,22 @@ describe('PostgresProfileAdapter database boundary', () => {
       adapter.readVersion(client, subjectD),
     );
     expect(versionCheck).toBe(1);
+  });
+
+  // `false` is falsy, so an adapter that folded absent-and-false together with
+  // `||` instead of `??` would turn "set privacy mode off" into "leave it as it
+  // was" -- and every other update test would still pass, because they all set
+  // truthy values. The fixture row starts at true precisely so this one can only
+  // pass by actually writing false.
+  it('writes privacyModeEnabled false rather than treating it as absent', async () => {
+    const updated = await transaction.run(subjectE, (client) =>
+      adapter.update(client, subjectE, { privacyModeEnabled: false }, 1),
+    );
+    expect(updated?.privacyModeEnabled).toBe(false);
+    const stored = await admin.query<{ privacy_mode_enabled: boolean }>(
+      'select privacy_mode_enabled from public.profiles where id = $1',
+      [subjectE],
+    );
+    expect(stored.rows[0]?.privacy_mode_enabled).toBe(false);
   });
 });
