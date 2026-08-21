@@ -79,4 +79,84 @@ describe('PostgresProfileAdapter database boundary', () => {
       defaultCurrency: 'USD',
     });
   });
+
+  it('a freshly inserted profile has version = 1 (202607150005_profile_version.sql)', async () => {
+    const result = await admin.query<{ version: number }>(
+      'select version from public.profiles where id = $1',
+      [subjectA],
+    );
+    expect(result.rows[0]?.version).toBe(1);
+  });
+
+  it("savia_application inside PgTransaction.run for subject A can update A's own row and version becomes 2", async () => {
+    const updateResult = await transaction.run(subjectA, (client) =>
+      client.query(
+        `update public.profiles set display_name = 'Subject A Updated', version = version + 1 where id = $1`,
+        [subjectA],
+      ),
+    );
+    expect(updateResult.rowCount).toBe(1);
+
+    const result = await admin.query<{ version: number; display_name: string }>(
+      'select version, display_name from public.profiles where id = $1',
+      [subjectA],
+    );
+    expect(result.rows[0]?.version).toBe(2);
+    expect(result.rows[0]?.display_name).toBe('Subject A Updated');
+  });
+
+  it("inside run for subject B, an update targeting A's row affects zero rows (RLS filters)", async () => {
+    const before = await admin.query(
+      'select * from public.profiles where id = $1',
+      [subjectA],
+    );
+    const updateResult = await transaction.run(subjectB, (client) =>
+      client.query(
+        `update public.profiles set display_name = 'Subject A Hacked', version = version + 1 where id = $1`,
+        [subjectA],
+      ),
+    );
+    expect(updateResult.rowCount).toBe(0);
+
+    const after = await admin.query(
+      'select * from public.profiles where id = $1',
+      [subjectA],
+    );
+    expect(after.rows[0]).toEqual(before.rows[0]);
+  });
+
+  // The cases above prove which ROW may be updated. This proves which COLUMNS
+  // may be updated at all, which is a separate guarantee and the one that does
+  // not depend on application code remembering the contract: the grant names
+  // six columns, so email, id and created_at are unwritable by this role no
+  // matter what a future controller asks for. Rejection is by privilege
+  // (SQLSTATE 42501), before any policy is consulted.
+  //
+  // Because id is among the ungranted columns, a row also cannot be moved out
+  // of the caller's scope -- so the policy's `with check` is belt-and-braces
+  // here. Worth stating plainly, since it is tempting to read that clause as
+  // the thing doing the work: PostgreSQL applies the `using` expression as the
+  // check expression when a policy declares none, and the two are identical
+  // here, so the explicit clause documents intent rather than adding
+  // enforcement. Measured, not assumed -- removing it changed no result.
+  it('cannot update a column outside the update grant', async () => {
+    for (const statement of [
+      'update public.profiles set email = $2 where id = $1',
+      'update public.profiles set id = $2 where id = $1',
+    ]) {
+      await expect(
+        transaction.run(subjectA, (client) =>
+          client.query(statement, [subjectA, subjectB]),
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+    }
+    const row = await admin.query(
+      'select id, email from public.profiles where id = $1',
+      [subjectA],
+    );
+    expect(row.rows[0]).toEqual({
+      id: subjectA,
+      email: 'subject-a@example.test',
+    });
+  });
 });
