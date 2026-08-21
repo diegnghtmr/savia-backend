@@ -83,6 +83,7 @@ describe('health endpoint', () => {
       'PATCH /v1/me',
       'GET /v1/workspaces',
       'GET /v1/workspaces/:workspaceId',
+      'PATCH /v1/workspaces/:workspaceId',
     ]);
 
     await app.close();

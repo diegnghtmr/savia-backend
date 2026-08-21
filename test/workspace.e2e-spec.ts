@@ -78,6 +78,11 @@ async function createApplication(
       nextCursor: null,
     },
   }),
+  update: WorkspacePort['update'] = vi.fn().mockResolvedValue({
+    kind: 'ok',
+    workspace: { ...WORKSPACE, name: 'Acme Corp Updated', version: 2 },
+    version: 2,
+  }),
 ): Promise<NestFastifyApplication> {
   const moduleRef = await Test.createTestingModule({
     imports: [IdentityModule],
@@ -85,7 +90,7 @@ async function createApplication(
     .overrideProvider(JoseJwtVerifier)
     .useValue(verifier)
     .overrideProvider(WORKSPACE_PORT)
-    .useValue({ read, list })
+    .useValue({ read, list, update })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -94,6 +99,27 @@ async function createApplication(
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
   return app;
+}
+
+function patchWorkspace(
+  application: NestFastifyApplication,
+  workspaceId: string,
+  body: unknown,
+  options: { token?: string; ifMatch?: unknown } = {},
+) {
+  const headers: Record<string, string> = {};
+  if (options.token !== undefined) {
+    headers.authorization = `Bearer ${options.token}`;
+  }
+  if (options.ifMatch !== undefined) {
+    headers['if-match'] = options.ifMatch as string;
+  }
+  return application.inject({
+    method: 'PATCH',
+    url: `/v1/workspaces/${workspaceId}`,
+    headers,
+    payload: body as Record<string, unknown>,
+  });
 }
 
 function getWorkspace(
@@ -537,6 +563,276 @@ describe('GET /v1/workspaces', () => {
       instance: '/v1/workspaces',
     });
     expect(list).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /v1/workspaces/:workspaceId', () => {
+  it('answers 200 with updated workspace and ETag header on valid update', async () => {
+    const updatedWorkspace = {
+      ...WORKSPACE,
+      name: 'Acme Renovated',
+      version: 2,
+    };
+    const update = vi.fn<WorkspacePort['update']>().mockResolvedValue({
+      kind: 'ok',
+      workspace: updatedWorkspace,
+      version: 2,
+    });
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { name: 'Acme Renovated' },
+      { token: TOKEN, ifMatch: '"1"' },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers.etag).toBe('"2"');
+    expect(JSON.parse(response.payload)).toEqual(updatedWorkspace);
+    expect(update).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      { name: 'Acme Renovated' },
+      1,
+    );
+  });
+
+  it('answers 422 for empty update {} and does not call port', async () => {
+    const update = vi.fn<WorkspacePort['update']>();
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      {},
+      { token: TOKEN },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual(
+      expect.objectContaining({
+        type: 'https://savia.app/problems/unprocessable',
+        status: 422,
+        code: 'unprocessable',
+      }),
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 422 for unknown fields and does not call port', async () => {
+    const update = vi.fn<WorkspacePort['update']>();
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { name: 'Acme', unknownProperty: 'value' },
+      { token: TOKEN },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 422 for immutable field kind and does not call port', async () => {
+    const update = vi.fn<WorkspacePort['update']>();
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { kind: 'family' },
+      { token: TOKEN },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 422 for invalid baseCurrency (USDX, US) and proves port was never called', async () => {
+    for (const invalidCurrency of ['USDX', 'US', 'usd1', 'XXZ']) {
+      const update = vi.fn<WorkspacePort['update']>();
+      const application = await createApplication(undefined, undefined, update);
+
+      const response = await patchWorkspace(
+        application,
+        WORKSPACE_ID,
+        { baseCurrency: invalidCurrency },
+        { token: TOKEN },
+      );
+
+      expect(response.statusCode).toBe(422);
+      expect(response.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      expect(update).not.toHaveBeenCalled();
+    }
+  });
+
+  it('answers 412 for malformed If-Match and does not call port', async () => {
+    for (const malformed of ['007', '"007"', 'W/"1"', 'invalid', '""']) {
+      const update = vi.fn<WorkspacePort['update']>();
+      const application = await createApplication(undefined, undefined, update);
+
+      const response = await patchWorkspace(
+        application,
+        WORKSPACE_ID,
+        { name: 'Acme' },
+        { token: TOKEN, ifMatch: malformed },
+      );
+
+      expect(response.statusCode).toBe(412);
+      expect(response.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      expect(update).not.toHaveBeenCalled();
+    }
+  });
+
+  it('answers 412 (not 500) for oversized If-Match values', async () => {
+    for (const oversized of ['"2147483648"', '"100000000000000000000"']) {
+      const update = vi.fn<WorkspacePort['update']>();
+      const application = await createApplication(undefined, undefined, update);
+
+      const response = await patchWorkspace(
+        application,
+        WORKSPACE_ID,
+        { name: 'Acme' },
+        { token: TOKEN, ifMatch: oversized },
+      );
+
+      expect(response.statusCode).toBe(412);
+      expect(response.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      expect(update).not.toHaveBeenCalled();
+    }
+  });
+
+  it('answers 400 problem+json when workspaceId is not a valid UUID', async () => {
+    const update = vi.fn<WorkspacePort['update']>();
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      'not-a-uuid',
+      { name: 'Acme' },
+      { token: TOKEN },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/bad-request',
+      title: 'Invalid workspace identifier',
+      status: 400,
+      code: 'bad-request',
+      traceId: expect.stringMatching(/.+/),
+      instance: '/v1/workspaces/not-a-uuid',
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 problem+json with no bearer token', async () => {
+    const update = vi.fn<WorkspacePort['update']>();
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(application, WORKSPACE_ID, {
+      name: 'Acme',
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 403 problem+json when port returns forbidden', async () => {
+    const update = vi.fn<WorkspacePort['update']>().mockResolvedValue({
+      kind: 'forbidden',
+    });
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { name: 'Acme' },
+      { token: TOKEN },
+    );
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/forbidden',
+      title: 'Workspace access forbidden',
+      status: 403,
+      code: 'forbidden',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
+  });
+
+  it('answers 404 problem+json when port returns not-found', async () => {
+    const update = vi.fn<WorkspacePort['update']>().mockResolvedValue({
+      kind: 'not-found',
+    });
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { name: 'Acme' },
+      { token: TOKEN },
+    );
+
+    expect(response.statusCode).toBe(404);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/not-found',
+      title: 'Workspace not found',
+      status: 404,
+      code: 'not-found',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
+  });
+
+  it('answers 412 problem+json when port returns version-conflict', async () => {
+    const update = vi.fn<WorkspacePort['update']>().mockResolvedValue({
+      kind: 'version-conflict',
+    });
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { name: 'Acme' },
+      { token: TOKEN, ifMatch: '"1"' },
+    );
+
+    expect(response.statusCode).toBe(412);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/precondition-failed',
+      title: 'Precondition failed',
+      status: 412,
+      code: 'precondition-failed',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
   });
 });
 

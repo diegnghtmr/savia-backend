@@ -1,3 +1,5 @@
+import type { WorkspaceUpdateCommand } from './workspace-command.js';
+
 export const WORKSPACE_PORT = Symbol('WorkspacePort');
 
 export const WORKSPACE_KIND = {
@@ -32,6 +34,15 @@ export const WORKSPACE_ACCESS_KINDS = {
 export type WorkspaceAccessKind =
   (typeof WORKSPACE_ACCESS_KINDS)[keyof typeof WORKSPACE_ACCESS_KINDS];
 
+export const WORKSPACE_UPDATE_OUTCOMES = {
+  OK: 'ok',
+  NOT_FOUND: 'not-found',
+  FORBIDDEN: 'forbidden',
+  VERSION_CONFLICT: 'version-conflict',
+} as const;
+export type WorkspaceUpdateOutcomeKind =
+  (typeof WORKSPACE_UPDATE_OUTCOMES)[keyof typeof WORKSPACE_UPDATE_OUTCOMES];
+
 export interface Workspace {
   readonly id: string;
   readonly name: string;
@@ -59,6 +70,30 @@ export type WorkspaceAccess =
   | WorkspaceAccessOk
   | WorkspaceAccessForbidden
   | WorkspaceAccessNotFound;
+
+export interface WorkspaceUpdateOk {
+  readonly kind: typeof WORKSPACE_UPDATE_OUTCOMES.OK;
+  readonly workspace: Workspace;
+  readonly version: number;
+}
+
+export interface WorkspaceUpdateNotFound {
+  readonly kind: typeof WORKSPACE_UPDATE_OUTCOMES.NOT_FOUND;
+}
+
+export interface WorkspaceUpdateForbidden {
+  readonly kind: typeof WORKSPACE_UPDATE_OUTCOMES.FORBIDDEN;
+}
+
+export interface WorkspaceUpdateVersionConflict {
+  readonly kind: typeof WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT;
+}
+
+export type WorkspaceUpdateOutcome =
+  | WorkspaceUpdateOk
+  | WorkspaceUpdateNotFound
+  | WorkspaceUpdateForbidden
+  | WorkspaceUpdateVersionConflict;
 
 export interface PageInfo {
   readonly hasNextPage: boolean;
@@ -127,4 +162,10 @@ export function decodeCursor(raw: string): WorkspaceCursor | undefined {
 export interface WorkspacePort {
   read(subject: string, workspaceId: string): Promise<WorkspaceAccess>;
   list(subject: string, query: WorkspaceListQuery): Promise<WorkspacePage>;
+  update(
+    subject: string,
+    workspaceId: string,
+    command: WorkspaceUpdateCommand,
+    expectedVersion: number | undefined,
+  ): Promise<WorkspaceUpdateOutcome>;
 }

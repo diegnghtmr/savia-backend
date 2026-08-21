@@ -25,6 +25,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   const subjectEditor = subject(701);
   const subjectSuspended = subject(702);
   const subjectNonMember = subject(703);
+  const subjectAdmin = subject(704);
   const subjectPaginator = subject(710);
   const subjectExactFull = subject(711);
 
@@ -48,7 +49,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     service = new WorkspaceService(transaction, adapter);
 
     await admin.query(
-      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12)`,
+      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12), ($13, $14)`,
       [
         subjectOwner,
         'owner@example.test',
@@ -58,6 +59,8 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         'suspended@example.test',
         subjectNonMember,
         'nonmember@example.test',
+        subjectAdmin,
+        'admin@example.test',
         subjectPaginator,
         'paginator@example.test',
         subjectExactFull,
@@ -70,6 +73,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       [subjectEditor, 'editor@example.test', 'Editor User'],
       [subjectSuspended, 'suspended@example.test', 'Suspended User'],
       [subjectNonMember, 'nonmember@example.test', 'Non Member User'],
+      [subjectAdmin, 'admin@example.test', 'Admin User'],
       [subjectPaginator, 'paginator@example.test', 'Paginator User'],
       [subjectExactFull, 'exactfull@example.test', 'Exact Full User'],
     ]) {
@@ -90,8 +94,15 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
        values ($1, $2, 'owner', 'active'),
               ($1, $3, 'editor', 'active'),
-              ($1, $4, 'viewer', 'suspended')`,
-      [sharedWorkspaceId, subjectOwner, subjectEditor, subjectSuspended],
+              ($1, $4, 'viewer', 'suspended'),
+              ($1, $5, 'administrator', 'active')`,
+      [
+        sharedWorkspaceId,
+        subjectOwner,
+        subjectEditor,
+        subjectSuspended,
+        subjectAdmin,
+      ],
     );
 
     // Seed 6 workspaces for subjectPaginator (ws3Id and ws4Id share identical created_at)
@@ -309,5 +320,118 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     expect(outcome.items).toHaveLength(0);
     expect(outcome.pageInfo.hasNextPage).toBe(false);
     expect(outcome.pageInfo.nextCursor).toBeNull();
+  });
+
+  describe('update', () => {
+    it('returns not-found when caller is not a member of the workspace', async () => {
+      const outcome = await service.update(
+        subjectNonMember,
+        sharedWorkspaceId,
+        { name: 'Hacked Workspace' },
+        undefined,
+      );
+      expect(outcome.kind).toBe('not-found');
+    });
+
+    it('returns forbidden when caller is a suspended member with positive control for active administrator', async () => {
+      const outcome = await service.update(
+        subjectSuspended,
+        sharedWorkspaceId,
+        { name: 'Suspended Attempt' },
+        undefined,
+      );
+      expect(outcome.kind).toBe('forbidden');
+
+      // Positive control: active administrator issues identical request and succeeds (200)
+      const positiveOutcome = await service.update(
+        subjectAdmin,
+        sharedWorkspaceId,
+        { name: 'Admin Active Name' },
+        undefined,
+      );
+      expect(positiveOutcome.kind).toBe('ok');
+    });
+
+    it('returns forbidden when caller is an active editor with positive control for active administrator', async () => {
+      const outcome = await service.update(
+        subjectEditor,
+        sharedWorkspaceId,
+        { name: 'Editor Attempt' },
+        undefined,
+      );
+      expect(outcome.kind).toBe('forbidden');
+
+      // Positive control: active administrator issues identical request and succeeds (200)
+      const positiveOutcome = await service.update(
+        subjectAdmin,
+        sharedWorkspaceId,
+        { name: 'Admin Positive Control' },
+        undefined,
+      );
+      expect(positiveOutcome.kind).toBe('ok');
+    });
+
+    it('returns not-found when active owner attempts to update a non-existent workspace', async () => {
+      const outcome = await service.update(
+        subjectOwner,
+        '00000000-0000-0000-0000-000000000999',
+        { name: 'Non Existent' },
+        undefined,
+      );
+      expect(outcome.kind).toBe('not-found');
+    });
+
+    it('returns version-conflict when If-Match version is stale against read version', async () => {
+      const read = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(read.kind).toBe('ok');
+      if (read.kind !== 'ok') throw new Error('unreachable');
+
+      const staleVersion = read.workspace.version + 999;
+      const outcome = await service.update(
+        subjectOwner,
+        sharedWorkspaceId,
+        { name: 'Stale Version Attempt' },
+        staleVersion,
+      );
+      expect(outcome.kind).toBe('version-conflict');
+    });
+
+    it('active owner updates workspace successfully, version increments by 1, and returns updated workspace', async () => {
+      const readBefore = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readBefore.kind).toBe('ok');
+      if (readBefore.kind !== 'ok') throw new Error('unreachable');
+
+      const outcome = await service.update(
+        subjectOwner,
+        sharedWorkspaceId,
+        { name: 'Acme Super Shared', baseCurrency: 'EUR' },
+        readBefore.workspace.version,
+      );
+
+      expect(outcome.kind).toBe('ok');
+      if (outcome.kind !== 'ok') throw new Error('unreachable');
+      expect(outcome.version).toBe(readBefore.workspace.version + 1);
+      expect(outcome.workspace.version).toBe(readBefore.workspace.version + 1);
+      expect(outcome.workspace.name).toBe('Acme Super Shared');
+      expect(outcome.workspace.baseCurrency).toBe('EUR');
+      expect(outcome.workspace.role).toBe('owner');
+    });
+
+    it('returns version-conflict when rowCount === 0 from concurrent bump between read and write', async () => {
+      const mockStore: typeof adapter = {
+        readMembership: (...args) => adapter.readMembership(...args),
+        readWorkspace: (...args) => adapter.readWorkspace(...args),
+        listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        update: async () => undefined, // simulates rowCount === 0 from concurrent bump
+      };
+      const concurrentService = new WorkspaceService(transaction, mockStore);
+      const outcome = await concurrentService.update(
+        subjectOwner,
+        sharedWorkspaceId,
+        { name: 'Acme Concurrently Bumped' },
+        undefined,
+      );
+      expect(outcome.kind).toBe('version-conflict');
+    });
   });
 });
