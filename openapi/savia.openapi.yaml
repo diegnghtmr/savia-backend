@@ -188,6 +188,40 @@ components:
           pattern: '^[A-Za-z]{3}$'
         privacyModeEnabled:
           type: boolean
+    Workspace:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - kind
+        - baseCurrency
+        - role
+        - createdAt
+        - version
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        kind:
+          type: string
+          enum: [personal, family, shared]
+        baseCurrency:
+          type: string
+          pattern: '^[A-Za-z]{3}$'
+        role:
+          type: string
+          enum: [owner, administrator, editor, viewer]
+        createdAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          minimum: 1
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -361,6 +395,56 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
           description: Unprocessable entity
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /v1/workspaces/{workspaceId}:
+    get:
+      operationId: getWorkspace
+      tags:
+        - Workspaces
+      summary: Read workspace by identifier
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Workspace details
+          headers:
+            ETag:
+              description: Quoted decimal workspace version
+              required: true
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        '400':
+          description: The workspace identifier is not a valid UUID.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Workspace not found.
           content:
             application/problem+json:
               schema:

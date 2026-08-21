@@ -21,6 +21,11 @@
       "operationId": "updateCurrentUser",
       "method": "PATCH",
       "path": "/v1/me"
+    },
+    {
+      "operationId": "getWorkspace",
+      "method": "GET",
+      "path": "/v1/workspaces/{workspaceId}"
     }
   ]
 }

@@ -11,12 +11,16 @@ import { PostgresConfig } from './postgres-config.js';
 import { PostgresPool } from './postgres-pool.js';
 import { PostgresBootstrapAdapter } from './postgres-bootstrap.adapter.js';
 import { PostgresProfileAdapter } from './postgres-profile.adapter.js';
+import { PostgresWorkspaceAdapter } from './postgres-workspace.adapter.js';
 import { ProfileController } from './profile.controller.js';
 import { PROFILE_PORT } from './profile.port.js';
 import { ProfileService } from './profile.service.js';
+import { WorkspaceController } from './workspace.controller.js';
+import { WORKSPACE_PORT } from './workspace.port.js';
+import { WorkspaceService } from './workspace.service.js';
 
 @Module({
-  controllers: [OnboardingController, ProfileController],
+  controllers: [OnboardingController, ProfileController, WorkspaceController],
   providers: [
     {
       provide: AuthConfig,
@@ -63,6 +67,16 @@ import { ProfileService } from './profile.service.js';
       ) => new ProfileService(transaction, adapter),
     },
     { provide: PROFILE_PORT, useExisting: ProfileService },
+    PostgresWorkspaceAdapter,
+    {
+      provide: WorkspaceService,
+      inject: [PgTransaction, PostgresWorkspaceAdapter],
+      useFactory: (
+        transaction: PgTransaction,
+        adapter: PostgresWorkspaceAdapter,
+      ) => new WorkspaceService(transaction, adapter),
+    },
+    { provide: WORKSPACE_PORT, useExisting: WorkspaceService },
   ],
   exports: [
     JoseJwtVerifier,
@@ -70,6 +84,7 @@ import { ProfileService } from './profile.service.js';
     PgTransaction,
     BOOTSTRAP_PORT,
     PROFILE_PORT,
+    WORKSPACE_PORT,
   ],
 })
 export class IdentityModule {
