@@ -33,6 +33,11 @@
       "path": "/v1/workspaces/{workspaceId}"
     },
     {
+      "operationId": "createWorkspace",
+      "method": "POST",
+      "path": "/v1/workspaces"
+    },
+    {
       "operationId": "listWorkspaces",
       "method": "GET",
       "path": "/v1/workspaces"
