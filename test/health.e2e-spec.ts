@@ -84,6 +84,7 @@ describe('health endpoint', () => {
       'POST /v1/workspaces',
       'GET /v1/workspaces',
       'GET /v1/workspaces/:workspaceId',
+      'GET /v1/workspaces/:workspaceId/members',
       'PATCH /v1/workspaces/:workspaceId',
       'DELETE /v1/workspaces/:workspaceId',
     ]);
