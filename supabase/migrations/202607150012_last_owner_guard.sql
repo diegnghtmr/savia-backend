@@ -1,11 +1,12 @@
 begin;
 grant usage, create on schema public to savia_elevated;   -- revoked below (RULING 13)
 
--- LOAD-BEARING, NOT PLUMBING. SELECT ... FOR UPDATE consults the locking role's UPDATE
--- privilege AND its UPDATE `using` policy, and when either is missing it returns ZERO ROWS
--- rather than raising (executed, #4227 FINDING 3). A guard counting zero owners concludes
--- there is no owner to protect and permits the removal. Removing either line below silently
--- disables the last-owner invariant. See the fail-open sabotage test.
+-- `using (true)` is required so `select ... for update` can see and lock rows.
+-- `with check (false)` is independently load-bearing: savia_elevated already has SELECT
+-- visibility via elevated_reads_memberships and UPDATE(role, status, version), so
+-- `with check (true)` would permit direct writes to those columns.
+-- Dropping this UPDATE policy silently yields zero locked rows, which makes any guard
+-- built on it fail OPEN. Revoking the UPDATE grant instead fails closed with 42501.
 grant update (role, status, version) on public.workspace_memberships to savia_elevated;
 
 -- `using` is what the row-locking clause consults; `with check (false)` keeps a lock
