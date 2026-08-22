@@ -9,6 +9,8 @@ import {
   encodeCursor,
   WORKSPACE_ACCESS_KINDS,
   WORKSPACE_CREATE_OUTCOME_KINDS,
+  WORKSPACE_DELETE_OUTCOME_KINDS,
+  WORKSPACE_KIND,
   WORKSPACE_MEMBER_STATUS,
   WORKSPACE_ROLE,
   WORKSPACE_UPDATE_OUTCOMES,
@@ -16,6 +18,8 @@ import {
   type WorkspaceAccess,
   type WorkspaceCreateOutcome,
   type WorkspaceCursor,
+  type WorkspaceDeleteOutcome,
+  type WorkspaceDeleteOutcomeKind,
   type WorkspaceKind,
   type WorkspaceListQuery,
   type WorkspaceMemberStatus,
@@ -87,6 +91,10 @@ export interface WorkspaceStore {
     command: WorkspaceUpdateCommand,
     expectedVersion?: number | readonly number[],
   ): Promise<WorkspaceRecord | undefined>;
+  deleteWorkspace(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<number>;
 }
 
 export class WorkspaceService implements WorkspacePort {
@@ -325,6 +333,126 @@ export class WorkspaceService implements WorkspacePort {
         },
         version: updated.version,
       };
+    });
+  }
+
+  public async delete(
+    subject: string,
+    workspaceId: string,
+    idempotencyKey: string,
+  ): Promise<WorkspaceDeleteOutcome> {
+    const route = 'DELETE /v1/workspaces/{workspaceId}';
+    const fingerprint = computeRequestFingerprint({ workspaceId });
+
+    return this.transaction.run(subject, async (client) => {
+      const existing = await this.idempotencyStore.read(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+      );
+      if (existing !== undefined) {
+        if (existing.requestFingerprint !== fingerprint) {
+          return {
+            kind: WORKSPACE_DELETE_OUTCOME_KINDS.IDEMPOTENCY_CONFLICT,
+          };
+        }
+        return {
+          kind: WORKSPACE_DELETE_OUTCOME_KINDS.REPLAYED,
+          status: existing.responseStatus,
+        };
+      }
+
+      let outcomeKind: WorkspaceDeleteOutcomeKind;
+      let status: number;
+
+      const membership = await this.store.readMembership(
+        client,
+        workspaceId,
+        subject,
+      );
+      if (membership === undefined) {
+        outcomeKind = WORKSPACE_DELETE_OUTCOME_KINDS.NOT_FOUND;
+        status = 404;
+      } else if (membership.status === WORKSPACE_MEMBER_STATUS.SUSPENDED) {
+        outcomeKind = WORKSPACE_DELETE_OUTCOME_KINDS.FORBIDDEN;
+        status = 403;
+      } else if (membership.role !== WORKSPACE_ROLE.OWNER) {
+        outcomeKind = WORKSPACE_DELETE_OUTCOME_KINDS.FORBIDDEN;
+        status = 403;
+      } else {
+        const workspace = await this.store.readWorkspace(client, workspaceId);
+        if (workspace === undefined) {
+          outcomeKind = WORKSPACE_DELETE_OUTCOME_KINDS.NOT_FOUND;
+          status = 404;
+        } else if (workspace.kind === WORKSPACE_KIND.PERSONAL) {
+          outcomeKind = WORKSPACE_DELETE_OUTCOME_KINDS.UNPROCESSABLE;
+          status = 422;
+        } else {
+          const rowCount = await this.store.deleteWorkspace(
+            client,
+            workspaceId,
+          );
+          if (rowCount === 1) {
+            outcomeKind = WORKSPACE_DELETE_OUTCOME_KINDS.DELETED;
+            status = 204;
+          } else {
+            // rowCount === 0: Confirming re-SELECT separates policy refusal from concurrent deletion
+            const reread = await this.store.readWorkspace(client, workspaceId);
+            if (reread !== undefined) {
+              // Row STILL PRESENT -> RLS policy refused deletion
+              outcomeKind = WORKSPACE_DELETE_OUTCOME_KINDS.UNPROCESSABLE;
+              status = 422;
+            } else {
+              // Row ABSENT -> workspace was concurrently deleted
+              outcomeKind = WORKSPACE_DELETE_OUTCOME_KINDS.NOT_FOUND;
+              status = 404;
+            }
+          }
+        }
+      }
+
+      const written = await this.idempotencyStore.write(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        fingerprint,
+        status,
+        null,
+        null,
+      );
+
+      if (!written) {
+        const reread = await this.idempotencyStore.read(
+          client,
+          subject,
+          route,
+          idempotencyKey,
+        );
+        if (reread !== undefined) {
+          if (reread.requestFingerprint !== fingerprint) {
+            return {
+              kind: WORKSPACE_DELETE_OUTCOME_KINDS.IDEMPOTENCY_CONFLICT,
+            };
+          }
+          return {
+            kind: WORKSPACE_DELETE_OUTCOME_KINDS.REPLAYED,
+            status: reread.responseStatus,
+          };
+        }
+      }
+
+      if (outcomeKind === WORKSPACE_DELETE_OUTCOME_KINDS.DELETED) {
+        return { kind: WORKSPACE_DELETE_OUTCOME_KINDS.DELETED };
+      }
+      if (outcomeKind === WORKSPACE_DELETE_OUTCOME_KINDS.FORBIDDEN) {
+        return { kind: WORKSPACE_DELETE_OUTCOME_KINDS.FORBIDDEN };
+      }
+      if (outcomeKind === WORKSPACE_DELETE_OUTCOME_KINDS.NOT_FOUND) {
+        return { kind: WORKSPACE_DELETE_OUTCOME_KINDS.NOT_FOUND };
+      }
+      return { kind: WORKSPACE_DELETE_OUTCOME_KINDS.UNPROCESSABLE };
     });
   }
 }

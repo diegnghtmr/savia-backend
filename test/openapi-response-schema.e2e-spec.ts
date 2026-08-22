@@ -158,7 +158,9 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
     vi.restoreAllMocks();
   });
 
-  async function createApplication(): Promise<NestFastifyApplication> {
+  async function createApplication(overrides?: {
+    deleteOp?: WorkspacePort['delete'];
+  }): Promise<NestFastifyApplication> {
     const bootstrapMock: BootstrapPort = {
       execute: vi.fn<BootstrapPort['execute']>().mockResolvedValue({
         kind: 'created',
@@ -194,6 +196,11 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
       update: vi.fn<WorkspacePort['update']>().mockResolvedValue({
         kind: 'version-conflict',
       }),
+      delete:
+        overrides?.deleteOp ??
+        vi.fn<WorkspacePort['delete']>().mockResolvedValue({
+          kind: 'not-found',
+        }),
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -463,6 +470,63 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
     expect(response.statusCode).toBe(422);
     const payload = JSON.parse(response.payload);
 
+    const isValid = validateUnprocessable(payload);
+    expect(validateUnprocessable.errors).toBeNull();
+    expect(isValid).toBe(true);
+  });
+
+  it('validates live DELETE /v1/workspaces/{workspaceId} 404 response body against its declared ProblemDetails schema', async () => {
+    const document = loadBundledContract();
+    const validateNotFound = compileResponseValidator(
+      document,
+      '/v1/workspaces/{workspaceId}',
+      'DELETE',
+      '404',
+      'application/problem+json',
+    );
+
+    app = await createApplication();
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/v1/workspaces/${TEST_AGGREGATE.workspaceId}`,
+      headers: {
+        authorization: `Bearer ${TEST_TOKEN}`,
+        'idempotency-key': '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb01',
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+    const payload = JSON.parse(response.payload);
+
+    const isValid = validateNotFound(payload);
+    expect(validateNotFound.errors).toBeNull();
+    expect(isValid).toBe(true);
+  });
+
+  it('validates live DELETE /v1/workspaces/{workspaceId} 422 response body against its declared ProblemDetails schema', async () => {
+    const document = loadBundledContract();
+    const validateUnprocessable = compileResponseValidator(
+      document,
+      '/v1/workspaces/{workspaceId}',
+      'DELETE',
+      '422',
+      'application/problem+json',
+    );
+
+    app = await createApplication({
+      deleteOp: async () => ({ kind: 'unprocessable' }),
+    });
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/v1/workspaces/${TEST_AGGREGATE.workspaceId}`,
+      headers: {
+        authorization: `Bearer ${TEST_TOKEN}`,
+        'idempotency-key': '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb01',
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    const payload = JSON.parse(response.payload);
     const isValid = validateUnprocessable(payload);
     expect(validateUnprocessable.errors).toBeNull();
     expect(isValid).toBe(true);

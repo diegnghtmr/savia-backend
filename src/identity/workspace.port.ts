@@ -191,6 +191,50 @@ export function decodeCursor(raw: string): WorkspaceCursor | undefined {
   }
 }
 
+export const WORKSPACE_DELETE_OUTCOME_KINDS = {
+  DELETED: 'deleted',
+  NOT_FOUND: 'not-found',
+  FORBIDDEN: 'forbidden',
+  UNPROCESSABLE: 'unprocessable',
+  REPLAYED: 'replayed',
+  IDEMPOTENCY_CONFLICT: 'idempotency-conflict',
+} as const;
+export type WorkspaceDeleteOutcomeKind =
+  (typeof WORKSPACE_DELETE_OUTCOME_KINDS)[keyof typeof WORKSPACE_DELETE_OUTCOME_KINDS];
+
+export interface WorkspaceDeleteDeletedOutcome {
+  readonly kind: typeof WORKSPACE_DELETE_OUTCOME_KINDS.DELETED;
+}
+
+export interface WorkspaceDeleteNotFoundOutcome {
+  readonly kind: typeof WORKSPACE_DELETE_OUTCOME_KINDS.NOT_FOUND;
+}
+
+export interface WorkspaceDeleteForbiddenOutcome {
+  readonly kind: typeof WORKSPACE_DELETE_OUTCOME_KINDS.FORBIDDEN;
+}
+
+export interface WorkspaceDeleteUnprocessableOutcome {
+  readonly kind: typeof WORKSPACE_DELETE_OUTCOME_KINDS.UNPROCESSABLE;
+}
+
+export interface WorkspaceDeleteReplayedOutcome {
+  readonly kind: typeof WORKSPACE_DELETE_OUTCOME_KINDS.REPLAYED;
+  readonly status: number;
+}
+
+export interface WorkspaceDeleteConflictOutcome {
+  readonly kind: typeof WORKSPACE_DELETE_OUTCOME_KINDS.IDEMPOTENCY_CONFLICT;
+}
+
+export type WorkspaceDeleteOutcome =
+  | WorkspaceDeleteDeletedOutcome
+  | WorkspaceDeleteNotFoundOutcome
+  | WorkspaceDeleteForbiddenOutcome
+  | WorkspaceDeleteUnprocessableOutcome
+  | WorkspaceDeleteReplayedOutcome
+  | WorkspaceDeleteConflictOutcome;
+
 export interface WorkspacePort {
   read(subject: string, workspaceId: string): Promise<WorkspaceAccess>;
   list(subject: string, query: WorkspaceListQuery): Promise<WorkspacePage>;
@@ -205,4 +249,9 @@ export interface WorkspacePort {
     command: WorkspaceUpdateCommand,
     expectedVersion?: number | readonly number[],
   ): Promise<WorkspaceUpdateOutcome>;
+  delete(
+    subject: string,
+    workspaceId: string,
+    idempotencyKey: string,
+  ): Promise<WorkspaceDeleteOutcome>;
 }
