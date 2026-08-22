@@ -107,12 +107,12 @@ function patchWorkspace(
   body: unknown,
   options: { token?: string; ifMatch?: unknown } = {},
 ) {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string | string[]> = {};
   if (options.token !== undefined) {
     headers.authorization = `Bearer ${options.token}`;
   }
   if (options.ifMatch !== undefined) {
-    headers['if-match'] = options.ifMatch as string;
+    headers['if-match'] = options.ifMatch as string | string[];
   }
   return application.inject({
     method: 'PATCH',
@@ -595,6 +595,125 @@ describe('PATCH /v1/workspaces/:workspaceId', () => {
       WORKSPACE_ID,
       { name: 'Acme Renovated' },
       1,
+    );
+  });
+
+  it('answers 200 on multi-version If-Match list ("1", "999") when current version is a member', async () => {
+    const updatedWorkspace = {
+      ...WORKSPACE,
+      name: 'Acme Multi Version',
+      version: 2,
+    };
+    const update = vi.fn<WorkspacePort['update']>().mockResolvedValue({
+      kind: 'ok',
+      workspace: updatedWorkspace,
+      version: 2,
+    });
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { name: 'Acme Multi Version' },
+      { token: TOKEN, ifMatch: '"1", "999"' },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(update).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      { name: 'Acme Multi Version' },
+      [1, 999],
+    );
+  });
+
+  it('answers 200 on duplicated If-Match header array when current version is a member', async () => {
+    const updatedWorkspace = {
+      ...WORKSPACE,
+      name: 'Acme Array Header',
+      version: 2,
+    };
+    const update = vi.fn<WorkspacePort['update']>().mockResolvedValue({
+      kind: 'ok',
+      workspace: updatedWorkspace,
+      version: 2,
+    });
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { name: 'Acme Array Header' },
+      { token: TOKEN, ifMatch: ['"1"', '"999"'] },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(update).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      { name: 'Acme Array Header' },
+      [1, 999],
+    );
+  });
+
+  it('answers 200 on If-Match: * for an existing administered workspace (positive control proving * is not ignored)', async () => {
+    const updatedWorkspace = {
+      ...WORKSPACE,
+      name: 'Acme Wildcard Updated',
+      version: 2,
+    };
+    const update = vi.fn<WorkspacePort['update']>().mockResolvedValue({
+      kind: 'ok',
+      workspace: updatedWorkspace,
+      version: 2,
+    });
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { name: 'Acme Wildcard Updated' },
+      { token: TOKEN, ifMatch: '*' },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(update).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      { name: 'Acme Wildcard Updated' },
+      undefined,
+    );
+  });
+
+  it('answers 404 on If-Match: * for an absent workspace as a deliberate deviation from RFC 9110', async () => {
+    const update = vi.fn<WorkspacePort['update']>().mockResolvedValue({
+      kind: 'not-found',
+    });
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { name: 'Acme Wildcard Absent' },
+      { token: TOKEN, ifMatch: '*' },
+    );
+
+    expect(response.statusCode).toBe(404);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual(
+      expect.objectContaining({
+        type: 'https://savia.app/problems/not-found',
+        status: 404,
+        code: 'not-found',
+      }),
+    );
+    expect(update).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      { name: 'Acme Wildcard Absent' },
+      undefined,
     );
   });
 

@@ -79,13 +79,17 @@ export class PostgresWorkspaceAdapter implements WorkspaceStore {
     client: TransactionClient,
     workspaceId: string,
     command: WorkspaceUpdateCommand,
-    expectedVersion?: number,
+    expectedVersion?: number | readonly number[],
   ): Promise<WorkspaceRecord | undefined> {
+    const versions =
+      typeof expectedVersion === 'number'
+        ? [expectedVersion]
+        : (expectedVersion ?? null);
     const values = [
       workspaceId,
       command.name ?? null,
       command.baseCurrency ?? null,
-      expectedVersion ?? null,
+      versions,
     ];
     const result = await client.query<WorkspaceRow>(
       `update public.workspaces
@@ -93,7 +97,7 @@ export class PostgresWorkspaceAdapter implements WorkspaceStore {
        base_currency = coalesce($3, base_currency),
        version = version + 1
  where id = $1
-   and ($4::integer is null or version = $4)
+   and ($4::integer[] is null or version = any($4::integer[]))
 returning id::text, name, kind, base_currency as "baseCurrency",
           created_at as "createdAt", version`,
       values,

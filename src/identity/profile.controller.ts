@@ -91,13 +91,17 @@ export class ProfileController {
     // the resource identity is the authenticated subject, so "you have no
     // profile" is the actual problem, while 412 would invite a retry with a
     // fresh validator that will never exist.
-    const expectedVersion =
-      ifMatch.kind === 'version' ? ifMatch.version : undefined;
+    const expectedVersions =
+      ifMatch.kind === 'versions'
+        ? ifMatch.versions.length === 1
+          ? ifMatch.versions[0]
+          : ifMatch.versions
+        : undefined;
 
     const outcome = await this.profile.update(
       request.identity.subject,
       command,
-      expectedVersion,
+      expectedVersions,
     );
 
     if (outcome.kind === PROFILE_UPDATE_OUTCOMES.OK) {

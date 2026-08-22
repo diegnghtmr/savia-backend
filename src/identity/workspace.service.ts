@@ -66,7 +66,7 @@ export interface WorkspaceStore {
     client: TransactionClient,
     workspaceId: string,
     command: WorkspaceUpdateCommand,
-    expectedVersion?: number,
+    expectedVersion?: number | readonly number[],
   ): Promise<WorkspaceRecord | undefined>;
 }
 
@@ -147,7 +147,7 @@ export class WorkspaceService implements WorkspacePort {
     subject: string,
     workspaceId: string,
     command: WorkspaceUpdateCommand,
-    expectedVersion: number | undefined,
+    expectedVersion?: number | readonly number[],
   ): Promise<WorkspaceUpdateOutcome> {
     return this.transaction.run(subject, async (client) => {
       const membership = await this.store.readMembership(
@@ -173,9 +173,13 @@ export class WorkspaceService implements WorkspacePort {
         return { kind: WORKSPACE_UPDATE_OUTCOMES.NOT_FOUND };
       }
 
+      const versions =
+        typeof expectedVersion === 'number'
+          ? [expectedVersion]
+          : expectedVersion;
       if (
-        expectedVersion !== undefined &&
-        workspace.version !== expectedVersion
+        versions !== undefined &&
+        !versions.includes(workspace.version)
       ) {
         return { kind: WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT };
       }
@@ -184,7 +188,7 @@ export class WorkspaceService implements WorkspacePort {
         client,
         workspaceId,
         command,
-        expectedVersion,
+        versions,
       );
       if (updated === undefined) {
         return { kind: WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT };

@@ -180,14 +180,32 @@ export class WorkspaceController {
       return;
     }
 
-    const expectedVersion =
-      ifMatch.kind === 'version' ? ifMatch.version : undefined;
+    // RFC 9110 section 13.1.1 defines If-Match: * as evaluating to false if the
+    // representation does not exist, which would technically warrant 412.
+    // However, this API cannot distinguish an absent workspace from one where
+    // the caller is not a member, answering 404 for both in getWorkspace.
+    // Answering 404 here is a deliberate deviation from RFC 9110 to maintain
+    // consistency with getWorkspace and avoid leaking existence information.
+    let expectedVersions: number | readonly number[] | undefined;
+    if (ifMatch.kind === 'versions') {
+      expectedVersions =
+        ifMatch.versions.length === 1
+          ? ifMatch.versions[0]
+          : ifMatch.versions;
+    } else if (ifMatch.kind === 'any') {
+      // If-Match: * requires representation to exist; if absent or forbidden,
+      // workspace.update will answer NOT_FOUND (404) or FORBIDDEN (403).
+      expectedVersions = undefined;
+    } else {
+      // ifMatch.kind === 'absent'
+      expectedVersions = undefined;
+    }
 
     const outcome = await this.workspace.update(
       request.identity.subject,
       workspaceId,
       command,
-      expectedVersion,
+      expectedVersions,
     );
 
     if (outcome.kind === WORKSPACE_UPDATE_OUTCOMES.OK) {

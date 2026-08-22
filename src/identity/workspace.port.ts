@@ -166,6 +166,6 @@ export interface WorkspacePort {
     subject: string,
     workspaceId: string,
     command: WorkspaceUpdateCommand,
-    expectedVersion: number | undefined,
+    expectedVersion?: number | readonly number[],
   ): Promise<WorkspaceUpdateOutcome>;
 }
