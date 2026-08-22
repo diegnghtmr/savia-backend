@@ -148,6 +148,17 @@ returning id::text, name, kind, base_currency as "baseCurrency",
       version: row.version,
     };
   }
+
+  public async deleteWorkspace(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<number> {
+    const result = await client.query(
+      'delete from public.workspaces where id = $1',
+      [workspaceId],
+    );
+    return result.rowCount ?? 0;
+  }
 }
 
 interface WorkspaceMembershipRow

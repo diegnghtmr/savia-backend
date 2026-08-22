@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Inject,
   Param,
@@ -29,6 +30,7 @@ import {
   decodeCursor,
   WORKSPACE_ACCESS_KINDS,
   WORKSPACE_CREATE_OUTCOME_KINDS,
+  WORKSPACE_DELETE_OUTCOME_KINDS,
   WORKSPACE_PORT,
   WORKSPACE_UPDATE_OUTCOMES,
   type WorkspaceCursor,
@@ -314,6 +316,118 @@ export class WorkspaceController {
         title: 'Precondition failed',
         status: 412,
       });
+      return;
+    }
+  }
+
+  @Delete(':workspaceId')
+  public async deleteWorkspace(
+    @Param('workspaceId') workspaceId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const keyResult = validateIdempotencyKey(
+      request.headers['idempotency-key'],
+    );
+    if (keyResult.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid Idempotency-Key header',
+        detail: keyResult.reason,
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(workspaceId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid workspace identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    const outcome = await this.workspace.delete(
+      request.identity.subject,
+      workspaceId,
+      keyResult.key,
+    );
+
+    if (outcome.kind === WORKSPACE_DELETE_OUTCOME_KINDS.DELETED) {
+      void reply.status(204).send();
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_DELETE_OUTCOME_KINDS.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Workspace not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_DELETE_OUTCOME_KINDS.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_DELETE_OUTCOME_KINDS.UNPROCESSABLE) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Unprocessable entity',
+        status: 422,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_DELETE_OUTCOME_KINDS.IDEMPOTENCY_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency conflict',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_DELETE_OUTCOME_KINDS.REPLAYED) {
+      if (outcome.status === 204) {
+        void reply.status(204).send();
+        return;
+      }
+      // A replayed refusal re-renders through sendProblem from a status->problem map rather than
+      // echoing a stored body, so traceId and instance stay bound to the actual replaying
+      // request. Note this in a comment as a deliberate, narrow deviation from byte-identical replay.
+      if (outcome.status === 403) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.FORBIDDEN,
+          title: 'Workspace access forbidden',
+          status: 403,
+        });
+        return;
+      }
+      if (outcome.status === 404) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.NOT_FOUND,
+          title: 'Workspace not found',
+          status: 404,
+        });
+        return;
+      }
+      if (outcome.status === 422) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Unprocessable entity',
+          status: 422,
+        });
+        return;
+      }
+      void reply.status(outcome.status).send();
       return;
     }
   }

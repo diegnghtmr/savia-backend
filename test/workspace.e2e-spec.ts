@@ -13,6 +13,7 @@ import {
   type Workspace,
   type WorkspaceAccess,
   type WorkspaceCreateOutcome,
+  type WorkspaceDeleteOutcome,
   type WorkspacePort,
 } from '../src/identity/workspace.port.js';
 import { WorkspaceService } from '../src/identity/workspace.service.js';
@@ -89,6 +90,9 @@ async function createApplication(
     kind: 'created',
     workspace: WORKSPACE,
   } satisfies WorkspaceCreateOutcome),
+  deleteOp: WorkspacePort['delete'] = vi.fn().mockResolvedValue({
+    kind: 'deleted',
+  } satisfies WorkspaceDeleteOutcome),
 ): Promise<NestFastifyApplication> {
   const moduleRef = await Test.createTestingModule({
     imports: [IdentityModule],
@@ -96,7 +100,7 @@ async function createApplication(
     .overrideProvider(JoseJwtVerifier)
     .useValue(verifier)
     .overrideProvider(WORKSPACE_PORT)
-    .useValue({ read, list, update, create })
+    .useValue({ read, list, update, create, delete: deleteOp })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -178,6 +182,25 @@ function postWorkspace(
     url: '/v1/workspaces',
     headers,
     payload: body as string | object | Buffer | NodeJS.ReadableStream,
+  });
+}
+
+function deleteWorkspace(
+  application: NestFastifyApplication,
+  workspaceId: string,
+  options: { token?: string; idempotencyKey?: string | string[] } = {},
+) {
+  const headers: Record<string, string | string[]> = {};
+  if (options.token !== undefined) {
+    headers['authorization'] = `Bearer ${options.token}`;
+  }
+  if (options.idempotencyKey !== undefined) {
+    headers['idempotency-key'] = options.idempotencyKey;
+  }
+  return application.inject({
+    method: 'DELETE',
+    url: `/v1/workspaces/${workspaceId}`,
+    headers,
   });
 }
 
@@ -1371,6 +1394,449 @@ describe('PATCH /v1/workspaces/:workspaceId', () => {
       traceId: expect.stringMatching(/.+/),
       instance: `/v1/workspaces/${WORKSPACE_ID}`,
     });
+  });
+});
+
+describe('DELETE /v1/workspaces/:workspaceId', () => {
+  it('answers 204 on valid deletion and passes subject, workspaceId, and idempotencyKey to the port', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>().mockResolvedValue({
+      kind: 'deleted',
+    });
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.payload).toBe('');
+    expect(deleteOp).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      IDEMPOTENCY_KEY,
+    );
+  });
+
+  it('answers 204 on replayed outcome (status 204)', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>().mockResolvedValue({
+      kind: 'replayed',
+      status: 204,
+    });
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.payload).toBe('');
+    expect(deleteOp).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      IDEMPOTENCY_KEY,
+    );
+  });
+
+  it('answers 403 on replayed refusal (status 403) with freshly rendered ProblemDetails', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>().mockResolvedValue({
+      kind: 'replayed',
+      status: 403,
+    });
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/forbidden',
+      title: 'Workspace access forbidden',
+      status: 403,
+      code: 'forbidden',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
+  });
+
+  it('answers 404 on replayed refusal (status 404) with freshly rendered ProblemDetails', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>().mockResolvedValue({
+      kind: 'replayed',
+      status: 404,
+    });
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/not-found',
+      title: 'Workspace not found',
+      status: 404,
+      code: 'not-found',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
+  });
+
+  it('answers 422 on replayed refusal (status 422) with freshly rendered ProblemDetails', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>().mockResolvedValue({
+      kind: 'replayed',
+      status: 422,
+    });
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/unprocessable',
+      title: 'Unprocessable entity',
+      status: 422,
+      code: 'unprocessable',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
+  });
+
+  it('answers 409 problem+json when the port reports an idempotency conflict', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>().mockResolvedValue({
+      kind: 'idempotency-conflict',
+    });
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/conflict',
+      title: 'Idempotency conflict',
+      status: 409,
+      code: 'conflict',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
+  });
+
+  it('answers 403 problem+json when port returns forbidden', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>().mockResolvedValue({
+      kind: 'forbidden',
+    });
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/forbidden',
+      title: 'Workspace access forbidden',
+      status: 403,
+      code: 'forbidden',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
+  });
+
+  it('answers 404 problem+json when port returns not-found', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>().mockResolvedValue({
+      kind: 'not-found',
+    });
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/not-found',
+      title: 'Workspace not found',
+      status: 404,
+      code: 'not-found',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
+  });
+
+  it('answers 422 problem+json when port returns unprocessable', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>().mockResolvedValue({
+      kind: 'unprocessable',
+    });
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/unprocessable',
+      title: 'Unprocessable entity',
+      status: 422,
+      code: 'unprocessable',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
+  });
+
+  it('answers 400 problem+json for missing Idempotency-Key header and asserts port was never called', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>();
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/bad-request',
+      title: 'Invalid Idempotency-Key header',
+      status: 400,
+      code: 'bad-request',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+      detail: expect.any(String),
+    });
+    expect(deleteOp).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 problem+json for duplicated Idempotency-Key header (array) and asserts port was never called', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>();
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: [
+        '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb01',
+        '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb02',
+      ],
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/bad-request',
+      title: 'Invalid Idempotency-Key header',
+      status: 400,
+      code: 'bad-request',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+      detail: expect.any(String),
+    });
+    expect(deleteOp).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 problem+json for non-UUID Idempotency-Key header and asserts port was never called', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>();
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: TOKEN,
+      idempotencyKey: 'not-a-uuid',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/bad-request',
+      title: 'Invalid Idempotency-Key header',
+      status: 400,
+      code: 'bad-request',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+      detail: expect.any(String),
+    });
+    expect(deleteOp).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 problem+json for non-UUID workspaceId and asserts port was never called', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>();
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, 'not-a-uuid', {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/bad-request',
+      title: 'Invalid workspace identifier',
+      status: 400,
+      code: 'bad-request',
+      traceId: expect.stringMatching(/.+/),
+      instance: '/v1/workspaces/not-a-uuid',
+    });
+    expect(deleteOp).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 problem+json with no bearer token', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>();
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(deleteOp).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 problem+json with an invalid bearer token', async () => {
+    const deleteOp = vi.fn<WorkspacePort['delete']>();
+    const application = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deleteOp,
+    );
+
+    const response = await deleteWorkspace(application, WORKSPACE_ID, {
+      token: 'invalid-token',
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(deleteOp).not.toHaveBeenCalled();
   });
 });
 

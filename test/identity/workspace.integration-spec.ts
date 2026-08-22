@@ -56,6 +56,11 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   const exactFull3Id = '00000000-0000-0000-0000-000000000853';
   const exactFull4Id = '00000000-0000-0000-0000-000000000854';
 
+  const wsPersonalId = '00000000-0000-0000-0000-000000000860';
+  const wsDeletePositiveId = '00000000-0000-0000-0000-000000000861';
+  const wsDeleteConcurrentId = '00000000-0000-0000-0000-000000000862';
+  const wsDeleteReplayId = '00000000-0000-0000-0000-000000000863';
+
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
     pool = new PostgresPool(PostgresConfig.fromUrl(url));
@@ -168,6 +173,56 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         [id, subjectExactFull, role],
       );
     }
+
+    // Seed wsPersonalId for subjectOwner (personal workspace with deferred owner membership)
+    await admin.query('begin');
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
+       values ($1, 'Personal Workspace Owner', 'personal', 'USD', $2)`,
+      [wsPersonalId, subjectOwner],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+       values ($1, $2, 'owner', 'active')`,
+      [wsPersonalId, subjectOwner],
+    );
+    await admin.query('commit');
+
+    // Seed wsDeletePositiveId for subjectOwner (shared workspace for positive control deletion)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
+       values ($1, 'Delete Positive Control WS', 'shared', 'USD', null)`,
+      [wsDeletePositiveId],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+       values ($1, $2, 'owner', 'active')`,
+      [wsDeletePositiveId, subjectOwner],
+    );
+
+    // Seed wsDeleteConcurrentId for subjectOwner (shared workspace for concurrent deletion test)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
+       values ($1, 'Delete Concurrent WS', 'shared', 'USD', null)`,
+      [wsDeleteConcurrentId],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+       values ($1, $2, 'owner', 'active')`,
+      [wsDeleteConcurrentId, subjectOwner],
+    );
+
+    // Seed wsDeleteReplayId for subjectOwner (shared workspace for idempotency replay test)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
+       values ($1, 'Delete Replay WS', 'shared', 'USD', null)`,
+      [wsDeleteReplayId],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+       values ($1, $2, 'owner', 'active')`,
+      [wsDeleteReplayId, subjectOwner],
+    );
   });
 
   afterAll(async () => {
@@ -361,6 +416,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         createWorkspace: (...args) => adapter.createWorkspace(...args),
         createMembership: (...args) => adapter.createMembership(...args),
         update: (...args) => adapter.update(...args),
+        deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
       };
       const isolatedService = new WorkspaceService(
         transaction,
@@ -445,6 +501,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         createWorkspace: (...args) => adapter.createWorkspace(...args),
         createMembership: (...args) => adapter.createMembership(...args),
         update: (...args) => adapter.update(...args),
+        deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
       };
       const absentWorkspaceService = new WorkspaceService(
         transaction,
@@ -517,6 +574,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         createWorkspace: (...args) => adapter.createWorkspace(...args),
         createMembership: (...args) => adapter.createMembership(...args),
         update: async () => undefined, // simulates rowCount === 0 from concurrent bump
+        deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
       };
       const concurrentService = new WorkspaceService(
         transaction,
@@ -551,6 +609,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         createWorkspace: (...args) => adapter.createWorkspace(...args),
         createMembership: (...args) => adapter.createMembership(...args),
         update: (...args) => adapter.update(...args),
+        deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
       };
 
       const realConcurrentService = new WorkspaceService(
@@ -584,6 +643,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
         createWorkspace: (...args) => adapter.createWorkspace(...args),
         createMembership: (...args) => adapter.createMembership(...args),
+        deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
         update: async (client, id, cmd, expected) => {
           await admin.query(
             "update public.workspace_memberships set role = 'viewer' where workspace_id = $1 and profile_id = $2",
@@ -687,6 +747,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         readWorkspace: adapter.readWorkspace.bind(adapter),
         listWorkspaces: adapter.listWorkspaces.bind(adapter),
         update: adapter.update.bind(adapter),
+        deleteWorkspace: adapter.deleteWorkspace.bind(adapter),
         createWorkspace: async (client, sub, cmd) => {
           const record = await adapter.createWorkspace(client, sub, cmd);
           insertedWorkspaceId = record.id;
@@ -818,6 +879,255 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
 
       expect(otherOutcome.kind).toBe(IDEMPOTENCY_OUTCOME_KINDS.EXECUTED);
       expect(otherExecuted).toBe(true);
+    });
+  });
+
+  describe('WorkspaceService.delete', () => {
+    it('Row A: caller is not a member of the workspace -> not-found (404) and asserts workspace is still present', async () => {
+      const outcome = await service.delete(
+        subjectNonMember,
+        sharedWorkspaceId,
+        'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d01',
+      );
+      expect(outcome.kind).toBe('not-found');
+
+      const check = await admin.query(
+        'select 1 from public.workspaces where id = $1',
+        [sharedWorkspaceId],
+      );
+      expect(check.rows).toHaveLength(1);
+    });
+
+    it('Row B: caller is a suspended member -> forbidden (403) and asserts workspace is still present', async () => {
+      const outcome = await service.delete(
+        subjectSuspended,
+        sharedWorkspaceId,
+        'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d02',
+      );
+      expect(outcome.kind).toBe('forbidden');
+
+      const check = await admin.query(
+        'select 1 from public.workspaces where id = $1',
+        [sharedWorkspaceId],
+      );
+      expect(check.rows).toHaveLength(1);
+    });
+
+    it('Row C: caller is an active editor (role != owner) -> forbidden (403) and asserts workspace is still present', async () => {
+      const outcome = await service.delete(
+        subjectEditor,
+        sharedWorkspaceId,
+        'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d03',
+      );
+      expect(outcome.kind).toBe('forbidden');
+
+      const check = await admin.query(
+        'select 1 from public.workspaces where id = $1',
+        [sharedWorkspaceId],
+      );
+      expect(check.rows).toHaveLength(1);
+    });
+
+    it('Row D: active owner attempts to delete an absent workspace -> not-found (404)', async () => {
+      const outcome = await service.delete(
+        subjectOwner,
+        '00000000-0000-0000-0000-000000000999',
+        'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d04',
+      );
+      expect(outcome.kind).toBe('not-found');
+    });
+
+    it('Row E: active owner attempts to delete personal workspace -> unprocessable (422) without issuing DELETE and asserts row is still present', async () => {
+      let deleteCalled = false;
+      const trackingStore: WorkspaceStore = {
+        readMembership: adapter.readMembership.bind(adapter),
+        readWorkspace: adapter.readWorkspace.bind(adapter),
+        listWorkspaces: adapter.listWorkspaces.bind(adapter),
+        createWorkspace: adapter.createWorkspace.bind(adapter),
+        createMembership: adapter.createMembership.bind(adapter),
+        update: adapter.update.bind(adapter),
+        deleteWorkspace: async (client, id) => {
+          deleteCalled = true;
+          return adapter.deleteWorkspace(client, id);
+        },
+      };
+      const trackingService = new WorkspaceService(
+        transaction,
+        trackingStore,
+        idempotencyAdapter,
+      );
+
+      const outcome = await trackingService.delete(
+        subjectOwner,
+        wsPersonalId,
+        'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d05',
+      );
+      expect(outcome.kind).toBe('unprocessable');
+      expect(deleteCalled).toBe(false);
+
+      const check = await admin.query(
+        'select 1 from public.workspaces where id = $1',
+        [wsPersonalId],
+      );
+      expect(check.rows).toHaveLength(1);
+    });
+
+    it('Row F: active owner deletes shared workspace (positive control) -> deleted (204) and row is gone', async () => {
+      const outcome = await service.delete(
+        subjectOwner,
+        wsDeletePositiveId,
+        'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d06',
+      );
+      expect(outcome.kind).toBe('deleted');
+
+      const check = await admin.query(
+        'select 1 from public.workspaces where id = $1',
+        [wsDeletePositiveId],
+      );
+      expect(check.rows).toHaveLength(0);
+    });
+
+    it('Row G: active owner on personal workspace with service check bypassed -> RLS yields DELETE 0, confirming re-SELECT finds row present -> unprocessable (422) and row is still present', async () => {
+      const bypassedStore: WorkspaceStore = {
+        readMembership: adapter.readMembership.bind(adapter),
+        readWorkspace: async (client, id) => {
+          const row = await adapter.readWorkspace(client, id);
+          if (row && row.kind === 'personal') {
+            return { ...row, kind: 'shared' };
+          }
+          return row;
+        },
+        listWorkspaces: adapter.listWorkspaces.bind(adapter),
+        createWorkspace: adapter.createWorkspace.bind(adapter),
+        createMembership: adapter.createMembership.bind(adapter),
+        update: adapter.update.bind(adapter),
+        deleteWorkspace: adapter.deleteWorkspace.bind(adapter),
+      };
+      const bypassedService = new WorkspaceService(
+        transaction,
+        bypassedStore,
+        idempotencyAdapter,
+      );
+
+      const outcome = await bypassedService.delete(
+        subjectOwner,
+        wsPersonalId,
+        'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d07',
+      );
+      expect(outcome.kind).toBe('unprocessable');
+
+      const check = await admin.query(
+        'select 1 from public.workspaces where id = $1',
+        [wsPersonalId],
+      );
+      expect(check.rows).toHaveLength(1);
+    });
+
+    it('Row H: active owner on shared workspace concurrently deleted before DELETE -> DELETE 0, confirming re-SELECT finds row absent -> not-found (404)', async () => {
+      const concurrentDeleteStore: WorkspaceStore = {
+        readMembership: adapter.readMembership.bind(adapter),
+        readWorkspace: adapter.readWorkspace.bind(adapter),
+        listWorkspaces: adapter.listWorkspaces.bind(adapter),
+        createWorkspace: adapter.createWorkspace.bind(adapter),
+        createMembership: adapter.createMembership.bind(adapter),
+        update: adapter.update.bind(adapter),
+        deleteWorkspace: async (client, id) => {
+          await admin.query('delete from public.workspaces where id = $1', [
+            id,
+          ]);
+          return adapter.deleteWorkspace(client, id);
+        },
+      };
+      const concurrentDeleteService = new WorkspaceService(
+        transaction,
+        concurrentDeleteStore,
+        idempotencyAdapter,
+      );
+
+      const outcome = await concurrentDeleteService.delete(
+        subjectOwner,
+        wsDeleteConcurrentId,
+        'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d08',
+      );
+      expect(outcome.kind).toBe('not-found');
+    });
+
+    it('identical replay after 204 returns replayed outcome without re-issuing DELETE', async () => {
+      const key = 'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d09';
+      let deleteCount = 0;
+      const countingStore: WorkspaceStore = {
+        readMembership: adapter.readMembership.bind(adapter),
+        readWorkspace: adapter.readWorkspace.bind(adapter),
+        listWorkspaces: adapter.listWorkspaces.bind(adapter),
+        createWorkspace: adapter.createWorkspace.bind(adapter),
+        createMembership: adapter.createMembership.bind(adapter),
+        update: adapter.update.bind(adapter),
+        deleteWorkspace: async (client, id) => {
+          deleteCount += 1;
+          return adapter.deleteWorkspace(client, id);
+        },
+      };
+      const countingService = new WorkspaceService(
+        transaction,
+        countingStore,
+        idempotencyAdapter,
+      );
+
+      const firstOutcome = await countingService.delete(
+        subjectOwner,
+        wsDeleteReplayId,
+        key,
+      );
+      expect(firstOutcome.kind).toBe('deleted');
+      expect(deleteCount).toBe(1);
+
+      const secondOutcome = await countingService.delete(
+        subjectOwner,
+        wsDeleteReplayId,
+        key,
+      );
+      expect(secondOutcome.kind).toBe('replayed');
+      if (secondOutcome.kind === 'replayed') {
+        expect(secondOutcome.status).toBe(204);
+      }
+      expect(deleteCount).toBe(1);
+    });
+
+    it('identical replay after refusal (403/404/422) returns stored refusal outcome without re-executing', async () => {
+      const key = 'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d10';
+      const firstOutcome = await service.delete(
+        subjectEditor,
+        sharedWorkspaceId,
+        key,
+      );
+      expect(firstOutcome.kind).toBe('forbidden');
+
+      const secondOutcome = await service.delete(
+        subjectEditor,
+        sharedWorkspaceId,
+        key,
+      );
+      expect(secondOutcome.kind).toBe('replayed');
+      if (secondOutcome.kind === 'replayed') {
+        expect(secondOutcome.status).toBe(403);
+      }
+    });
+
+    it('same idempotency key with different workspaceId returns idempotency conflict', async () => {
+      const key = 'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d11';
+      const firstOutcome = await service.delete(
+        subjectOwner,
+        wsPersonalId,
+        key,
+      );
+      expect(firstOutcome.kind).toBe('unprocessable');
+
+      const conflictOutcome = await service.delete(
+        subjectOwner,
+        sharedWorkspaceId,
+        key,
+      );
+      expect(conflictOutcome.kind).toBe('idempotency-conflict');
     });
   });
 });

@@ -82,6 +82,7 @@ describe('WorkspaceService', () => {
         createWorkspace: vi.fn(async () => ({ id: fakeCreatedRecord.id })),
         createMembership: vi.fn(async () => undefined),
         update: vi.fn(),
+        deleteWorkspace: vi.fn(),
       };
 
       const service = new WorkspaceService(
@@ -131,6 +132,7 @@ describe('WorkspaceService', () => {
         createWorkspace: vi.fn(async () => ({ id: fakeCreatedRecord.id })),
         createMembership: vi.fn(async () => undefined),
         update: vi.fn(),
+        deleteWorkspace: vi.fn(),
       };
 
       const service = new WorkspaceService(
@@ -163,6 +165,7 @@ describe('WorkspaceService', () => {
         createWorkspace: vi.fn(async () => ({ id: fakeCreatedRecord.id })),
         createMembership: vi.fn(async () => undefined),
         update: vi.fn(),
+        deleteWorkspace: vi.fn(),
       };
 
       const service = new WorkspaceService(
