@@ -473,7 +473,9 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         readMembership: (...args) => adapter.readMembership(...args),
         readWorkspace: vi
           .fn()
-          .mockImplementationOnce((...args) => adapter.readWorkspace(...args))
+          .mockImplementationOnce((client, id) =>
+            adapter.readWorkspace(client, id),
+          )
           .mockImplementationOnce(async (client, id) => {
             const row = await adapter.readWorkspace(client, id);
             return row ? { ...row, version: row.version + 1 } : undefined;
