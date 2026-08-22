@@ -39,6 +39,19 @@ revoke create on schema public from savia_elevated;   -- immediately (RULING 13;
 revoke execute on function public.workspace_actor_active_role(uuid) from public;
 grant execute on function public.workspace_actor_active_role(uuid) to savia_application;
 
+-- Read visibility for the WRITE path, not the roster. Slices 3 and 4 issue a confirming
+-- re-read after a zero-row UPDATE/DELETE to separate a policy refusal from a concurrent
+-- deletion; without visibility of the target member's row that re-read always answers
+-- "absent" and every refusal collapses into a 404.
+-- RLS policies for one command are OR'd, so this composes with
+-- application_reads_own_membership (202607150002:39-44) rather than replacing it.
+-- It calls the security-definer helper instead of subquerying workspace_memberships,
+-- because a policy that references its own table raises 42P17 `infinite recursion
+-- detected in policy for relation` at query time (executed).
+-- No `kind in ('family','shared')` guard here, deliberately: a personal workspace's sole
+-- member is the caller, already visible through application_reads_own_membership, so the
+-- guard would be unreachable. This project does not ship security controls no test can
+-- exercise. The write policies below DO carry the guard because there it is reachable.
 create policy application_reads_administered_membership
   on public.workspace_memberships for select to savia_application
   using (

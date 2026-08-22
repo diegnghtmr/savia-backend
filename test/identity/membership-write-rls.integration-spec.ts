@@ -336,6 +336,166 @@ describe('Membership write RLS, version column, and column-scoped grants (202607
     });
   });
 
+  describe('application_reads_administered_membership boundaries', () => {
+    it('an editor and a viewer of a shared workspace each read back ONLY their own membership row, while an owner of the same workspace reads back every row (positive control)', async () => {
+      const editorRes = await asSubject(editorD, async (client) => {
+        return client.query(
+          'select id, profile_id from public.workspace_memberships where workspace_id = $1',
+          [ws1Id],
+        );
+      });
+      expect(editorRes.rows).toHaveLength(1);
+      expect(editorRes.rows[0].id).toBe(memEditorDId);
+      expect(editorRes.rows[0].profile_id).toBe(editorD);
+
+      const viewerRes = await asSubject(viewerE, async (client) => {
+        return client.query(
+          'select id, profile_id from public.workspace_memberships where workspace_id = $1',
+          [ws1Id],
+        );
+      });
+      expect(viewerRes.rows).toHaveLength(1);
+      expect(viewerRes.rows[0].id).toBe(memViewerEId);
+      expect(viewerRes.rows[0].profile_id).toBe(viewerE);
+
+      const ownerRes = await asSubject(ownerA, async (client) => {
+        return client.query(
+          'select id, profile_id from public.workspace_memberships where workspace_id = $1',
+          [ws1Id],
+        );
+      });
+      expect(ownerRes.rows).toHaveLength(8);
+      expect(ownerRes.rows.map((r) => r.id)).toEqual(
+        expect.arrayContaining([
+          memOwnerAId,
+          memOwnerBId,
+          memAdminCId,
+          memEditorDId,
+          memViewerEId,
+          memTargetFId,
+          memTargetGId,
+          memSuspendedSId,
+        ]),
+      );
+    });
+
+    it('an owner and an administrator of workspace A read back zero rows from workspace B, while reading back every row of workspace A (positive control)', async () => {
+      const ownerWsBRes = await asSubject(ownerB, async (client) => {
+        return client.query(
+          'select id from public.workspace_memberships where workspace_id = $1',
+          [ws2Id],
+        );
+      });
+      expect(ownerWsBRes.rows).toHaveLength(0);
+
+      const ownerWsARes = await asSubject(ownerB, async (client) => {
+        return client.query(
+          'select id from public.workspace_memberships where workspace_id = $1',
+          [ws1Id],
+        );
+      });
+      expect(ownerWsARes.rows).toHaveLength(8);
+
+      const adminWsBRes = await asSubject(adminC, async (client) => {
+        return client.query(
+          'select id from public.workspace_memberships where workspace_id = $1',
+          [ws2Id],
+        );
+      });
+      expect(adminWsBRes.rows).toHaveLength(0);
+
+      const adminWsARes = await asSubject(adminC, async (client) => {
+        return client.query(
+          'select id from public.workspace_memberships where workspace_id = $1',
+          [ws1Id],
+        );
+      });
+      expect(adminWsARes.rows).toHaveLength(8);
+    });
+
+    it('a SUSPENDED owner and a SUSPENDED administrator each read back zero rows, while the identical query as their active counterpart reads back every row (positive control)', async () => {
+      const memSuspendedOwnerId = '00000000-0000-0000-0000-000000000991';
+      const memSuspendedAdminId = '00000000-0000-0000-0000-000000000992';
+
+      await admin.query(
+        `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'owner', 'suspended'),
+                ($4, $5, $6, 'administrator', 'suspended')`,
+        [
+          memSuspendedOwnerId,
+          ws1Id,
+          disposableSubject1,
+          memSuspendedAdminId,
+          ws1Id,
+          disposableSubject2,
+        ],
+      );
+
+      try {
+        const suspendedOwnerRes = await asSubject(
+          disposableSubject1,
+          async (client) => {
+            return client.query(
+              'select id from public.workspace_memberships where workspace_id = $1 and profile_id <> $2',
+              [ws1Id, disposableSubject1],
+            );
+          },
+        );
+        expect(suspendedOwnerRes.rows).toHaveLength(0);
+
+        const activeOwnerRes = await asSubject(ownerA, async (client) => {
+          return client.query(
+            'select id from public.workspace_memberships where workspace_id = $1 and profile_id <> $2',
+            [ws1Id, ownerA],
+          );
+        });
+        expect(activeOwnerRes.rows).toHaveLength(9);
+
+        const suspendedAdminRes = await asSubject(
+          disposableSubject2,
+          async (client) => {
+            return client.query(
+              'select id from public.workspace_memberships where workspace_id = $1 and profile_id <> $2',
+              [ws1Id, disposableSubject2],
+            );
+          },
+        );
+        expect(suspendedAdminRes.rows).toHaveLength(0);
+
+        const activeAdminRes = await asSubject(adminC, async (client) => {
+          return client.query(
+            'select id from public.workspace_memberships where workspace_id = $1 and profile_id <> $2',
+            [ws1Id, adminC],
+          );
+        });
+        expect(activeAdminRes.rows).toHaveLength(9);
+      } finally {
+        await admin.query(
+          'delete from public.workspace_memberships where id in ($1, $2)',
+          [memSuspendedOwnerId, memSuspendedAdminId],
+        );
+      }
+    });
+
+    it('a subject with no membership anywhere reads back zero rows, while an active owner reads back every row (positive control)', async () => {
+      const outsiderRes = await asSubject(outsiderZ, async (client) => {
+        return client.query(
+          'select id from public.workspace_memberships where workspace_id = $1',
+          [ws1Id],
+        );
+      });
+      expect(outsiderRes.rows).toHaveLength(0);
+
+      const ownerRes = await asSubject(ownerA, async (client) => {
+        return client.query(
+          'select id from public.workspace_memberships where workspace_id = $1',
+          [ws1Id],
+        );
+      });
+      expect(ownerRes.rows).toHaveLength(8);
+    });
+  });
+
   describe('application_updates_administered_membership', () => {
     it("owner updates a non-owner member's role on a shared workspace -> UPDATE 1 and the row reflects the new role", async () => {
       const updateRes = await asSubject(ownerA, async (client) => {
