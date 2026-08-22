@@ -199,6 +199,7 @@ describe('Membership write RLS, version column, and column-scoped grants (202607
   });
 
   describe('version column', () => {
+    // NOT covered here: the backfill at 202607150011:3 and the `set constraints all immediate` at :4. The disposable database applies migrations before any membership row exists, so no row is ever backfilled in this harness. Both lines exist for a non-empty production table and are verified by review, not by this suite.
     it('version defaults to 1, is not null, and a direct attempt to set version = 0 is refused by workspace_memberships_version_gte_1 with 23514', async () => {
       const versionRes = await admin.query(
         'select version from public.workspace_memberships where id = $1',
@@ -654,6 +655,48 @@ describe('Membership write RLS, version column, and column-scoped grants (202607
         [memOwnerBId],
       );
     });
+
+    it('an administrator promoting THEMSELVES to owner returns UPDATE 0 and their row still reads administrator, while an owner promoting that same administrator succeeds (positive control)', async () => {
+      let adminRowCount = 0;
+      try {
+        const adminRes = await asSubject(adminC, async (client) => {
+          return client.query(
+            `update public.workspace_memberships set role = 'owner' where id = $1`,
+            [memAdminCId],
+          );
+        });
+        adminRowCount = adminRes.rowCount ?? 0;
+      } catch (err: unknown) {
+        if ((err as { code?: string })?.code !== '42501') throw err;
+      }
+      expect(adminRowCount).toBe(0);
+
+      const checkAdmin = await admin.query(
+        'select role from public.workspace_memberships where id = $1',
+        [memAdminCId],
+      );
+      expect(checkAdmin.rows[0].role).toBe('administrator');
+
+      const ownerRes = await asSubject(ownerA, async (client) => {
+        return client.query(
+          `update public.workspace_memberships set role = 'owner' where id = $1`,
+          [memAdminCId],
+        );
+      });
+      expect(ownerRes.rowCount).toBe(1);
+
+      const checkOwner = await admin.query(
+        'select role from public.workspace_memberships where id = $1',
+        [memAdminCId],
+      );
+      expect(checkOwner.rows[0].role).toBe('owner');
+
+      // Restore adminC afterwards so later tests see a clean fixture
+      await admin.query(
+        `update public.workspace_memberships set role = 'administrator', version = 1 where id = $1`,
+        [memAdminCId],
+      );
+    });
   });
 
   describe('application_deletes_administered_membership', () => {
@@ -806,6 +849,329 @@ describe('Membership write RLS, version column, and column-scoped grants (202607
          values ($1, $2, $3, 'owner', 'active')`,
         [memOwnerBId, ws1Id, ownerB],
       );
+    });
+  });
+
+  describe('write boundaries for suspended, cross-workspace and outsider actors', () => {
+    it('a SUSPENDED owner and a SUSPENDED administrator each return UPDATE 0 and DELETE 0 and the target row is unchanged, while the identical statements as their active counterpart succeed (positive control)', async () => {
+      const memSuspendedOwnerId = '00000000-0000-0000-0000-000000000991';
+      const memSuspendedAdminId = '00000000-0000-0000-0000-000000000992';
+      const memTargetRowId = '00000000-0000-0000-0000-000000000993';
+
+      await admin.query(
+        `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'owner', 'suspended'),
+                ($4, $5, $6, 'administrator', 'suspended'),
+                ($7, $8, $9, 'viewer', 'active')`,
+        [
+          memSuspendedOwnerId,
+          ws1Id,
+          disposableSubject1,
+          memSuspendedAdminId,
+          ws1Id,
+          disposableSubject2,
+          memTargetRowId,
+          ws1Id,
+          disposableSubject3,
+        ],
+      );
+
+      try {
+        // Suspended owner: UPDATE
+        let suspendedOwnerUpdateCount = 0;
+        try {
+          const res = await asSubject(disposableSubject1, async (client) => {
+            return client.query(
+              `update public.workspace_memberships set role = 'editor', version = version + 1 where id = $1`,
+              [memTargetRowId],
+            );
+          });
+          suspendedOwnerUpdateCount = res.rowCount ?? 0;
+        } catch (err: unknown) {
+          if ((err as { code?: string })?.code !== '42501') throw err;
+        }
+        expect(suspendedOwnerUpdateCount).toBe(0);
+
+        const checkAfterSuspendedOwnerUpdate = await admin.query(
+          'select role, version from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+        expect(checkAfterSuspendedOwnerUpdate.rows[0].role).toBe('viewer');
+        expect(checkAfterSuspendedOwnerUpdate.rows[0].version).toBe(1);
+
+        // Suspended owner: DELETE
+        const suspendedOwnerDeleteRes = await asSubject(
+          disposableSubject1,
+          async (client) => {
+            return client.query(
+              'delete from public.workspace_memberships where id = $1',
+              [memTargetRowId],
+            );
+          },
+        );
+        expect(suspendedOwnerDeleteRes.rowCount).toBe(0);
+
+        const checkAfterSuspendedOwnerDelete = await admin.query(
+          'select 1 from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+        expect(checkAfterSuspendedOwnerDelete.rows).toHaveLength(1);
+
+        // Suspended administrator: UPDATE
+        let suspendedAdminUpdateCount = 0;
+        try {
+          const res = await asSubject(disposableSubject2, async (client) => {
+            return client.query(
+              `update public.workspace_memberships set role = 'editor', version = version + 1 where id = $1`,
+              [memTargetRowId],
+            );
+          });
+          suspendedAdminUpdateCount = res.rowCount ?? 0;
+        } catch (err: unknown) {
+          if ((err as { code?: string })?.code !== '42501') throw err;
+        }
+        expect(suspendedAdminUpdateCount).toBe(0);
+
+        const checkAfterSuspendedAdminUpdate = await admin.query(
+          'select role, version from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+        expect(checkAfterSuspendedAdminUpdate.rows[0].role).toBe('viewer');
+        expect(checkAfterSuspendedAdminUpdate.rows[0].version).toBe(1);
+
+        // Suspended administrator: DELETE
+        const suspendedAdminDeleteRes = await asSubject(
+          disposableSubject2,
+          async (client) => {
+            return client.query(
+              'delete from public.workspace_memberships where id = $1',
+              [memTargetRowId],
+            );
+          },
+        );
+        expect(suspendedAdminDeleteRes.rowCount).toBe(0);
+
+        const checkAfterSuspendedAdminDelete = await admin.query(
+          'select 1 from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+        expect(checkAfterSuspendedAdminDelete.rows).toHaveLength(1);
+
+        // Positive control: active owner (ownerA) UPDATE
+        const activeOwnerUpdateRes = await asSubject(ownerA, async (client) => {
+          return client.query(
+            `update public.workspace_memberships set role = 'editor', version = version + 1 where id = $1`,
+            [memTargetRowId],
+          );
+        });
+        expect(activeOwnerUpdateRes.rowCount).toBe(1);
+
+        const checkAfterActiveOwnerUpdate = await admin.query(
+          'select role, version from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+        expect(checkAfterActiveOwnerUpdate.rows[0].role).toBe('editor');
+        expect(checkAfterActiveOwnerUpdate.rows[0].version).toBe(2);
+
+        // Positive control: active owner (ownerA) DELETE
+        const activeOwnerDeleteRes = await asSubject(ownerA, async (client) => {
+          return client.query(
+            'delete from public.workspace_memberships where id = $1',
+            [memTargetRowId],
+          );
+        });
+        expect(activeOwnerDeleteRes.rowCount).toBe(1);
+
+        const checkAfterActiveOwnerDelete = await admin.query(
+          'select 1 from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+        expect(checkAfterActiveOwnerDelete.rows).toHaveLength(0);
+      } finally {
+        await admin.query(
+          'delete from public.workspace_memberships where id in ($1, $2, $3)',
+          [memSuspendedOwnerId, memSuspendedAdminId, memTargetRowId],
+        );
+      }
+    });
+
+    it('an active owner of workspace A returns UPDATE 0 and DELETE 0 against a membership row of workspace B, while the identical statements against workspace A succeed (positive control)', async () => {
+      const memWs2TargetId = '00000000-0000-0000-0000-000000000994';
+      const memWs1TargetId = '00000000-0000-0000-0000-000000000995';
+
+      await admin.query(
+        `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'viewer', 'active'),
+                ($4, $5, $6, 'viewer', 'active')`,
+        [
+          memWs2TargetId,
+          ws2Id,
+          disposableSubject1,
+          memWs1TargetId,
+          ws1Id,
+          disposableSubject2,
+        ],
+      );
+
+      try {
+        // Negative: ownerB (owner of ws1 only) UPDATE against ws2 target
+        let ownerWsBUpdateCount = 0;
+        try {
+          const res = await asSubject(ownerB, async (client) => {
+            return client.query(
+              `update public.workspace_memberships set role = 'editor', version = version + 1 where id = $1`,
+              [memWs2TargetId],
+            );
+          });
+          ownerWsBUpdateCount = res.rowCount ?? 0;
+        } catch (err: unknown) {
+          if ((err as { code?: string })?.code !== '42501') throw err;
+        }
+        expect(ownerWsBUpdateCount).toBe(0);
+
+        const checkWs2Update = await admin.query(
+          'select role, version from public.workspace_memberships where id = $1',
+          [memWs2TargetId],
+        );
+        expect(checkWs2Update.rows[0].role).toBe('viewer');
+        expect(checkWs2Update.rows[0].version).toBe(1);
+
+        // Negative: ownerB DELETE against ws2 target
+        const ownerWsBDeleteRes = await asSubject(ownerB, async (client) => {
+          return client.query(
+            'delete from public.workspace_memberships where id = $1',
+            [memWs2TargetId],
+          );
+        });
+        expect(ownerWsBDeleteRes.rowCount).toBe(0);
+
+        const checkWs2Delete = await admin.query(
+          'select 1 from public.workspace_memberships where id = $1',
+          [memWs2TargetId],
+        );
+        expect(checkWs2Delete.rows).toHaveLength(1);
+
+        // Positive control: ownerB UPDATE against ws1 target
+        const ownerWsAUpdateRes = await asSubject(ownerB, async (client) => {
+          return client.query(
+            `update public.workspace_memberships set role = 'editor', version = version + 1 where id = $1`,
+            [memWs1TargetId],
+          );
+        });
+        expect(ownerWsAUpdateRes.rowCount).toBe(1);
+
+        const checkWs1Update = await admin.query(
+          'select role, version from public.workspace_memberships where id = $1',
+          [memWs1TargetId],
+        );
+        expect(checkWs1Update.rows[0].role).toBe('editor');
+        expect(checkWs1Update.rows[0].version).toBe(2);
+
+        // Positive control: ownerB DELETE against ws1 target
+        const ownerWsADeleteRes = await asSubject(ownerB, async (client) => {
+          return client.query(
+            'delete from public.workspace_memberships where id = $1',
+            [memWs1TargetId],
+          );
+        });
+        expect(ownerWsADeleteRes.rowCount).toBe(1);
+
+        const checkWs1Delete = await admin.query(
+          'select 1 from public.workspace_memberships where id = $1',
+          [memWs1TargetId],
+        );
+        expect(checkWs1Delete.rows).toHaveLength(0);
+      } finally {
+        await admin.query(
+          'delete from public.workspace_memberships where id in ($1, $2)',
+          [memWs2TargetId, memWs1TargetId],
+        );
+      }
+    });
+
+    it('a subject with no membership anywhere returns UPDATE 0 and DELETE 0, while an active owner issuing the identical statements succeeds (positive control)', async () => {
+      const memTargetRowId = '00000000-0000-0000-0000-000000000996';
+
+      await admin.query(
+        `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'viewer', 'active')`,
+        [memTargetRowId, ws1Id, disposableSubject1],
+      );
+
+      try {
+        // Negative: outsiderZ UPDATE
+        let outsiderUpdateCount = 0;
+        try {
+          const res = await asSubject(outsiderZ, async (client) => {
+            return client.query(
+              `update public.workspace_memberships set role = 'editor', version = version + 1 where id = $1`,
+              [memTargetRowId],
+            );
+          });
+          outsiderUpdateCount = res.rowCount ?? 0;
+        } catch (err: unknown) {
+          if ((err as { code?: string })?.code !== '42501') throw err;
+        }
+        expect(outsiderUpdateCount).toBe(0);
+
+        const checkOutsiderUpdate = await admin.query(
+          'select role, version from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+        expect(checkOutsiderUpdate.rows[0].role).toBe('viewer');
+        expect(checkOutsiderUpdate.rows[0].version).toBe(1);
+
+        // Negative: outsiderZ DELETE
+        const outsiderDeleteRes = await asSubject(outsiderZ, async (client) => {
+          return client.query(
+            'delete from public.workspace_memberships where id = $1',
+            [memTargetRowId],
+          );
+        });
+        expect(outsiderDeleteRes.rowCount).toBe(0);
+
+        const checkOutsiderDelete = await admin.query(
+          'select 1 from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+        expect(checkOutsiderDelete.rows).toHaveLength(1);
+
+        // Positive control: ownerA UPDATE
+        const ownerUpdateRes = await asSubject(ownerA, async (client) => {
+          return client.query(
+            `update public.workspace_memberships set role = 'editor', version = version + 1 where id = $1`,
+            [memTargetRowId],
+          );
+        });
+        expect(ownerUpdateRes.rowCount).toBe(1);
+
+        const checkOwnerUpdate = await admin.query(
+          'select role, version from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+        expect(checkOwnerUpdate.rows[0].role).toBe('editor');
+        expect(checkOwnerUpdate.rows[0].version).toBe(2);
+
+        // Positive control: ownerA DELETE
+        const ownerDeleteRes = await asSubject(ownerA, async (client) => {
+          return client.query(
+            'delete from public.workspace_memberships where id = $1',
+            [memTargetRowId],
+          );
+        });
+        expect(ownerDeleteRes.rowCount).toBe(1);
+
+        const checkOwnerDelete = await admin.query(
+          'select 1 from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+        expect(checkOwnerDelete.rows).toHaveLength(0);
+      } finally {
+        await admin.query(
+          'delete from public.workspace_memberships where id = $1',
+          [memTargetRowId],
+        );
+      }
     });
   });
 
@@ -995,6 +1361,28 @@ describe('Membership write RLS, version column, and column-scoped grants (202607
       } finally {
         client.release();
       }
+    });
+
+    it('the helper is executable by savia_application but NOT by public, and savia_elevated retains no create on schema public (positive control on both)', async () => {
+      const publicExecRes = await admin.query(
+        `select has_function_privilege('public', 'public.workspace_actor_active_role(uuid)', 'execute') as priv`,
+      );
+      expect(publicExecRes.rows[0].priv).toBe(false);
+
+      const appExecRes = await admin.query(
+        `select has_function_privilege('savia_application', 'public.workspace_actor_active_role(uuid)', 'execute') as priv`,
+      );
+      expect(appExecRes.rows[0].priv).toBe(true);
+
+      const elevatedCreateRes = await admin.query(
+        `select has_schema_privilege('savia_elevated', 'public', 'create') as priv`,
+      );
+      expect(elevatedCreateRes.rows[0].priv).toBe(false);
+
+      const elevatedUsageRes = await admin.query(
+        `select has_schema_privilege('savia_elevated', 'public', 'usage') as priv`,
+      );
+      expect(elevatedUsageRes.rows[0].priv).toBe(true);
     });
   });
 });
