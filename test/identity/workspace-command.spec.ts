@@ -85,6 +85,38 @@ describe('createWorkspaceUpdateCommand', () => {
         );
       },
     );
+
+    // Reject NUL
+    expectViolation(
+      () => createWorkspaceUpdateCommand({ name: 'Acme\0Corp' }),
+      (violations) => {
+        expect(violations).toContainEqual(
+          expect.objectContaining({
+            field: 'name',
+            code: 'invalid-characters',
+          }),
+        );
+      },
+    );
+
+    // Unicode code points vs UTF-16 code units
+    const exact120CodePoints = '\u{1F600}' + 'a'.repeat(119);
+    expect(
+      createWorkspaceUpdateCommand({ name: exact120CodePoints }).name,
+    ).toBe(exact120CodePoints);
+
+    const exact121CodePoints = '\u{1F600}' + 'a'.repeat(120);
+    expectViolation(
+      () => createWorkspaceUpdateCommand({ name: exact121CodePoints }),
+      (violations) => {
+        expect(violations).toContainEqual(
+          expect.objectContaining({
+            field: 'name',
+            code: 'max-length',
+          }),
+        );
+      },
+    );
   });
 
   it('rejects invalid, malformed, or inactive baseCurrency', () => {

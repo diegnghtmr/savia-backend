@@ -84,6 +84,40 @@ describe('createProfileUpdateCommand', () => {
         );
       },
     );
+
+    // Reject NUL
+    expectViolation(
+      () => createProfileUpdateCommand({ displayName: 'Acme\0Corp' }),
+      (violations) => {
+        expect(violations).toContainEqual(
+          expect.objectContaining({
+            field: 'displayName',
+            code: 'invalid-characters',
+          }),
+        );
+      },
+    );
+
+    // Unicode code points vs UTF-16 code units
+    const exact120CodePoints = '\u{1F600}' + 'a'.repeat(119);
+    expect(
+      createProfileUpdateCommand({ displayName: exact120CodePoints })
+        .displayName,
+    ).toBe(exact120CodePoints);
+
+    const exact121CodePoints = '\u{1F600}' + 'a'.repeat(120);
+    expectViolation(
+      () =>
+        createProfileUpdateCommand({ displayName: exact121CodePoints }),
+      (violations) => {
+        expect(violations).toContainEqual(
+          expect.objectContaining({
+            field: 'displayName',
+            code: 'max-length',
+          }),
+        );
+      },
+    );
   });
 
   it('accepts valid currency in lowercase and normalizes it to uppercase', () => {

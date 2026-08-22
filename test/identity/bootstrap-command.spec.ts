@@ -84,6 +84,54 @@ describe('createBootstrapCommand', () => {
         field,
       );
   });
+
+  it('rejects strings containing null characters (U+0000) with invalid-characters violation', () => {
+    for (const field of ['displayName', 'workspaceName']) {
+      expectViolation(
+        () =>
+          createBootstrapCommand(subject, {
+            ...body,
+            [field]: 'Acme\0Corp',
+          }),
+        field,
+      );
+    }
+  });
+
+  it('enforces name length by unicode code points rather than UTF-16 code units', () => {
+    // U+1F600 (surrogate pair, 2 UTF-16 code units, 1 Unicode code point) + 119 ASCII chars = 120 code points (121 UTF-16 units)
+    const exact120CodePoints = '\u{1F600}' + 'a'.repeat(119);
+    expect([...exact120CodePoints].length).toBe(120);
+    expect(exact120CodePoints.length).toBe(121);
+
+    const command = createBootstrapCommand(subject, {
+      ...body,
+      displayName: exact120CodePoints,
+      workspaceName: exact120CodePoints,
+    });
+    expect(command.displayName).toBe(exact120CodePoints);
+    expect(command.workspaceName).toBe(exact120CodePoints);
+
+    // 121 code points must be rejected
+    const exact121CodePoints = '\u{1F600}' + 'a'.repeat(120);
+    expect([...exact121CodePoints].length).toBe(121);
+    expectViolation(
+      () =>
+        createBootstrapCommand(subject, {
+          ...body,
+          displayName: exact121CodePoints,
+        }),
+      'displayName',
+    );
+    expectViolation(
+      () =>
+        createBootstrapCommand(subject, {
+          ...body,
+          workspaceName: exact121CodePoints,
+        }),
+      'workspaceName',
+    );
+  });
 });
 
 describe('isExactBootstrapReplay', () => {
