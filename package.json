@@ -25,6 +25,7 @@
     "test:integration:workspace-write-rls": "bash scripts/run-disposable-database-suite.sh test/identity/workspace-write-rls.integration-spec.ts",
     "test:integration:membership-write-rls": "bash scripts/run-disposable-database-suite.sh test/identity/membership-write-rls.integration-spec.ts",
     "test:integration:last-owner-guard": "bash scripts/run-disposable-database-suite.sh test/identity/last-owner-guard.integration-spec.ts",
+    "test:integration:workspace-members": "bash scripts/run-disposable-database-suite.sh test/identity/workspace-members.integration-spec.ts",
     "test:integration:command-idempotency": "bash scripts/run-disposable-database-suite.sh test/identity/command-idempotency.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",

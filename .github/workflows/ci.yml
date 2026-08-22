@@ -107,6 +107,9 @@ jobs:
       - name: last owner guard integration
         shell: bash
         run: pnpm test:integration:last-owner-guard
+      - name: workspace members integration
+        shell: bash
+        run: pnpm test:integration:workspace-members
       - name: command idempotency integration
         shell: bash
         run: pnpm test:integration:command-idempotency
