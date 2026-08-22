@@ -101,7 +101,23 @@ export function stringValue(
   field: string,
   violations: FieldViolation[],
 ): string {
-  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value !== 'string') {
+    add(violations, field, 'required', 'must be a non-empty string');
+    return '';
+  }
+  // PostgreSQL text columns cannot represent U+0000 and raise SQLSTATE 22021
+  // (invalid byte sequence for encoding "UTF8": 0x00), which a length check does not catch.
+  if (value.includes('\0')) {
+    add(
+      violations,
+      field,
+      'invalid-characters',
+      'must not contain null characters',
+    );
+    return '';
+  }
+  const trimmed = value.trim();
+  if (trimmed) return trimmed;
   add(violations, field, 'required', 'must be a non-empty string');
   return '';
 }
@@ -117,7 +133,7 @@ export function nameValue(
   violations: FieldViolation[],
 ): string {
   const name = stringValue(value, field, violations);
-  if (name.length > 120)
+  if ([...name].length > 120)
     add(violations, field, 'max-length', 'must be at most 120 characters');
   return name;
 }

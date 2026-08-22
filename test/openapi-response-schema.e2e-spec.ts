@@ -20,6 +20,10 @@ import {
   PROFILE_PORT,
   type ProfilePort,
 } from '../src/identity/profile.port.js';
+import {
+  WORKSPACE_PORT,
+  type WorkspacePort,
+} from '../src/identity/workspace.port.js';
 import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 
@@ -167,6 +171,18 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
         kind: 'version-conflict',
       }),
     };
+    const workspaceMock: WorkspacePort = {
+      read: vi.fn<WorkspacePort['read']>().mockResolvedValue({
+        kind: 'not-found',
+      }),
+      list: vi.fn<WorkspacePort['list']>().mockResolvedValue({
+        items: [],
+        pageInfo: { hasNextPage: false, nextCursor: null },
+      }),
+      update: vi.fn<WorkspacePort['update']>().mockResolvedValue({
+        kind: 'version-conflict',
+      }),
+    };
 
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -182,6 +198,8 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
       .useValue(bootstrapMock)
       .overrideProvider(PROFILE_PORT)
       .useValue(profileMock)
+      .overrideProvider(WORKSPACE_PORT)
+      .useValue(workspaceMock)
       .compile();
 
     const fastifyApp = moduleRef.createNestApplication<NestFastifyApplication>(
@@ -306,6 +324,61 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
     const response = await app.inject({
       method: 'PATCH',
       url: '/v1/me',
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(422);
+    const payload = JSON.parse(response.payload);
+
+    const isValid = validateUnprocessable(payload);
+    expect(validateUnprocessable.errors).toBeNull();
+    expect(isValid).toBe(true);
+  });
+
+  it('validates live PATCH /v1/workspaces/{workspaceId} 412 response body against its declared ProblemDetails schema', async () => {
+    const document = loadBundledContract();
+    const validatePreconditionFailed = compileResponseValidator(
+      document,
+      '/v1/workspaces/{workspaceId}',
+      'PATCH',
+      '412',
+      'application/problem+json',
+    );
+
+    app = await createApplication();
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/v1/workspaces/${TEST_AGGREGATE.workspaceId}`,
+      headers: {
+        authorization: `Bearer ${TEST_TOKEN}`,
+        'if-match': '"1"',
+      },
+      payload: { name: 'Acme Renovated' },
+    });
+
+    expect(response.statusCode).toBe(412);
+    const payload = JSON.parse(response.payload);
+
+    const isValid = validatePreconditionFailed(payload);
+    expect(validatePreconditionFailed.errors).toBeNull();
+    expect(isValid).toBe(true);
+  });
+
+  it('validates live PATCH /v1/workspaces/{workspaceId} 422 response body against its declared ProblemDetails schema', async () => {
+    const document = loadBundledContract();
+    const validateUnprocessable = compileResponseValidator(
+      document,
+      '/v1/workspaces/{workspaceId}',
+      'PATCH',
+      '422',
+      'application/problem+json',
+    );
+
+    app = await createApplication();
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/v1/workspaces/${TEST_AGGREGATE.workspaceId}`,
       headers: { authorization: `Bearer ${TEST_TOKEN}` },
       payload: {},
     });

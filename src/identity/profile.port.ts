@@ -45,6 +45,6 @@ export interface ProfilePort {
   update(
     subject: string,
     command: ProfileUpdateCommand,
-    expectedVersion?: number,
+    expectedVersion?: number | readonly number[],
   ): Promise<ProfileUpdateOutcome>;
 }

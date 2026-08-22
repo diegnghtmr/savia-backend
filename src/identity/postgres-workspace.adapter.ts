@@ -1,4 +1,5 @@
 import type { TransactionClient } from './pg-transaction.js';
+import type { WorkspaceUpdateCommand } from './workspace-command.js';
 import type {
   Workspace,
   WorkspaceCursor,
@@ -72,6 +73,48 @@ export class PostgresWorkspaceAdapter implements WorkspaceStore {
           : String(row.createdAt),
       version: row.version,
     }));
+  }
+
+  public async update(
+    client: TransactionClient,
+    workspaceId: string,
+    command: WorkspaceUpdateCommand,
+    expectedVersion?: number | readonly number[],
+  ): Promise<WorkspaceRecord | undefined> {
+    const versions =
+      typeof expectedVersion === 'number'
+        ? [expectedVersion]
+        : (expectedVersion ?? null);
+    const values = [
+      workspaceId,
+      command.name ?? null,
+      command.baseCurrency ?? null,
+      versions,
+    ];
+    const result = await client.query<WorkspaceRow>(
+      `update public.workspaces
+   set name = coalesce($2, name),
+       base_currency = coalesce($3, base_currency),
+       version = version + 1
+ where id = $1
+   and ($4::integer[] is null or version = any($4::integer[]))
+returning id::text, name, kind, base_currency as "baseCurrency",
+          created_at as "createdAt", version`,
+      values,
+    );
+    const row = result.rows[0];
+    if (row === undefined) return undefined;
+    return {
+      id: row.id,
+      name: row.name,
+      kind: row.kind,
+      baseCurrency: row.baseCurrency,
+      createdAt:
+        row.createdAt instanceof Date
+          ? row.createdAt.toISOString()
+          : String(row.createdAt),
+      version: row.version,
+    };
   }
 }
 

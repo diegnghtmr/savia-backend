@@ -84,6 +84,54 @@ describe('createBootstrapCommand', () => {
         field,
       );
   });
+
+  it('rejects strings containing null characters (U+0000) with invalid-characters violation', () => {
+    for (const field of ['displayName', 'workspaceName']) {
+      expectViolation(
+        () =>
+          createBootstrapCommand(subject, {
+            ...body,
+            [field]: 'Acme\0Corp',
+          }),
+        field,
+      );
+    }
+  });
+
+  it('enforces name length by unicode code points rather than UTF-16 code units', () => {
+    // U+1F600 (surrogate pair, 2 UTF-16 code units, 1 Unicode code point) + 119 ASCII chars = 120 code points (121 UTF-16 units)
+    const exact120CodePoints = '\u{1F600}' + 'a'.repeat(119);
+    expect([...exact120CodePoints].length).toBe(120);
+    expect(exact120CodePoints.length).toBe(121);
+
+    const command = createBootstrapCommand(subject, {
+      ...body,
+      displayName: exact120CodePoints,
+      workspaceName: exact120CodePoints,
+    });
+    expect(command.displayName).toBe(exact120CodePoints);
+    expect(command.workspaceName).toBe(exact120CodePoints);
+
+    // 121 code points must be rejected
+    const exact121CodePoints = '\u{1F600}' + 'a'.repeat(120);
+    expect([...exact121CodePoints].length).toBe(121);
+    expectViolation(
+      () =>
+        createBootstrapCommand(subject, {
+          ...body,
+          displayName: exact121CodePoints,
+        }),
+      'displayName',
+    );
+    expectViolation(
+      () =>
+        createBootstrapCommand(subject, {
+          ...body,
+          workspaceName: exact121CodePoints,
+        }),
+      'workspaceName',
+    );
+  });
 });
 
 describe('isExactBootstrapReplay', () => {
@@ -101,6 +149,19 @@ describe('isExactBootstrapReplay', () => {
       expect(
         isExactBootstrapReplay(canonical, { ...canonical, [field]: value }),
       ).toBe(false);
+  });
+
+  // currencyValue accepts any code in Intl.supportedValuesOf('currency'), and both
+  // profiles.default_currency and workspaces.base_currency are
+  // `char(3) check (~ '^[A-Z]{3}$')`. Measured on PostgreSQL 18.4, a code that slips
+  // through reaches SQL as 23514, or as 22001 if it is longer than three characters,
+  // and both escape the catch-all filter as a 500 from a request body. This asserts
+  // the validator is genuinely NARROWER than the column rather than merely believed
+  // to be, and fails loudly if ICU data ever widens the accepted set.
+  it('accepts only currency codes the char(3) column check can store', () => {
+    const accepted = Intl.supportedValuesOf('currency');
+    expect(accepted.length).toBeGreaterThan(0);
+    expect(accepted.filter((code) => !/^[A-Z]{3}$/.test(code))).toEqual([]);
   });
 });
 

@@ -1,8 +1,10 @@
 import {
+  Body,
   Controller,
   Get,
   Inject,
   Param,
+  Patch,
   Query,
   Req,
   Res,
@@ -11,12 +13,19 @@ import {
 import type { FastifyReply } from 'fastify';
 
 import type { AuthenticatedRequest } from './authenticated-request.js';
+import { parseIfMatch } from './if-match.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { PROBLEM_TYPES, sendProblem } from './problem-details.js';
+import {
+  createWorkspaceUpdateCommand,
+  WorkspaceCommandValidationError,
+  type WorkspaceUpdateCommand,
+} from './workspace-command.js';
 import {
   decodeCursor,
   WORKSPACE_ACCESS_KINDS,
   WORKSPACE_PORT,
+  WORKSPACE_UPDATE_OUTCOMES,
   type WorkspaceCursor,
   type WorkspacePort,
 } from './workspace.port.js';
@@ -122,5 +131,114 @@ export class WorkspaceController {
       .header('etag', `"${access.workspace.version}"`)
       .status(200)
       .send(access.workspace);
+  }
+
+  @Patch(':workspaceId')
+  public async updateWorkspace(
+    @Param('workspaceId') workspaceId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Body() body: unknown,
+  ): Promise<void> {
+    if (!UUID_PATTERN.test(workspaceId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid workspace identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    const ifMatch = parseIfMatch(request.headers['if-match']);
+    if (ifMatch.kind === 'malformed') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+      return;
+    }
+
+    let command: WorkspaceUpdateCommand;
+    try {
+      command = createWorkspaceUpdateCommand(body);
+    } catch (error) {
+      if (error instanceof WorkspaceCommandValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Unprocessable entity',
+          status: 422,
+          errors: error.violations,
+        });
+        return;
+      }
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Bad request',
+        status: 400,
+      });
+      return;
+    }
+
+    // RFC 9110 section 13.1.1 defines If-Match: * as evaluating to false if the
+    // representation does not exist, which would technically warrant 412.
+    // However, this API cannot distinguish an absent workspace from one where
+    // the caller is not a member, answering 404 for both in getWorkspace.
+    // Answering 404 here is a deliberate deviation from RFC 9110 to maintain
+    // consistency with getWorkspace and avoid leaking existence information.
+    let expectedVersions: number | readonly number[] | undefined;
+    if (ifMatch.kind === 'versions') {
+      expectedVersions =
+        ifMatch.versions.length === 1 ? ifMatch.versions[0] : ifMatch.versions;
+    } else if (ifMatch.kind === 'any') {
+      // If-Match: * requires representation to exist; if absent or forbidden,
+      // workspace.update will answer NOT_FOUND (404) or FORBIDDEN (403).
+      expectedVersions = undefined;
+    } else {
+      // ifMatch.kind === 'absent'
+      expectedVersions = undefined;
+    }
+
+    const outcome = await this.workspace.update(
+      request.identity.subject,
+      workspaceId,
+      command,
+      expectedVersions,
+    );
+
+    if (outcome.kind === WORKSPACE_UPDATE_OUTCOMES.OK) {
+      void reply
+        .header('etag', `"${outcome.version}"`)
+        .status(200)
+        .send(outcome.workspace);
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_UPDATE_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Workspace not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_UPDATE_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+      return;
+    }
   }
 }

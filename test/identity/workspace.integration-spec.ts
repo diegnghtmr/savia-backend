@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { PgTransaction } from '../../src/identity/pg-transaction.js';
 import { PostgresWorkspaceAdapter } from '../../src/identity/postgres-workspace.adapter.js';
@@ -25,6 +25,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   const subjectEditor = subject(701);
   const subjectSuspended = subject(702);
   const subjectNonMember = subject(703);
+  const subjectAdmin = subject(704);
   const subjectPaginator = subject(710);
   const subjectExactFull = subject(711);
 
@@ -48,7 +49,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     service = new WorkspaceService(transaction, adapter);
 
     await admin.query(
-      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12)`,
+      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12), ($13, $14)`,
       [
         subjectOwner,
         'owner@example.test',
@@ -58,6 +59,8 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         'suspended@example.test',
         subjectNonMember,
         'nonmember@example.test',
+        subjectAdmin,
+        'admin@example.test',
         subjectPaginator,
         'paginator@example.test',
         subjectExactFull,
@@ -70,6 +73,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       [subjectEditor, 'editor@example.test', 'Editor User'],
       [subjectSuspended, 'suspended@example.test', 'Suspended User'],
       [subjectNonMember, 'nonmember@example.test', 'Non Member User'],
+      [subjectAdmin, 'admin@example.test', 'Admin User'],
       [subjectPaginator, 'paginator@example.test', 'Paginator User'],
       [subjectExactFull, 'exactfull@example.test', 'Exact Full User'],
     ]) {
@@ -90,8 +94,15 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
        values ($1, $2, 'owner', 'active'),
               ($1, $3, 'editor', 'active'),
-              ($1, $4, 'viewer', 'suspended')`,
-      [sharedWorkspaceId, subjectOwner, subjectEditor, subjectSuspended],
+              ($1, $4, 'owner', 'suspended'),
+              ($1, $5, 'administrator', 'active')`,
+      [
+        sharedWorkspaceId,
+        subjectOwner,
+        subjectEditor,
+        subjectSuspended,
+        subjectAdmin,
+      ],
     );
 
     // Seed 6 workspaces for subjectPaginator (ws3Id and ws4Id share identical created_at)
@@ -309,5 +320,256 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     expect(outcome.items).toHaveLength(0);
     expect(outcome.pageInfo.hasNextPage).toBe(false);
     expect(outcome.pageInfo.nextCursor).toBeNull();
+  });
+
+  describe('update', () => {
+    it('returns not-found when caller is not a member of the workspace and asserts nothing was persisted', async () => {
+      const readBefore = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readBefore.kind).toBe('ok');
+      if (readBefore.kind !== 'ok') throw new Error('unreachable');
+
+      // Create a store where workspace IS readable (returns row) but membership is absent (undefined),
+      // isolating the membership === undefined branch.
+      const isolatedStore: typeof adapter = {
+        readMembership: async () => undefined,
+        readWorkspace: (...args) => adapter.readWorkspace(...args),
+        listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        update: (...args) => adapter.update(...args),
+      };
+      const isolatedService = new WorkspaceService(transaction, isolatedStore);
+      const outcome = await isolatedService.update(
+        subjectOwner,
+        sharedWorkspaceId,
+        { name: 'Hacked Workspace' },
+        undefined,
+      );
+      expect(outcome.kind).toBe('not-found');
+
+      const readAfter = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readAfter.kind).toBe('ok');
+      if (readAfter.kind !== 'ok') throw new Error('unreachable');
+      expect(readAfter.workspace.name).toBe(readBefore.workspace.name);
+    });
+
+    it('returns forbidden when caller is a suspended member with positive control for active owner and asserts no write occurred', async () => {
+      const readBefore = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readBefore.kind).toBe('ok');
+      if (readBefore.kind !== 'ok') throw new Error('unreachable');
+
+      const outcome = await service.update(
+        subjectSuspended,
+        sharedWorkspaceId,
+        { name: 'Suspended Attempt' },
+        undefined,
+      );
+      expect(outcome.kind).toBe('forbidden');
+
+      // Prove no write occurred
+      const readAfterSuspended = await service.read(
+        subjectOwner,
+        sharedWorkspaceId,
+      );
+      expect(readAfterSuspended.kind).toBe('ok');
+      if (readAfterSuspended.kind !== 'ok') throw new Error('unreachable');
+      expect(readAfterSuspended.workspace.name).toBe(readBefore.workspace.name);
+
+      // Positive control: active owner issues identical request and succeeds (200)
+      const positiveOutcome = await service.update(
+        subjectOwner,
+        sharedWorkspaceId,
+        { name: 'Owner Active Name' },
+        undefined,
+      );
+      expect(positiveOutcome.kind).toBe('ok');
+    });
+
+    it('returns forbidden when caller is an active editor with positive control for active administrator', async () => {
+      const outcome = await service.update(
+        subjectEditor,
+        sharedWorkspaceId,
+        { name: 'Editor Attempt' },
+        undefined,
+      );
+      expect(outcome.kind).toBe('forbidden');
+
+      // Positive control: active administrator issues identical request and succeeds (200)
+      const positiveOutcome = await service.update(
+        subjectAdmin,
+        sharedWorkspaceId,
+        { name: 'Admin Positive Control' },
+        undefined,
+      );
+      expect(positiveOutcome.kind).toBe('ok');
+    });
+
+    it('returns not-found when active owner attempts to update an absent workspace row', async () => {
+      // Store where caller has an active owner membership, but workspace row is absent,
+      // isolating the workspace === undefined branch.
+      const absentWorkspaceStore: typeof adapter = {
+        readMembership: async () => ({
+          role: 'owner',
+          status: 'active',
+        }),
+        readWorkspace: async () => undefined,
+        listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        update: (...args) => adapter.update(...args),
+      };
+      const absentWorkspaceService = new WorkspaceService(
+        transaction,
+        absentWorkspaceStore,
+      );
+      const outcome = await absentWorkspaceService.update(
+        subjectOwner,
+        '00000000-0000-0000-0000-000000000999',
+        { name: 'Non Existent' },
+        undefined,
+      );
+      expect(outcome.kind).toBe('not-found');
+    });
+
+    it('returns version-conflict when If-Match version is stale against read version and does not persist', async () => {
+      const readBefore = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readBefore.kind).toBe('ok');
+      if (readBefore.kind !== 'ok') throw new Error('unreachable');
+
+      const staleVersion = readBefore.workspace.version + 999;
+      const outcome = await service.update(
+        subjectOwner,
+        sharedWorkspaceId,
+        { name: 'Stale Version Attempt' },
+        staleVersion,
+      );
+      expect(outcome.kind).toBe('version-conflict');
+
+      const readAfter = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readAfter.kind).toBe('ok');
+      if (readAfter.kind !== 'ok') throw new Error('unreachable');
+      expect(readAfter.workspace.name).toBe(readBefore.workspace.name);
+    });
+
+    it('active owner updates workspace successfully, version increments by 1, and returns updated workspace', async () => {
+      const readBefore = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readBefore.kind).toBe('ok');
+      if (readBefore.kind !== 'ok') throw new Error('unreachable');
+
+      const outcome = await service.update(
+        subjectOwner,
+        sharedWorkspaceId,
+        { name: 'Acme Super Shared', baseCurrency: 'EUR' },
+        readBefore.workspace.version,
+      );
+
+      expect(outcome.kind).toBe('ok');
+      if (outcome.kind !== 'ok') throw new Error('unreachable');
+      expect(outcome.version).toBe(readBefore.workspace.version + 1);
+      expect(outcome.workspace.version).toBe(readBefore.workspace.version + 1);
+      expect(outcome.workspace.name).toBe('Acme Super Shared');
+      expect(outcome.workspace.baseCurrency).toBe('EUR');
+      expect(outcome.workspace.role).toBe('owner');
+    });
+
+    it('covers service mapping only: returns version-conflict when store.update returns undefined and re-read version differs', async () => {
+      const mockStore: typeof adapter = {
+        readMembership: (...args) => adapter.readMembership(...args),
+        readWorkspace: vi
+          .fn()
+          .mockImplementationOnce((client, id) =>
+            adapter.readWorkspace(client, id),
+          )
+          .mockImplementationOnce(async (client, id) => {
+            const row = await adapter.readWorkspace(client, id);
+            return row ? { ...row, version: row.version + 1 } : undefined;
+          }),
+        listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        update: async () => undefined, // simulates rowCount === 0 from concurrent bump
+      };
+      const concurrentService = new WorkspaceService(transaction, mockStore);
+      const outcome = await concurrentService.update(
+        subjectOwner,
+        sharedWorkspaceId,
+        { name: 'Acme Concurrently Bumped Mock' },
+        undefined,
+      );
+      expect(outcome.kind).toBe('version-conflict');
+    });
+
+    it('returns version-conflict and leaves name intact when concurrent transaction bumps version between read and write in real database', async () => {
+      const readBefore = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readBefore.kind).toBe('ok');
+      if (readBefore.kind !== 'ok') throw new Error('unreachable');
+
+      const hookedStore: typeof adapter = {
+        readMembership: (...args) => adapter.readMembership(...args),
+        readWorkspace: async (client, id) => {
+          const ws = await adapter.readWorkspace(client, id);
+          await admin.query(
+            'update public.workspaces set version = version + 1 where id = $1',
+            [id],
+          );
+          return ws;
+        },
+        listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        update: (...args) => adapter.update(...args),
+      };
+
+      const realConcurrentService = new WorkspaceService(
+        transaction,
+        hookedStore,
+      );
+      const outcome = await realConcurrentService.update(
+        subjectOwner,
+        sharedWorkspaceId,
+        { name: 'Concurrent Database Bump Attempt' },
+        readBefore.workspace.version,
+      );
+
+      expect(outcome.kind).toBe('version-conflict');
+
+      const readAfter = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readAfter.kind).toBe('ok');
+      if (readAfter.kind !== 'ok') throw new Error('unreachable');
+      expect(readAfter.workspace.name).toBe(readBefore.workspace.name);
+    });
+
+    it('returns forbidden and does not persist when caller authorization is revoked mid-transaction before update', async () => {
+      const readBefore = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readBefore.kind).toBe('ok');
+      if (readBefore.kind !== 'ok') throw new Error('unreachable');
+
+      const revokedStore: typeof adapter = {
+        readMembership: (...args) => adapter.readMembership(...args),
+        readWorkspace: (...args) => adapter.readWorkspace(...args),
+        listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        update: async (client, id, cmd, expected) => {
+          await admin.query(
+            "update public.workspace_memberships set role = 'viewer' where workspace_id = $1 and profile_id = $2",
+            [id, subjectOwner],
+          );
+          try {
+            return await adapter.update(client, id, cmd, expected);
+          } finally {
+            await admin.query(
+              "update public.workspace_memberships set role = 'owner' where workspace_id = $1 and profile_id = $2",
+              [id, subjectOwner],
+            );
+          }
+        },
+      };
+
+      const revokedService = new WorkspaceService(transaction, revokedStore);
+      const outcome = await revokedService.update(
+        subjectOwner,
+        sharedWorkspaceId,
+        { name: 'Revocation Attempt' },
+        readBefore.workspace.version,
+      );
+
+      expect(outcome.kind).toBe('forbidden');
+
+      const readAfter = await service.read(subjectOwner, sharedWorkspaceId);
+      expect(readAfter.kind).toBe('ok');
+      if (readAfter.kind !== 'ok') throw new Error('unreachable');
+      expect(readAfter.workspace.name).toBe(readBefore.workspace.name);
+    });
   });
 });

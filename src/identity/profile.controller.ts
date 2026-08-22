@@ -22,6 +22,7 @@ import {
   ProfileUpdateValidationError,
   type ProfileUpdateCommand,
 } from './profile-update-command.js';
+import { parseIfMatch } from './if-match.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 
 @Controller('v1/me')
@@ -75,52 +76,32 @@ export class ProfileController {
       return;
     }
 
-    const ifMatch = request.headers['if-match'];
-    let expectedVersion: number | undefined;
-
-    if (ifMatch !== undefined) {
-      if (typeof ifMatch !== 'string') {
-        sendProblem(reply, {
-          type: PROBLEM_TYPES.PRECONDITION_FAILED,
-          title: 'Precondition failed',
-          status: 412,
-        });
-        return;
-      }
-
-      const trimmed = ifMatch.trim();
-      if (trimmed === '*') {
-        // RFC 9110 makes `*` false when no current representation exists, which
-        // would be a 412. This route answers 404 there instead, deliberately:
-        // the resource identity is the authenticated subject, so "you have no
-        // profile" is the actual problem, while 412 would invite a retry with a
-        // fresh validator that will never exist.
-        expectedVersion = undefined;
-      } else {
-        // Leading zeros are rejected because RFC 9110 compares entity-tags by
-        // octet equality: "007" is simply not "7", and parsing it as 7 would let
-        // a client match a version it was never given. The int32 ceiling is not
-        // cosmetic -- `version` is an integer column, and a larger value reaches
-        // PostgreSQL as `value "100000000000000000000" is out of range for type
-        // integer` (SQLSTATE 22003), which escapes to the filter's catch-all and
-        // answers 500. A client-supplied header must never be able to do that.
-        const match = /^"(0|[1-9][0-9]*)"$/.exec(trimmed);
-        if (!match || Number(match[1]) > 2_147_483_647) {
-          sendProblem(reply, {
-            type: PROBLEM_TYPES.PRECONDITION_FAILED,
-            title: 'Precondition failed',
-            status: 412,
-          });
-          return;
-        }
-        expectedVersion = Number.parseInt(match[1], 10);
-      }
+    const ifMatch = parseIfMatch(request.headers['if-match']);
+    if (ifMatch.kind === 'malformed') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+      return;
     }
+
+    // RFC 9110 makes `*` false when no current representation exists, which
+    // would be a 412. This route answers 404 there instead, deliberately:
+    // the resource identity is the authenticated subject, so "you have no
+    // profile" is the actual problem, while 412 would invite a retry with a
+    // fresh validator that will never exist.
+    const expectedVersions =
+      ifMatch.kind === 'versions'
+        ? ifMatch.versions.length === 1
+          ? ifMatch.versions[0]
+          : ifMatch.versions
+        : undefined;
 
     const outcome = await this.profile.update(
       request.identity.subject,
       command,
-      expectedVersion,
+      expectedVersions,
     );
 
     if (outcome.kind === PROFILE_UPDATE_OUTCOMES.OK) {

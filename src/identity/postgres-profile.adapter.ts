@@ -22,8 +22,12 @@ export class PostgresProfileAdapter {
     client: TransactionClient,
     subject: string,
     command: ProfileUpdateCommand,
-    expectedVersion?: number,
+    expectedVersion?: number | readonly number[],
   ): Promise<UserProfileWithVersion | undefined> {
+    const versions =
+      typeof expectedVersion === 'number'
+        ? [expectedVersion]
+        : (expectedVersion ?? null);
     const values = [
       subject,
       command.displayName ?? null,
@@ -31,7 +35,7 @@ export class PostgresProfileAdapter {
       command.timezone ?? null,
       command.defaultCurrency ?? null,
       command.privacyModeEnabled ?? null,
-      expectedVersion ?? null,
+      versions,
     ];
     const result = await client.query<UserProfileWithVersionRow>(
       `update public.profiles
@@ -42,7 +46,7 @@ export class PostgresProfileAdapter {
        privacy_mode_enabled = coalesce($6::boolean, privacy_mode_enabled),
        version              = version + 1
  where id = $1
-   and ($7::integer is null or version = $7)
+   and ($7::integer[] is null or version = any($7::integer[]))
 returning id::text, email, display_name as "displayName", locale, timezone,
           default_currency as "defaultCurrency",
           privacy_mode_enabled as "privacyModeEnabled", version`,

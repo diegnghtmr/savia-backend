@@ -1,8 +1,11 @@
 import type { TransactionClient } from './pg-transaction.js';
+import type { WorkspaceUpdateCommand } from './workspace-command.js';
 import {
   encodeCursor,
   WORKSPACE_ACCESS_KINDS,
   WORKSPACE_MEMBER_STATUS,
+  WORKSPACE_ROLE,
+  WORKSPACE_UPDATE_OUTCOMES,
   type Workspace,
   type WorkspaceAccess,
   type WorkspaceCursor,
@@ -12,10 +15,18 @@ import {
   type WorkspacePage,
   type WorkspacePort,
   type WorkspaceRole,
+  type WorkspaceUpdateOutcome,
 } from './workspace.port.js';
 
 export interface WorkspaceReadTransaction {
   runRead<T>(
+    subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T>;
+}
+
+export interface WorkspaceTransaction extends WorkspaceReadTransaction {
+  run<T>(
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T>;
@@ -51,11 +62,17 @@ export interface WorkspaceStore {
     cursor: WorkspaceCursor | undefined,
     limit: number,
   ): Promise<readonly Workspace[]>;
+  update(
+    client: TransactionClient,
+    workspaceId: string,
+    command: WorkspaceUpdateCommand,
+    expectedVersion?: number | readonly number[],
+  ): Promise<WorkspaceRecord | undefined>;
 }
 
 export class WorkspaceService implements WorkspacePort {
   public constructor(
-    private readonly transaction: WorkspaceReadTransaction,
+    private readonly transaction: WorkspaceTransaction,
     private readonly store: WorkspaceStore,
   ) {}
 
@@ -122,6 +139,83 @@ export class WorkspaceService implements WorkspacePort {
           hasNextPage,
           nextCursor,
         },
+      };
+    });
+  }
+
+  public update(
+    subject: string,
+    workspaceId: string,
+    command: WorkspaceUpdateCommand,
+    expectedVersion?: number | readonly number[],
+  ): Promise<WorkspaceUpdateOutcome> {
+    return this.transaction.run(subject, async (client) => {
+      const membership = await this.store.readMembership(
+        client,
+        workspaceId,
+        subject,
+      );
+      if (membership === undefined) {
+        return { kind: WORKSPACE_UPDATE_OUTCOMES.NOT_FOUND };
+      }
+      if (membership.status === WORKSPACE_MEMBER_STATUS.SUSPENDED) {
+        return { kind: WORKSPACE_UPDATE_OUTCOMES.FORBIDDEN };
+      }
+      if (
+        membership.role !== WORKSPACE_ROLE.OWNER &&
+        membership.role !== WORKSPACE_ROLE.ADMINISTRATOR
+      ) {
+        return { kind: WORKSPACE_UPDATE_OUTCOMES.FORBIDDEN };
+      }
+
+      const workspace = await this.store.readWorkspace(client, workspaceId);
+      if (workspace === undefined) {
+        return { kind: WORKSPACE_UPDATE_OUTCOMES.NOT_FOUND };
+      }
+
+      const versions =
+        typeof expectedVersion === 'number'
+          ? [expectedVersion]
+          : expectedVersion;
+      if (versions !== undefined && !versions.includes(workspace.version)) {
+        return { kind: WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT };
+      }
+
+      const updated = await this.store.update(
+        client,
+        workspaceId,
+        command,
+        versions,
+      );
+      if (updated === undefined) {
+        // A zero-row UPDATE has three distinct causes:
+        // 1. The workspace was deleted mid-transaction -> not-found (404)
+        // 2. A concurrent update bumped the version -> version-conflict (412)
+        // 3. The caller's membership was suspended mid-transaction, so the RLS
+        //    UPDATE policy withheld the row while the version is unchanged -> forbidden (403)
+        // Collapsing them into 412 reports an authorization failure as a concurrency failure.
+        const reread = await this.store.readWorkspace(client, workspaceId);
+        if (reread === undefined) {
+          return { kind: WORKSPACE_UPDATE_OUTCOMES.NOT_FOUND };
+        }
+        if (reread.version !== workspace.version) {
+          return { kind: WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT };
+        }
+        return { kind: WORKSPACE_UPDATE_OUTCOMES.FORBIDDEN };
+      }
+
+      return {
+        kind: WORKSPACE_UPDATE_OUTCOMES.OK,
+        workspace: {
+          id: updated.id,
+          name: updated.name,
+          kind: updated.kind,
+          baseCurrency: updated.baseCurrency,
+          role: membership.role,
+          createdAt: updated.createdAt,
+          version: updated.version,
+        },
+        version: updated.version,
       };
     });
   }

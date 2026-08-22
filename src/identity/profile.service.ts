@@ -34,7 +34,7 @@ export interface ProfileStore {
     client: TransactionClient,
     subject: string,
     command: ProfileUpdateCommand,
-    expectedVersion?: number,
+    expectedVersion?: number | readonly number[],
   ): Promise<ProfileStoreRow | undefined>;
   readVersion(
     client: TransactionClient,
@@ -57,7 +57,7 @@ export class ProfileService implements ProfilePort {
   public update(
     subject: string,
     command: ProfileUpdateCommand,
-    expectedVersion?: number,
+    expectedVersion?: number | readonly number[],
   ): Promise<ProfileUpdateOutcome> {
     return this.transaction.run(subject, async (client) => {
       const row = await this.store.update(
