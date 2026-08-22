@@ -221,6 +221,29 @@ export class WorkspaceService implements WorkspacePort {
         workspace,
       );
 
+      if (!written) {
+        // A losing write means a live record won and the response must come from that record.
+        const reread = await this.idempotencyStore.read(
+          client,
+          subject,
+          route,
+          idempotencyKey,
+        );
+        if (reread !== undefined) {
+          if (reread.requestFingerprint !== fingerprint) {
+            return {
+              kind: WORKSPACE_CREATE_OUTCOME_KINDS.IDEMPOTENCY_CONFLICT,
+            };
+          }
+          return {
+            kind: WORKSPACE_CREATE_OUTCOME_KINDS.REPLAYED,
+            status: reread.responseStatus,
+            etag: reread.responseEtag,
+            body: reread.responseBody,
+          };
+        }
+      }
+
       return {
         kind: WORKSPACE_CREATE_OUTCOME_KINDS.CREATED,
         workspace,
