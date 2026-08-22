@@ -57,11 +57,14 @@ alter function public.collaborative_workspace_retains_active_owner(uuid, uuid)
 
 -- DB-layer backstop. UPDATE/DELETE only: an INSERT can never remove the last owner.
 -- security definer, so it is not blind the way 202607150001:39 is.
+-- VOLATILE, and it MUST stay volatile for SELECT ... FOR UPDATE.
 create function public.enforce_collaborative_workspace_owner_membership()
-returns trigger language plpgsql security definer
+returns trigger language plpgsql volatile security definer
 set search_path = pg_catalog, public
 as $$
-declare target_workspace_id uuid;
+declare
+  target_workspace_id uuid;
+  remaining integer;
 begin
   foreach target_workspace_id in array
     (case when tg_op = 'DELETE' then array[old.workspace_id]
@@ -69,13 +72,20 @@ begin
   loop
     if exists (select 1 from public.workspaces workspace
                where workspace.id = target_workspace_id
-                 and workspace.kind in ('family','shared'))
-       and not exists (select 1 from public.workspace_memberships membership
-                       where membership.workspace_id = target_workspace_id
-                         and membership.role = 'owner'
-                         and membership.status = 'active') then
-      raise exception 'collaborative workspace must retain an active owner'
-        using errcode = 'check_violation';
+                 and workspace.kind in ('family','shared')) then
+      select count(*) into remaining
+      from (select membership.id
+            from public.workspace_memberships membership
+            where membership.workspace_id = target_workspace_id
+              and membership.role = 'owner'
+              and membership.status = 'active'
+            order by membership.id            -- deterministic lock order: a mitigation, not a guarantee
+            for update) locked;
+
+      if remaining < 1 then
+        raise exception 'collaborative workspace must retain an active owner'
+          using errcode = 'check_violation';
+      end if;
     end if;
   end loop;
   return null;
@@ -85,6 +95,7 @@ alter function public.enforce_collaborative_workspace_owner_membership() owner t
 
 revoke create on schema public from savia_elevated;
 revoke execute on function public.collaborative_workspace_retains_active_owner(uuid, uuid) from public;
+revoke execute on function public.enforce_collaborative_workspace_owner_membership() from public;
 grant execute on function public.collaborative_workspace_retains_active_owner(uuid, uuid)
   to savia_application;
 
