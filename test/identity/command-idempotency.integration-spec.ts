@@ -364,4 +364,59 @@ describe('Command Idempotency database boundary and concurrency', () => {
     expect(diffResult1.kind).toBe(IDEMPOTENCY_OUTCOME_KINDS.EXECUTED);
     expect(diffResult2.kind).toBe(IDEMPOTENCY_OUTCOME_KINDS.EXECUTED);
   });
+
+  it('adapter write returns false against a live record without mutating it; POSITIVE CONTROL: write returns true and updates when expired', async () => {
+    const key = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb09';
+    const route = 'POST /v1/workspaces';
+    const f1 =
+      '1111111111111111111111111111111111111111111111111111111111111111';
+    const f2 =
+      '2222222222222222222222222222222222222222222222222222222222222222';
+
+    // 1. Insert a live record for (subject, route, key) with fingerprint F1 (committed)
+    const initialWriteResult = await transaction.run(subjectA, (client) =>
+      adapter.write(client, subjectA, route, key, f1, 201, '"etag-1"', {
+        v: 1,
+      }),
+    );
+    expect(initialWriteResult).toBe(true);
+
+    // 2. Call the adapter's write directly with the same (subject, route, key) but fingerprint F2
+    const losingWriteResult = await transaction.run(subjectA, (client) =>
+      adapter.write(client, subjectA, route, key, f2, 200, '"etag-2"', {
+        v: 2,
+      }),
+    );
+
+    // 3. Assert it returns false because the on conflict predicate excludes a live row
+    expect(losingWriteResult).toBe(false);
+
+    // 4. Assert the stored record still holds F1, proving the live record was not overwritten
+    const currentRecord = await transaction.runRead(subjectA, (client) =>
+      adapter.read(client, subjectA, route, key),
+    );
+    expect(currentRecord?.requestFingerprint).toBe(f1);
+    expect(currentRecord?.responseStatus).toBe(201);
+
+    // POSITIVE CONTROL: backdate created_at past 24 hours, call write again with F2
+    await admin.query(
+      `update public.command_idempotency_records
+          set created_at = now() - interval '25 hours'
+        where subject_id = $1 and route = $2 and idempotency_key = $3`,
+      [subjectA, route, key],
+    );
+
+    const expiredWriteResult = await transaction.run(subjectA, (client) =>
+      adapter.write(client, subjectA, route, key, f2, 200, '"etag-2"', {
+        v: 2,
+      }),
+    );
+    expect(expiredWriteResult).toBe(true);
+
+    const updatedRecord = await transaction.runRead(subjectA, (client) =>
+      adapter.read(client, subjectA, route, key),
+    );
+    expect(updatedRecord?.requestFingerprint).toBe(f2);
+    expect(updatedRecord?.responseStatus).toBe(200);
+  });
 });

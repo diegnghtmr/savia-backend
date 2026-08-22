@@ -207,7 +207,7 @@ describe('IdempotencyService', () => {
     expect(store.write).not.toHaveBeenCalled();
   });
 
-  it('re-reads and replays when write returns 0 rows (concurrent live winner)', async () => {
+  it('service maps a losing write to a re-read and replay (adapter mocked; the database behaviour is covered in command-idempotency.integration-spec.ts)', async () => {
     const payload = { name: 'Acme' };
     const fingerprint = computeRequestFingerprint(payload);
 
