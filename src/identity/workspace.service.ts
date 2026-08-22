@@ -1,13 +1,20 @@
+import type { IdempotencyStore } from './idempotency.port.js';
+import { computeRequestFingerprint } from './idempotency.service.js';
 import type { TransactionClient } from './pg-transaction.js';
-import type { WorkspaceUpdateCommand } from './workspace-command.js';
+import type {
+  WorkspaceCreateCommand,
+  WorkspaceUpdateCommand,
+} from './workspace-command.js';
 import {
   encodeCursor,
   WORKSPACE_ACCESS_KINDS,
+  WORKSPACE_CREATE_OUTCOME_KINDS,
   WORKSPACE_MEMBER_STATUS,
   WORKSPACE_ROLE,
   WORKSPACE_UPDATE_OUTCOMES,
   type Workspace,
   type WorkspaceAccess,
+  type WorkspaceCreateOutcome,
   type WorkspaceCursor,
   type WorkspaceKind,
   type WorkspaceListQuery,
@@ -62,6 +69,18 @@ export interface WorkspaceStore {
     cursor: WorkspaceCursor | undefined,
     limit: number,
   ): Promise<readonly Workspace[]>;
+  createWorkspace(
+    client: TransactionClient,
+    subject: string,
+    command: WorkspaceCreateCommand,
+  ): Promise<{ id: string }>;
+  createMembership(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    role: WorkspaceRole,
+    status: WorkspaceMemberStatus,
+  ): Promise<void>;
   update(
     client: TransactionClient,
     workspaceId: string,
@@ -74,6 +93,7 @@ export class WorkspaceService implements WorkspacePort {
   public constructor(
     private readonly transaction: WorkspaceTransaction,
     private readonly store: WorkspaceStore,
+    private readonly idempotencyStore: IdempotencyStore,
   ) {}
 
   public read(subject: string, workspaceId: string): Promise<WorkspaceAccess> {
@@ -139,6 +159,71 @@ export class WorkspaceService implements WorkspacePort {
           hasNextPage,
           nextCursor,
         },
+      };
+    });
+  }
+
+  public async create(
+    subject: string,
+    command: WorkspaceCreateCommand,
+    idempotencyKey: string,
+  ): Promise<WorkspaceCreateOutcome> {
+    const route = 'POST /v1/workspaces';
+    const fingerprint = computeRequestFingerprint(command);
+
+    return this.transaction.run(subject, async (client) => {
+      const existing = await this.idempotencyStore.read(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+      );
+      if (existing !== undefined) {
+        if (existing.requestFingerprint !== fingerprint) {
+          return {
+            kind: WORKSPACE_CREATE_OUTCOME_KINDS.IDEMPOTENCY_CONFLICT,
+          };
+        }
+        return {
+          kind: WORKSPACE_CREATE_OUTCOME_KINDS.REPLAYED,
+          status: existing.responseStatus,
+          etag: existing.responseEtag,
+          body: existing.responseBody,
+        };
+      }
+
+      const { id } = await this.store.createWorkspace(client, subject, command);
+      await this.store.createMembership(client, id, subject, 'owner', 'active');
+
+      const record = await this.store.readWorkspace(client, id);
+      if (record === undefined) {
+        throw new Error('Created workspace could not be read.');
+      }
+
+      const workspace: Workspace = {
+        id: record.id,
+        name: record.name,
+        kind: record.kind,
+        baseCurrency: record.baseCurrency,
+        role: 'owner',
+        createdAt: record.createdAt,
+        version: record.version,
+      };
+
+      const written = await this.idempotencyStore.write(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        fingerprint,
+        201,
+        `"${workspace.version}"`,
+        workspace,
+      );
+
+      return {
+        kind: WORKSPACE_CREATE_OUTCOME_KINDS.CREATED,
+        workspace,
       };
     });
   }

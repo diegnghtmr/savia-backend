@@ -5,6 +5,7 @@ import {
   Inject,
   Param,
   Patch,
+  Post,
   Query,
   Req,
   Res,
@@ -13,17 +14,21 @@ import {
 import type { FastifyReply } from 'fastify';
 
 import type { AuthenticatedRequest } from './authenticated-request.js';
+import { validateIdempotencyKey } from './idempotency-key.js';
 import { parseIfMatch } from './if-match.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { PROBLEM_TYPES, sendProblem } from './problem-details.js';
 import {
+  createWorkspaceCreateCommand,
   createWorkspaceUpdateCommand,
   WorkspaceCommandValidationError,
+  type WorkspaceCreateCommand,
   type WorkspaceUpdateCommand,
 } from './workspace-command.js';
 import {
   decodeCursor,
   WORKSPACE_ACCESS_KINDS,
+  WORKSPACE_CREATE_OUTCOME_KINDS,
   WORKSPACE_PORT,
   WORKSPACE_UPDATE_OUTCOMES,
   type WorkspaceCursor,
@@ -39,6 +44,77 @@ export class WorkspaceController {
   public constructor(
     @Inject(WORKSPACE_PORT) private readonly workspace: WorkspacePort,
   ) {}
+
+  @Post()
+  public async createWorkspace(
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const keyResult = validateIdempotencyKey(
+      request.headers['idempotency-key'],
+    );
+    if (keyResult.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid Idempotency-Key header',
+        detail: keyResult.reason,
+        status: 400,
+      });
+      return;
+    }
+
+    let command: WorkspaceCreateCommand;
+    try {
+      command = createWorkspaceCreateCommand(request.body);
+    } catch (error) {
+      if (error instanceof WorkspaceCommandValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Unprocessable entity',
+          status: 422,
+          errors: error.violations,
+        });
+        return;
+      }
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Bad request',
+        status: 400,
+      });
+      return;
+    }
+
+    const outcome = await this.workspace.create(
+      request.identity.subject,
+      command,
+      keyResult.key,
+    );
+
+    if (outcome.kind === WORKSPACE_CREATE_OUTCOME_KINDS.CREATED) {
+      void reply
+        .header('etag', `"${outcome.workspace.version}"`)
+        .status(201)
+        .send(outcome.workspace);
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_CREATE_OUTCOME_KINDS.REPLAYED) {
+      if (outcome.etag !== null) {
+        void reply.header('etag', outcome.etag);
+      }
+      void reply.status(outcome.status).send(outcome.body);
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_CREATE_OUTCOME_KINDS.IDEMPOTENCY_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency conflict',
+        status: 409,
+      });
+      return;
+    }
+  }
 
   @Get()
   public async listWorkspaces(
