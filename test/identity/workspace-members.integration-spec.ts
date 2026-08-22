@@ -138,7 +138,7 @@ describe('Workspace member roster (202607150013_workspace_member_roster.sql)', (
   });
 
   afterAll(async () => {
-    await pool?.close();
+    await pool?.end();
     await admin?.end();
   });
 

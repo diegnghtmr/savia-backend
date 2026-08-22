@@ -21,6 +21,9 @@ import { PostgresIdempotencyAdapter } from './postgres-idempotency.adapter.js';
 import { WorkspaceController } from './workspace.controller.js';
 import { WORKSPACE_PORT } from './workspace.port.js';
 import { WorkspaceService } from './workspace.service.js';
+import { PostgresWorkspaceMemberAdapter } from './postgres-workspace-member.adapter.js';
+import { WORKSPACE_MEMBER_PORT } from './workspace-member.port.js';
+import { WorkspaceMemberService } from './workspace-member.service.js';
 
 @Module({
   controllers: [OnboardingController, ProfileController, WorkspaceController],
@@ -86,6 +89,16 @@ import { WorkspaceService } from './workspace.service.js';
       ) => new WorkspaceService(transaction, adapter, idempotency),
     },
     { provide: WORKSPACE_PORT, useExisting: WorkspaceService },
+    PostgresWorkspaceMemberAdapter,
+    {
+      provide: WorkspaceMemberService,
+      inject: [PgTransaction, PostgresWorkspaceMemberAdapter],
+      useFactory: (
+        transaction: PgTransaction,
+        adapter: PostgresWorkspaceMemberAdapter,
+      ) => new WorkspaceMemberService(transaction, adapter),
+    },
+    { provide: WORKSPACE_MEMBER_PORT, useExisting: WorkspaceMemberService },
     {
       provide: IdempotencyService,
       inject: [PgTransaction, PostgresIdempotencyAdapter],
@@ -103,6 +116,7 @@ import { WorkspaceService } from './workspace.service.js';
     BOOTSTRAP_PORT,
     PROFILE_PORT,
     WORKSPACE_PORT,
+    WORKSPACE_MEMBER_PORT,
     IDEMPOTENCY_PORT,
   ],
 })
