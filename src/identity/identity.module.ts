@@ -15,6 +15,9 @@ import { PostgresWorkspaceAdapter } from './postgres-workspace.adapter.js';
 import { ProfileController } from './profile.controller.js';
 import { PROFILE_PORT } from './profile.port.js';
 import { ProfileService } from './profile.service.js';
+import { IDEMPOTENCY_PORT } from './idempotency.port.js';
+import { IdempotencyService } from './idempotency.service.js';
+import { PostgresIdempotencyAdapter } from './postgres-idempotency.adapter.js';
 import { WorkspaceController } from './workspace.controller.js';
 import { WORKSPACE_PORT } from './workspace.port.js';
 import { WorkspaceService } from './workspace.service.js';
@@ -77,6 +80,16 @@ import { WorkspaceService } from './workspace.service.js';
       ) => new WorkspaceService(transaction, adapter),
     },
     { provide: WORKSPACE_PORT, useExisting: WorkspaceService },
+    PostgresIdempotencyAdapter,
+    {
+      provide: IdempotencyService,
+      inject: [PgTransaction, PostgresIdempotencyAdapter],
+      useFactory: (
+        transaction: PgTransaction,
+        adapter: PostgresIdempotencyAdapter,
+      ) => new IdempotencyService(transaction, adapter),
+    },
+    { provide: IDEMPOTENCY_PORT, useExisting: IdempotencyService },
   ],
   exports: [
     JoseJwtVerifier,
@@ -85,6 +98,7 @@ import { WorkspaceService } from './workspace.service.js';
     BOOTSTRAP_PORT,
     PROFILE_PORT,
     WORKSPACE_PORT,
+    IDEMPOTENCY_PORT,
   ],
 })
 export class IdentityModule {
