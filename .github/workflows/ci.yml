@@ -101,6 +101,9 @@ jobs:
       - name: workspace write rls integration
         shell: bash
         run: pnpm test:integration:workspace-write-rls
+      - name: membership write rls integration
+        shell: bash
+        run: pnpm test:integration:membership-write-rls
       - name: command idempotency integration
         shell: bash
         run: pnpm test:integration:command-idempotency
