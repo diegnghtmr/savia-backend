@@ -15,6 +15,7 @@ case "$spec" in
   test/identity/workspace.integration-spec.ts) ;;
   test/identity/workspace-write-rls.integration-spec.ts) ;;
   test/identity/command-idempotency.integration-spec.ts) ;;
+  test/identity/membership-write-rls.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
