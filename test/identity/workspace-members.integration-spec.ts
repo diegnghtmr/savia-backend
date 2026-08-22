@@ -66,7 +66,7 @@ describe('Workspace member roster (202607150013_workspace_member_roster.sql)', (
 
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
-    pool = new PostgresPool(new PostgresConfig(url));
+    pool = new PostgresPool(PostgresConfig.fromUrl(url));
     transaction = new PgTransaction(pool);
     service = new WorkspaceMemberService(transaction, adapter);
 
