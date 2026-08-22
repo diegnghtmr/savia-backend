@@ -646,6 +646,10 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
         update: async (client, id, cmd, expected) => {
           await admin.query(
+            "update public.workspace_memberships set role = 'owner' where workspace_id = $1 and profile_id = $2",
+            [id, subjectAdmin],
+          );
+          await admin.query(
             "update public.workspace_memberships set role = 'viewer' where workspace_id = $1 and profile_id = $2",
             [id, subjectOwner],
           );
@@ -655,6 +659,10 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
             await admin.query(
               "update public.workspace_memberships set role = 'owner' where workspace_id = $1 and profile_id = $2",
               [id, subjectOwner],
+            );
+            await admin.query(
+              "update public.workspace_memberships set role = 'administrator' where workspace_id = $1 and profile_id = $2",
+              [id, subjectAdmin],
             );
           }
         },

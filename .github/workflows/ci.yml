@@ -104,6 +104,9 @@ jobs:
       - name: membership write rls integration
         shell: bash
         run: pnpm test:integration:membership-write-rls
+      - name: last owner guard integration
+        shell: bash
+        run: pnpm test:integration:last-owner-guard
       - name: command idempotency integration
         shell: bash
         run: pnpm test:integration:command-idempotency
