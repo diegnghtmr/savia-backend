@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { TransactionClient } from '../../src/identity/pg-transaction.js';
 import {
   decodeMemberCursor,
+  encodeMemberCursor,
+  MAX_MEMBER_CURSOR_LENGTH,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   type WorkspaceMember,
 } from '../../src/identity/workspace-member.port.js';
@@ -195,8 +197,9 @@ describe('WorkspaceMemberService.listWorkspaceMembers', () => {
     if (outcome.kind === WORKSPACE_MEMBER_LIST_OUTCOMES.OK) {
       const nextCursor = outcome.page.pageInfo.nextCursor;
       expect(nextCursor).not.toBeNull();
-      const decoded = decodeMemberCursor(nextCursor!);
+      const decoded = decodeMemberCursor(nextCursor!, dummyWorkspaceId);
       expect(decoded).toEqual({
+        workspaceId: dummyWorkspaceId,
         joinedAt: fakeMember2.joinedAt,
         membershipId: fakeMember2.id,
       });
@@ -224,5 +227,96 @@ describe('WorkspaceMemberService.listWorkspaceMembers', () => {
     });
     expect(runRead).toHaveBeenCalledTimes(1);
     expect(run).not.toHaveBeenCalled();
+  });
+});
+
+describe('encodeMemberCursor and decodeMemberCursor', () => {
+  const wsId = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+  const otherWsId = '8c9e6679-7425-40de-944b-e07fc1f90ae8';
+  const joinedAt = '2026-07-15T01:00:00.000Z';
+  const memId = '11111111-1111-1111-1111-111111111111';
+
+  it('round-trips a valid member cursor', () => {
+    const raw = encodeMemberCursor({
+      workspaceId: wsId,
+      joinedAt,
+      membershipId: memId,
+    });
+    expect(decodeMemberCursor(raw)).toEqual({
+      workspaceId: wsId,
+      joinedAt,
+      membershipId: memId,
+    });
+    expect(decodeMemberCursor(raw, wsId)).toEqual({
+      workspaceId: wsId,
+      joinedAt,
+      membershipId: memId,
+    });
+  });
+
+  it('rejects a cursor encoded for another workspace when expectedWorkspaceId is provided', () => {
+    const raw = encodeMemberCursor({
+      workspaceId: otherWsId,
+      joinedAt,
+      membershipId: memId,
+    });
+    expect(decodeMemberCursor(raw, wsId)).toBeUndefined();
+  });
+
+  it('rejects an over-long cursor exceeding MAX_MEMBER_CURSOR_LENGTH before JSON parsing', () => {
+    const raw = encodeMemberCursor({
+      workspaceId: wsId,
+      joinedAt,
+      membershipId: memId,
+    });
+    expect(raw.length).toBeLessThanOrEqual(MAX_MEMBER_CURSOR_LENGTH);
+    const overlong = raw + 'A'.repeat(MAX_MEMBER_CURSOR_LENGTH);
+    expect(overlong.length).toBeGreaterThan(MAX_MEMBER_CURSOR_LENGTH);
+
+    const parseSpy = vi.spyOn(JSON, 'parse');
+    try {
+      parseSpy.mockClear();
+      expect(decodeMemberCursor(overlong)).toBeUndefined();
+      expect(parseSpy).not.toHaveBeenCalled();
+    } finally {
+      parseSpy.mockRestore();
+    }
+  });
+
+  it('rejects a cursor with non-canonical payload such as trailing whitespace', () => {
+    const padded = Buffer.from(
+      JSON.stringify([wsId, joinedAt, memId]) + '   ',
+    ).toString('base64url');
+    expect(decodeMemberCursor(padded)).toBeUndefined();
+  });
+
+  it('rejects non-base64url characters and empty string', () => {
+    expect(decodeMemberCursor('')).toBeUndefined();
+    expect(decodeMemberCursor('!!!not-base64url!!!')).toBeUndefined();
+    expect(decodeMemberCursor('abc\0def')).toBeUndefined();
+  });
+
+  it('rejects year-0000 timestamp and extended-year timestamp', () => {
+    const y0000 = Buffer.from(
+      JSON.stringify([wsId, '0000-01-01T00:00:00.000Z', memId]),
+    ).toString('base64url');
+    expect(decodeMemberCursor(y0000)).toBeUndefined();
+
+    const extended = Buffer.from(
+      JSON.stringify([wsId, '+275760-09-13T00:00:00.000Z', memId]),
+    ).toString('base64url');
+    expect(decodeMemberCursor(extended)).toBeUndefined();
+  });
+
+  it('rejects non-UUID workspaceId or membershipId', () => {
+    const badWs = Buffer.from(
+      JSON.stringify(['not-a-uuid', joinedAt, memId]),
+    ).toString('base64url');
+    expect(decodeMemberCursor(badWs)).toBeUndefined();
+
+    const badMem = Buffer.from(
+      JSON.stringify([wsId, joinedAt, 'not-a-uuid']),
+    ).toString('base64url');
+    expect(decodeMemberCursor(badMem)).toBeUndefined();
   });
 });

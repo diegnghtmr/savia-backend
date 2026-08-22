@@ -65,6 +65,7 @@ const defaultMember: WorkspaceMember = {
   id: '00000000-0000-0000-0000-000000000001',
   userId: SUBJECT,
   displayName: 'Active User',
+  email: 'active@example.test',
   role: 'owner',
   status: 'active',
   joinedAt: '2026-07-15T00:00:00.000Z',
@@ -202,39 +203,130 @@ describe('listWorkspaceMembers HTTP boundary', () => {
     expect(body.code).toBe('not-found');
   });
 
-  it('returns 400 for a malformed cursor and never 500', async () => {
+  it('returns 400 for a cursor with non-base64 payload and never 500', async () => {
     const appInstance = await createApplication();
-
-    const badCursor1 = '%%%not-base64%%%';
-    const response1 = await listWorkspaceMembersRequest(
+    const response = await listWorkspaceMembersRequest(
       appInstance,
       WORKSPACE_ID,
-      `cursor=${badCursor1}`,
+      'cursor=%%%not-base64%%%',
       { token: TOKEN },
     );
-    expect(response1.statusCode).toBe(400);
-    expect(response1.statusCode).not.toBe(500);
-    const body1 = response1.json();
-    expect(body1.type).toBe('https://savia.app/problems/bad-request');
-    expect(body1.code).toBe('bad-request');
+    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).not.toBe(500);
+    const body = response.json();
+    expect(body.type).toBe('https://savia.app/problems/bad-request');
+    expect(body.code).toBe('bad-request');
+  });
 
-    const outOfRange = Buffer.from(
+  it('returns 400 for a cursor containing a NUL byte and never 500', async () => {
+    const appInstance = await createApplication();
+    const response = await listWorkspaceMembersRequest(
+      appInstance,
+      WORKSPACE_ID,
+      'cursor=abc%00def',
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).not.toBe(500);
+    expect(response.json().code).toBe('bad-request');
+  });
+
+  it('returns 400 for a cursor with year-0000 timestamp and never 500', async () => {
+    const appInstance = await createApplication();
+    const cursor = Buffer.from(
       JSON.stringify([
+        WORKSPACE_ID,
+        '0000-01-01T00:00:00.000Z',
+        '00000000-0000-0000-0000-000000000001',
+      ]),
+    ).toString('base64url');
+    const response = await listWorkspaceMembersRequest(
+      appInstance,
+      WORKSPACE_ID,
+      { cursor },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).not.toBe(500);
+    expect(response.json().code).toBe('bad-request');
+  });
+
+  it('returns 400 for a cursor with an extended-year timestamp and never 500', async () => {
+    const appInstance = await createApplication();
+    const cursor = Buffer.from(
+      JSON.stringify([
+        WORKSPACE_ID,
         '+275760-09-13T00:00:00.000Z',
         '00000000-0000-0000-0000-000000000001',
       ]),
     ).toString('base64url');
-    const response2 = await listWorkspaceMembersRequest(
+    const response = await listWorkspaceMembersRequest(
       appInstance,
       WORKSPACE_ID,
-      { cursor: outOfRange },
+      { cursor },
       { token: TOKEN },
     );
-    expect(response2.statusCode).toBe(400);
-    expect(response2.statusCode).not.toBe(500);
-    const body2 = response2.json();
-    expect(body2.type).toBe('https://savia.app/problems/bad-request');
-    expect(body2.code).toBe('bad-request');
+    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).not.toBe(500);
+    expect(response.json().code).toBe('bad-request');
+  });
+
+  it('returns 400 for a cursor minted for another workspace (foreign workspace) and never 500', async () => {
+    const appInstance = await createApplication();
+    const foreignWorkspaceId = '00000000-0000-0000-0000-000000000099';
+    const cursor = encodeMemberCursor({
+      workspaceId: foreignWorkspaceId,
+      joinedAt: '2026-07-15T00:00:00.000Z',
+      membershipId: '00000000-0000-0000-0000-000000000001',
+    });
+    const response = await listWorkspaceMembersRequest(
+      appInstance,
+      WORKSPACE_ID,
+      { cursor },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).not.toBe(500);
+    expect(response.json().code).toBe('bad-request');
+  });
+
+  it('returns 400 for an over-long cursor exceeding max length and never 500', async () => {
+    const appInstance = await createApplication();
+    const validCursor = encodeMemberCursor({
+      workspaceId: WORKSPACE_ID,
+      joinedAt: '2026-07-15T00:00:00.000Z',
+      membershipId: '00000000-0000-0000-0000-000000000001',
+    });
+    const overlongCursor = validCursor + 'A'.repeat(300);
+    const response = await listWorkspaceMembersRequest(
+      appInstance,
+      WORKSPACE_ID,
+      { cursor: overlongCursor },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).not.toBe(500);
+    expect(response.json().code).toBe('bad-request');
+  });
+
+  it('returns 400 for a cursor with non-canonical trailing whitespace and never 500', async () => {
+    const appInstance = await createApplication();
+    const nonCanonical = Buffer.from(
+      JSON.stringify([
+        WORKSPACE_ID,
+        '2026-07-15T00:00:00.000Z',
+        '00000000-0000-0000-0000-000000000001',
+      ]) + '   ',
+    ).toString('base64url');
+    const response = await listWorkspaceMembersRequest(
+      appInstance,
+      WORKSPACE_ID,
+      { cursor: nonCanonical },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).not.toBe(500);
+    expect(response.json().code).toBe('bad-request');
   });
 
   it('returns 400 for a non-numeric limit', async () => {
@@ -297,6 +389,7 @@ describe('listWorkspaceMembers HTTP boundary', () => {
     });
     const appInstance = await createApplication(listSpy);
     const rawCursor = encodeMemberCursor({
+      workspaceId: WORKSPACE_ID,
       joinedAt: '2026-07-15T00:00:00.000Z',
       membershipId: '00000000-0000-0000-0000-000000000001',
     });
@@ -309,6 +402,7 @@ describe('listWorkspaceMembers HTTP boundary', () => {
     );
     expect(listSpy).toHaveBeenCalledWith(SUBJECT, WORKSPACE_ID, {
       cursor: {
+        workspaceId: WORKSPACE_ID,
         joinedAt: '2026-07-15T00:00:00.000Z',
         membershipId: '00000000-0000-0000-0000-000000000001',
       },
@@ -326,6 +420,40 @@ describe('listWorkspaceMembers HTTP boundary', () => {
       cursor: undefined,
       limit: 50,
     });
+  });
+
+  it('includes email when the port returns an email (positive control)', async () => {
+    const itemWithEmail: WorkspaceMember = {
+      id: '00000000-0000-0000-0000-000000000001',
+      userId: SUBJECT,
+      displayName: 'Active User',
+      email: 'active@example.test',
+      role: 'owner',
+      status: 'active',
+      joinedAt: '2026-07-15T00:00:00.000Z',
+    };
+    const appInstance = await createApplication(
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_LIST_OUTCOMES.OK,
+        page: {
+          items: [itemWithEmail],
+          pageInfo: {
+            hasNextPage: false,
+            nextCursor: null,
+          },
+        },
+      }),
+    );
+    const response = await listWorkspaceMembersRequest(
+      appInstance,
+      WORKSPACE_ID,
+      {},
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.items.length).toBe(1);
+    expect(body.items[0].email).toBe('active@example.test');
   });
 
   it('omits email from every item when the port returns no email', async () => {

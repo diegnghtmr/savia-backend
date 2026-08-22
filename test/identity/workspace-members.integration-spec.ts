@@ -432,13 +432,77 @@ describe('Workspace member roster (202607150013_workspace_member_roster.sql)', (
         pagedItems.push(...pageOutcome.page.items);
         hasNextPage = pageOutcome.page.pageInfo.hasNextPage;
         if (pageOutcome.page.pageInfo.nextCursor) {
-          cursor = decodeMemberCursor(pageOutcome.page.pageInfo.nextCursor);
+          cursor = decodeMemberCursor(
+            pageOutcome.page.pageInfo.nextCursor,
+            workspaceW,
+          );
         }
       }
 
       expect(pagedItems.map((i) => i.id)).toEqual(fullItems.map((i) => i.id));
       const ids = pagedItems.map((i) => i.id);
       expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    it('continues pagination correctly when the cursor anchor member row has been deleted', async () => {
+      const wsDeletedAnchor = '00000000-0000-0000-0000-000000001199';
+      const mem1 = '00000000-0000-0000-0000-000000001991';
+      const mem2 = '00000000-0000-0000-0000-000000001992';
+      const mem3 = '00000000-0000-0000-0000-000000001993';
+
+      await admin.query(
+        `insert into public.workspaces (id, name, kind, base_currency, created_by)
+         values ($1, 'Workspace Anchor Test', 'shared', 'USD', $2)`,
+        [wsDeletedAnchor, subjectOwner],
+      );
+
+      await admin.query(
+        `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status, joined_at)
+         values ($1, $2, $3, 'owner', 'active', '2026-07-15T01:00:00.000Z'),
+                ($4, $5, $6, 'editor', 'active', '2026-07-15T02:00:00.000Z'),
+                ($7, $8, $9, 'viewer', 'active', '2026-07-15T03:00:00.000Z')`,
+        [
+          mem1,
+          wsDeletedAnchor,
+          subjectOwner,
+          mem2,
+          wsDeletedAnchor,
+          subjectEditor,
+          mem3,
+          wsDeletedAnchor,
+          subjectViewer,
+        ],
+      );
+
+      const firstPage = await service.listWorkspaceMembers(
+        subjectOwner,
+        wsDeletedAnchor,
+        { limit: 2 },
+      );
+      expect(firstPage.kind).toBe('ok');
+      if (firstPage.kind !== 'ok') return;
+      expect(firstPage.page.items.map((i) => i.id)).toEqual([mem1, mem2]);
+      expect(firstPage.page.pageInfo.hasNextPage).toBe(true);
+      const nextCursorRaw = firstPage.page.pageInfo.nextCursor;
+      expect(nextCursorRaw).not.toBeNull();
+      const nextCursor = decodeMemberCursor(nextCursorRaw!, wsDeletedAnchor);
+
+      // Delete the anchor row mid-iteration
+      await admin.query(
+        `delete from public.workspace_memberships where id = $1`,
+        [mem2],
+      );
+
+      // Fetch next page with the cursor anchored at the deleted row
+      const secondPage = await service.listWorkspaceMembers(
+        subjectOwner,
+        wsDeletedAnchor,
+        { cursor: nextCursor, limit: 2 },
+      );
+      expect(secondPage.kind).toBe('ok');
+      if (secondPage.kind !== 'ok') return;
+      expect(secondPage.page.items.map((i) => i.id)).toEqual([mem3]);
+      expect(secondPage.page.pageInfo.hasNextPage).toBe(false);
     });
 
     it('reports hasNextPage false and nextCursor null on a final page that is exactly full', async () => {
