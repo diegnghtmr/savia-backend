@@ -384,14 +384,21 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
         'revoke update (role, status, version) on public.workspace_memberships from savia_elevated;',
       );
 
-      // 3. Re-run helper call: assert resolves without raising and value is false
-      const res = await asSubject(ownerO1, (c) =>
-        c.query(
-          'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
-          [wsTwoOwnersId, memO1Id],
+      // 3. Re-run helper call: in PostgreSQL, revoking table UPDATE privilege raises 42501 permission denied
+      // (table privileges are checked before RLS filtering for SELECT FOR UPDATE)
+      await expect(
+        asSubject(ownerO1, (c) =>
+          c.query(
+            'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
+            [wsTwoOwnersId, memO1Id],
+          ),
         ),
-      );
-      expect(res.rows[0].retains).toBe(false);
+      ).rejects.toMatchObject({
+        code: '42501',
+        message: expect.stringContaining(
+          'permission denied for table workspace_memberships',
+        ),
+      });
     } finally {
       // 4. Restore grant
       await admin.query(
@@ -491,8 +498,8 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
       expect.unreachable(
         'Creating or executing STABLE function with FOR UPDATE should have failed',
       );
-    } catch (err: any) {
-      expect(err.message).toContain(
+    } catch (err: unknown) {
+      expect((err as Error).message).toContain(
         'SELECT FOR UPDATE is not allowed in a non-volatile function',
       );
     } finally {
@@ -638,19 +645,25 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
       );
       expect(del2.rowCount).toBe(1);
 
-      // Both commit
+      // C1 commits cleanly
       await c1.query('commit');
-      await c2.query('commit');
 
-      // The deferred trigger backstop does not save this case either, because each
-      // COMMIT's check runs without seeing the other's uncommitted write.
-      // Assert zero active owners remain.
+      // Under READ COMMITTED, the deferred constraint trigger executing at C2's COMMIT time
+      // sees C1's committed deletion, detects zero active owners, and raises check_violation (23514).
+      await expect(c2.query('commit')).rejects.toMatchObject({
+        code: '23514',
+        message: expect.stringContaining(
+          'collaborative workspace must retain an active owner',
+        ),
+      });
+
+      // Assert exactly one active owner remains (O2, whose transaction was aborted)
       const rem = await admin.query(
         `select count(*)::int as count from public.workspace_memberships
          where workspace_id = $1 and role = 'owner' and status = 'active'`,
         [wsUnguardedId],
       );
-      expect(rem.rows[0].count).toBe(0);
+      expect(rem.rows[0].count).toBe(1);
     } finally {
       await c1.query('rollback').catch(() => {});
       await c2.query('rollback').catch(() => {});
