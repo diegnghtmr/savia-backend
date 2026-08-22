@@ -27,6 +27,15 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
   const unguardedO2 = subject(961);
   const concurO1 = subject(962);
   const concurO2 = subject(963);
+  const ownerDemoteSole = subject(964);
+  const ownerDemote1 = subject(965);
+  const ownerDemote2 = subject(966);
+  const ownerSuspendSole = subject(967);
+  const ownerSuspend1 = subject(968);
+  const ownerSuspend2 = subject(969);
+  const ownerProfSole = subject(970);
+  const ownerProf1 = subject(971);
+  const ownerProf2 = subject(972);
 
   const wsTwoOwnersId = '00000000-0000-0000-0000-000000001001';
   const wsOneOwnerId = '00000000-0000-0000-0000-000000001002';
@@ -35,6 +44,13 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
   const wsCascadeId = '00000000-0000-0000-0000-000000001005';
   const wsUnguardedId = '00000000-0000-0000-0000-000000001006';
   const wsConcurrentId = '00000000-0000-0000-0000-000000001007';
+  const wsConcurThreeId = '00000000-0000-0000-0000-000000001008';
+  const wsDemoteSoleId = '00000000-0000-0000-0000-000000001009';
+  const wsDemoteTwoId = '00000000-0000-0000-0000-000000001010';
+  const wsSuspendSoleId = '00000000-0000-0000-0000-000000001011';
+  const wsSuspendTwoId = '00000000-0000-0000-0000-000000001012';
+  const wsProfileSoleId = '00000000-0000-0000-0000-000000001013';
+  const wsProfileTwoId = '00000000-0000-0000-0000-000000001014';
 
   const memO1Id = '00000000-0000-0000-0000-000000001021';
   const memO2Id = '00000000-0000-0000-0000-000000001022';
@@ -49,6 +65,18 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
   const memUnguarded2Id = '00000000-0000-0000-0000-000000001031';
   const memConcur1Id = '00000000-0000-0000-0000-000000001032';
   const memConcur2Id = '00000000-0000-0000-0000-000000001033';
+  const memConcur3T1Id = '00000000-0000-0000-0000-000000001034';
+  const memConcur3T2Id = '00000000-0000-0000-0000-000000001035';
+  const memConcur3T3Id = '00000000-0000-0000-0000-000000001036';
+  const memDemoteSoleId = '00000000-0000-0000-0000-000000001037';
+  const memDemote1Id = '00000000-0000-0000-0000-000000001038';
+  const memDemote2Id = '00000000-0000-0000-0000-000000001039';
+  const memSuspendSoleId = '00000000-0000-0000-0000-000000001040';
+  const memSuspend1Id = '00000000-0000-0000-0000-000000001041';
+  const memSuspend2Id = '00000000-0000-0000-0000-000000001042';
+  const memProfSoleId = '00000000-0000-0000-0000-000000001043';
+  const memProf1Id = '00000000-0000-0000-0000-000000001044';
+  const memProf2Id = '00000000-0000-0000-0000-000000001045';
 
   async function asSubject<T>(
     subjectId: string,
@@ -93,42 +121,7 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
 
-    await admin.query(
-      `insert into auth.users (id, email) values
-       ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10),
-       ($11, $12), ($13, $14), ($15, $16), ($17, $18), ($19, $20),
-       ($21, $22), ($23, $24), ($25, $26)`,
-      [
-        ownerO1,
-        'owner-o1@example.test',
-        ownerO2,
-        'owner-o2@example.test',
-        adminA,
-        'admin-a@example.test',
-        ownerS,
-        'owner-s@example.test',
-        ownerT1,
-        'owner-t1@example.test',
-        ownerT2,
-        'owner-t2@example.test',
-        ownerT3,
-        'owner-t3@example.test',
-        personalOwner,
-        'personal-owner@example.test',
-        cascadeOwner,
-        'cascade-owner@example.test',
-        unguardedO1,
-        'unguarded-o1@example.test',
-        unguardedO2,
-        'unguarded-o2@example.test',
-        concurO1,
-        'concur-o1@example.test',
-        concurO2,
-        'concur-o2@example.test',
-      ],
-    );
-
-    for (const [id, email, name] of [
+    const seedProfiles: Array<[string, string, string]> = [
       [ownerO1, 'owner-o1@example.test', 'Owner O1'],
       [ownerO2, 'owner-o2@example.test', 'Owner O2'],
       [adminA, 'admin-a@example.test', 'Admin A'],
@@ -142,7 +135,29 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
       [unguardedO2, 'unguarded-o2@example.test', 'Unguarded O2'],
       [concurO1, 'concur-o1@example.test', 'Concur O1'],
       [concurO2, 'concur-o2@example.test', 'Concur O2'],
-    ]) {
+      [ownerDemoteSole, 'owner-demote-sole@example.test', 'Owner Demote Sole'],
+      [ownerDemote1, 'owner-demote-1@example.test', 'Owner Demote 1'],
+      [ownerDemote2, 'owner-demote-2@example.test', 'Owner Demote 2'],
+      [
+        ownerSuspendSole,
+        'owner-suspend-sole@example.test',
+        'Owner Suspend Sole',
+      ],
+      [ownerSuspend1, 'owner-suspend-1@example.test', 'Owner Suspend 1'],
+      [ownerSuspend2, 'owner-suspend-2@example.test', 'Owner Suspend 2'],
+      [ownerProfSole, 'owner-prof-sole@example.test', 'Owner Prof Sole'],
+      [ownerProf1, 'owner-prof-1@example.test', 'Owner Prof 1'],
+      [ownerProf2, 'owner-prof-2@example.test', 'Owner Prof 2'],
+    ];
+
+    for (const [id, email] of seedProfiles) {
+      await admin.query(`insert into auth.users (id, email) values ($1, $2)`, [
+        id,
+        email,
+      ]);
+    }
+
+    for (const [id, email, name] of seedProfiles) {
       await admin.query(
         `insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency, privacy_mode_enabled)
          values ($1, $2, $3, 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', false)`,
@@ -275,6 +290,126 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
         concurO2,
       ],
     );
+
+    // Seed wsConcurThree (shared, owners ownerT1, ownerT2, ownerT3)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Concurrent Three Owners Workspace', 'shared', 'USD', null, $2)`,
+      [wsConcurThreeId, ownerT1],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+       values ($1, $2, $3, 'owner', 'active'),
+              ($4, $5, $6, 'owner', 'active'),
+              ($7, $8, $9, 'owner', 'active')`,
+      [
+        memConcur3T1Id,
+        wsConcurThreeId,
+        ownerT1,
+        memConcur3T2Id,
+        wsConcurThreeId,
+        ownerT2,
+        memConcur3T3Id,
+        wsConcurThreeId,
+        ownerT3,
+      ],
+    );
+
+    // Seed wsDemoteSole (shared, ownerDemoteSole)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Demote Sole Workspace', 'shared', 'USD', null, $2)`,
+      [wsDemoteSoleId, ownerDemoteSole],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+       values ($1, $2, $3, 'owner', 'active')`,
+      [memDemoteSoleId, wsDemoteSoleId, ownerDemoteSole],
+    );
+
+    // Seed wsDemoteTwo (shared, ownerDemote1, ownerDemote2)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Demote Two Workspace', 'shared', 'USD', null, $2)`,
+      [wsDemoteTwoId, ownerDemote1],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+       values ($1, $2, $3, 'owner', 'active'),
+              ($4, $5, $6, 'owner', 'active')`,
+      [
+        memDemote1Id,
+        wsDemoteTwoId,
+        ownerDemote1,
+        memDemote2Id,
+        wsDemoteTwoId,
+        ownerDemote2,
+      ],
+    );
+
+    // Seed wsSuspendSole (shared, ownerSuspendSole)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Suspend Sole Workspace', 'shared', 'USD', null, $2)`,
+      [wsSuspendSoleId, ownerSuspendSole],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+       values ($1, $2, $3, 'owner', 'active')`,
+      [memSuspendSoleId, wsSuspendSoleId, ownerSuspendSole],
+    );
+
+    // Seed wsSuspendTwo (shared, ownerSuspend1, ownerSuspend2)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Suspend Two Workspace', 'shared', 'USD', null, $2)`,
+      [wsSuspendTwoId, ownerSuspend1],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+       values ($1, $2, $3, 'owner', 'active'),
+              ($4, $5, $6, 'owner', 'active')`,
+      [
+        memSuspend1Id,
+        wsSuspendTwoId,
+        ownerSuspend1,
+        memSuspend2Id,
+        wsSuspendTwoId,
+        ownerSuspend2,
+      ],
+    );
+
+    // Seed wsProfileSole (shared, ownerProfSole, created_by adminA so deleting profile tests membership cascade)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Profile Sole Workspace', 'shared', 'USD', null, $2)`,
+      [wsProfileSoleId, adminA],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+       values ($1, $2, $3, 'owner', 'active')`,
+      [memProfSoleId, wsProfileSoleId, ownerProfSole],
+    );
+
+    // Seed wsProfileTwo (shared, ownerProf1, ownerProf2, created_by adminA)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Profile Two Workspace', 'shared', 'USD', null, $2)`,
+      [wsProfileTwoId, adminA],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+       values ($1, $2, $3, 'owner', 'active'),
+              ($4, $5, $6, 'owner', 'active')`,
+      [
+        memProf1Id,
+        wsProfileTwoId,
+        ownerProf1,
+        memProf2Id,
+        wsProfileTwoId,
+        ownerProf2,
+      ],
+    );
   });
 
   afterAll(async () => {
@@ -319,105 +454,8 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
     expect(personalRes.rows[0].retains).toBe(false);
   });
 
-  it('dropping elevated_locks_memberships collapses the helper to false WITHOUT raising, and the guard then permits removing the last owner (fail-open regression)', async () => {
-    // 1. Positive control with policy in place
-    const before = await asSubject(ownerO1, (c) =>
-      c.query(
-        'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
-        [wsTwoOwnersId, memO1Id],
-      ),
-    );
-    expect(before.rows[0].retains).toBe(true);
-
-    try {
-      // 2. Drop policy
-      await admin.query(
-        'drop policy elevated_locks_memberships on public.workspace_memberships;',
-      );
-
-      // 3. Re-run helper call: assert it resolves (does NOT reject) and returns false
-      const res = await asSubject(ownerO1, (c) =>
-        c.query(
-          'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
-          [wsTwoOwnersId, memO1Id],
-        ),
-      );
-      expect(res.rows[0].retains).toBe(false);
-
-      // 4. Assert the fail-open consequence directly: with the policy dropped,
-      // the helper answers false for a workspace that genuinely still has O2 —
-      // i.e. a caller trusting it would conclude the last owner is being removed
-      // when it is not, and symmetrically for wsOneOwner the helper can no
-      // longer distinguish 'one owner' from 'none'.
-    } finally {
-      // 5. Restore policy
-      await admin.query(`
-        create policy elevated_locks_memberships
-          on public.workspace_memberships for update to savia_elevated
-          using (true) with check (false);
-      `);
-    }
-
-    // 6. Assert restored
-    const after = await asSubject(ownerO1, (c) =>
-      c.query(
-        'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
-        [wsTwoOwnersId, memO1Id],
-      ),
-    );
-    expect(after.rows[0].retains).toBe(true);
-  });
-
-  it('revoking the elevated update (role, status, version) grant collapses the helper to false WITHOUT raising, and restoring it restores the true verdict (fail-open regression)', async () => {
-    // 1. Positive control
-    const before = await asSubject(ownerO1, (c) =>
-      c.query(
-        'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
-        [wsTwoOwnersId, memO1Id],
-      ),
-    );
-    expect(before.rows[0].retains).toBe(true);
-
-    try {
-      // 2. Revoke grant
-      await admin.query(
-        'revoke update (role, status, version) on public.workspace_memberships from savia_elevated;',
-      );
-
-      // 3. Re-run helper call: in PostgreSQL, revoking table UPDATE privilege raises 42501 permission denied
-      // (table privileges are checked before RLS filtering for SELECT FOR UPDATE)
-      await expect(
-        asSubject(ownerO1, (c) =>
-          c.query(
-            'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
-            [wsTwoOwnersId, memO1Id],
-          ),
-        ),
-      ).rejects.toMatchObject({
-        code: '42501',
-        message: expect.stringContaining(
-          'permission denied for table workspace_memberships',
-        ),
-      });
-    } finally {
-      // 4. Restore grant
-      await admin.query(
-        'grant update (role, status, version) on public.workspace_memberships to savia_elevated;',
-      );
-    }
-
-    // 5. Assert restored
-    const after = await asSubject(ownerO1, (c) =>
-      c.query(
-        'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
-        [wsTwoOwnersId, memO1Id],
-      ),
-    );
-    expect(after.rows[0].retains).toBe(true);
-  });
-
   it('as savia_elevated the locking count succeeds while a real update is refused with 42501 and the row is verifiably unchanged (with check (false) grants the lock, not the write)', async () => {
-    // 1. Locking count succeeds and returns 2 rows
+    // 1. Locking count succeeds and returns 2 rows against pristine migration state
     const lockRes = await asElevated(async (c) => {
       return c.query(
         `select 1 from public.workspace_memberships
@@ -455,6 +493,146 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
       `select rolbypassrls from pg_roles where rolname = 'savia_elevated'`,
     );
     expect(bypassRes.rows[0].rolbypassrls).toBe(false);
+
+    // 5. Identical-shape positive control: temporarily set policy to with check (true), prove update succeeds, then restore and prove refused again
+    try {
+      await admin.query(`
+        alter policy elevated_locks_memberships on public.workspace_memberships with check (true);
+      `);
+
+      const updateRes = await asElevated(async (c) => {
+        return c.query(
+          `update public.workspace_memberships set status = 'suspended' where id = $1`,
+          [memO1Id],
+        );
+      });
+      expect(updateRes.rowCount).toBe(1);
+
+      const checkUpdated = await admin.query(
+        'select status from public.workspace_memberships where id = $1',
+        [memO1Id],
+      );
+      expect(checkUpdated.rows[0].status).toBe('suspended');
+    } finally {
+      await admin.query(
+        `update public.workspace_memberships set status = 'active' where id = $1`,
+        [memO1Id],
+      );
+      await admin.query(`
+        alter policy elevated_locks_memberships on public.workspace_memberships with check (false);
+      `);
+    }
+
+    // Prove update is refused again with with check (false)
+    await expect(
+      asElevated(async (c) => {
+        return c.query(
+          `update public.workspace_memberships set status = 'suspended' where id = $1`,
+          [memO1Id],
+        );
+      }),
+    ).rejects.toMatchObject({
+      code: '42501',
+      message: expect.stringContaining(
+        'new row violates row-level security policy',
+      ),
+    });
+  });
+
+  it('dropping elevated_locks_memberships collapses the helper to false WITHOUT raising (fail-open regression)', async () => {
+    // 1. Positive control with policy in place
+    const before = await asSubject(ownerO1, (c) =>
+      c.query(
+        'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
+        [wsTwoOwnersId, memO1Id],
+      ),
+    );
+    expect(before.rows[0].retains).toBe(true);
+
+    const policyDef = await admin.query(`
+      select qual, with_check from pg_policies
+      where schemaname = 'public' and tablename = 'workspace_memberships' and policyname = 'elevated_locks_memberships'
+    `);
+    expect(policyDef.rows).toHaveLength(1);
+
+    try {
+      // 2. Drop policy
+      await admin.query(
+        'drop policy elevated_locks_memberships on public.workspace_memberships;',
+      );
+
+      // 3. Re-run helper call: assert it resolves (does NOT reject) and returns false
+      const res = await asSubject(ownerO1, (c) =>
+        c.query(
+          'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
+          [wsTwoOwnersId, memO1Id],
+        ),
+      );
+      expect(res.rows[0].retains).toBe(false);
+    } finally {
+      // 4. Restore policy using saved catalogue definition
+      await admin.query(`
+        create policy elevated_locks_memberships
+          on public.workspace_memberships for update to savia_elevated
+          using (${policyDef.rows[0].qual}) with check (${policyDef.rows[0].with_check});
+      `);
+    }
+
+    // 5. Assert restored
+    const after = await asSubject(ownerO1, (c) =>
+      c.query(
+        'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
+        [wsTwoOwnersId, memO1Id],
+      ),
+    );
+    expect(after.rows[0].retains).toBe(true);
+  });
+
+  it('revoking the elevated update (role, status, version) grant fails closed with 42501 permission denied, and restoring it restores the true verdict', async () => {
+    // 1. Positive control
+    const before = await asSubject(ownerO1, (c) =>
+      c.query(
+        'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
+        [wsTwoOwnersId, memO1Id],
+      ),
+    );
+    expect(before.rows[0].retains).toBe(true);
+
+    try {
+      // 2. Revoke grant
+      await admin.query(
+        'revoke update (role, status, version) on public.workspace_memberships from savia_elevated;',
+      );
+
+      // 3. Re-run helper call: in PostgreSQL, revoking table UPDATE privilege raises 42501 permission denied
+      await expect(
+        asSubject(ownerO1, (c) =>
+          c.query(
+            'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
+            [wsTwoOwnersId, memO1Id],
+          ),
+        ),
+      ).rejects.toMatchObject({
+        code: '42501',
+        message: expect.stringContaining(
+          'permission denied for table workspace_memberships',
+        ),
+      });
+    } finally {
+      // 4. Restore grant
+      await admin.query(
+        'grant update (role, status, version) on public.workspace_memberships to savia_elevated;',
+      );
+    }
+
+    // 5. Assert restored
+    const after = await asSubject(ownerO1, (c) =>
+      c.query(
+        'select public.collaborative_workspace_retains_active_owner($1, $2) as retains',
+        [wsTwoOwnersId, memO1Id],
+      ),
+    );
+    expect(after.rows[0].retains).toBe(true);
   });
 
   it('a STABLE copy of the helper body fails to create with "SELECT FOR UPDATE is not allowed in a non-volatile function", pinning the migration comment', async () => {
@@ -521,11 +699,39 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
     expect(procRes.rows[0].prosecdef).toBe(true);
     expect(procRes.rows[0].rolname).toBe('savia_elevated');
 
+    // Positive controls for shipped trigger function
+    const triggerProcRes = await admin.query(`
+      select p.provolatile, p.prosecdef, r.rolname
+      from pg_proc p
+      join pg_roles r on r.oid = p.proowner
+      where p.proname = 'enforce_collaborative_workspace_owner_membership'
+    `);
+    expect(triggerProcRes.rows[0].provolatile).toBe('v');
+    expect(triggerProcRes.rows[0].prosecdef).toBe(true);
+    expect(triggerProcRes.rows[0].rolname).toBe('savia_elevated');
+
     // Schema create privilege was revoked from savia_elevated (Sabotage 9 pin)
     const privRes = await admin.query(
       `select has_schema_privilege('savia_elevated', 'public', 'create') as has_create`,
     );
     expect(privRes.rows[0].has_create).toBe(false);
+
+    // Helper execute permissions: savia_application has execute, public does not
+    const helperPublicRes = await admin.query(
+      `select has_function_privilege('public', 'public.collaborative_workspace_retains_active_owner(uuid, uuid)', 'execute') as priv`,
+    );
+    expect(helperPublicRes.rows[0].priv).toBe(false);
+
+    const helperAppRes = await admin.query(
+      `select has_function_privilege('savia_application', 'public.collaborative_workspace_retains_active_owner(uuid, uuid)', 'execute') as priv`,
+    );
+    expect(helperAppRes.rows[0].priv).toBe(true);
+
+    // Trigger function execute permissions: revoked from public
+    const triggerPublicRes = await admin.query(
+      `select has_function_privilege('public', 'public.enforce_collaborative_workspace_owner_membership()', 'execute') as priv`,
+    );
+    expect(triggerPublicRes.rows[0].priv).toBe(false);
   });
 
   it('a direct delete of the sole remaining active owner of a collaborative workspace raises check_violation at COMMIT, not at statement time', async () => {
@@ -601,7 +807,8 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
     );
   });
 
-  it('two raw pg clients counting active owners WITHOUT for update both delete their target and both commit, leaving zero active owners (the hazard this slice closes)', async () => {
+  it('two raw pg transactions each deleting a DIFFERENT co-owner and committing CONCURRENTLY cannot both succeed: at least one active owner survives (positive control: a three-owner workspace lets both removals succeed)', async () => {
+    // Part A: Two-owner workspace under concurrent raw deletions without awaiting first commit
     const c1 = await admin.connect();
     const c2 = await admin.connect();
     try {
@@ -617,22 +824,7 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
         unguardedO2,
       ]);
 
-      // Both count active owners WITHOUT for update
-      const c1Count = await c1.query(
-        `select count(*)::int as count from public.workspace_memberships
-         where workspace_id = $1 and role = 'owner' and status = 'active' and id <> $2`,
-        [wsUnguardedId, memUnguarded1Id],
-      );
-      expect(c1Count.rows[0].count).toBe(1);
-
-      const c2Count = await c2.query(
-        `select count(*)::int as count from public.workspace_memberships
-         where workspace_id = $1 and role = 'owner' and status = 'active' and id <> $2`,
-        [wsUnguardedId, memUnguarded2Id],
-      );
-      expect(c2Count.rows[0].count).toBe(1);
-
-      // Both delete their target
+      // Both delete statements must be issued and complete before either commit
       const del1 = await c1.query(
         'delete from public.workspace_memberships where id = $1',
         [memUnguarded1Id],
@@ -645,31 +837,298 @@ describe('Last-owner invariant, elevated lock surface, and trigger backstop (202
       );
       expect(del2.rowCount).toBe(1);
 
-      // C1 commits cleanly
-      await c1.query('commit');
+      // Both commit promises started without awaiting the first, then settled together
+      const results = await Promise.allSettled([
+        c1.query('commit'),
+        c2.query('commit'),
+      ]);
 
-      // Under READ COMMITTED, the deferred constraint trigger executing at C2's COMMIT time
-      // sees C1's committed deletion, detects zero active owners, and raises check_violation (23514).
-      await expect(c2.query('commit')).rejects.toMatchObject({
-        code: '23514',
-        message: expect.stringContaining(
-          'collaborative workspace must retain an active owner',
-        ),
-      });
+      const rejected = results.filter((r) => r.status === 'rejected');
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
 
-      // Assert exactly one active owner remains (O2, whose transaction was aborted)
+      expect(rejected.length).toBeGreaterThanOrEqual(1);
+      expect(fulfilled.length).toBe(1);
+
+      // Assert at least 1 active owner survives
       const rem = await admin.query(
         `select count(*)::int as count from public.workspace_memberships
          where workspace_id = $1 and role = 'owner' and status = 'active'`,
         [wsUnguardedId],
       );
-      expect(rem.rows[0].count).toBe(1);
+      expect(rem.rows[0].count).toBeGreaterThanOrEqual(1);
     } finally {
       await c1.query('rollback').catch(() => {});
       await c2.query('rollback').catch(() => {});
       c1.release();
       c2.release();
     }
+
+    // Part B: Positive control on three-owner workspace letting both removals succeed
+    const c3 = await admin.connect();
+    const c4 = await admin.connect();
+    try {
+      await c3.query('begin');
+      await c3.query('set local role savia_application');
+      await c3.query("select set_config('app.subject_id', $1, true)", [
+        ownerT1,
+      ]);
+
+      const del3 = await c3.query(
+        'delete from public.workspace_memberships where id = $1',
+        [memConcur3T1Id],
+      );
+      expect(del3.rowCount).toBe(1);
+      await c3.query('commit');
+
+      await c4.query('begin');
+      await c4.query('set local role savia_application');
+      await c4.query("select set_config('app.subject_id', $1, true)", [
+        ownerT2,
+      ]);
+
+      const del4 = await c4.query(
+        'delete from public.workspace_memberships where id = $1',
+        [memConcur3T2Id],
+      );
+      expect(del4.rowCount).toBe(1);
+      await c4.query('commit');
+
+      const countThree = await admin.query(
+        `select count(*)::int as count from public.workspace_memberships
+         where workspace_id = $1 and role = 'owner' and status = 'active'`,
+        [wsConcurThreeId],
+      );
+      expect(countThree.rows[0].count).toBe(1);
+
+      const surviving = await admin.query(
+        `select profile_id from public.workspace_memberships
+         where workspace_id = $1 and role = 'owner' and status = 'active'`,
+        [wsConcurThreeId],
+      );
+      expect(surviving.rows[0].profile_id).toBe(ownerT3);
+    } finally {
+      await c3.query('rollback').catch(() => {});
+      await c4.query('rollback').catch(() => {});
+      c3.release();
+      c4.release();
+    }
+  });
+
+  it('demoting the sole active owner of a collaborative workspace to editor raises check_violation at COMMIT and the row still reads owner (positive control: demoting one of two owners succeeds)', async () => {
+    // 1. Demoting sole active owner raises check_violation at COMMIT
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query("select set_config('app.subject_id', $1, true)", [
+        ownerDemoteSole,
+      ]);
+
+      const updateRes = await client.query(
+        `update public.workspace_memberships set role = 'editor', version = version + 1 where id = $1`,
+        [memDemoteSoleId],
+      );
+      expect(updateRes.rowCount).toBe(1);
+
+      await expect(client.query('commit')).rejects.toMatchObject({
+        code: '23514',
+        message: expect.stringContaining(
+          'collaborative workspace must retain an active owner',
+        ),
+      });
+    } finally {
+      await client.query('rollback').catch(() => {});
+      client.release();
+    }
+
+    // Row still reads owner
+    const checkSole = await admin.query(
+      'select role, status from public.workspace_memberships where id = $1',
+      [memDemoteSoleId],
+    );
+    expect(checkSole.rows[0].role).toBe('owner');
+    expect(checkSole.rows[0].status).toBe('active');
+
+    // 2. Positive control: demoting one of two owners succeeds
+    const c2 = await admin.connect();
+    try {
+      await c2.query('begin');
+      await c2.query('set local role savia_application');
+      await c2.query("select set_config('app.subject_id', $1, true)", [
+        ownerDemote1,
+      ]);
+
+      const updateTwoRes = await c2.query(
+        `update public.workspace_memberships set role = 'editor', version = version + 1 where id = $1`,
+        [memDemote1Id],
+      );
+      expect(updateTwoRes.rowCount).toBe(1);
+      await c2.query('commit');
+    } finally {
+      await c2.query('rollback').catch(() => {});
+      c2.release();
+    }
+
+    const checkDemote1 = await admin.query(
+      'select role, status from public.workspace_memberships where id = $1',
+      [memDemote1Id],
+    );
+    expect(checkDemote1.rows[0].role).toBe('editor');
+
+    const checkDemote2 = await admin.query(
+      'select role, status from public.workspace_memberships where id = $1',
+      [memDemote2Id],
+    );
+    expect(checkDemote2.rows[0].role).toBe('owner');
+    expect(checkDemote2.rows[0].status).toBe('active');
+  });
+
+  it('suspending the sole active owner of a collaborative workspace raises check_violation at COMMIT and the row still reads active (positive control: suspending one of two owners succeeds)', async () => {
+    // 1. Suspending sole active owner raises check_violation at COMMIT
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query("select set_config('app.subject_id', $1, true)", [
+        ownerSuspendSole,
+      ]);
+
+      const updateRes = await client.query(
+        `update public.workspace_memberships set status = 'suspended', version = version + 1 where id = $1`,
+        [memSuspendSoleId],
+      );
+      expect(updateRes.rowCount).toBe(1);
+
+      await expect(client.query('commit')).rejects.toMatchObject({
+        code: '23514',
+        message: expect.stringContaining(
+          'collaborative workspace must retain an active owner',
+        ),
+      });
+    } finally {
+      await client.query('rollback').catch(() => {});
+      client.release();
+    }
+
+    // Row still reads active
+    const checkSole = await admin.query(
+      'select role, status from public.workspace_memberships where id = $1',
+      [memSuspendSoleId],
+    );
+    expect(checkSole.rows[0].role).toBe('owner');
+    expect(checkSole.rows[0].status).toBe('active');
+
+    // 2. Positive control: suspending one of two owners succeeds
+    const c2 = await admin.connect();
+    try {
+      await c2.query('begin');
+      await c2.query('set local role savia_application');
+      await c2.query("select set_config('app.subject_id', $1, true)", [
+        ownerSuspend1,
+      ]);
+
+      const updateTwoRes = await c2.query(
+        `update public.workspace_memberships set status = 'suspended', version = version + 1 where id = $1`,
+        [memSuspend1Id],
+      );
+      expect(updateTwoRes.rowCount).toBe(1);
+      await c2.query('commit');
+    } finally {
+      await c2.query('rollback').catch(() => {});
+      c2.release();
+    }
+
+    const checkSuspend1 = await admin.query(
+      'select role, status from public.workspace_memberships where id = $1',
+      [memSuspend1Id],
+    );
+    expect(checkSuspend1.rows[0].status).toBe('suspended');
+
+    const checkSuspend2 = await admin.query(
+      'select role, status from public.workspace_memberships where id = $1',
+      [memSuspend2Id],
+    );
+    expect(checkSuspend2.rows[0].role).toBe('owner');
+    expect(checkSuspend2.rows[0].status).toBe('active');
+  });
+
+  it('deleting a profiles row whose membership is the sole active owner of a surviving collaborative workspace is rejected at COMMIT (positive control: deleting a profile that is one of two owners succeeds)', async () => {
+    // 1. Deleting sole owner profile cascades to membership and is rejected at COMMIT
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      const delRes = await client.query(
+        'delete from public.profiles where id = $1',
+        [ownerProfSole],
+      );
+      expect(delRes.rowCount).toBe(1);
+
+      await expect(client.query('commit')).rejects.toMatchObject({
+        code: '23514',
+        message: expect.stringContaining(
+          'collaborative workspace must retain an active owner',
+        ),
+      });
+    } finally {
+      await client.query('rollback').catch(() => {});
+      client.release();
+    }
+
+    // Profile and membership remain intact
+    const checkProf = await admin.query(
+      'select 1 from public.profiles where id = $1',
+      [ownerProfSole],
+    );
+    expect(checkProf.rows).toHaveLength(1);
+
+    const checkMem = await admin.query(
+      'select role, status from public.workspace_memberships where id = $1',
+      [memProfSoleId],
+    );
+    expect(checkMem.rows).toHaveLength(1);
+    expect(checkMem.rows[0].role).toBe('owner');
+    expect(checkMem.rows[0].status).toBe('active');
+
+    // 2. Positive control: deleting a profile that is one of two owners succeeds
+    const c2 = await admin.connect();
+    try {
+      await c2.query('begin');
+      const delTwoRes = await c2.query(
+        'delete from public.profiles where id = $1',
+        [ownerProf1],
+      );
+      expect(delTwoRes.rowCount).toBe(1);
+      await c2.query('commit');
+    } finally {
+      await c2.query('rollback').catch(() => {});
+      c2.release();
+    }
+
+    const checkProf1 = await admin.query(
+      'select 1 from public.profiles where id = $1',
+      [ownerProf1],
+    );
+    expect(checkProf1.rows).toHaveLength(0);
+
+    const checkMem1 = await admin.query(
+      'select 1 from public.workspace_memberships where id = $1',
+      [memProf1Id],
+    );
+    expect(checkMem1.rows).toHaveLength(0);
+
+    const checkProf2 = await admin.query(
+      'select 1 from public.profiles where id = $1',
+      [ownerProf2],
+    );
+    expect(checkProf2.rows).toHaveLength(1);
+
+    const checkMem2 = await admin.query(
+      'select role, status from public.workspace_memberships where id = $1',
+      [memProf2Id],
+    );
+    expect(checkMem2.rows).toHaveLength(1);
+    expect(checkMem2.rows[0].role).toBe('owner');
+    expect(checkMem2.rows[0].status).toBe('active');
   });
 
   it('two concurrent removals of different co-owners serialize on the helper lock: exactly one succeeds, the loser observes false, and at least one active owner remains', async () => {
