@@ -102,6 +102,19 @@ describe('isExactBootstrapReplay', () => {
         isExactBootstrapReplay(canonical, { ...canonical, [field]: value }),
       ).toBe(false);
   });
+
+  // currencyValue accepts any code in Intl.supportedValuesOf('currency'), and both
+  // profiles.default_currency and workspaces.base_currency are
+  // `char(3) check (~ '^[A-Z]{3}$')`. Measured on PostgreSQL 18.4, a code that slips
+  // through reaches SQL as 23514, or as 22001 if it is longer than three characters,
+  // and both escape the catch-all filter as a 500 from a request body. This asserts
+  // the validator is genuinely NARROWER than the column rather than merely believed
+  // to be, and fails loudly if ICU data ever widens the accepted set.
+  it('accepts only currency codes the char(3) column check can store', () => {
+    const accepted = Intl.supportedValuesOf('currency');
+    expect(accepted.length).toBeGreaterThan(0);
+    expect(accepted.filter((code) => !/^[A-Z]{3}$/.test(code))).toEqual([]);
+  });
 });
 
 function expectViolation(action: () => unknown, field: string): void {
