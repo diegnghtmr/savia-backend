@@ -8,6 +8,7 @@ export const PROBLEM_TYPES = {
   VALIDATION_FAILED: `${BASE_URI}/validation-failed`,
   UNAUTHORIZED: `${BASE_URI}/unauthorized`,
   ONBOARDING_CONFLICT: `${BASE_URI}/onboarding-conflict`,
+  CONFLICT: `${BASE_URI}/conflict`,
   INTERNAL: `${BASE_URI}/internal`,
   OUTCOME_UNKNOWN: `${BASE_URI}/outcome-unknown`,
   BAD_REQUEST: `${BASE_URI}/bad-request`,
@@ -20,6 +21,7 @@ export interface Problem {
   readonly type: string;
   readonly title: string;
   readonly status: number;
+  readonly detail?: string;
   readonly errors?: readonly FieldViolation[];
 }
 export function sendProblem(reply: FastifyReply, problem: Problem): void {
@@ -34,6 +36,7 @@ export function sendProblem(reply: FastifyReply, problem: Problem): void {
       code,
       traceId: reply.request.id,
       instance: reply.request.url,
+      ...(problem.detail === undefined ? {} : { detail: problem.detail }),
       ...(problem.errors === undefined ? {} : { errors: problem.errors }),
     });
 }

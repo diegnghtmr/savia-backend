@@ -18,10 +18,27 @@ describe('validateIdempotencyKey', () => {
     });
   });
 
-  it('accepts a valid 255-character string', () => {
-    const key = 'k'.repeat(255);
+  it('accepts a valid UUID in uppercase (case-insensitive)', () => {
+    const key = '9B1DEB4D-3B7D-4BAD-9BDD-2B0D7B3DCB6D';
     const result = validateIdempotencyKey(key);
     expect(result).toEqual({ kind: 'ok', key });
+  });
+
+  it('rejects not-a-uuid string', () => {
+    const result = validateIdempotencyKey('not-a-uuid');
+    expect(result).toEqual({
+      kind: 'invalid',
+      reason: 'Idempotency-Key must be a valid UUID.',
+    });
+  });
+
+  it('rejects a 255-character non-UUID string', () => {
+    const key = 'k'.repeat(255);
+    const result = validateIdempotencyKey(key);
+    expect(result).toEqual({
+      kind: 'invalid',
+      reason: 'Idempotency-Key must be a valid UUID.',
+    });
   });
 
   it.each([

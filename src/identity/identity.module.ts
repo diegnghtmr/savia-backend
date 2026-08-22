@@ -71,16 +71,21 @@ import { WorkspaceService } from './workspace.service.js';
     },
     { provide: PROFILE_PORT, useExisting: ProfileService },
     PostgresWorkspaceAdapter,
+    PostgresIdempotencyAdapter,
     {
       provide: WorkspaceService,
-      inject: [PgTransaction, PostgresWorkspaceAdapter],
+      inject: [
+        PgTransaction,
+        PostgresWorkspaceAdapter,
+        PostgresIdempotencyAdapter,
+      ],
       useFactory: (
         transaction: PgTransaction,
         adapter: PostgresWorkspaceAdapter,
-      ) => new WorkspaceService(transaction, adapter),
+        idempotency: PostgresIdempotencyAdapter,
+      ) => new WorkspaceService(transaction, adapter, idempotency),
     },
     { provide: WORKSPACE_PORT, useExisting: WorkspaceService },
-    PostgresIdempotencyAdapter,
     {
       provide: IdempotencyService,
       inject: [PgTransaction, PostgresIdempotencyAdapter],

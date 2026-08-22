@@ -1,3 +1,6 @@
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export interface IdempotencyKeyValid {
   readonly kind: 'ok';
   readonly key: string;
@@ -33,10 +36,19 @@ export function validateIdempotencyKey(input: unknown): IdempotencyKeyResult {
     };
   }
 
+  // The authority declares maxLength: 255, which is redundant once the format is a UUID,
+  // but kept explicitly for defense in depth.
   if (trimmed.length > 255) {
     return {
       kind: 'invalid',
       reason: 'Idempotency-Key must be at most 255 characters.',
+    };
+  }
+
+  if (!UUID_PATTERN.test(trimmed)) {
+    return {
+      kind: 'invalid',
+      reason: 'Idempotency-Key must be a valid UUID.',
     };
   }
 

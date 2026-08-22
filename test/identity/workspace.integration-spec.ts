@@ -3,10 +3,20 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { PgTransaction } from '../../src/identity/pg-transaction.js';
 import { PostgresWorkspaceAdapter } from '../../src/identity/postgres-workspace.adapter.js';
+import { PostgresIdempotencyAdapter } from '../../src/identity/postgres-idempotency.adapter.js';
+import { IDEMPOTENCY_OUTCOME_KINDS } from '../../src/identity/idempotency.port.js';
+import { IdempotencyService } from '../../src/identity/idempotency.service.js';
 import { PostgresConfig } from '../../src/identity/postgres-config.js';
 import { PostgresPool } from '../../src/identity/postgres-pool.js';
-import { decodeCursor } from '../../src/identity/workspace.port.js';
-import { WorkspaceService } from '../../src/identity/workspace.service.js';
+import type { WorkspaceCreateCommand } from '../../src/identity/workspace-command.js';
+import {
+  decodeCursor,
+  WORKSPACE_CREATE_OUTCOME_KINDS,
+} from '../../src/identity/workspace.port.js';
+import {
+  WorkspaceService,
+  type WorkspaceStore,
+} from '../../src/identity/workspace.service.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -19,6 +29,8 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   let pool: PostgresPool;
   let transaction: PgTransaction;
   const adapter = new PostgresWorkspaceAdapter();
+  const idempotencyAdapter = new PostgresIdempotencyAdapter();
+  let idempotencyService: IdempotencyService;
   let service: WorkspaceService;
 
   const subjectOwner = subject(700);
@@ -28,6 +40,8 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   const subjectAdmin = subject(704);
   const subjectPaginator = subject(710);
   const subjectExactFull = subject(711);
+  const subjectCreator = subject(720);
+  const subjectCreator2 = subject(721);
 
   const sharedWorkspaceId = '00000000-0000-0000-0000-000000000750';
   const ws1Id = '00000000-0000-0000-0000-000000000801';
@@ -46,10 +60,14 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     admin = new Pool({ connectionString: url });
     pool = new PostgresPool(PostgresConfig.fromUrl(url));
     transaction = new PgTransaction(pool, { callbackTimeoutMs: 3_000 });
-    service = new WorkspaceService(transaction, adapter);
+    idempotencyService = new IdempotencyService(
+      transaction,
+      idempotencyAdapter,
+    );
+    service = new WorkspaceService(transaction, adapter, idempotencyAdapter);
 
     await admin.query(
-      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12), ($13, $14)`,
+      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12), ($13, $14), ($15, $16), ($17, $18)`,
       [
         subjectOwner,
         'owner@example.test',
@@ -65,6 +83,10 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         'paginator@example.test',
         subjectExactFull,
         'exactfull@example.test',
+        subjectCreator,
+        'creator@example.test',
+        subjectCreator2,
+        'creator2@example.test',
       ],
     );
 
@@ -76,6 +98,8 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       [subjectAdmin, 'admin@example.test', 'Admin User'],
       [subjectPaginator, 'paginator@example.test', 'Paginator User'],
       [subjectExactFull, 'exactfull@example.test', 'Exact Full User'],
+      [subjectCreator, 'creator@example.test', 'Creator User'],
+      [subjectCreator2, 'creator2@example.test', 'Creator User 2'],
     ]) {
       await admin.query(
         `insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency, privacy_mode_enabled)
@@ -330,13 +354,19 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
 
       // Create a store where workspace IS readable (returns row) but membership is absent (undefined),
       // isolating the membership === undefined branch.
-      const isolatedStore: typeof adapter = {
+      const isolatedStore: WorkspaceStore = {
         readMembership: async () => undefined,
         readWorkspace: (...args) => adapter.readWorkspace(...args),
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        createWorkspace: (...args) => adapter.createWorkspace(...args),
+        createMembership: (...args) => adapter.createMembership(...args),
         update: (...args) => adapter.update(...args),
       };
-      const isolatedService = new WorkspaceService(transaction, isolatedStore);
+      const isolatedService = new WorkspaceService(
+        transaction,
+        isolatedStore,
+        idempotencyAdapter,
+      );
       const outcome = await isolatedService.update(
         subjectOwner,
         sharedWorkspaceId,
@@ -405,18 +435,21 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     it('returns not-found when active owner attempts to update an absent workspace row', async () => {
       // Store where caller has an active owner membership, but workspace row is absent,
       // isolating the workspace === undefined branch.
-      const absentWorkspaceStore: typeof adapter = {
+      const absentWorkspaceStore: WorkspaceStore = {
         readMembership: async () => ({
           role: 'owner',
           status: 'active',
         }),
         readWorkspace: async () => undefined,
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        createWorkspace: (...args) => adapter.createWorkspace(...args),
+        createMembership: (...args) => adapter.createMembership(...args),
         update: (...args) => adapter.update(...args),
       };
       const absentWorkspaceService = new WorkspaceService(
         transaction,
         absentWorkspaceStore,
+        idempotencyAdapter,
       );
       const outcome = await absentWorkspaceService.update(
         subjectOwner,
@@ -469,7 +502,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     });
 
     it('covers service mapping only: returns version-conflict when store.update returns undefined and re-read version differs', async () => {
-      const mockStore: typeof adapter = {
+      const mockStore: WorkspaceStore = {
         readMembership: (...args) => adapter.readMembership(...args),
         readWorkspace: vi
           .fn()
@@ -481,9 +514,15 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
             return row ? { ...row, version: row.version + 1 } : undefined;
           }),
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        createWorkspace: (...args) => adapter.createWorkspace(...args),
+        createMembership: (...args) => adapter.createMembership(...args),
         update: async () => undefined, // simulates rowCount === 0 from concurrent bump
       };
-      const concurrentService = new WorkspaceService(transaction, mockStore);
+      const concurrentService = new WorkspaceService(
+        transaction,
+        mockStore,
+        idempotencyAdapter,
+      );
       const outcome = await concurrentService.update(
         subjectOwner,
         sharedWorkspaceId,
@@ -498,7 +537,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       expect(readBefore.kind).toBe('ok');
       if (readBefore.kind !== 'ok') throw new Error('unreachable');
 
-      const hookedStore: typeof adapter = {
+      const hookedStore: WorkspaceStore = {
         readMembership: (...args) => adapter.readMembership(...args),
         readWorkspace: async (client, id) => {
           const ws = await adapter.readWorkspace(client, id);
@@ -509,12 +548,15 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
           return ws;
         },
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        createWorkspace: (...args) => adapter.createWorkspace(...args),
+        createMembership: (...args) => adapter.createMembership(...args),
         update: (...args) => adapter.update(...args),
       };
 
       const realConcurrentService = new WorkspaceService(
         transaction,
         hookedStore,
+        idempotencyAdapter,
       );
       const outcome = await realConcurrentService.update(
         subjectOwner,
@@ -536,10 +578,12 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       expect(readBefore.kind).toBe('ok');
       if (readBefore.kind !== 'ok') throw new Error('unreachable');
 
-      const revokedStore: typeof adapter = {
+      const revokedStore: WorkspaceStore = {
         readMembership: (...args) => adapter.readMembership(...args),
         readWorkspace: (...args) => adapter.readWorkspace(...args),
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
+        createWorkspace: (...args) => adapter.createWorkspace(...args),
+        createMembership: (...args) => adapter.createMembership(...args),
         update: async (client, id, cmd, expected) => {
           await admin.query(
             "update public.workspace_memberships set role = 'viewer' where workspace_id = $1 and profile_id = $2",
@@ -556,7 +600,11 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         },
       };
 
-      const revokedService = new WorkspaceService(transaction, revokedStore);
+      const revokedService = new WorkspaceService(
+        transaction,
+        revokedStore,
+        idempotencyAdapter,
+      );
       const outcome = await revokedService.update(
         subjectOwner,
         sharedWorkspaceId,
@@ -570,6 +618,206 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       expect(readAfter.kind).toBe('ok');
       if (readAfter.kind !== 'ok') throw new Error('unreachable');
       expect(readAfter.workspace.name).toBe(readBefore.workspace.name);
+    });
+  });
+
+  describe('WorkspaceService.create', () => {
+    it('an active creator creates a collaborative workspace stamping created_by and owner membership', async () => {
+      const key = 'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c01';
+      const command: WorkspaceCreateCommand = {
+        name: 'Created Family Workspace',
+        kind: 'family',
+        baseCurrency: 'USD',
+      };
+
+      const outcome = await service.create(subjectCreator, command, key);
+      expect(outcome.kind).toBe(WORKSPACE_CREATE_OUTCOME_KINDS.CREATED);
+      if (outcome.kind !== WORKSPACE_CREATE_OUTCOME_KINDS.CREATED) return;
+
+      expect(outcome.workspace).toEqual({
+        id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        name: 'Created Family Workspace',
+        kind: 'family',
+        baseCurrency: 'USD',
+        role: 'owner',
+        createdAt: expect.stringMatching(
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+        ),
+        version: 1,
+      });
+
+      // Verify directly in database under elevated connection
+      const wsResult = await admin.query<{
+        created_by: string;
+        name: string;
+        kind: string;
+        base_currency: string;
+        version: number;
+      }>(
+        'select created_by, name, kind, base_currency, version from public.workspaces where id = $1',
+        [outcome.workspace.id],
+      );
+      expect(wsResult.rows).toHaveLength(1);
+      expect(wsResult.rows[0]?.created_by).toBe(subjectCreator);
+      expect(wsResult.rows[0]?.name).toBe('Created Family Workspace');
+      expect(wsResult.rows[0]?.kind).toBe('family');
+      expect(wsResult.rows[0]?.base_currency).toBe('USD');
+      expect(wsResult.rows[0]?.version).toBe(1);
+
+      const memResult = await admin.query<{ role: string; status: string }>(
+        'select role, status from public.workspace_memberships where workspace_id = $1 and profile_id = $2',
+        [outcome.workspace.id, subjectCreator],
+      );
+      expect(memResult.rows).toHaveLength(1);
+      expect(memResult.rows[0]?.role).toBe('owner');
+      expect(memResult.rows[0]?.status).toBe('active');
+    });
+
+    it('atomicity: rolled back transaction leaves 0 orphaned workspace rows when membership fails after workspace insert', async () => {
+      const key = 'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c02';
+      const command: WorkspaceCreateCommand = {
+        name: 'Atomicity Rolled Back Workspace',
+        kind: 'shared',
+        baseCurrency: 'USD',
+      };
+
+      let insertedWorkspaceId: string | undefined;
+      const failingStore: WorkspaceStore = {
+        readMembership: adapter.readMembership.bind(adapter),
+        readWorkspace: adapter.readWorkspace.bind(adapter),
+        listWorkspaces: adapter.listWorkspaces.bind(adapter),
+        update: adapter.update.bind(adapter),
+        createWorkspace: async (client, sub, cmd) => {
+          const record = await adapter.createWorkspace(client, sub, cmd);
+          insertedWorkspaceId = record.id;
+          return record;
+        },
+        createMembership: async () => {
+          throw new Error('Simulated membership insert failure');
+        },
+      };
+
+      const failingService = new WorkspaceService(
+        transaction,
+        failingStore,
+        idempotencyAdapter,
+      );
+
+      await expect(
+        failingService.create(subjectCreator, command, key),
+      ).rejects.toThrow('Simulated membership insert failure');
+
+      expect(insertedWorkspaceId).toBeDefined();
+
+      // Assert count(*) = 0 for that workspace ID
+      const countResult = await admin.query<{ count: string }>(
+        'select count(*) as count from public.workspaces where id = $1',
+        [insertedWorkspaceId],
+      );
+      expect(countResult.rows[0]?.count).toBe('0');
+
+      // Assert no idempotency record was committed
+      const idempResult = await admin.query<{ count: string }>(
+        'select count(*) as count from public.command_idempotency_records where idempotency_key = $1',
+        [key],
+      );
+      expect(idempResult.rows[0]?.count).toBe('0');
+    });
+
+    it('identical replay returns the stored outcome without inserting a second workspace', async () => {
+      const key = 'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c03';
+      const command: WorkspaceCreateCommand = {
+        name: 'Replay Workspace Testing',
+        kind: 'family',
+        baseCurrency: 'EUR',
+      };
+
+      const firstOutcome = await service.create(subjectCreator, command, key);
+      expect(firstOutcome.kind).toBe(WORKSPACE_CREATE_OUTCOME_KINDS.CREATED);
+      if (firstOutcome.kind !== WORKSPACE_CREATE_OUTCOME_KINDS.CREATED) return;
+
+      const secondOutcome = await service.create(subjectCreator, command, key);
+      expect(secondOutcome.kind).toBe(WORKSPACE_CREATE_OUTCOME_KINDS.REPLAYED);
+      if (secondOutcome.kind !== WORKSPACE_CREATE_OUTCOME_KINDS.REPLAYED)
+        return;
+
+      expect(secondOutcome.status).toBe(201);
+      expect(secondOutcome.etag).toBe(`"${firstOutcome.workspace.version}"`);
+      expect(secondOutcome.body).toEqual(firstOutcome.workspace);
+
+      // Assert workspace count in database stays 1
+      const countResult = await admin.query<{ count: string }>(
+        'select count(*) as count from public.workspaces where name = $1 and created_by = $2',
+        ['Replay Workspace Testing', subjectCreator],
+      );
+      expect(countResult.rows[0]?.count).toBe('1');
+    });
+
+    it('same idempotency key with different payload returns idempotency conflict', async () => {
+      const key = 'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c04';
+      const initialCommand: WorkspaceCreateCommand = {
+        name: 'Initial Workspace',
+        kind: 'family',
+        baseCurrency: 'USD',
+      };
+
+      const firstOutcome = await service.create(
+        subjectCreator,
+        initialCommand,
+        key,
+      );
+      expect(firstOutcome.kind).toBe(WORKSPACE_CREATE_OUTCOME_KINDS.CREATED);
+
+      const mutatedCommand: WorkspaceCreateCommand = {
+        name: 'Mutated Workspace Name',
+        kind: 'family',
+        baseCurrency: 'USD',
+      };
+
+      const conflictOutcome = await service.create(
+        subjectCreator,
+        mutatedCommand,
+        key,
+      );
+      expect(conflictOutcome.kind).toBe(
+        WORKSPACE_CREATE_OUTCOME_KINDS.IDEMPOTENCY_CONFLICT,
+      );
+    });
+
+    it('same key on different route templates executes independently', async () => {
+      const key = 'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c05';
+      const command: WorkspaceCreateCommand = {
+        name: 'Route Isolation Workspace',
+        kind: 'family',
+        baseCurrency: 'USD',
+      };
+
+      const workspaceOutcome = await service.create(
+        subjectCreator2,
+        command,
+        key,
+      );
+      expect(workspaceOutcome.kind).toBe(
+        WORKSPACE_CREATE_OUTCOME_KINDS.CREATED,
+      );
+
+      // Execute another route template with same key
+      let otherExecuted = false;
+      const otherOutcome = await idempotencyService.execute(
+        {
+          subject: subjectCreator2,
+          route: 'DELETE /v1/workspaces/{workspaceId}',
+          idempotencyKey: key,
+          payload: { workspaceId: '00000000-0000-0000-0000-000000000001' },
+        },
+        async () => {
+          otherExecuted = true;
+          return { status: 204, etag: null, body: null };
+        },
+      );
+
+      expect(otherOutcome.kind).toBe(IDEMPOTENCY_OUTCOME_KINDS.EXECUTED);
+      expect(otherExecuted).toBe(true);
     });
   });
 });

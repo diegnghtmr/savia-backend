@@ -179,6 +179,18 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
         items: [],
         pageInfo: { hasNextPage: false, nextCursor: null },
       }),
+      create: vi.fn<WorkspacePort['create']>().mockResolvedValue({
+        kind: 'created',
+        workspace: {
+          id: TEST_AGGREGATE.workspaceId,
+          name: 'Acme Family',
+          kind: 'family',
+          baseCurrency: 'USD',
+          role: 'owner',
+          createdAt: '2026-07-15T00:00:00.000Z',
+          version: 1,
+        },
+      }),
       update: vi.fn<WorkspacePort['update']>().mockResolvedValue({
         kind: 'version-conflict',
       }),
@@ -391,6 +403,71 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
     expect(isValid).toBe(true);
   });
 
+  it('validates live POST /v1/workspaces response body against its declared 201 schema', async () => {
+    const document = loadBundledContract();
+    const validateWorkspaceResponse = compileResponseValidator(
+      document,
+      '/v1/workspaces',
+      'POST',
+      '201',
+    );
+
+    app = await createApplication();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces',
+      headers: {
+        authorization: `Bearer ${TEST_TOKEN}`,
+        'idempotency-key': '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb01',
+      },
+      payload: {
+        name: 'Acme Family',
+        kind: 'family',
+        baseCurrency: 'USD',
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const payload = JSON.parse(response.payload);
+
+    const isValid = validateWorkspaceResponse(payload);
+    expect(validateWorkspaceResponse.errors).toBeNull();
+    expect(isValid).toBe(true);
+  });
+
+  it('validates live POST /v1/workspaces 422 response body against its declared ProblemDetails schema', async () => {
+    const document = loadBundledContract();
+    const validateUnprocessable = compileResponseValidator(
+      document,
+      '/v1/workspaces',
+      'POST',
+      '422',
+      'application/problem+json',
+    );
+
+    app = await createApplication();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces',
+      headers: {
+        authorization: `Bearer ${TEST_TOKEN}`,
+        'idempotency-key': '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb01',
+      },
+      payload: {
+        name: 'Invalid',
+        kind: 'personal',
+        baseCurrency: 'USD',
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    const payload = JSON.parse(response.payload);
+
+    const isValid = validateUnprocessable(payload);
+    expect(validateUnprocessable.errors).toBeNull();
+    expect(isValid).toBe(true);
+  });
+
   it('proves the validator rejects non-conforming mutated payloads', () => {
     const document = loadBundledContract();
     const validateHealthResponse = compileResponseValidator(
@@ -402,6 +479,12 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
     const validateOnboardingResponse = compileResponseValidator(
       document,
       '/v1/onboarding',
+      'POST',
+      '201',
+    );
+    const validateWorkspaceResponse = compileResponseValidator(
+      document,
+      '/v1/workspaces',
       'POST',
       '201',
     );
@@ -462,6 +545,27 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
         expect.objectContaining({
           keyword: 'type',
           params: { type: 'string' },
+        }),
+      ]),
+    );
+
+    // Workspace mutation 1: drop required field 'version'
+    const invalidWorkspaceMissingVersion = {
+      id: '9a8b7c6d-5e4f-4a3b-8c9d-0e1f2a3b4c5d',
+      name: 'Acme',
+      kind: 'family',
+      baseCurrency: 'USD',
+      role: 'owner',
+      createdAt: '2026-07-15T00:00:00.000Z',
+    };
+    expect(validateWorkspaceResponse(invalidWorkspaceMissingVersion)).toBe(
+      false,
+    );
+    expect(validateWorkspaceResponse.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          keyword: 'required',
+          params: { missingProperty: 'version' },
         }),
       ]),
     );

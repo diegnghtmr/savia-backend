@@ -81,6 +81,7 @@ describe('health endpoint', () => {
       'POST /v1/onboarding',
       'GET /v1/me',
       'PATCH /v1/me',
+      'POST /v1/workspaces',
       'GET /v1/workspaces',
       'GET /v1/workspaces/:workspaceId',
       'PATCH /v1/workspaces/:workspaceId',

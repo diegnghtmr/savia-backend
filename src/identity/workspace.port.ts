@@ -1,4 +1,7 @@
-import type { WorkspaceUpdateCommand } from './workspace-command.js';
+import type {
+  WorkspaceCreateCommand,
+  WorkspaceUpdateCommand,
+} from './workspace-command.js';
 
 export const WORKSPACE_PORT = Symbol('WorkspacePort');
 
@@ -70,6 +73,35 @@ export type WorkspaceAccess =
   | WorkspaceAccessOk
   | WorkspaceAccessForbidden
   | WorkspaceAccessNotFound;
+
+export const WORKSPACE_CREATE_OUTCOME_KINDS = {
+  CREATED: 'created',
+  REPLAYED: 'replayed',
+  IDEMPOTENCY_CONFLICT: 'idempotency-conflict',
+} as const;
+export type WorkspaceCreateOutcomeKind =
+  (typeof WORKSPACE_CREATE_OUTCOME_KINDS)[keyof typeof WORKSPACE_CREATE_OUTCOME_KINDS];
+
+export interface WorkspaceCreateCreatedOutcome {
+  readonly kind: typeof WORKSPACE_CREATE_OUTCOME_KINDS.CREATED;
+  readonly workspace: Workspace;
+}
+
+export interface WorkspaceCreateReplayedOutcome {
+  readonly kind: typeof WORKSPACE_CREATE_OUTCOME_KINDS.REPLAYED;
+  readonly status: number;
+  readonly etag: string | null;
+  readonly body: unknown;
+}
+
+export interface WorkspaceCreateConflictOutcome {
+  readonly kind: typeof WORKSPACE_CREATE_OUTCOME_KINDS.IDEMPOTENCY_CONFLICT;
+}
+
+export type WorkspaceCreateOutcome =
+  | WorkspaceCreateCreatedOutcome
+  | WorkspaceCreateReplayedOutcome
+  | WorkspaceCreateConflictOutcome;
 
 export interface WorkspaceUpdateOk {
   readonly kind: typeof WORKSPACE_UPDATE_OUTCOMES.OK;
@@ -162,6 +194,11 @@ export function decodeCursor(raw: string): WorkspaceCursor | undefined {
 export interface WorkspacePort {
   read(subject: string, workspaceId: string): Promise<WorkspaceAccess>;
   list(subject: string, query: WorkspaceListQuery): Promise<WorkspacePage>;
+  create(
+    subject: string,
+    command: WorkspaceCreateCommand,
+    idempotencyKey: string,
+  ): Promise<WorkspaceCreateOutcome>;
   update(
     subject: string,
     workspaceId: string,

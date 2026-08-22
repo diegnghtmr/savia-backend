@@ -1,8 +1,12 @@
 import type { TransactionClient } from './pg-transaction.js';
-import type { WorkspaceUpdateCommand } from './workspace-command.js';
+import type {
+  WorkspaceCreateCommand,
+  WorkspaceUpdateCommand,
+} from './workspace-command.js';
 import type {
   Workspace,
   WorkspaceCursor,
+  WorkspaceMemberStatus,
   WorkspaceRole,
 } from './workspace.port.js';
 import type {
@@ -45,6 +49,34 @@ export class PostgresWorkspaceAdapter implements WorkspaceStore {
           : String(row.createdAt),
       version: row.version,
     };
+  }
+
+  public async createWorkspace(
+    client: TransactionClient,
+    subject: string,
+    command: WorkspaceCreateCommand,
+  ): Promise<{ id: string }> {
+    const id = crypto.randomUUID();
+    await client.query(
+      `insert into public.workspaces (id, name, kind, base_currency, created_by)
+values ($1, $2, $3, $4, $5)`,
+      [id, command.name, command.kind, command.baseCurrency, subject],
+    );
+    return { id };
+  }
+
+  public async createMembership(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    role: WorkspaceRole,
+    status: WorkspaceMemberStatus,
+  ): Promise<void> {
+    await client.query(
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+values ($1, $2, $3, $4)`,
+      [workspaceId, subject, role, status],
+    );
   }
 
   public async listWorkspaces(
