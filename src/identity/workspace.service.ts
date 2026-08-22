@@ -177,10 +177,7 @@ export class WorkspaceService implements WorkspacePort {
         typeof expectedVersion === 'number'
           ? [expectedVersion]
           : expectedVersion;
-      if (
-        versions !== undefined &&
-        !versions.includes(workspace.version)
-      ) {
+      if (versions !== undefined && !versions.includes(workspace.version)) {
         return { kind: WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT };
       }
 

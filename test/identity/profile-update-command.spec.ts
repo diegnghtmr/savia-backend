@@ -107,8 +107,7 @@ describe('createProfileUpdateCommand', () => {
 
     const exact121CodePoints = '\u{1F600}' + 'a'.repeat(120);
     expectViolation(
-      () =>
-        createProfileUpdateCommand({ displayName: exact121CodePoints }),
+      () => createProfileUpdateCommand({ displayName: exact121CodePoints }),
       (violations) => {
         expect(violations).toContainEqual(
           expect.objectContaining({

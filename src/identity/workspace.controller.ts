@@ -189,9 +189,7 @@ export class WorkspaceController {
     let expectedVersions: number | readonly number[] | undefined;
     if (ifMatch.kind === 'versions') {
       expectedVersions =
-        ifMatch.versions.length === 1
-          ? ifMatch.versions[0]
-          : ifMatch.versions;
+        ifMatch.versions.length === 1 ? ifMatch.versions[0] : ifMatch.versions;
     } else if (ifMatch.kind === 'any') {
       // If-Match: * requires representation to exist; if absent or forbidden,
       // workspace.update will answer NOT_FOUND (404) or FORBIDDEN (403).
