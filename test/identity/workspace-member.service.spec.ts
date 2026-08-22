@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import type { TransactionClient } from '../../src/identity/pg-transaction.js';
 import {
   decodeMemberCursor,
-  encodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   type WorkspaceMember,
 } from '../../src/identity/workspace-member.port.js';
