@@ -145,7 +145,10 @@ describe('Workspace member roster (202607150013_workspace_member_roster.sql)', (
   describe('workspace_member_roster projection', () => {
     it('a plain left join to public.profiles returns the caller own display_name (positive control)', async () => {
       const result = await asSubject(subjectOwner, async (client) => {
-        return client.query<{ profile_id: string; display_name: string | null }>(
+        return client.query<{
+          profile_id: string;
+          display_name: string | null;
+        }>(
           `select membership.profile_id, profile.display_name
              from public.workspace_memberships membership
              left join public.profiles profile on profile.id = membership.profile_id
@@ -160,7 +163,10 @@ describe('Workspace member roster (202607150013_workspace_member_roster.sql)', (
 
     it('a plain left join to public.profiles returns NULL for a peer display_name', async () => {
       const result = await asSubject(subjectOwner, async (client) => {
-        return client.query<{ profile_id: string; display_name: string | null }>(
+        return client.query<{
+          profile_id: string;
+          display_name: string | null;
+        }>(
           `select membership.profile_id, profile.display_name
              from public.workspace_memberships membership
              left join public.profiles profile on profile.id = membership.profile_id
@@ -177,10 +183,10 @@ describe('Workspace member roster (202607150013_workspace_member_roster.sql)', (
 
     it('workspace_member_roster returns a non-NULL display_name for every peer', async () => {
       const result = await asSubject(subjectOwner, async (client) => {
-        return client.query<{ profile_id: string; display_name: string | null }>(
-          `select * from public.workspace_member_roster($1)`,
-          [workspaceW],
-        );
+        return client.query<{
+          profile_id: string;
+          display_name: string | null;
+        }>(`select * from public.workspace_member_roster($1)`, [workspaceW]);
       });
       const peerRows = result.rows.filter((r) => r.profile_id !== subjectOwner);
       expect(peerRows.length).toBeGreaterThan(0);

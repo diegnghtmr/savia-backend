@@ -4,10 +4,7 @@ import type {
   WorkspaceMemberCursor,
 } from './workspace-member.port.js';
 import type { WorkspaceMemberStore } from './workspace-member.service.js';
-import type {
-  WorkspaceMemberStatus,
-  WorkspaceRole,
-} from './workspace.port.js';
+import type { WorkspaceMemberStatus, WorkspaceRole } from './workspace.port.js';
 import type { WorkspaceMembershipRecord } from './workspace.service.js';
 
 export class PostgresWorkspaceMemberAdapter implements WorkspaceMemberStore {
