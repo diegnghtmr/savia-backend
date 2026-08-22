@@ -73,6 +73,7 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
       const nextCursor =
         hasNextPage && lastItem !== undefined
           ? encodeMemberCursor({
+              workspaceId,
               joinedAt: lastItem.joinedAt,
               membershipId: lastItem.id,
             })

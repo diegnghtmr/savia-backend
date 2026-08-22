@@ -260,7 +260,7 @@ export class WorkspaceController {
 
     let cursor: WorkspaceMemberCursor | undefined;
     if (cursorParam !== undefined) {
-      cursor = decodeMemberCursor(cursorParam);
+      cursor = decodeMemberCursor(cursorParam, workspaceId);
       if (cursor === undefined) {
         sendProblem(reply, {
           type: PROBLEM_TYPES.BAD_REQUEST,
