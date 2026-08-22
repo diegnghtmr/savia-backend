@@ -191,7 +191,20 @@ export class WorkspaceService implements WorkspacePort {
         versions,
       );
       if (updated === undefined) {
-        return { kind: WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT };
+        // A zero-row UPDATE has three distinct causes:
+        // 1. The workspace was deleted mid-transaction -> not-found (404)
+        // 2. A concurrent update bumped the version -> version-conflict (412)
+        // 3. The caller's membership was suspended mid-transaction, so the RLS
+        //    UPDATE policy withheld the row while the version is unchanged -> forbidden (403)
+        // Collapsing them into 412 reports an authorization failure as a concurrency failure.
+        const reread = await this.store.readWorkspace(client, workspaceId);
+        if (reread === undefined) {
+          return { kind: WORKSPACE_UPDATE_OUTCOMES.NOT_FOUND };
+        }
+        if (reread.version !== workspace.version) {
+          return { kind: WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT };
+        }
+        return { kind: WORKSPACE_UPDATE_OUTCOMES.FORBIDDEN };
       }
 
       return {
