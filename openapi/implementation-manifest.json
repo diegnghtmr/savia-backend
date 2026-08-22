@@ -46,6 +46,11 @@
       "operationId": "deleteWorkspace",
       "method": "DELETE",
       "path": "/v1/workspaces/{workspaceId}"
+    },
+    {
+      "operationId": "listWorkspaceMembers",
+      "method": "GET",
+      "path": "/v1/workspaces/{workspaceId}/members"
     }
   ]
 }

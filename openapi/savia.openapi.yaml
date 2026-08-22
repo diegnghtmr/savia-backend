@@ -222,6 +222,37 @@ components:
         version:
           type: integer
           minimum: 1
+    WorkspaceMember:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - displayName
+        - role
+        - status
+        - joinedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [owner, administrator, editor, viewer]
+        status:
+          type: string
+          enum: [active, suspended]
+        joinedAt:
+          type: string
+          format: date-time
     CreateWorkspaceRequest:
       type: object
       additionalProperties: false
@@ -381,6 +412,14 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Profile not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -840,3 +879,80 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/workspaces/{workspaceId}/members:
+    get:
+      operationId: listWorkspaceMembers
+      tags:
+        - Members
+      summary: List workspace members
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Paginated roster of workspace members
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - items
+                  - pageInfo
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WorkspaceMember'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+        '400':
+          description: The workspace identifier or the query parameters failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Workspace not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
