@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { PgTransaction } from '../../src/identity/pg-transaction.js';
 import { PostgresWorkspaceAdapter } from '../../src/identity/postgres-workspace.adapter.js';
