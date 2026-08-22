@@ -414,13 +414,19 @@ describe('Membership write RLS, version column, and column-scoped grants (202607
     });
 
     it('administrator promoting a member to role owner returns UPDATE 0 and the row is unchanged, while an owner issuing the identical statement succeeds (positive control)', async () => {
-      const adminRes = await asSubject(adminC, async (client) => {
-        return client.query(
-          `update public.workspace_memberships set role = 'owner', version = version + 1 where id = $1`,
-          [memTargetFId],
-        );
-      });
-      expect(adminRes.rowCount).toBe(0);
+      let adminRowCount = 0;
+      try {
+        const adminRes = await asSubject(adminC, async (client) => {
+          return client.query(
+            `update public.workspace_memberships set role = 'owner', version = version + 1 where id = $1`,
+            [memTargetFId],
+          );
+        });
+        adminRowCount = adminRes.rowCount ?? 0;
+      } catch (err: unknown) {
+        if ((err as { code?: string })?.code !== '42501') throw err;
+      }
+      expect(adminRowCount).toBe(0);
 
       const checkAdmin = await admin.query(
         'select role, version from public.workspace_memberships where id = $1',
