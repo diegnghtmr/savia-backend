@@ -253,6 +253,15 @@ components:
         joinedAt:
           type: string
           format: date-time
+    UpdateWorkspaceMemberRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - role
+      properties:
+        role:
+          type: string
+          enum: [owner, administrator, editor, viewer]
     CreateWorkspaceRequest:
       type: object
       additionalProperties: false
@@ -951,6 +960,114 @@ paths:
           description: >-
             An internal failure the client cannot act on. The cause is recorded
             server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /v1/workspaces/{workspaceId}/members/{memberId}:
+    patch:
+      operationId: updateWorkspaceMember
+      tags:
+        - Members
+      summary: Change workspace member role
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: memberId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWorkspaceMemberRequest'
+      responses:
+        '200':
+          description: Member updated.
+          headers:
+            ETag:
+              description: Quoted decimal workspace member version
+              required: true
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceMember'
+        '400':
+          description: The workspace identifier or member identifier is not a valid UUID.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace member role update is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Workspace or member not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Workspace member update conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '412':
+          description: Precondition failed
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Unprocessable entity
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: >-
+            The transaction outcome is unknown. The request is idempotent per
+            subject, so it is safe to retry after the indicated delay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              required: true
+              schema:
+                type: integer
+                minimum: 0
           content:
             application/problem+json:
               schema:
