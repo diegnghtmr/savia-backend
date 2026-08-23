@@ -1,6 +1,6 @@
 begin;
 
-select plan(15);
+select plan(17);
 
 insert into auth.users (id, email) values
   ('00000000-0000-0000-0000-000000000011', 'owner@example.test'),
@@ -108,11 +108,38 @@ rollback;
 begin;
 set local role savia_elevated;
 set local search_path = extensions, public;
+-- THIS FILE RUNS AGAINST TWO DIFFERENT SCHEMAS, so every assertion in it must hold under both.
+-- The `database RLS contract` CI step applies ALL migrations. The `database schema contract`
+-- step -- test/schema/identity-tables.integration-spec.ts, reachable locally as
+-- `pnpm test:schema-contract` -- copies only 202607150001 through 202607150004 and runs this
+-- same file against that subset. Under the subset savia_elevated holds no privilege on
+-- public.profiles at all; under the full set 202607150013 grants it select on exactly
+-- (id, display_name, email), because the security-definer projection workspace_member_roster
+-- executes as savia_elevated and application_reads_own_profile is self-only.
+--
+-- Only the negatives below are true under both, so only they belong here. The positive control
+-- proving the grant actually reaches those three columns lives in
+-- test/identity/workspace-members.integration-spec.ts, which runs against the full migration
+-- set. Without that control these two assertions could not distinguish "this column is
+-- protected" from "this role cannot read profiles at all", and the grant could be narrowed to
+-- nothing without failing a test -- so do not delete it.
 select throws_ok(
-  $$select count(*) from public.profiles$$,
+  $$select privacy_mode_enabled from public.profiles$$,
   '42501',
-  'permission denied for table profiles',
-  'elevated role has no protected-table grant'
+  NULL,
+  'elevated role cannot read privacy_mode_enabled'
+);
+select throws_ok(
+  $$select default_currency, locale from public.profiles$$,
+  '42501',
+  NULL,
+  'elevated role cannot read default_currency or locale'
+);
+select throws_ok(
+  $$update public.profiles set display_name = 'seized'$$,
+  '42501',
+  NULL,
+  'elevated role has no write grant on profiles'
 );
 rollback;
 

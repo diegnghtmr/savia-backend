@@ -1,6 +1,12 @@
 begin;
 grant usage, create on schema public to savia_elevated;   -- revoked below (RULING 13)
-grant select on public.profiles to savia_elevated;
+-- COLUMN-SCOPED, per the doctrine at 202607150011:11-14. The projection below reads exactly
+-- three profile columns, so savia_elevated is granted exactly those three. A table-wide
+-- `grant select on public.profiles` would put privacy_mode_enabled, default_currency and locale
+-- inside the elevated role's reach, leaving the projection's RETURN TYPE as the only thing
+-- keeping them out of a response. With this grant they are unreachable at the PRIVILEGE layer
+-- as well, and identity_rls.test.sql pins that with a 42501.
+grant select (id, display_name, email) on public.profiles to savia_elevated;
 
 -- savia_elevated is nobypassrls (202607150002:9-15) and public.profiles carries
 -- `force row level security` (202607150002:23-24), so the grant alone yields zero rows.
