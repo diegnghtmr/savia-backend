@@ -1,6 +1,6 @@
 begin;
 
-select plan(15);
+select plan(18);
 
 insert into auth.users (id, email) values
   ('00000000-0000-0000-0000-000000000011', 'owner@example.test'),
@@ -108,11 +108,35 @@ rollback;
 begin;
 set local role savia_elevated;
 set local search_path = extensions, public;
+-- 202607150013 grants savia_elevated a COLUMN-SCOPED select on public.profiles, because the
+-- security-definer projection workspace_member_roster executes as savia_elevated and must read
+-- a peer's display_name and email -- application_reads_own_profile is self-only, so a plain join
+-- returns NULL for every peer and WorkspaceMember.displayName is required by the authority.
+-- These three assertions pin exactly how far that grant reaches. The positive control comes
+-- first: without it the two 42501 assertions could not distinguish "the column is protected"
+-- from "the role cannot read profiles at all", and the grant could be deleted without failing
+-- a test.
+select lives_ok(
+  $$select id, display_name, email from public.profiles$$,
+  'elevated role reads the three columns the member roster projects'
+);
 select throws_ok(
-  $$select count(*) from public.profiles$$,
+  $$select privacy_mode_enabled from public.profiles$$,
   '42501',
-  'permission denied for table profiles',
-  'elevated role has no protected-table grant'
+  NULL,
+  'elevated role cannot read privacy_mode_enabled'
+);
+select throws_ok(
+  $$select default_currency, locale from public.profiles$$,
+  '42501',
+  NULL,
+  'elevated role cannot read default_currency or locale'
+);
+select throws_ok(
+  $$update public.profiles set display_name = 'seized'$$,
+  '42501',
+  NULL,
+  'elevated role has no write grant on profiles'
 );
 rollback;
 
