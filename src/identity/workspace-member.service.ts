@@ -253,13 +253,22 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
         // Residual zero-row UPDATE:
         // A concurrent transaction could have demoted/suspended the caller (losing authority under RLS),
         // or deleted/modified the target member row (failing the version predicate or id match).
-        // 1. Re-read the caller's own membership first (always visible under application_reads_own_membership).
-        // If the caller is no longer an active owner or administrator, answer FORBIDDEN (403).
+        // 1. Re-read the target first (may be hidden under RLS or genuinely gone).
+        const residual = await this.store.readMembershipById(
+          client,
+          workspaceId,
+          memberId,
+        );
+        // 2. Re-read the caller's own membership last (always visible under application_reads_own_membership).
         const callerResidual = await this.store.readMembership(
           client,
           workspaceId,
           subject,
         );
+        // 3. If the caller is no longer an active owner or administrator -> FORBIDDEN.
+        // Step 3 must precede step 4 because the target read's visibility depends on the
+        // caller's current role, so an absent target is not evidence of absence until the
+        // caller's authority is confirmed.
         if (
           callerResidual === undefined ||
           callerResidual.status === WORKSPACE_MEMBER_STATUS.SUSPENDED ||
@@ -269,13 +278,8 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
           return { kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.FORBIDDEN };
         }
 
-        // 2. Re-read the target row to decide 404 vs 412 vs 409.
+        // 4. Target is genuinely absent or not visible even to an active administrator/owner.
         // Never answer 200 after a zero-row UPDATE.
-        const residual = await this.store.readMembershipById(
-          client,
-          workspaceId,
-          memberId,
-        );
         if (residual === undefined) {
           return { kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.NOT_FOUND };
         }
@@ -383,7 +387,10 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
         callerMembership.role !== WORKSPACE_ROLE.OWNER &&
         callerMembership.role !== WORKSPACE_ROLE.ADMINISTRATOR
       ) {
-        // Step 7: Caller's role is editor or viewer
+        // Step 7: Caller's role is editor or viewer.
+        // Members below administrator cannot currently remove their own membership, because
+        // the only DELETE policy requires an administered role; enabling self-removal requires
+        // a new policy and is deliberately out of scope here.
         outcomeKind = WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN;
         status = 403;
       } else {
@@ -442,19 +449,32 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
                   status = 204;
                 } catch (error) {
                   if (isCheckViolation(error)) {
-                    return {
-                      kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED,
-                    };
+                    outcomeKind =
+                      WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED;
+                    status = 409;
+                    problemType = PROBLEM_TYPES.LAST_OWNER_REQUIRED;
+                  } else {
+                    throw error;
                   }
-                  throw error;
                 }
               } else {
-                // rowCount === 0: Confirming re-SELECT separates policy refusal from concurrent deletion
+                // rowCount === 0: Confirming re-SELECT separates policy refusal from concurrent deletion.
+                // 1. Re-read the target first (may be hidden under RLS or genuinely gone).
+                const residual = await this.store.readMembershipById(
+                  client,
+                  workspaceId,
+                  memberId,
+                );
+                // 2. Re-read the caller's own membership last (always visible under application_reads_own_membership).
                 const callerResidual = await this.store.readMembership(
                   client,
                   workspaceId,
                   subject,
                 );
+                // 3. If the caller is no longer an active owner or administrator -> FORBIDDEN.
+                // Step 3 must precede step 4 because the target read's visibility depends on the
+                // caller's current role, so an absent target is not evidence of absence until the
+                // caller's authority is confirmed.
                 if (
                   callerResidual === undefined ||
                   callerResidual.status === WORKSPACE_MEMBER_STATUS.SUSPENDED ||
@@ -463,40 +483,34 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
                 ) {
                   outcomeKind = WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN;
                   status = 403;
+                } else if (residual === undefined) {
+                  // 4. Target is genuinely absent or not visible even to an active administrator/owner.
+                  outcomeKind = WORKSPACE_MEMBER_REMOVE_OUTCOMES.NOT_FOUND;
+                  status = 404;
+                } else if (
+                  residual.role === WORKSPACE_ROLE.OWNER &&
+                  callerResidual.role === WORKSPACE_ROLE.ADMINISTRATOR
+                ) {
+                  outcomeKind = WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN;
+                  status = 403;
                 } else {
-                  const residual = await this.store.readMembershipById(
+                  const kindResidual = await this.store.readWorkspaceKind(
                     client,
                     workspaceId,
-                    memberId,
                   );
-                  if (residual === undefined) {
-                    outcomeKind = WORKSPACE_MEMBER_REMOVE_OUTCOMES.NOT_FOUND;
-                    status = 404;
-                  } else if (
-                    residual.role === WORKSPACE_ROLE.OWNER &&
-                    callerResidual.role === WORKSPACE_ROLE.ADMINISTRATOR
-                  ) {
+                  if (kindResidual === WORKSPACE_KIND.PERSONAL) {
+                    outcomeKind =
+                      WORKSPACE_MEMBER_REMOVE_OUTCOMES.PERSONAL_WORKSPACE;
+                    status = 409;
+                    problemType = PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP;
+                  } else if (residual.role === WORKSPACE_ROLE.OWNER) {
+                    outcomeKind =
+                      WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED;
+                    status = 409;
+                    problemType = PROBLEM_TYPES.LAST_OWNER_REQUIRED;
+                  } else {
                     outcomeKind = WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN;
                     status = 403;
-                  } else {
-                    const kindResidual = await this.store.readWorkspaceKind(
-                      client,
-                      workspaceId,
-                    );
-                    if (kindResidual === WORKSPACE_KIND.PERSONAL) {
-                      outcomeKind =
-                        WORKSPACE_MEMBER_REMOVE_OUTCOMES.PERSONAL_WORKSPACE;
-                      status = 409;
-                      problemType = PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP;
-                    } else if (residual.role === WORKSPACE_ROLE.OWNER) {
-                      outcomeKind =
-                        WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED;
-                      status = 409;
-                      problemType = PROBLEM_TYPES.LAST_OWNER_REQUIRED;
-                    } else {
-                      outcomeKind = WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN;
-                      status = 403;
-                    }
                   }
                 }
               }
