@@ -131,13 +131,20 @@ export class PostgresWorkspaceMemberAdapter implements WorkspaceMemberStore {
     workspaceId: string,
     memberId: string,
     role: WorkspaceRole,
+    expectedVersion?: number | readonly number[],
   ): Promise<{ rowCount: number; version?: number }> {
+    const versions =
+      typeof expectedVersion === 'number'
+        ? [expectedVersion]
+        : (expectedVersion ?? null);
+    const values = [role, memberId, workspaceId, versions];
     const result = await client.query<{ version: number }>(
       `update public.workspace_memberships
           set role = $1, version = version + 1
         where id = $2 and workspace_id = $3
+          and ($4::integer[] is null or version = any($4::integer[]))
     returning version`,
-      [role, memberId, workspaceId],
+      values,
     );
     const row = result.rows[0];
     return {
