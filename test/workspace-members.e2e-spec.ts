@@ -616,34 +616,75 @@ describe('updateWorkspaceMember HTTP boundary', () => {
     );
     expect(response.statusCode).toBe(401);
     expect(updateSpy).not.toHaveBeenCalled();
+    const body = response.json();
+    expect(body.type).toBe('https://savia.app/problems/unauthorized');
+    expect(body.code).toBe('unauthorized');
   });
 
   it('returns 400 for a workspace identifier that is not a UUID', async () => {
     const appInstance = await createApplication();
-    const response = await updateWorkspaceMemberRequest(
-      appInstance,
+    for (const badWs of [
       'not-a-uuid',
+      `workspace\0${WORKSPACE_ID}`,
+      'a'.repeat(80),
+    ]) {
+      const response = await updateWorkspaceMemberRequest(
+        appInstance,
+        badWs,
+        MEMBER_ID,
+        { role: 'editor' },
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(400);
+      expect(response.statusCode).not.toBe(500);
+      expect(response.json().type).toBe(
+        'https://savia.app/problems/bad-request',
+      );
+      expect(response.json().code).toBe('bad-request');
+    }
+    const overlong = await updateWorkspaceMemberRequest(
+      appInstance,
+      'a'.repeat(10_000),
       MEMBER_ID,
       { role: 'editor' },
       { token: TOKEN },
     );
-    expect(response.statusCode).toBe(400);
-    expect(response.json().type).toBe('https://savia.app/problems/bad-request');
-    expect(response.json().code).toBe('bad-request');
+    expect(overlong.statusCode).toBeGreaterThanOrEqual(400);
+    expect(overlong.statusCode).toBeLessThan(500);
+    expect(overlong.statusCode).not.toBe(500);
   });
 
   it('returns 400 for a member identifier that is not a UUID', async () => {
     const appInstance = await createApplication();
-    const response = await updateWorkspaceMemberRequest(
+    for (const badMem of [
+      'not-a-uuid',
+      `member\0${MEMBER_ID}`,
+      'b'.repeat(80),
+    ]) {
+      const response = await updateWorkspaceMemberRequest(
+        appInstance,
+        WORKSPACE_ID,
+        badMem,
+        { role: 'editor' },
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(400);
+      expect(response.statusCode).not.toBe(500);
+      expect(response.json().type).toBe(
+        'https://savia.app/problems/bad-request',
+      );
+      expect(response.json().code).toBe('bad-request');
+    }
+    const overlong = await updateWorkspaceMemberRequest(
       appInstance,
       WORKSPACE_ID,
-      'not-a-uuid',
+      'b'.repeat(10_000),
       { role: 'editor' },
       { token: TOKEN },
     );
-    expect(response.statusCode).toBe(400);
-    expect(response.json().type).toBe('https://savia.app/problems/bad-request');
-    expect(response.json().code).toBe('bad-request');
+    expect(overlong.statusCode).toBeGreaterThanOrEqual(400);
+    expect(overlong.statusCode).toBeLessThan(500);
+    expect(overlong.statusCode).not.toBe(500);
   });
 
   it('returns 403 when outcome is FORBIDDEN', async () => {
@@ -768,7 +809,7 @@ describe('updateWorkspaceMember HTTP boundary', () => {
     expect(body.code).toBe('precondition-failed');
   });
 
-  it('returns 412 for malformed If-Match headers and never 500', async () => {
+  it('returns 412 when an over-large ETag or malformed If-Match is refused and never 500', async () => {
     const appInstance = await createApplication();
     for (const badIfMatch of [
       'W/"7"',
@@ -776,6 +817,8 @@ describe('updateWorkspaceMember HTTP boundary', () => {
       '7',
       '""',
       '"99999999999999999999"',
+      '"7\0"',
+      '\0',
     ]) {
       const response = await updateWorkspaceMemberRequest(
         appInstance,
@@ -801,6 +844,8 @@ describe('updateWorkspaceMember HTTP boundary', () => {
       { role: 'editor', status: 'suspended' },
       { role: null },
       { role: 42 },
+      { role: 'editor\0' },
+      { role: 'a'.repeat(10_000) },
       [],
     ]) {
       const response = await updateWorkspaceMemberRequest(

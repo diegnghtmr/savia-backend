@@ -599,6 +599,30 @@ describe('WorkspaceMemberService.updateWorkspaceMember', () => {
     );
   });
 
+  it('residual zero-row update: returns forbidden when caller loses authority between pre-check and residual re-read', async () => {
+    let callerReadCount = 0;
+    const { service } = createService({
+      readMembership: vi.fn().mockImplementation(() => {
+        callerReadCount++;
+        if (callerReadCount === 1) {
+          return Promise.resolve(defaultCallerMembership);
+        }
+        return Promise.resolve({
+          role: WORKSPACE_ROLE.EDITOR,
+          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+        });
+      }),
+      updateMemberRole: vi.fn().mockResolvedValue({ rowCount: 0 }),
+    });
+    const outcome = await service.updateWorkspaceMember(
+      dummySubject,
+      dummyWorkspaceId,
+      dummyMemberId,
+      { role: WORKSPACE_ROLE.EDITOR },
+    );
+    expect(outcome.kind).toBe(WORKSPACE_MEMBER_UPDATE_OUTCOMES.FORBIDDEN);
+  });
+
   it('residual zero-row update: returns not-found when target row has since been deleted', async () => {
     let callCount = 0;
     const { service } = createService({

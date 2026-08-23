@@ -13,7 +13,14 @@ import { registerProblemFilter } from '../../src/identity/onboarding-problem.fil
 import { PgTransaction } from '../../src/identity/pg-transaction.js';
 import { PostgresConfig } from '../../src/identity/postgres-config.js';
 import { PostgresPool } from '../../src/identity/postgres-pool.js';
+import { PostgresWorkspaceMemberAdapter } from '../../src/identity/postgres-workspace-member.adapter.js';
 import { PROBLEM_TYPES } from '../../src/identity/problem-details.js';
+import { WORKSPACE_MEMBER_UPDATE_OUTCOMES } from '../../src/identity/workspace-member.port.js';
+import {
+  WorkspaceMemberService,
+  type WorkspaceMemberStore,
+  type WorkspaceMemberTransaction,
+} from '../../src/identity/workspace-member.service.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -50,6 +57,12 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
   const statusCheckViewerSubject = subject(2022);
   const promoteEditorSubject = subject(2023);
   const noopSubject = subject(2024);
+  const bothAdminSubject = subject(2025);
+  const otherViewerSubject = subject(2026);
+  const interleavingOwner1 = subject(2027);
+  const interleavingOwner2 = subject(2028);
+  const interleavingViewer = subject(2029);
+  const secondMainOwnerSubject = subject(2030);
 
   // Workspaces
   const wsMainId = '00000000-0000-0000-0000-000000002100';
@@ -62,6 +75,7 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
   const wsIfMatchId = '00000000-0000-0000-0000-000000002107';
   const wsConcurTwoId = '00000000-0000-0000-0000-000000002108';
   const wsConcurThreeId = '00000000-0000-0000-0000-000000002109';
+  const wsInterleavingId = '00000000-0000-0000-0000-000000002110';
 
   // Memberships
   const memOwnerId = '00000000-0000-0000-0000-000000002201';
@@ -72,8 +86,12 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
   const memStatusCheckId = '00000000-0000-0000-0000-000000002206';
   const memPromoteEditorId = '00000000-0000-0000-0000-000000002207';
   const memNoopId = '00000000-0000-0000-0000-000000002208';
+  const memBothAdminMainId = '00000000-0000-0000-0000-000000002209';
 
   const memOtherOwnerId = '00000000-0000-0000-0000-000000002210';
+  const memBothAdminOtherId = '00000000-0000-0000-0000-000000002211';
+  const memOtherViewerId = '00000000-0000-0000-0000-000000002212';
+  const memSecondMainOwnerId = '00000000-0000-0000-0000-000000002213';
   const memPersonalId = '00000000-0000-0000-0000-000000002220';
   const memSoleOwnerId = '00000000-0000-0000-0000-000000002230';
   const memTwoOwner1Id = '00000000-0000-0000-0000-000000002241';
@@ -88,6 +106,9 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
   const memConcurThree1Id = '00000000-0000-0000-0000-000000002291';
   const memConcurThree2Id = '00000000-0000-0000-0000-000000002292';
   const memConcurThree3Id = '00000000-0000-0000-0000-000000002293';
+  const memInterleavingOwner1Id = '00000000-0000-0000-0000-000000002301';
+  const memInterleavingOwner2Id = '00000000-0000-0000-0000-000000002302';
+  const memInterleavingViewerId = '00000000-0000-0000-0000-000000002303';
 
   const verifier = {
     verify: (token: string) => {
@@ -162,6 +183,24 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
         'Promote Editor User',
       ],
       [noopSubject, 'noop@example.test', 'Noop User'],
+      [bothAdminSubject, 'bothadmin@example.test', 'Both Admin User'],
+      [otherViewerSubject, 'otherviewer@example.test', 'Other Viewer User'],
+      [
+        interleavingOwner1,
+        'interleaving1@example.test',
+        'Interleaving Owner 1',
+      ],
+      [
+        interleavingOwner2,
+        'interleaving2@example.test',
+        'Interleaving Owner 2',
+      ],
+      [interleavingViewer, 'interleavingv@example.test', 'Interleaving Viewer'],
+      [
+        secondMainOwnerSubject,
+        'secondmainowner@example.test',
+        'Second Main Owner',
+      ],
     ] as const;
 
     for (const [id, email] of seedUsers) {
@@ -187,7 +226,8 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
               ($11, 'Self Sole Workspace', 'family', 'USD', null, $12),
               ($13, 'If-Match Workspace', 'shared', 'USD', null, $14),
               ($15, 'Concurrent Two Workspace', 'shared', 'USD', null, $16),
-              ($17, 'Concurrent Three Workspace', 'shared', 'USD', null, $18)`,
+              ($17, 'Concurrent Three Workspace', 'shared', 'USD', null, $18),
+              ($19, 'Interleaving Workspace', 'shared', 'USD', null, $20)`,
       [
         wsMainId,
         ownerSubject,
@@ -207,6 +247,8 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
         concurTwo1Subject,
         wsConcurThreeId,
         concurThree1Subject,
+        wsInterleavingId,
+        interleavingOwner1,
       ],
     );
 
@@ -432,6 +474,69 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
         '2026-07-15T20:00:00.000Z',
         1,
       ],
+      [
+        memBothAdminMainId,
+        wsMainId,
+        bothAdminSubject,
+        'administrator',
+        'active',
+        '2026-07-15T21:00:00.000Z',
+        1,
+      ],
+      [
+        memBothAdminOtherId,
+        wsOtherId,
+        bothAdminSubject,
+        'administrator',
+        'active',
+        '2026-07-15T21:05:00.000Z',
+        1,
+      ],
+      [
+        memOtherViewerId,
+        wsOtherId,
+        otherViewerSubject,
+        'viewer',
+        'active',
+        '2026-07-15T21:10:00.000Z',
+        1,
+      ],
+      [
+        memSecondMainOwnerId,
+        wsMainId,
+        secondMainOwnerSubject,
+        'owner',
+        'active',
+        '2026-07-15T21:15:00.000Z',
+        1,
+      ],
+      [
+        memInterleavingOwner1Id,
+        wsInterleavingId,
+        interleavingOwner1,
+        'owner',
+        'active',
+        '2026-07-15T21:20:00.000Z',
+        1,
+      ],
+      [
+        memInterleavingOwner2Id,
+        wsInterleavingId,
+        interleavingOwner2,
+        'owner',
+        'active',
+        '2026-07-15T21:25:00.000Z',
+        1,
+      ],
+      [
+        memInterleavingViewerId,
+        wsInterleavingId,
+        interleavingViewer,
+        'viewer',
+        'active',
+        '2026-07-15T21:30:00.000Z',
+        1,
+      ],
     ];
 
     for (const [
@@ -612,6 +717,14 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       expect(body.code).toBe('forbidden');
     });
 
+    it('positive control for 8, 9, and 10: the identical request (memViewerId with role viewer) from an active owner succeeds: 200', async () => {
+      const response = await patchMember(wsMainId, memViewerId, ownerSubject, {
+        role: 'viewer',
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().role).toBe('viewer');
+    });
+
     it('11. a non-member receives 404 not-found', async () => {
       const response = await patchMember(
         wsMainId,
@@ -635,6 +748,21 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       expect(body.code).toBe('forbidden');
     });
 
+    it('positive control for 12: an owner demoting an owner (memOwnerId to editor) when another owner exists succeeds: 200', async () => {
+      // wsMainId retains secondMainOwnerSubject as an active owner, so demoting memOwnerId succeeds.
+      const response = await patchMember(wsMainId, memOwnerId, ownerSubject, {
+        role: 'editor',
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().role).toBe('editor');
+
+      // Restore memOwnerId back to owner for subsequent tests
+      await admin.query(
+        `update public.workspace_memberships set role = 'owner', version = version + 1 where id = $1`,
+        [memOwnerId],
+      );
+    });
+
     it('13. an administrator setting role owner receives 403 forbidden', async () => {
       const response = await patchMember(wsMainId, memViewerId, adminSubject, {
         role: 'owner',
@@ -645,7 +773,7 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       expect(body.code).toBe('forbidden');
     });
 
-    it('14. positive control for 12 and 13: the identical request from an owner succeeds: 200', async () => {
+    it('14. positive control for 13: the identical request from an owner succeeds: 200', async () => {
       const response = await patchMember(wsMainId, memViewerId, ownerSubject, {
         role: 'owner',
       });
@@ -656,7 +784,7 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
 
   // Targeting (15-18)
   describe('Targeting', () => {
-    it('15. a memberId that exists but belongs to a DIFFERENT workspace: 404 not-found, and the other workspace row is verifiably unchanged', async () => {
+    it('15. a memberId that exists but belongs to a DIFFERENT workspace (pins RLS policy): 404 not-found, and the other workspace row is verifiably unchanged', async () => {
       const before = await admin.query<{ role: string; version: number }>(
         'select role, version from public.workspace_memberships where id = $1',
         [memOtherOwnerId],
@@ -678,6 +806,38 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       const after = await admin.query<{ role: string; version: number }>(
         'select role, version from public.workspace_memberships where id = $1',
         [memOtherOwnerId],
+      );
+      expect(after.rows[0]!.role).toBe(prevRole);
+      expect(after.rows[0]!.version).toBe(prevVersion);
+    });
+
+    it('a memberId from another workspace the caller ALSO administers answers 404 and leaves that row untouched', async () => {
+      const before = await admin.query<{ role: string; version: number }>(
+        'select role, version from public.workspace_memberships where id = $1',
+        [memOtherViewerId],
+      );
+      const prevRole = before.rows[0]!.role;
+      const prevVersion = before.rows[0]!.version;
+
+      // bothAdminSubject administers BOTH wsMainId and wsOtherId. Under RLS,
+      // application_reads_administered_membership would make memOtherViewerId visible
+      // to bothAdminSubject because bothAdminSubject administers wsOtherId.
+      // Therefore, only the workspace_id predicate in readMembershipById enforces
+      // the workspace boundary and produces 404 here.
+      const response = await patchMember(
+        wsMainId,
+        memOtherViewerId,
+        bothAdminSubject,
+        { role: 'editor' },
+      );
+      expect(response.statusCode).toBe(404);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.NOT_FOUND);
+      expect(body.code).toBe('not-found');
+
+      const after = await admin.query<{ role: string; version: number }>(
+        'select role, version from public.workspace_memberships where id = $1',
+        [memOtherViewerId],
       );
       expect(after.rows[0]!.role).toBe(prevRole);
       expect(after.rows[0]!.version).toBe(prevVersion);
@@ -731,6 +891,43 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       expect(resBadWs.statusCode).toBe(400);
       expect(resBadWs.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
       expect(resBadWs.json().code).toBe('bad-request');
+    });
+
+    it('a non-UUID memberId with NUL byte: 400 bad-request; and overlong memberId (10 000 chars): 4xx and never 500; same for workspaceId', async () => {
+      for (const badMem of [`member\0${memViewerId}`, 'm'.repeat(80)]) {
+        const res = await patchMember(wsMainId, badMem, ownerSubject, {
+          role: 'editor',
+        });
+        expect(res.statusCode).toBe(400);
+        expect(res.statusCode).not.toBe(500);
+        expect(res.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+        expect(res.json().code).toBe('bad-request');
+      }
+      for (const overlongMem of ['m'.repeat(10_000)]) {
+        const res = await patchMember(wsMainId, overlongMem, ownerSubject, {
+          role: 'editor',
+        });
+        expect(res.statusCode).toBeGreaterThanOrEqual(400);
+        expect(res.statusCode).toBeLessThan(500);
+        expect(res.statusCode).not.toBe(500);
+      }
+      for (const badWs of [`ws\0${wsMainId}`, 'w'.repeat(80)]) {
+        const res = await patchMember(badWs, memViewerId, ownerSubject, {
+          role: 'editor',
+        });
+        expect(res.statusCode).toBe(400);
+        expect(res.statusCode).not.toBe(500);
+        expect(res.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+        expect(res.json().code).toBe('bad-request');
+      }
+      for (const overlongWs of ['w'.repeat(10_000)]) {
+        const res = await patchMember(overlongWs, memViewerId, ownerSubject, {
+          role: 'editor',
+        });
+        expect(res.statusCode).toBeGreaterThanOrEqual(400);
+        expect(res.statusCode).toBeLessThan(500);
+        expect(res.statusCode).not.toBe(500);
+      }
     });
   });
 
@@ -816,6 +1013,122 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
 
   // Optimistic concurrency (24-29)
   describe('Optimistic concurrency', () => {
+    it('a version committed between the If-Match pre-check and the UPDATE is not overwritten: the request answers 412 and the concurrent change survives', async () => {
+      // Direct driver with two raw PoolClients (no PgTransaction to avoid fixed lock_timeout).
+      // Interleaving mechanism:
+      // The store wrapper intercepts readMembershipById (step 8/11 pre-check). After reading the
+      // initial version (1), a second PoolClient as co-owner interleavingOwner2 commits an UPDATE
+      // to that same membership row, bumping its version to 2.
+      // When the service's updateMemberRole executes its atomic SQL UPDATE predicate
+      // (and ($4::integer[] is null or version = any($4::integer[]))), the version mismatch
+      // causes 0 rows to be updated, and the residual branch answers 412 (VERSION_CONFLICT).
+      const rawTransaction: WorkspaceMemberTransaction = {
+        run: async (sub, callback) => {
+          const client = await admin.connect();
+          try {
+            await client.query('begin');
+            await client.query('set local role savia_application');
+            await client.query(
+              "select set_config('app.subject_id', $1, true)",
+              [sub],
+            );
+            const result = await callback(client);
+            await client.query('commit');
+            return result;
+          } catch (err) {
+            await client.query('rollback').catch(() => {});
+            throw err;
+          } finally {
+            client.release();
+          }
+        },
+        runRead: async (sub, callback) => {
+          const client = await admin.connect();
+          try {
+            await client.query('begin read only');
+            await client.query('set local role savia_application');
+            await client.query(
+              "select set_config('app.subject_id', $1, true)",
+              [sub],
+            );
+            const result = await callback(client);
+            await client.query('rollback');
+            return result;
+          } catch (err) {
+            await client.query('rollback').catch(() => {});
+            throw err;
+          } finally {
+            client.release();
+          }
+        },
+      };
+
+      let targetReadCount = 0;
+      const realStore = new PostgresWorkspaceMemberAdapter();
+      const storeWrapper: WorkspaceMemberStore = {
+        readMembership: (c, w, s) => realStore.readMembership(c, w, s),
+        listRoster: (c, w, cur, l) => realStore.listRoster(c, w, cur, l),
+        readWorkspaceKind: (c, w) => realStore.readWorkspaceKind(c, w),
+        readMembershipById: async (c, w, m) => {
+          targetReadCount++;
+          const res = await realStore.readMembershipById(c, w, m);
+          // Force interleaving: competing commit lands after readMembershipById (first call / pre-check) and before UPDATE
+          if (targetReadCount === 1) {
+            const compClient = await admin.connect();
+            try {
+              await compClient.query('begin');
+              await compClient.query('set local role savia_application');
+              await compClient.query(
+                "select set_config('app.subject_id', $1, true)",
+                [interleavingOwner2],
+              );
+              await compClient.query(
+                `update public.workspace_memberships
+                    set role = 'editor', version = version + 1
+                  where id = $1 and workspace_id = $2`,
+                [m, w],
+              );
+              await compClient.query('commit');
+            } finally {
+              compClient.release();
+            }
+          }
+          return res;
+        },
+        retainsActiveOwner: (c, w, e) => realStore.retainsActiveOwner(c, w, e),
+        updateMemberRole: (c, w, m, r, ev) =>
+          realStore.updateMemberRole(c, w, m, r, ev),
+        enforceDeferredConstraints: (c) =>
+          realStore.enforceDeferredConstraints(c),
+        readRosterMember: (c, w, m) => realStore.readRosterMember(c, w, m),
+      };
+
+      const directService = new WorkspaceMemberService(
+        rawTransaction,
+        storeWrapper,
+      );
+      const outcome = await directService.updateWorkspaceMember(
+        interleavingOwner1,
+        wsInterleavingId,
+        memInterleavingViewerId,
+        { role: 'administrator' },
+        1, // Expected version 1
+      );
+
+      // Assert 412 (VERSION_CONFLICT)
+      expect(outcome.kind).toBe(
+        WORKSPACE_MEMBER_UPDATE_OUTCOMES.VERSION_CONFLICT,
+      );
+
+      // Assert competing change is still present and was not overwritten by the caller
+      const surviving = await admin.query<{ role: string; version: number }>(
+        'select role, version from public.workspace_memberships where id = $1',
+        [memInterleavingViewerId],
+      );
+      expect(surviving.rows[0]!.role).toBe('editor');
+      expect(surviving.rows[0]!.version).toBe(2);
+    });
+
     it('24. correct If-Match: 200', async () => {
       const response = await patchMember(
         wsIfMatchId,
@@ -867,6 +1180,21 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       expect(response.statusCode).toBe(200);
     });
 
+    it('If-Match: * on a memberId that does not exist answers 404, not 412 — a deliberate RFC 9110 deviation shared with updateWorkspace', async () => {
+      const nonExistentUuid = '00000000-0000-0000-0000-000000009999';
+      const response = await patchMember(
+        wsIfMatchId,
+        nonExistentUuid,
+        ifMatchOwnerSubject,
+        { role: 'viewer' },
+        { ifMatch: '*' },
+      );
+      expect(response.statusCode).toBe(404);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.NOT_FOUND);
+      expect(body.code).toBe('not-found');
+    });
+
     it('27. If-Match: "1", "9" where current version is 9: 200 (list form)', async () => {
       const cur = await admin.query<{ version: number }>(
         'select version from public.workspace_memberships where id = $1',
@@ -884,13 +1212,15 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       expect(response.statusCode).toBe(200);
     });
 
-    it('28. malformed If-Match values, each 412 and never 500: W/"7", "007", 7, "", "99999999999999999999"', async () => {
+    it('28. malformed or over-large If-Match values, each 412 and never 500: W/"7", "007", 7, "", "99999999999999999999", "7\\0", "\\0"', async () => {
       for (const badHeader of [
         'W/"7"',
         '"007"',
         '7',
         '""',
         '"99999999999999999999"',
+        '"7\0"',
+        '\0',
       ]) {
         const response = await patchMember(
           wsIfMatchId,
@@ -1008,6 +1338,17 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       expect(body.type).toBe(PROBLEM_TYPES.UNPROCESSABLE);
       expect(body.code).toBe('unprocessable');
     });
+
+    it('an over-long role string (10 000 characters): 422 unprocessable and never 500', async () => {
+      const response = await patchMember(wsMainId, memViewerId, ownerSubject, {
+        role: 'a'.repeat(10_000),
+      });
+      expect(response.statusCode).toBe(422);
+      expect(response.statusCode).not.toBe(500);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.UNPROCESSABLE);
+      expect(body.code).toBe('unprocessable');
+    });
   });
 
   // Concurrency (37)
@@ -1035,6 +1376,10 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       expect(statusCodes).toContain(200);
       expect(statusCodes.filter((s) => s === 200).length).toBe(1);
       expect(statusCodes).toContain(409);
+
+      const loser = res1.statusCode === 409 ? res1 : res2;
+      expect(loser.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(loser.json().code).toBe('last-owner-required');
 
       // Verify at least one active owner remains
       const remainingTwo = await admin.query<{ count: number }>(
