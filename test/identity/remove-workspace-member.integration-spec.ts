@@ -960,7 +960,13 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
   });
 
   describe('Concurrency & Race Conditions', () => {
-    it('concurrent deletion of two co-owners: exactly one succeeds (204) and one fails (409 last-owner-required)', async () => {
+    it('concurrent deletion of two co-owners never empties the workspace: exactly one succeeds and the other is refused (409 last-owner-required, or 404 when it began after the winner committed)', async () => {
+      // The fixture makes each co-owner delete the OTHER owner's membership, so the winner deletes the loser's own row.
+      // - If the winner commits before the loser reads its caller membership at step 5 (WorkspaceMemberService),
+      //   the loser is already a non-member and correctly receives 404 not-found under the Visibility Rule.
+      // - If the transactions overlap such that the loser passes step 5 and reaches step 11 (WorkspaceMemberService),
+      //   retainsActiveOwner returns false and the loser correctly receives 409 last-owner-required.
+      // Both loser outcomes are honest; the invariant is that exactly one removal succeeds (204) and exactly one owner remains.
       const key1 = 'a0000000-0000-0000-0000-000000000051';
       const key2 = 'a0000000-0000-0000-0000-000000000052';
 
@@ -973,12 +979,21 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
         }),
       ]);
 
-      const statuses = [res1.statusCode, res2.statusCode].sort();
-      expect(statuses).toEqual([204, 409]);
+      const successCount = [res1, res2].filter(
+        (r) => r.statusCode === 204,
+      ).length;
+      expect(successCount).toBe(1);
 
-      const failedRes = res1.statusCode === 409 ? res1 : res2;
-      expect(failedRes.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
-      expect(failedRes.json().code).toBe('last-owner-required');
+      const failedRes = res1.statusCode === 204 ? res2 : res1;
+      expect([404, 409]).toContain(failedRes.statusCode);
+
+      if (failedRes.statusCode === 409) {
+        expect(failedRes.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+        expect(failedRes.json().code).toBe('last-owner-required');
+      } else {
+        expect(failedRes.json().type).toBe(PROBLEM_TYPES.NOT_FOUND);
+        expect(failedRes.json().code).toBe('not-found');
+      }
 
       // Verify that exactly one owner remains
       const remaining = await admin.query(
