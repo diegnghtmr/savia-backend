@@ -352,6 +352,12 @@ export class WorkspaceController {
       return;
     }
 
+    // RFC 9110 section 13.1.1 defines If-Match: * as evaluating to false if the
+    // representation does not exist, which would technically warrant 412.
+    // However, as documented for updateWorkspace (src/identity/workspace.controller.ts:488-493),
+    // this API cannot distinguish an absent member or workspace from one where
+    // the caller is not an administrator, answering 404 for both to avoid leaking
+    // existence information. Answering 404 here is a deliberate deviation from RFC 9110.
     let expectedVersions: number | readonly number[] | undefined;
     if (ifMatch.kind === 'versions') {
       expectedVersions =
