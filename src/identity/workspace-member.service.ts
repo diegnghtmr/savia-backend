@@ -73,6 +73,7 @@ export interface WorkspaceMemberStore {
     workspaceId: string,
     memberId: string,
     role: WorkspaceRole,
+    expectedVersion?: number | readonly number[],
   ): Promise<{ rowCount: number; version?: number }>;
   enforceDeferredConstraints(client: TransactionClient): Promise<void>;
   readRosterMember(
@@ -226,17 +227,37 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
       }
 
       // Perform UPDATE
+      // The SQL predicate ($4::integer[] is null or version = any($4::integer[])),
+      // not the step-11 pre-check, is the load-bearing guard against concurrent lost updates.
       const updateResult = await this.store.updateMemberRole(
         client,
         workspaceId,
         memberId,
         command.role,
+        expectedVersion,
       );
 
       if (updateResult.rowCount === 0) {
         // Residual zero-row UPDATE:
-        // After steps 0-12 pass, a concurrent transaction could have deleted or modified
-        // the target member row. We re-read the target row to decide 404 vs 412 vs 409.
+        // A concurrent transaction could have demoted/suspended the caller (losing authority under RLS),
+        // or deleted/modified the target member row (failing the version predicate or id match).
+        // 1. Re-read the caller's own membership first (always visible under application_reads_own_membership).
+        // If the caller is no longer an active owner or administrator, answer FORBIDDEN (403).
+        const callerResidual = await this.store.readMembership(
+          client,
+          workspaceId,
+          subject,
+        );
+        if (
+          callerResidual === undefined ||
+          callerResidual.status === WORKSPACE_MEMBER_STATUS.SUSPENDED ||
+          (callerResidual.role !== WORKSPACE_ROLE.OWNER &&
+            callerResidual.role !== WORKSPACE_ROLE.ADMINISTRATOR)
+        ) {
+          return { kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.FORBIDDEN };
+        }
+
+        // 2. Re-read the target row to decide 404 vs 412 vs 409.
         // Never answer 200 after a zero-row UPDATE.
         const residual = await this.store.readMembershipById(
           client,
