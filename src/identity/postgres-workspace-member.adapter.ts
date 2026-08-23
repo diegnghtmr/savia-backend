@@ -159,6 +159,18 @@ export class PostgresWorkspaceMemberAdapter implements WorkspaceMemberStore {
     await client.query('set constraints all immediate');
   }
 
+  public async deleteMember(
+    client: TransactionClient,
+    workspaceId: string,
+    memberId: string,
+  ): Promise<number> {
+    const result = await client.query(
+      'delete from public.workspace_memberships where id = $1 and workspace_id = $2',
+      [memberId, workspaceId],
+    );
+    return result.rowCount ?? 0;
+  }
+
   public async readRosterMember(
     client: TransactionClient,
     workspaceId: string,
