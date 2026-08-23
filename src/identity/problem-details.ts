@@ -16,6 +16,8 @@ export const PROBLEM_TYPES = {
   UNPROCESSABLE: `${BASE_URI}/unprocessable`,
   PRECONDITION_FAILED: `${BASE_URI}/precondition-failed`,
   FORBIDDEN: `${BASE_URI}/forbidden`,
+  PERSONAL_WORKSPACE_MEMBERSHIP: `${BASE_URI}/personal-workspace-membership`,
+  LAST_OWNER_REQUIRED: `${BASE_URI}/last-owner-required`,
 } as const;
 export interface Problem {
   readonly type: string;
