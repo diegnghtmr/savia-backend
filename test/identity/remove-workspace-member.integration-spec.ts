@@ -599,7 +599,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       expect(check.rows).toHaveLength(0);
     });
 
-    it('owner removes themselves when another owner remains: returns 204', async () => {
+    it('happy path: an owner removes their own membership when another owner remains: returns 204 and caller loses access', async () => {
       const key = 'a0000000-0000-0000-0000-000000000005';
       const res = await deleteMember(
         wsSelfTwoOwnersId,
@@ -612,11 +612,22 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       expect(res.statusCode).toBe(204);
       expect(res.body).toBe('');
 
+      // Verify row is gone from workspace_memberships
       const check = await admin.query(
         'select * from public.workspace_memberships where id = $1',
         [memSelfTwoOwner1Id],
       );
       expect(check.rows).toHaveLength(0);
+
+      // Verify caller can no longer read the workspace
+      const readRes = await app.inject({
+        method: 'GET',
+        url: `/v1/workspaces/${wsSelfTwoOwnersId}`,
+        headers: {
+          authorization: `Bearer bearer-${selfTwoOwner1Subject}`,
+        },
+      });
+      expect(readRes.statusCode).toBe(404);
     });
   });
 
@@ -649,6 +660,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       expect(first.json().type).toBe(
         PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
       );
+      expect(first.json().code).toBe('personal-workspace-membership');
 
       const replay = await deleteMember(
         wsPersonalId,
@@ -662,6 +674,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       expect(replay.json().type).toBe(
         PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
       );
+      expect(replay.json().code).toBe('personal-workspace-membership');
       expect(replay.json().status).toBe(409);
     });
 
@@ -677,6 +690,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(first.statusCode).toBe(409);
       expect(first.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(first.json().code).toBe('last-owner-required');
 
       const replay = await deleteMember(
         wsSoleOwnerId,
@@ -688,6 +702,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(replay.statusCode).toBe(409);
       expect(replay.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(replay.json().code).toBe('last-owner-required');
     });
 
     it('replays 403 forbidden refusal', async () => {
@@ -697,12 +712,14 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(first.statusCode).toBe(403);
       expect(first.json().type).toBe(PROBLEM_TYPES.FORBIDDEN);
+      expect(first.json().code).toBe('forbidden');
 
       const replay = await deleteMember(wsMainId, memOwnerId, adminSubject, {
         idempotencyKey: key,
       });
       expect(replay.statusCode).toBe(403);
       expect(replay.json().type).toBe(PROBLEM_TYPES.FORBIDDEN);
+      expect(replay.json().code).toBe('forbidden');
     });
 
     it('replays 404 not-found refusal', async () => {
@@ -718,6 +735,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(first.statusCode).toBe(404);
       expect(first.json().type).toBe(PROBLEM_TYPES.NOT_FOUND);
+      expect(first.json().code).toBe('not-found');
 
       const replay = await deleteMember(
         wsMainId,
@@ -729,6 +747,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(replay.statusCode).toBe(404);
       expect(replay.json().type).toBe(PROBLEM_TYPES.NOT_FOUND);
+      expect(replay.json().code).toBe('not-found');
     });
 
     it('returns 409 conflict when idempotency key is reused with a different memberId', async () => {
@@ -743,17 +762,20 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(conflictRes.statusCode).toBe(409);
       expect(conflictRes.json().type).toBe(PROBLEM_TYPES.CONFLICT);
+      expect(conflictRes.json().code).toBe('conflict');
     });
   });
 
   describe('Authorization & Visibility Rules', () => {
-    it('returns 404 not-found when caller has no membership in workspace', async () => {
+    it('pins RLS visibility: returns 404 not-found when caller is a non-member of the workspace', async () => {
+      // Note: Step 5 in WorkspaceMemberService is defence in depth; even if omitted, non-member read visibility under RLS produces 404.
       const key = 'a0000000-0000-0000-0000-000000000020';
       const res = await deleteMember(wsMainId, memEditorId, nonMemberSubject, {
         idempotencyKey: key,
       });
       expect(res.statusCode).toBe(404);
       expect(res.json().type).toBe(PROBLEM_TYPES.NOT_FOUND);
+      expect(res.json().code).toBe('not-found');
     });
 
     it('returns 403 forbidden when caller membership is suspended', async () => {
@@ -763,6 +785,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(res.statusCode).toBe(403);
       expect(res.json().type).toBe(PROBLEM_TYPES.FORBIDDEN);
+      expect(res.json().code).toBe('forbidden');
     });
 
     it('returns 403 forbidden when caller role is editor', async () => {
@@ -772,6 +795,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(res.statusCode).toBe(403);
       expect(res.json().type).toBe(PROBLEM_TYPES.FORBIDDEN);
+      expect(res.json().code).toBe('forbidden');
     });
 
     it('returns 403 forbidden when caller role is viewer', async () => {
@@ -781,15 +805,18 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(res.statusCode).toBe(403);
       expect(res.json().type).toBe(PROBLEM_TYPES.FORBIDDEN);
+      expect(res.json().code).toBe('forbidden');
     });
 
     it('returns 403 forbidden when administrator attempts to remove an owner (RULING 7)', async () => {
+      // Note: Step 10 in WorkspaceMemberService is defence in depth; removing it still yields 403 through RLS (application_deletes_administered_membership) plus the residual check.
       const key = 'a0000000-0000-0000-0000-000000000024';
       const res = await deleteMember(wsMainId, memOwnerId, adminSubject, {
         idempotencyKey: key,
       });
       expect(res.statusCode).toBe(403);
       expect(res.json().type).toBe(PROBLEM_TYPES.FORBIDDEN);
+      expect(res.json().code).toBe('forbidden');
 
       // Verify owner row was not deleted
       const check = await admin.query(
@@ -797,6 +824,45 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
         [memOwnerId],
       );
       expect(check.rows).toHaveLength(1);
+    });
+
+    it('documented limitation: an active editor cannot remove their own membership because RLS DELETE requires an administrator role (403 forbidden)', async () => {
+      const key = 'a0000000-0000-0000-0000-000000000025';
+      const res = await deleteMember(wsMainId, memEditorId, editorSubject, {
+        idempotencyKey: key,
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().type).toBe(PROBLEM_TYPES.FORBIDDEN);
+      expect(res.json().code).toBe('forbidden');
+
+      const check = await admin.query(
+        'select * from public.workspace_memberships where id = $1',
+        [memEditorId],
+      );
+      expect(check.rows).toHaveLength(1);
+      expect(check.rows[0].role).toBe('editor');
+    });
+
+    it('documented limitation: an active viewer cannot remove their own membership because RLS DELETE requires an administrator role (403 forbidden)', async () => {
+      const key = 'a0000000-0000-0000-0000-000000000026';
+      const res = await deleteMember(
+        wsMainId,
+        memAuthViewerId,
+        authViewerSubject,
+        {
+          idempotencyKey: key,
+        },
+      );
+      expect(res.statusCode).toBe(403);
+      expect(res.json().type).toBe(PROBLEM_TYPES.FORBIDDEN);
+      expect(res.json().code).toBe('forbidden');
+
+      const check = await admin.query(
+        'select * from public.workspace_memberships where id = $1',
+        [memAuthViewerId],
+      );
+      expect(check.rows).toHaveLength(1);
+      expect(check.rows[0].role).toBe('viewer');
     });
   });
 
@@ -816,6 +882,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(res.statusCode).toBe(404);
       expect(res.json().type).toBe(PROBLEM_TYPES.NOT_FOUND);
+      expect(res.json().code).toBe('not-found');
 
       // Crucial: verify memOtherViewerId in wsOtherId is completely unharmed!
       const check = await admin.query(
@@ -840,6 +907,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(res.statusCode).toBe(409);
       expect(res.json().type).toBe(PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP);
+      expect(res.json().code).toBe('personal-workspace-membership');
 
       const check = await admin.query(
         'select * from public.workspace_memberships where id = $1',
@@ -860,6 +928,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(res.statusCode).toBe(409);
       expect(res.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(res.json().code).toBe('last-owner-required');
 
       const check = await admin.query(
         'select * from public.workspace_memberships where id = $1',
@@ -880,6 +949,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(res.statusCode).toBe(409);
       expect(res.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(res.json().code).toBe('last-owner-required');
 
       const check = await admin.query(
         'select * from public.workspace_memberships where id = $1',
@@ -908,6 +978,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
 
       const failedRes = res1.statusCode === 409 ? res1 : res2;
       expect(failedRes.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(failedRes.json().code).toBe('last-owner-required');
 
       // Verify that exactly one owner remains
       const remaining = await admin.query(
@@ -940,6 +1011,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       const res = await deleteMember(wsMainId, memEditorId, ownerSubject);
       expect(res.statusCode).toBe(400);
       expect(res.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(res.json().code).toBe('bad-request');
     });
 
     it('returns 400 bad-request when Idempotency-Key is not a valid UUID', async () => {
@@ -948,6 +1020,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(res.json().code).toBe('bad-request');
     });
 
     it('returns 400 bad-request when Idempotency-Key contains a NUL byte', async () => {
@@ -956,6 +1029,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(res.json().code).toBe('bad-request');
     });
 
     it('returns 400 bad-request when Idempotency-Key exceeds 255 characters', async () => {
@@ -964,6 +1038,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(res.json().code).toBe('bad-request');
     });
 
     it('returns 400 bad-request when workspaceId is not a UUID', async () => {
@@ -972,6 +1047,36 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(res.json().code).toBe('bad-request');
+    });
+
+    it('returns 400 bad-request and never 500 when workspaceId contains a NUL byte', async () => {
+      const res = await deleteMember(
+        `workspace\0${wsMainId}`,
+        memEditorId,
+        ownerSubject,
+        {
+          idempotencyKey: 'a0000000-0000-0000-0000-000000000074',
+        },
+      );
+      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).not.toBe(500);
+      expect(res.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(res.json().code).toBe('bad-request');
+    });
+
+    it('returns 400 bad-request and never 500 when workspaceId exceeds 10000 characters', async () => {
+      const res = await deleteMember(
+        'a'.repeat(10_000),
+        memEditorId,
+        ownerSubject,
+        {
+          idempotencyKey: 'a0000000-0000-0000-0000-000000000075',
+        },
+      );
+      expect(res.statusCode).toBeGreaterThanOrEqual(400);
+      expect(res.statusCode).toBeLessThan(500);
+      expect(res.statusCode).not.toBe(500);
     });
 
     it('returns 400 bad-request when memberId is not a UUID', async () => {
@@ -980,6 +1085,36 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(res.json().code).toBe('bad-request');
+    });
+
+    it('returns 400 bad-request and never 500 when memberId contains a NUL byte', async () => {
+      const res = await deleteMember(
+        wsMainId,
+        `member\0${memEditorId}`,
+        ownerSubject,
+        {
+          idempotencyKey: 'a0000000-0000-0000-0000-000000000076',
+        },
+      );
+      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).not.toBe(500);
+      expect(res.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(res.json().code).toBe('bad-request');
+    });
+
+    it('returns 400 bad-request and never 500 when memberId exceeds 10000 characters', async () => {
+      const res = await deleteMember(
+        wsMainId,
+        'b'.repeat(10_000),
+        ownerSubject,
+        {
+          idempotencyKey: 'a0000000-0000-0000-0000-000000000077',
+        },
+      );
+      expect(res.statusCode).toBeGreaterThanOrEqual(400);
+      expect(res.statusCode).toBeLessThan(500);
+      expect(res.statusCode).not.toBe(500);
     });
 
     it('returns 401 unauthorized when Bearer token is missing', async () => {
@@ -992,6 +1127,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(res.statusCode).toBe(401);
       expect(res.json().type).toBe(PROBLEM_TYPES.UNAUTHORIZED);
+      expect(res.json().code).toBe('unauthorized');
     });
 
     it('returns 401 unauthorized when Bearer token is rejected by verifier', async () => {
@@ -1005,6 +1141,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       });
       expect(res.statusCode).toBe(401);
       expect(res.json().type).toBe(PROBLEM_TYPES.UNAUTHORIZED);
+      expect(res.json().code).toBe('unauthorized');
     });
   });
 

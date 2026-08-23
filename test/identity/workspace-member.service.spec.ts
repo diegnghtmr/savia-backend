@@ -630,6 +630,63 @@ describe('WorkspaceMemberService.updateWorkspaceMember', () => {
     expect(outcome.kind).toBe(WORKSPACE_MEMBER_UPDATE_OUTCOMES.FORBIDDEN);
   });
 
+  it('updateWorkspaceMember: a caller who loses authority between the UPDATE and the residual reads answers forbidden, not not-found', async () => {
+    let callerReadCount = 0;
+    let targetReadCount = 0;
+    const { service } = createService({
+      readMembership: vi.fn().mockImplementation(() => {
+        callerReadCount++;
+        if (callerReadCount === 1) {
+          return Promise.resolve(defaultCallerMembership);
+        }
+        return Promise.resolve({
+          role: WORKSPACE_ROLE.VIEWER,
+          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+        });
+      }),
+      readMembershipById: vi.fn().mockImplementation(() => {
+        targetReadCount++;
+        if (targetReadCount === 1) {
+          return Promise.resolve(defaultTargetMembership);
+        }
+        return Promise.resolve(undefined);
+      }),
+      updateMemberRole: vi.fn().mockResolvedValue({ rowCount: 0 }),
+    });
+    const outcome = await service.updateWorkspaceMember(
+      dummySubject,
+      dummyWorkspaceId,
+      dummyMemberId,
+      { role: WORKSPACE_ROLE.EDITOR },
+    );
+    expect(outcome.kind).toBe(WORKSPACE_MEMBER_UPDATE_OUTCOMES.FORBIDDEN);
+  });
+
+  it('updateWorkspaceMember positive control: caller retains authority but target is genuinely absent answers not-found', async () => {
+    let targetReadCount = 0;
+    const { service } = createService({
+      readMembership: vi.fn().mockResolvedValue({
+        role: WORKSPACE_ROLE.ADMINISTRATOR,
+        status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+      }),
+      readMembershipById: vi.fn().mockImplementation(() => {
+        targetReadCount++;
+        if (targetReadCount === 1) {
+          return Promise.resolve(defaultTargetMembership);
+        }
+        return Promise.resolve(undefined);
+      }),
+      updateMemberRole: vi.fn().mockResolvedValue({ rowCount: 0 }),
+    });
+    const outcome = await service.updateWorkspaceMember(
+      dummySubject,
+      dummyWorkspaceId,
+      dummyMemberId,
+      { role: WORKSPACE_ROLE.EDITOR },
+    );
+    expect(outcome.kind).toBe(WORKSPACE_MEMBER_UPDATE_OUTCOMES.NOT_FOUND);
+  });
+
   it('residual zero-row update: returns not-found when target row has since been deleted', async () => {
     let callCount = 0;
     const { service } = createService({
@@ -916,7 +973,7 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
     expect(outcome.kind).toBe(WORKSPACE_MEMBER_REMOVE_OUTCOMES.REMOVED);
   });
 
-  it('happy path: owner removes themselves when another owner remains -> REMOVED', async () => {
+  it('happy path: an owner removes a member who happens to be themselves when another owner remains -> REMOVED', async () => {
     const { service } = createRemoveService({
       readMembershipById: vi.fn().mockResolvedValue({
         ...defaultTargetMembership,
@@ -1293,6 +1350,75 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
     );
   });
 
+  it('deferred-trigger 23514 path writes idempotency record with last-owner-required and replay returns 409', async () => {
+    const checkViolationError = Object.assign(
+      new Error(
+        'check_violation: collaborative workspace must retain an active owner',
+      ),
+      { code: '23514' },
+    );
+    const writeSpy = vi.fn().mockResolvedValue(true);
+    const { service } = createRemoveService(
+      {
+        enforceDeferredConstraints: vi
+          .fn()
+          .mockRejectedValue(checkViolationError),
+      },
+      {},
+      {
+        write: writeSpy,
+      },
+    );
+    const outcome = await service.removeWorkspaceMember(
+      dummySubject,
+      dummyWorkspaceId,
+      dummyMemberId,
+      dummyKey,
+    );
+    expect(outcome.kind).toBe(
+      WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED,
+    );
+    expect(writeSpy).toHaveBeenCalledWith(
+      dummyClient,
+      dummySubject,
+      'DELETE /v1/workspaces/{workspaceId}/members/{memberId}',
+      dummyKey,
+      expect.any(String),
+      409,
+      null,
+      { type: PROBLEM_TYPES.LAST_OWNER_REQUIRED },
+    );
+
+    // Replay of that key returns 409 with that exact type
+    const matchingFingerprint = computeRequestFingerprint({
+      workspaceId: dummyWorkspaceId,
+      memberId: dummyMemberId,
+    });
+    const { service: replayService } = createRemoveService(
+      {},
+      {},
+      {
+        read: vi.fn().mockResolvedValue({
+          requestFingerprint: matchingFingerprint,
+          responseStatus: 409,
+          responseEtag: null,
+          responseBody: { type: PROBLEM_TYPES.LAST_OWNER_REQUIRED },
+        }),
+      },
+    );
+    const replayOutcome = await replayService.removeWorkspaceMember(
+      dummySubject,
+      dummyWorkspaceId,
+      dummyMemberId,
+      dummyKey,
+    );
+    expect(replayOutcome.kind).toBe(WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED);
+    if (replayOutcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED) {
+      expect(replayOutcome.status).toBe(409);
+      expect(replayOutcome.problemType).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+    }
+  });
+
   it('lets non-23514 errors escape unchanged', async () => {
     const otherDbError = Object.assign(new Error('connection failure'), {
       code: '08006',
@@ -1353,6 +1479,63 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
     expect(outcome.kind).toBe(WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN);
   });
 
+  it('a caller who loses authority between the DELETE and the residual reads answers forbidden, not not-found', async () => {
+    let callerCallCount = 0;
+    let targetCallCount = 0;
+    const { service } = createRemoveService({
+      readMembership: vi.fn().mockImplementation(() => {
+        callerCallCount++;
+        if (callerCallCount === 1) {
+          return Promise.resolve(defaultCallerMembership);
+        }
+        return Promise.resolve({
+          role: WORKSPACE_ROLE.VIEWER,
+          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+        });
+      }),
+      readMembershipById: vi.fn().mockImplementation(() => {
+        targetCallCount++;
+        if (targetCallCount === 1) {
+          return Promise.resolve(defaultTargetMembership);
+        }
+        return Promise.resolve(undefined);
+      }),
+      deleteMember: vi.fn().mockResolvedValue(0),
+    });
+    const outcome = await service.removeWorkspaceMember(
+      dummySubject,
+      dummyWorkspaceId,
+      dummyMemberId,
+      dummyKey,
+    );
+    expect(outcome.kind).toBe(WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN);
+  });
+
+  it('positive control: caller retains authority but target is genuinely absent answers not-found', async () => {
+    let targetCallCount = 0;
+    const { service } = createRemoveService({
+      readMembership: vi.fn().mockResolvedValue({
+        role: WORKSPACE_ROLE.ADMINISTRATOR,
+        status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+      }),
+      readMembershipById: vi.fn().mockImplementation(() => {
+        targetCallCount++;
+        if (targetCallCount === 1) {
+          return Promise.resolve(defaultTargetMembership);
+        }
+        return Promise.resolve(undefined);
+      }),
+      deleteMember: vi.fn().mockResolvedValue(0),
+    });
+    const outcome = await service.removeWorkspaceMember(
+      dummySubject,
+      dummyWorkspaceId,
+      dummyMemberId,
+      dummyKey,
+    );
+    expect(outcome.kind).toBe(WORKSPACE_MEMBER_REMOVE_OUTCOMES.NOT_FOUND);
+  });
+
   it('zero-row delete: returns policy refusal (forbidden) when target is owner and caller is administrator', async () => {
     let callerCallCount = 0;
     const { service } = createRemoveService({
@@ -1382,7 +1565,10 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
 
   it('zero-row delete: returns personal-workspace when target row is present and workspace is personal', async () => {
     const { service } = createRemoveService({
-      readWorkspaceKind: vi.fn().mockResolvedValue(WORKSPACE_KIND.PERSONAL),
+      readWorkspaceKind: vi
+        .fn()
+        .mockResolvedValueOnce(WORKSPACE_KIND.SHARED)
+        .mockResolvedValueOnce(WORKSPACE_KIND.PERSONAL),
       deleteMember: vi.fn().mockResolvedValue(0),
     });
     const outcome = await service.removeWorkspaceMember(
