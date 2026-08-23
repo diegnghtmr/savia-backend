@@ -631,6 +631,15 @@ describe('WorkspaceMemberService.updateWorkspaceMember', () => {
   });
 
   it('updateWorkspaceMember: a caller who loses authority between the UPDATE and the residual reads answers forbidden, not not-found', async () => {
+    // Models READ COMMITTED snapshot interleaving:
+    // A concurrent transaction demotes the caller between the two residual reads.
+    // If caller is read FIRST (wrong order): its snapshot is taken before the demotion
+    // commits, so it still sees owner authority. Then the target read's snapshot is taken
+    // after the demotion commits, so RLS hides the target -> NOT_FOUND (the bug).
+    // If target is read FIRST (correct order): the target is still visible. Then the
+    // caller read's snapshot sees the demotion -> viewer -> FORBIDDEN (correct).
+    let callerResidualCalled = false;
+    let targetResidualCalled = false;
     let callerReadCount = 0;
     let targetReadCount = 0;
     const { service } = createService({
@@ -639,17 +648,30 @@ describe('WorkspaceMemberService.updateWorkspaceMember', () => {
         if (callerReadCount === 1) {
           return Promise.resolve(defaultCallerMembership);
         }
-        return Promise.resolve({
-          role: WORKSPACE_ROLE.VIEWER,
-          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
-        });
+        callerResidualCalled = true;
+        if (targetResidualCalled) {
+          // Correct order: target was read first, demotion committed, caller sees viewer
+          return Promise.resolve({
+            role: WORKSPACE_ROLE.VIEWER,
+            status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+          });
+        }
+        // Wrong order: caller read first, snapshot before demotion -> still sees owner
+        return Promise.resolve(defaultCallerMembership);
       }),
       readMembershipById: vi.fn().mockImplementation(() => {
         targetReadCount++;
         if (targetReadCount === 1) {
           return Promise.resolve(defaultTargetMembership);
         }
-        return Promise.resolve(undefined);
+        targetResidualCalled = true;
+        if (callerResidualCalled) {
+          // Wrong order: caller was read first (still saw owner), demotion now committed,
+          // RLS hides the target from the demoted caller
+          return Promise.resolve(undefined);
+        }
+        // Correct order: target read first, demotion not yet committed, target visible
+        return Promise.resolve(defaultTargetMembership);
       }),
       updateMemberRole: vi.fn().mockResolvedValue({ rowCount: 0 }),
     });
@@ -659,6 +681,8 @@ describe('WorkspaceMemberService.updateWorkspaceMember', () => {
       dummyMemberId,
       { role: WORKSPACE_ROLE.EDITOR },
     );
+    // Correct order: target visible (conflict), caller demoted -> FORBIDDEN
+    // Wrong order: caller still owner (passes), target hidden -> NOT_FOUND (bug!)
     expect(outcome.kind).toBe(WORKSPACE_MEMBER_UPDATE_OUTCOMES.FORBIDDEN);
   });
 
@@ -1480,6 +1504,9 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
   });
 
   it('a caller who loses authority between the DELETE and the residual reads answers forbidden, not not-found', async () => {
+    // Models READ COMMITTED snapshot interleaving (see updateWorkspaceMember equivalent).
+    let callerResidualCalled = false;
+    let targetResidualCalled = false;
     let callerCallCount = 0;
     let targetCallCount = 0;
     const { service } = createRemoveService({
@@ -1488,17 +1515,30 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
         if (callerCallCount === 1) {
           return Promise.resolve(defaultCallerMembership);
         }
-        return Promise.resolve({
-          role: WORKSPACE_ROLE.VIEWER,
-          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
-        });
+        callerResidualCalled = true;
+        if (targetResidualCalled) {
+          // Correct order: target was read first, demotion committed, caller sees viewer
+          return Promise.resolve({
+            role: WORKSPACE_ROLE.VIEWER,
+            status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+          });
+        }
+        // Wrong order: caller read first, snapshot before demotion -> still sees owner
+        return Promise.resolve(defaultCallerMembership);
       }),
       readMembershipById: vi.fn().mockImplementation(() => {
         targetCallCount++;
         if (targetCallCount === 1) {
           return Promise.resolve(defaultTargetMembership);
         }
-        return Promise.resolve(undefined);
+        targetResidualCalled = true;
+        if (callerResidualCalled) {
+          // Wrong order: caller was read first (still saw owner), demotion now committed,
+          // RLS hides the target
+          return Promise.resolve(undefined);
+        }
+        // Correct order: target read first, demotion not yet committed, target visible
+        return Promise.resolve(defaultTargetMembership);
       }),
       deleteMember: vi.fn().mockResolvedValue(0),
     });
@@ -1508,6 +1548,8 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
       dummyMemberId,
       dummyKey,
     );
+    // Correct order: target visible, caller demoted -> FORBIDDEN
+    // Wrong order: caller still owner (passes), target hidden -> NOT_FOUND (bug!)
     expect(outcome.kind).toBe(WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN);
   });
 
