@@ -27,6 +27,13 @@ import {
   type WorkspaceUpdateCommand,
 } from './workspace-command.js';
 import {
+  decodeMemberCursor,
+  WORKSPACE_MEMBER_LIST_OUTCOMES,
+  WORKSPACE_MEMBER_PORT,
+  type WorkspaceMemberCursor,
+  type WorkspaceMemberPort,
+} from './workspace-member.port.js';
+import {
   decodeCursor,
   WORKSPACE_ACCESS_KINDS,
   WORKSPACE_CREATE_OUTCOME_KINDS,
@@ -45,6 +52,8 @@ const UUID_PATTERN =
 export class WorkspaceController {
   public constructor(
     @Inject(WORKSPACE_PORT) private readonly workspace: WorkspacePort,
+    @Inject(WORKSPACE_MEMBER_PORT)
+    private readonly members: WorkspaceMemberPort,
   ) {}
 
   @Post()
@@ -209,6 +218,84 @@ export class WorkspaceController {
       .header('etag', `"${access.workspace.version}"`)
       .status(200)
       .send(access.workspace);
+  }
+
+  @Get(':workspaceId/members')
+  public async listWorkspaceMembers(
+    @Param('workspaceId') workspaceId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Query('cursor') cursorParam?: string,
+    @Query('limit') limitParam?: string,
+  ): Promise<void> {
+    if (!UUID_PATTERN.test(workspaceId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid workspace identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    let limit = 50;
+    if (limitParam !== undefined) {
+      if (!/^\d+$/.test(limitParam)) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid limit parameter',
+          status: 400,
+        });
+        return;
+      }
+      limit = Number(limitParam);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid limit parameter',
+          status: 400,
+        });
+        return;
+      }
+    }
+
+    let cursor: WorkspaceMemberCursor | undefined;
+    if (cursorParam !== undefined) {
+      cursor = decodeMemberCursor(cursorParam, workspaceId);
+      if (cursor === undefined) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid cursor parameter',
+          status: 400,
+        });
+        return;
+      }
+    }
+
+    const outcome = await this.members.listWorkspaceMembers(
+      request.identity.subject,
+      workspaceId,
+      { cursor, limit },
+    );
+
+    if (outcome.kind === WORKSPACE_MEMBER_LIST_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Workspace not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_LIST_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    void reply.status(200).send(outcome.page);
   }
 
   @Patch(':workspaceId')
