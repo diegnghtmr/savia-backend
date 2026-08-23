@@ -27,9 +27,15 @@ import {
   type WorkspaceUpdateCommand,
 } from './workspace-command.js';
 import {
+  createWorkspaceMemberUpdateCommand,
+  WorkspaceMemberCommandValidationError,
+  type WorkspaceMemberUpdateCommand,
+} from './workspace-member-command.js';
+import {
   decodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   WORKSPACE_MEMBER_PORT,
+  WORKSPACE_MEMBER_UPDATE_OUTCOMES,
   type WorkspaceMemberCursor,
   type WorkspaceMemberPort,
 } from './workspace-member.port.js';
@@ -296,6 +302,139 @@ export class WorkspaceController {
     }
 
     void reply.status(200).send(outcome.page);
+  }
+
+  @Patch(':workspaceId/members/:memberId')
+  public async updateWorkspaceMember(
+    @Param('workspaceId') workspaceId: string,
+    @Param('memberId') memberId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Body() body: unknown,
+  ): Promise<void> {
+    if (!UUID_PATTERN.test(workspaceId) || !UUID_PATTERN.test(memberId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid identifier parameter',
+        status: 400,
+      });
+      return;
+    }
+
+    const ifMatch = parseIfMatch(request.headers['if-match']);
+    if (ifMatch.kind === 'malformed') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+      return;
+    }
+
+    let command: WorkspaceMemberUpdateCommand;
+    try {
+      command = createWorkspaceMemberUpdateCommand(body);
+    } catch (error) {
+      if (error instanceof WorkspaceMemberCommandValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Unprocessable entity',
+          status: 422,
+          errors: error.violations,
+        });
+        return;
+      }
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Bad request',
+        status: 400,
+      });
+      return;
+    }
+
+    // RFC 9110 section 13.1.1 defines If-Match: * as evaluating to false if the
+    // representation does not exist, which would technically warrant 412.
+    // However, as documented for updateWorkspace (src/identity/workspace.controller.ts:488-493),
+    // this API cannot distinguish an absent member or workspace from one where
+    // the caller is not an administrator, answering 404 for both to avoid leaking
+    // existence information. Answering 404 here is a deliberate deviation from RFC 9110.
+    let expectedVersions: number | readonly number[] | undefined;
+    if (ifMatch.kind === 'versions') {
+      expectedVersions =
+        ifMatch.versions.length === 1 ? ifMatch.versions[0] : ifMatch.versions;
+    } else {
+      expectedVersions = undefined;
+    }
+
+    const outcome = await this.members.updateWorkspaceMember(
+      request.identity.subject,
+      workspaceId,
+      memberId,
+      command,
+      expectedVersions,
+    );
+
+    if (outcome.kind === WORKSPACE_MEMBER_UPDATE_OUTCOMES.OK) {
+      void reply
+        .header('etag', `"${outcome.version}"`)
+        .status(200)
+        .send(outcome.member);
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_UPDATE_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Workspace not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_UPDATE_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_UPDATE_OUTCOMES.PERSONAL_WORKSPACE) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+        title: 'Personal workspace membership cannot be updated',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_UPDATE_OUTCOMES.LAST_OWNER_REQUIRED) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+        title: 'Collaborative workspace requires at least one active owner',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_UPDATE_OUTCOMES.VERSION_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_UPDATE_OUTCOMES.CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Conflict',
+        status: 409,
+      });
+      return;
+    }
   }
 
   @Patch(':workspaceId')

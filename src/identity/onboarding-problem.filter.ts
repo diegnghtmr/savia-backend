@@ -37,9 +37,11 @@ export class OnboardingProblemFilter implements ExceptionFilter {
         status: 401,
       });
     if (exception instanceof CommitOutcomeUnknownError) {
-      // The write may or may not have landed. Retrying is safe because the
-      // command is idempotent per subject, so the client is told to retry
-      // instead of being handed a failure it would be wrong to act on.
+      // The write may or may not have landed. Retrying is safe only for
+      // commands that carry a replay mechanism (such as an idempotent command
+      // per subject or an Idempotency-Key); for a version-bumping PATCH,
+      // the client's protection is If-Match, which makes a retry answer 412
+      // once the first write actually landed.
       // This is the only outcome an operator may need to reconcile by hand,
       // so the log names the subject and the underlying cause.
       const { subject } = host

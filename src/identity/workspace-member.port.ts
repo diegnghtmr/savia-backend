@@ -1,3 +1,4 @@
+import type { WorkspaceMemberUpdateCommand } from './workspace-member-command.js';
 import type {
   PageInfo,
   WorkspaceMemberStatus,
@@ -54,6 +55,50 @@ export type WorkspaceMemberListOutcome =
   | WorkspaceMemberListOk
   | WorkspaceMemberListForbidden
   | WorkspaceMemberListNotFound;
+
+export const WORKSPACE_MEMBER_UPDATE_OUTCOMES = {
+  OK: 'ok',
+  NOT_FOUND: 'not-found',
+  FORBIDDEN: 'forbidden',
+  PERSONAL_WORKSPACE: 'personal-workspace',
+  LAST_OWNER_REQUIRED: 'last-owner-required',
+  VERSION_CONFLICT: 'version-conflict',
+  CONFLICT: 'conflict',
+} as const;
+export type WorkspaceMemberUpdateOutcomeKind =
+  (typeof WORKSPACE_MEMBER_UPDATE_OUTCOMES)[keyof typeof WORKSPACE_MEMBER_UPDATE_OUTCOMES];
+
+export interface WorkspaceMemberUpdateOk {
+  readonly kind: typeof WORKSPACE_MEMBER_UPDATE_OUTCOMES.OK;
+  readonly member: WorkspaceMember;
+  readonly version: number;
+}
+export interface WorkspaceMemberUpdateNotFound {
+  readonly kind: typeof WORKSPACE_MEMBER_UPDATE_OUTCOMES.NOT_FOUND;
+}
+export interface WorkspaceMemberUpdateForbidden {
+  readonly kind: typeof WORKSPACE_MEMBER_UPDATE_OUTCOMES.FORBIDDEN;
+}
+export interface WorkspaceMemberUpdatePersonalWorkspace {
+  readonly kind: typeof WORKSPACE_MEMBER_UPDATE_OUTCOMES.PERSONAL_WORKSPACE;
+}
+export interface WorkspaceMemberUpdateLastOwnerRequired {
+  readonly kind: typeof WORKSPACE_MEMBER_UPDATE_OUTCOMES.LAST_OWNER_REQUIRED;
+}
+export interface WorkspaceMemberUpdateVersionConflict {
+  readonly kind: typeof WORKSPACE_MEMBER_UPDATE_OUTCOMES.VERSION_CONFLICT;
+}
+export interface WorkspaceMemberUpdateConflict {
+  readonly kind: typeof WORKSPACE_MEMBER_UPDATE_OUTCOMES.CONFLICT;
+}
+export type WorkspaceMemberUpdateOutcome =
+  | WorkspaceMemberUpdateOk
+  | WorkspaceMemberUpdateNotFound
+  | WorkspaceMemberUpdateForbidden
+  | WorkspaceMemberUpdatePersonalWorkspace
+  | WorkspaceMemberUpdateLastOwnerRequired
+  | WorkspaceMemberUpdateVersionConflict
+  | WorkspaceMemberUpdateConflict;
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -134,4 +179,11 @@ export interface WorkspaceMemberPort {
     workspaceId: string,
     query: WorkspaceMemberListQuery,
   ): Promise<WorkspaceMemberListOutcome>;
+  updateWorkspaceMember(
+    subject: string,
+    workspaceId: string,
+    memberId: string,
+    command: WorkspaceMemberUpdateCommand,
+    expectedVersion?: number | readonly number[],
+  ): Promise<WorkspaceMemberUpdateOutcome>;
 }

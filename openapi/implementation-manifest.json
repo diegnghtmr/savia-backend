@@ -51,6 +51,11 @@
       "operationId": "listWorkspaceMembers",
       "method": "GET",
       "path": "/v1/workspaces/{workspaceId}/members"
+    },
+    {
+      "operationId": "updateWorkspaceMember",
+      "method": "PATCH",
+      "path": "/v1/workspaces/{workspaceId}/members/{memberId}"
     }
   ]
 }
