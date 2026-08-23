@@ -56,6 +56,11 @@
       "operationId": "updateWorkspaceMember",
       "method": "PATCH",
       "path": "/v1/workspaces/{workspaceId}/members/{memberId}"
+    },
+    {
+      "operationId": "removeWorkspaceMember",
+      "method": "DELETE",
+      "path": "/v1/workspaces/{workspaceId}/members/{memberId}"
     }
   ]
 }
