@@ -110,6 +110,9 @@ jobs:
       - name: workspace members integration
         shell: bash
         run: pnpm test:integration:workspace-members
+      - name: update workspace member integration
+        shell: bash
+        run: pnpm test:integration:update-workspace-member
       - name: command idempotency integration
         shell: bash
         run: pnpm test:integration:command-idempotency

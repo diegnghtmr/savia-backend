@@ -12,9 +12,11 @@ import {
   encodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   WORKSPACE_MEMBER_PORT,
+  WORKSPACE_MEMBER_UPDATE_OUTCOMES,
   type WorkspaceMember,
   type WorkspaceMemberListOutcome,
   type WorkspaceMemberPort,
+  type WorkspaceMemberUpdateOutcome,
 } from '../src/identity/workspace-member.port.js';
 import {
   WORKSPACE_PORT,
@@ -23,6 +25,7 @@ import {
 
 const SUBJECT = '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d';
 const WORKSPACE_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+const MEMBER_ID = '11111111-1111-1111-1111-111111111111';
 const TOKEN = 'accepted-token';
 
 const authEnvironment = {
@@ -84,6 +87,13 @@ async function createApplication(
         },
       },
     } satisfies WorkspaceMemberListOutcome),
+  updateWorkspaceMember: WorkspaceMemberPort['updateWorkspaceMember'] = vi
+    .fn()
+    .mockResolvedValue({
+      kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.OK,
+      member: defaultMember,
+      version: 2,
+    } satisfies WorkspaceMemberUpdateOutcome),
 ): Promise<NestFastifyApplication> {
   const dummyWorkspacePort: WorkspacePort = {
     read: vi.fn(),
@@ -101,7 +111,7 @@ async function createApplication(
     .overrideProvider(WORKSPACE_PORT)
     .useValue(dummyWorkspacePort)
     .overrideProvider(WORKSPACE_MEMBER_PORT)
-    .useValue({ listWorkspaceMembers })
+    .useValue({ listWorkspaceMembers, updateWorkspaceMember })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -134,6 +144,26 @@ function listWorkspaceMembersRequest(
     ...(options.token === undefined
       ? {}
       : { headers: { authorization: `Bearer ${options.token}` } }),
+  });
+}
+
+function updateWorkspaceMemberRequest(
+  application: NestFastifyApplication,
+  workspaceId: string,
+  memberId: string,
+  body: unknown = { role: 'editor' },
+  options: { token?: string; ifMatch?: string } = {},
+) {
+  return application.inject({
+    method: 'PATCH',
+    url: `/v1/workspaces/${workspaceId}/members/${memberId}`,
+    payload: body as Record<string, unknown>,
+    headers: {
+      ...(options.token === undefined
+        ? {}
+        : { authorization: `Bearer ${options.token}` }),
+      ...(options.ifMatch === undefined ? {} : { 'if-match': options.ifMatch }),
+    },
   });
 }
 
@@ -546,5 +576,381 @@ describe('listWorkspaceMembers HTTP boundary', () => {
       hasNextPage: true,
       nextCursor: 'next-cursor-test-value',
     });
+  });
+});
+
+describe('updateWorkspaceMember HTTP boundary', () => {
+  it('returns 200 with updated member body and ETag header on OK outcome', async () => {
+    const updateSpy = vi.fn().mockResolvedValue({
+      kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.OK,
+      member: {
+        ...defaultMember,
+        role: 'editor',
+      },
+      version: 5,
+    });
+    const appInstance = await createApplication(undefined, updateSpy);
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['etag']).toBe('"5"');
+    const body = response.json();
+    expect(body.id).toBe(defaultMember.id);
+    expect(body.role).toBe('editor');
+    expect(Object.hasOwn(body, 'version')).toBe(false);
+  });
+
+  it('returns 401 when no bearer token is presented', async () => {
+    const updateSpy = vi.fn();
+    const appInstance = await createApplication(undefined, updateSpy);
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+    );
+    expect(response.statusCode).toBe(401);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a workspace identifier that is not a UUID', async () => {
+    const appInstance = await createApplication();
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      'not-a-uuid',
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(400);
+    expect(response.json().type).toBe('https://savia.app/problems/bad-request');
+    expect(response.json().code).toBe('bad-request');
+  });
+
+  it('returns 400 for a member identifier that is not a UUID', async () => {
+    const appInstance = await createApplication();
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      'not-a-uuid',
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(400);
+    expect(response.json().type).toBe('https://savia.app/problems/bad-request');
+    expect(response.json().code).toBe('bad-request');
+  });
+
+  it('returns 403 when outcome is FORBIDDEN', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.FORBIDDEN,
+      }),
+    );
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(403);
+    const body = response.json();
+    expect(body.type).toBe('https://savia.app/problems/forbidden');
+    expect(body.code).toBe('forbidden');
+  });
+
+  it('returns 404 when outcome is NOT_FOUND', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.NOT_FOUND,
+      }),
+    );
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(404);
+    const body = response.json();
+    expect(body.type).toBe('https://savia.app/problems/not-found');
+    expect(body.code).toBe('not-found');
+  });
+
+  it('returns 409 when outcome is PERSONAL_WORKSPACE with personal-workspace-membership problem type', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.PERSONAL_WORKSPACE,
+      }),
+    );
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(409);
+    const body = response.json();
+    expect(body.type).toBe(
+      'https://savia.app/problems/personal-workspace-membership',
+    );
+    expect(body.code).toBe('personal-workspace-membership');
+  });
+
+  it('returns 409 when outcome is LAST_OWNER_REQUIRED with last-owner-required problem type', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.LAST_OWNER_REQUIRED,
+      }),
+    );
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(409);
+    const body = response.json();
+    expect(body.type).toBe('https://savia.app/problems/last-owner-required');
+    expect(body.code).toBe('last-owner-required');
+  });
+
+  it('returns 409 when outcome is CONFLICT with conflict problem type', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.CONFLICT,
+      }),
+    );
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(409);
+    const body = response.json();
+    expect(body.type).toBe('https://savia.app/problems/conflict');
+    expect(body.code).toBe('conflict');
+  });
+
+  it('returns 412 when outcome is VERSION_CONFLICT with precondition-failed problem type', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.VERSION_CONFLICT,
+      }),
+    );
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN, ifMatch: '"1"' },
+    );
+    expect(response.statusCode).toBe(412);
+    const body = response.json();
+    expect(body.type).toBe('https://savia.app/problems/precondition-failed');
+    expect(body.code).toBe('precondition-failed');
+  });
+
+  it('returns 412 for malformed If-Match headers and never 500', async () => {
+    const appInstance = await createApplication();
+    for (const badIfMatch of [
+      'W/"7"',
+      '"007"',
+      '7',
+      '""',
+      '"99999999999999999999"',
+    ]) {
+      const response = await updateWorkspaceMemberRequest(
+        appInstance,
+        WORKSPACE_ID,
+        MEMBER_ID,
+        { role: 'editor' },
+        { token: TOKEN, ifMatch: badIfMatch },
+      );
+      expect(response.statusCode).toBe(412);
+      expect(response.statusCode).not.toBe(500);
+      const body = response.json();
+      expect(body.type).toBe('https://savia.app/problems/precondition-failed');
+      expect(body.code).toBe('precondition-failed');
+    }
+  });
+
+  it('returns 422 for invalid request body', async () => {
+    const appInstance = await createApplication();
+    for (const badBody of [
+      {},
+      { role: 'admin' },
+      { role: 'OWNER' },
+      { role: 'editor', status: 'suspended' },
+      { role: null },
+      { role: 42 },
+      [],
+    ]) {
+      const response = await updateWorkspaceMemberRequest(
+        appInstance,
+        WORKSPACE_ID,
+        MEMBER_ID,
+        badBody,
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(422);
+      const body = response.json();
+      expect(body.type).toBe('https://savia.app/problems/unprocessable');
+      expect(body.code).toBe('unprocessable');
+      expect(body.errors).toBeDefined();
+    }
+  });
+
+  it('passes parsed If-Match version to the port', async () => {
+    const updateSpy = vi.fn().mockResolvedValue({
+      kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.OK,
+      member: defaultMember,
+      version: 8,
+    });
+    const appInstance = await createApplication(undefined, updateSpy);
+
+    // Single version
+    await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN, ifMatch: '"7"' },
+    );
+    expect(updateSpy).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      7,
+    );
+
+    updateSpy.mockClear();
+    // Multi version list
+    await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN, ifMatch: '"1", "7"' },
+    );
+    expect(updateSpy).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      [1, 7],
+    );
+
+    updateSpy.mockClear();
+    // Any (*)
+    await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN, ifMatch: '*' },
+    );
+    expect(updateSpy).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      undefined,
+    );
+
+    updateSpy.mockClear();
+    // Absent
+    await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(updateSpy).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      undefined,
+    );
+  });
+
+  it('includes email when the port returns a member with email (positive control)', async () => {
+    const memberWithEmail: WorkspaceMember = {
+      id: MEMBER_ID,
+      userId: SUBJECT,
+      displayName: 'Active User',
+      email: 'user@example.test',
+      role: 'editor',
+      status: 'active',
+      joinedAt: '2026-07-15T00:00:00.000Z',
+    };
+    const appInstance = await createApplication(
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.OK,
+        member: memberWithEmail,
+        version: 2,
+      }),
+    );
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.email).toBe('user@example.test');
+    expect(Object.hasOwn(body, 'email')).toBe(true);
+  });
+
+  it('omits email when the port returns a member without email', async () => {
+    const memberWithoutEmail: WorkspaceMember = {
+      id: MEMBER_ID,
+      userId: SUBJECT,
+      displayName: 'Active User',
+      role: 'editor',
+      status: 'active',
+      joinedAt: '2026-07-15T00:00:00.000Z',
+    };
+    const appInstance = await createApplication(
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_UPDATE_OUTCOMES.OK,
+        member: memberWithoutEmail,
+        version: 2,
+      }),
+    );
+    const response = await updateWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { role: 'editor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(Object.hasOwn(body, 'email')).toBe(false);
   });
 });
