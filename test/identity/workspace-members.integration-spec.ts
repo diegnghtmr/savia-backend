@@ -323,6 +323,43 @@ describe('Workspace member roster (202607150013_workspace_member_roster.sql)', (
       expect(result.rows[0].app_exec).toBe(true);
     });
 
+    // The POSITIVE CONTROL for the two 42501 assertions in
+    // supabase/tests/database/identity_rls.test.sql. That file runs against two schemas -- the
+    // full migration set and the 202607150001-04 subset copied by
+    // test/schema/identity-tables.integration-spec.ts -- so it can only assert what is true
+    // under both, which means it can only assert the negatives. On the subset savia_elevated
+    // has no privilege on profiles at all, so those negatives would still pass if this grant
+    // were narrowed to nothing. This test is what makes them falsifiable.
+    it('savia_elevated reads exactly the three profile columns the roster projects and none of the private ones', async () => {
+      const result = await admin.query<{
+        column_name: string;
+        readable: boolean;
+      }>(
+        `select column_name,
+                has_column_privilege('savia_elevated', 'public.profiles', column_name, 'select') as readable
+           from information_schema.columns
+          where table_schema = 'public' and table_name = 'profiles'
+          order by column_name`,
+      );
+      const readable = result.rows
+        .filter((row) => row.readable)
+        .map((row) => row.column_name);
+      expect(readable).toEqual(['display_name', 'email', 'id']);
+    });
+
+    it('savia_elevated holds no write privilege on public.profiles', async () => {
+      const result = await admin.query<{
+        ins: boolean;
+        upd: boolean;
+        del: boolean;
+      }>(
+        `select has_table_privilege('savia_elevated', 'public.profiles', 'insert') as ins,
+                has_table_privilege('savia_elevated', 'public.profiles', 'update') as upd,
+                has_table_privilege('savia_elevated', 'public.profiles', 'delete') as del`,
+      );
+      expect(result.rows[0]).toEqual({ ins: false, upd: false, del: false });
+    });
+
     it('savia_elevated holds no create privilege on schema public after the migration', async () => {
       const result = await admin.query<{ has_create: boolean }>(
         `select has_schema_privilege('savia_elevated', 'public', 'create') as has_create`,

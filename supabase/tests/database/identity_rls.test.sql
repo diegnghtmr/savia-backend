@@ -1,6 +1,6 @@
 begin;
 
-select plan(18);
+select plan(17);
 
 insert into auth.users (id, email) values
   ('00000000-0000-0000-0000-000000000011', 'owner@example.test'),
@@ -108,18 +108,21 @@ rollback;
 begin;
 set local role savia_elevated;
 set local search_path = extensions, public;
--- 202607150013 grants savia_elevated a COLUMN-SCOPED select on public.profiles, because the
--- security-definer projection workspace_member_roster executes as savia_elevated and must read
--- a peer's display_name and email -- application_reads_own_profile is self-only, so a plain join
--- returns NULL for every peer and WorkspaceMember.displayName is required by the authority.
--- These three assertions pin exactly how far that grant reaches. The positive control comes
--- first: without it the two 42501 assertions could not distinguish "the column is protected"
--- from "the role cannot read profiles at all", and the grant could be deleted without failing
--- a test.
-select lives_ok(
-  $$select id, display_name, email from public.profiles$$,
-  'elevated role reads the three columns the member roster projects'
-);
+-- THIS FILE RUNS AGAINST TWO DIFFERENT SCHEMAS, so every assertion in it must hold under both.
+-- The `database RLS contract` CI step applies ALL migrations. The `database schema contract`
+-- step -- test/schema/identity-tables.integration-spec.ts, reachable locally as
+-- `pnpm test:schema-contract` -- copies only 202607150001 through 202607150004 and runs this
+-- same file against that subset. Under the subset savia_elevated holds no privilege on
+-- public.profiles at all; under the full set 202607150013 grants it select on exactly
+-- (id, display_name, email), because the security-definer projection workspace_member_roster
+-- executes as savia_elevated and application_reads_own_profile is self-only.
+--
+-- Only the negatives below are true under both, so only they belong here. The positive control
+-- proving the grant actually reaches those three columns lives in
+-- test/identity/workspace-members.integration-spec.ts, which runs against the full migration
+-- set. Without that control these two assertions could not distinguish "this column is
+-- protected" from "this role cannot read profiles at all", and the grant could be narrowed to
+-- nothing without failing a test -- so do not delete it.
 select throws_ok(
   $$select privacy_mode_enabled from public.profiles$$,
   '42501',
