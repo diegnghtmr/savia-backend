@@ -1,7 +1,15 @@
 begin;
 
+-- RULING 47 (binding): workspace_id is a scoping discriminator, NOT a referential
+-- link -- it carries no foreign key. An idempotency record is about the COMMAND and
+-- must outlive the resource whose deletion it records: WorkspaceService.delete()
+-- removes the workspaces row and then writes this record in the same transaction,
+-- so any FK raises 23503 there, and reordering cannot help because cascade would
+-- destroy the record that answers the replay. The value is server-derived from the
+-- authenticated request, never client-supplied; orphans are bounded by the
+-- adapter's created_at > now() - interval '24 hours' read filter.
 alter table public.command_idempotency_records
-  add column workspace_id uuid references public.workspaces(id) on delete cascade;
+  add column workspace_id uuid;
 
 do $$
 declare

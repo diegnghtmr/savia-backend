@@ -60,6 +60,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   const wsDeletePositiveId = '00000000-0000-0000-0000-000000000861';
   const wsDeleteConcurrentId = '00000000-0000-0000-0000-000000000862';
   const wsDeleteReplayId = '00000000-0000-0000-0000-000000000863';
+  const wsDeleteRecordSurvivesId = '00000000-0000-0000-0000-000000000864';
 
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
@@ -222,6 +223,19 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
        values ($1, $2, 'owner', 'active')`,
       [wsDeleteReplayId, subjectOwner],
+    );
+
+    // Seed wsDeleteRecordSurvivesId for subjectOwner (shared workspace proving the
+    // idempotency record outlives the workspace whose deletion it records)
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
+       values ($1, 'Delete Record Survives WS', 'shared', 'USD', null)`,
+      [wsDeleteRecordSurvivesId],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+       values ($1, $2, 'owner', 'active')`,
+      [wsDeleteRecordSurvivesId, subjectOwner],
     );
   });
 
@@ -1121,7 +1135,10 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       }
     });
 
-    it('same idempotency key with different workspaceId returns idempotency conflict', async () => {
+    // Records are workspace-scoped: the wsPersonalId refusal occupies the
+    // (subject, route, key, wsPersonalId) slot, so reusing the key against a
+    // DIFFERENT workspace is a different command slot and must execute for real.
+    it('same idempotency key on two different workspaces uses independent slots: stored refusal does not block the second delete', async () => {
       const key = 'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d11';
       const firstOutcome = await service.delete(
         subjectOwner,
@@ -1130,12 +1147,60 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       );
       expect(firstOutcome.kind).toBe('unprocessable');
 
-      const conflictOutcome = await service.delete(
+      const secondOutcome = await service.delete(
         subjectOwner,
         sharedWorkspaceId,
         key,
       );
-      expect(conflictOutcome.kind).toBe('idempotency-conflict');
+      expect(secondOutcome.kind).toBe('deleted');
+    });
+
+    // RULING 47: workspace_id on command_idempotency_records is a scoping
+    // discriminator, not a referential link -- it carries NO foreign key. This
+    // service path deletes the workspaces row and THEN writes the record that
+    // references its id inside ONE transaction; any FK here raises 23503 and
+    // rolls the whole delete back, and reordering cannot help because cascade
+    // would destroy the record that must answer the replay. The defect only
+    // appears when a CALLER deletes the referenced row in-transaction, so this
+    // test goes through the real WorkspaceService.delete(), never the adapter.
+    it('delete succeeds through the real service path and the idempotency record outlives the deleted workspace', async () => {
+      const key = 'a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7d12';
+
+      const outcome = await service.delete(
+        subjectOwner,
+        wsDeleteRecordSurvivesId,
+        key,
+      );
+      expect(outcome.kind).toBe('deleted');
+
+      const check = await admin.query(
+        'select 1 from public.workspaces where id = $1',
+        [wsDeleteRecordSurvivesId],
+      );
+      expect(check.rows).toHaveLength(0);
+
+      const records = await admin.query<{ count: string }>(
+        `select count(*)::text as count
+           from public.command_idempotency_records
+          where subject_id = $1 and route = $2 and idempotency_key = $3 and workspace_id = $4`,
+        [
+          subjectOwner,
+          'DELETE /v1/workspaces/{workspaceId}',
+          key,
+          wsDeleteRecordSurvivesId,
+        ],
+      );
+      expect(records.rows[0]?.count).toBe('1');
+
+      const replay = await service.delete(
+        subjectOwner,
+        wsDeleteRecordSurvivesId,
+        key,
+      );
+      expect(replay.kind).toBe('replayed');
+      if (replay.kind === 'replayed') {
+        expect(replay.status).toBe(204);
+      }
     });
   });
 });
