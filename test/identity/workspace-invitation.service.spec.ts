@@ -24,7 +24,9 @@ import {
 describe('WorkspaceInvitationService', () => {
   const dummySubject = '3f084ac5-18a6-4e09-920d-2e3da29df7c8';
   const dummyWorkspaceId = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
-  const dummyClient = {} as TransactionClient;
+  const dummyClient = {
+    query: vi.fn().mockResolvedValue({ rows: [] }),
+  } as unknown as TransactionClient;
 
   const fakeInvitation1: WorkspaceInvitation = {
     id: '11111111-1111-1111-1111-111111111111',

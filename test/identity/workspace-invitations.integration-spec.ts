@@ -6,7 +6,7 @@ import { PostgresConfig } from '../../src/identity/postgres-config.js';
 import { PostgresIdempotencyAdapter } from '../../src/identity/postgres-idempotency.adapter.js';
 import { PostgresPool } from '../../src/identity/postgres-pool.js';
 import { PostgresWorkspaceInvitationAdapter } from '../../src/identity/postgres-workspace-invitation.adapter.js';
-import { decodeCursor } from '../../src/identity/workspace-command.js';
+import { decodeCursor } from '../../src/identity/workspace.port.js';
 import {
   WORKSPACE_INVITATION_CREATE_OUTCOMES,
   WORKSPACE_INVITATION_LIST_OUTCOMES,
@@ -41,6 +41,7 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
 
   const wsSharedId = '00000000-0000-0000-0000-000000000881';
   const wsPersonalId = '00000000-0000-0000-0000-000000000882';
+  const wsPaginationId = '00000000-0000-0000-0000-000000000883';
 
   const memOwnerAId = '00000000-0000-0000-0000-000000000891';
   const memAdminBId = '00000000-0000-0000-0000-000000000892';
@@ -49,6 +50,7 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
   const memActiveId = '00000000-0000-0000-0000-000000000895';
   const memSuspendedId = '00000000-0000-0000-0000-000000000896';
   const memPersonalOwnerId = '00000000-0000-0000-0000-000000000897';
+  const memPaginationOwnerId = '00000000-0000-0000-0000-000000000898';
 
   async function asSubject<T>(
     subjectId: string,
@@ -123,8 +125,9 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
     await admin.query(
       `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
        values ($1, 'Shared Workspace Invitations', 'shared', 'USD', null, $2),
-              ($3, 'Personal Workspace Invitations', 'personal', 'USD', $4, $4)`,
-      [wsSharedId, ownerA, wsPersonalId, ownerA],
+              ($3, 'Personal Workspace Invitations', 'personal', 'USD', $4, $4),
+              ($5, 'Pagination Workspace Invitations', 'shared', 'USD', null, $2)`,
+      [wsSharedId, ownerA, wsPersonalId, ownerA, wsPaginationId],
     );
 
     await admin.query(
@@ -135,7 +138,8 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
               ($10, $11, $12, 'viewer', 'active'),
               ($13, $14, $15, 'editor', 'active'),
               ($16, $17, $18, 'viewer', 'suspended'),
-              ($19, $20, $21, 'owner', 'active')`,
+              ($19, $20, $21, 'owner', 'active'),
+              ($22, $23, $24, 'owner', 'active')`,
       [
         memOwnerAId,
         wsSharedId,
@@ -157,6 +161,9 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
         memberSuspended,
         memPersonalOwnerId,
         wsPersonalId,
+        ownerA,
+        memPaginationOwnerId,
+        wsPaginationId,
         ownerA,
       ],
     );
@@ -485,24 +492,33 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
       'page-gamma@example.test',
     ];
 
-    // Seed 3 invitations with sequential created_at
-    for (let i = 0; i < pagedEmails.length; i++) {
-      await admin.query(
-        `insert into public.workspace_invitations (id, workspace_id, invited_by, email, role, status, expires_at, created_at)
-         values ($1, $2, $3, $4, 'editor', 'pending', now() + interval '7 days', now() + interval '${i + 1} seconds')`,
-        [
-          `00000000-0000-0000-0000-00000000078${i + 1}`,
-          wsSharedId,
-          ownerA,
-          pagedEmails[i],
-        ],
-      );
-    }
+    // Seed 3 invitations in dedicated pagination workspace
+    // Beta and Gamma share the same created_at timestamp to test ID tiebreak
+    await admin.query(
+      `delete from public.workspace_invitations where workspace_id = $1`,
+      [wsPaginationId],
+    );
+    await admin.query(
+      `insert into public.workspace_invitations (id, workspace_id, invited_by, email, role, status, expires_at, created_at)
+       values ($1, $2, $3, $4, 'editor', 'pending', now() + interval '7 days', now() + interval '10 seconds'),
+              ($5, $2, $3, $6, 'editor', 'pending', now() + interval '7 days', now() + interval '5 seconds'),
+              ($7, $2, $3, $8, 'editor', 'pending', now() + interval '7 days', now() + interval '5 seconds')`,
+      [
+        '00000000-0000-0000-0000-000000000781',
+        wsPaginationId,
+        ownerA,
+        pagedEmails[0],
+        '00000000-0000-0000-0000-000000000782',
+        pagedEmails[1],
+        '00000000-0000-0000-0000-000000000783',
+        pagedEmails[2],
+      ],
+    );
 
     // Page 1: limit 1
     const page1Outcome = await service.listWorkspaceInvitations(
       ownerA,
-      wsSharedId,
+      wsPaginationId,
       { limit: 1 },
     );
     expect(page1Outcome.kind).toBe(WORKSPACE_INVITATION_LIST_OUTCOMES.OK);
@@ -515,23 +531,28 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
     const cursor1 = decodeCursor(page1Outcome.page.pageInfo.nextCursor!);
     const page2Outcome = await service.listWorkspaceInvitations(
       ownerA,
-      wsSharedId,
+      wsPaginationId,
       { cursor: cursor1, limit: 1 },
     );
     expect(page2Outcome.kind).toBe(WORKSPACE_INVITATION_LIST_OUTCOMES.OK);
     if (page2Outcome.kind !== WORKSPACE_INVITATION_LIST_OUTCOMES.OK) return;
     expect(page2Outcome.page.items.length).toBe(1);
+    expect(page2Outcome.page.pageInfo.hasNextPage).toBe(true);
+    expect(page2Outcome.page.pageInfo.nextCursor).not.toBeNull();
 
     // Page 3: limit 1 with cursor
     const cursor2 = decodeCursor(page2Outcome.page.pageInfo.nextCursor!);
     const page3Outcome = await service.listWorkspaceInvitations(
       ownerA,
-      wsSharedId,
+      wsPaginationId,
       { cursor: cursor2, limit: 1 },
     );
+
     expect(page3Outcome.kind).toBe(WORKSPACE_INVITATION_LIST_OUTCOMES.OK);
     if (page3Outcome.kind !== WORKSPACE_INVITATION_LIST_OUTCOMES.OK) return;
     expect(page3Outcome.page.items.length).toBe(1);
+    expect(page3Outcome.page.pageInfo.hasNextPage).toBe(false);
+    expect(page3Outcome.page.pageInfo.nextCursor).toBeNull();
 
     const receivedEmails = [
       page1Outcome.page.items[0]?.email,

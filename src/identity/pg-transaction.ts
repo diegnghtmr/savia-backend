@@ -56,7 +56,9 @@ export class PgTransaction implements OnApplicationShutdown {
       const transactionClient: TransactionClient = { query: async <Row extends Record<string, unknown>>(text: string, values?: readonly unknown[]) => {
         const remaining = remainingMilliseconds(callbackDeadline);
         if (!active || remaining < 1) throw deadlineError();
-        await client.query('select set_config($1, $2::text, true)', ['statement_timeout', `${Math.min(this.timeouts.statementTimeoutMs, remaining)}ms`]);
+        if (!text.trim().toUpperCase().startsWith('ROLLBACK TO')) {
+          await client.query('select set_config($1, $2::text, true)', ['statement_timeout', `${Math.min(this.timeouts.statementTimeoutMs, remaining)}ms`]);
+        }
         if (!active || remainingMilliseconds(callbackDeadline) < 1) throw deadlineError();
         return client.query<Row>(text, values);
       } };
