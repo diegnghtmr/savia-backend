@@ -20,6 +20,7 @@ case "$spec" in
   test/identity/workspace-members.integration-spec.ts) ;;
   test/identity/update-workspace-member.integration-spec.ts) ;;
   test/identity/remove-workspace-member.integration-spec.ts) ;;
+  test/identity/workspace-invitations-schema.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
