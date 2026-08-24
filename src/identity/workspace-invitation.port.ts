@@ -99,6 +99,46 @@ export type WorkspaceInvitationCreateOutcome =
   | WorkspaceInvitationCreateExistingMember
   | WorkspaceInvitationCreateAlreadyPending;
 
+export const WORKSPACE_INVITATION_REVOKE_OUTCOMES = {
+  OK: 'ok',
+  REPLAYED: 'replayed',
+  IDEMPOTENCY_CONFLICT: 'idempotency-conflict',
+  FORBIDDEN: 'forbidden',
+  NOT_FOUND: 'not-found',
+  NOT_PENDING: 'not-pending',
+} as const;
+export type WorkspaceInvitationRevokeOutcomeKind =
+  (typeof WORKSPACE_INVITATION_REVOKE_OUTCOMES)[keyof typeof WORKSPACE_INVITATION_REVOKE_OUTCOMES];
+
+export interface WorkspaceInvitationRevokeOk {
+  readonly kind: typeof WORKSPACE_INVITATION_REVOKE_OUTCOMES.OK;
+  readonly invitation: WorkspaceInvitation;
+}
+export interface WorkspaceInvitationRevokeReplayed {
+  readonly kind: typeof WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED;
+  readonly status: number;
+  readonly body: unknown;
+}
+export interface WorkspaceInvitationRevokeIdempotencyConflict {
+  readonly kind: typeof WORKSPACE_INVITATION_REVOKE_OUTCOMES.IDEMPOTENCY_CONFLICT;
+}
+export interface WorkspaceInvitationRevokeForbidden {
+  readonly kind: typeof WORKSPACE_INVITATION_REVOKE_OUTCOMES.FORBIDDEN;
+}
+export interface WorkspaceInvitationRevokeNotFound {
+  readonly kind: typeof WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_FOUND;
+}
+export interface WorkspaceInvitationRevokeNotPending {
+  readonly kind: typeof WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_PENDING;
+}
+export type WorkspaceInvitationRevokeOutcome =
+  | WorkspaceInvitationRevokeOk
+  | WorkspaceInvitationRevokeReplayed
+  | WorkspaceInvitationRevokeIdempotencyConflict
+  | WorkspaceInvitationRevokeForbidden
+  | WorkspaceInvitationRevokeNotFound
+  | WorkspaceInvitationRevokeNotPending;
+
 export interface WorkspaceInvitationPort {
   listWorkspaceInvitations(
     subject: string,
@@ -111,4 +151,10 @@ export interface WorkspaceInvitationPort {
     command: CreateWorkspaceInvitationCommand,
     idempotencyKey: string,
   ): Promise<WorkspaceInvitationCreateOutcome>;
+  revokeWorkspaceInvitation(
+    subject: string,
+    workspaceId: string,
+    invitationId: string,
+    idempotencyKey: string,
+  ): Promise<WorkspaceInvitationRevokeOutcome>;
 }

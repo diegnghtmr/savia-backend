@@ -118,6 +118,76 @@ export class PostgresWorkspaceInvitationAdapter
     );
   }
 
+  public async revokePendingInvitation(
+    client: TransactionClient,
+    workspaceId: string,
+    invitationId: string,
+  ): Promise<WorkspaceInvitation | undefined> {
+    const result = await client.query<WorkspaceInvitationRow>(
+      `update public.workspace_invitations
+          set status = 'revoked'
+        where id = $1 and workspace_id = $2 and status = 'pending'
+       returning id::text,
+                 email,
+                 role,
+                 status,
+                 expires_at as "expiresAt",
+                 created_at as "createdAt"`,
+      [invitationId, workspaceId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) return undefined;
+    return {
+      id: row.id,
+      email: row.email,
+      role: row.role,
+      status: row.status,
+      expiresAt:
+        row.expiresAt instanceof Date
+          ? row.expiresAt.toISOString()
+          : String(row.expiresAt),
+      createdAt:
+        row.createdAt instanceof Date
+          ? row.createdAt.toISOString()
+          : String(row.createdAt),
+    };
+  }
+
+  public async readInvitation(
+    client: TransactionClient,
+    workspaceId: string,
+    invitationId: string,
+  ): Promise<WorkspaceInvitation | undefined> {
+    const result = await client.query<WorkspaceInvitationRow>(
+      `select invitation.id::text,
+              invitation.email,
+              invitation.role,
+              case when invitation.status = 'pending' and invitation.expires_at <= now()
+                   then 'expired' else invitation.status end as status,
+              invitation.expires_at as "expiresAt",
+              invitation.created_at as "createdAt"
+         from public.workspace_invitations invitation
+        where invitation.workspace_id = $1 and invitation.id = $2`,
+      [workspaceId, invitationId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) return undefined;
+    return {
+      id: row.id,
+      email: row.email,
+      role: row.role,
+      status: row.status,
+      expiresAt:
+        row.expiresAt instanceof Date
+          ? row.expiresAt.toISOString()
+          : String(row.expiresAt),
+      createdAt:
+        row.createdAt instanceof Date
+          ? row.createdAt.toISOString()
+          : String(row.createdAt),
+    };
+  }
+
   public async createInvitation(
     client: TransactionClient,
     workspaceId: string,
