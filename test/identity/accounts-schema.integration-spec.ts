@@ -180,7 +180,9 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
          select 'command_idempotency_records' as table_name, obj_description('public.command_idempotency_records'::regclass) as description`,
       );
 
-      const byTable = new Map(res.rows.map((r) => [r.table_name, r.description]));
+      const byTable = new Map(
+        res.rows.map((r) => [r.table_name, r.description]),
+      );
 
       const accountsDescription = byTable.get('accounts');
       expect(accountsDescription).not.toBeNull();
@@ -333,7 +335,7 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
 
     it('6. The keyset pagination index exists on exactly (workspace_id, created_at, id)', async () => {
       const res = await admin.query<{ colnames: string[] }>(
-        `select array_agg(a.attname order by k.ord) as colnames
+        `select array_agg(a.attname::text order by k.ord) as colnames
            from pg_index i
            join pg_class idx on idx.oid = i.indexrelid
            join lateral unnest(i.indkey::smallint[]) with ordinality as k(attnum, ord) on true
@@ -342,7 +344,11 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
             and i.indisunique = false`,
       );
       expect(res.rows).toHaveLength(1);
-      expect(res.rows[0].colnames).toEqual(['workspace_id', 'created_at', 'id']);
+      expect(res.rows[0].colnames).toEqual([
+        'workspace_id',
+        'created_at',
+        'id',
+      ]);
     });
   });
 
@@ -405,9 +411,10 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
         );
         expect(check.rows).toHaveLength(2);
       } finally {
-        await admin.query('delete from public.accounts where id = any($1::uuid[])', [
-          [closedOkId, activeOkId],
-        ]);
+        await admin.query(
+          'delete from public.accounts where id = any($1::uuid[])',
+          [[closedOkId, activeOkId]],
+        );
       }
     });
 
@@ -423,9 +430,10 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
         );
         expect(check.rows[0].n).toBe(2);
       } finally {
-        await admin.query('delete from public.accounts where id = any($1::uuid[])', [
-          [firstId, secondId],
-        ]);
+        await admin.query(
+          'delete from public.accounts where id = any($1::uuid[])',
+          [[firstId, secondId]],
+        );
       }
     });
 
@@ -465,10 +473,10 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
 
     it('11. Deleting a profile referenced by created_by is REFUSED with 23503, proving on delete restrict', async () => {
       const disposableProfileId = subject(907);
-      await admin.query(
-        `insert into auth.users (id, email) values ($1, $2)`,
-        [disposableProfileId, 'disposable-account-creator@example.test'],
-      );
+      await admin.query(`insert into auth.users (id, email) values ($1, $2)`, [
+        disposableProfileId,
+        'disposable-account-creator@example.test',
+      ]);
       await admin.query(
         `insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency, privacy_mode_enabled)
          values ($1, $2, 'Disposable Creator', 'en', 'US', 'UTC', 'YYYY-MM-DD', 1, '1,234.56', 'USD', false)`,
@@ -618,10 +626,10 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
 
         // Positive control: the SAME editor CAN update a granted column.
         const renameRes = await asSubject(editorD, (client) =>
-          client.query(
-            'update public.accounts set name = $1 where id = $2',
-            ['Renamed By Editor', targetId],
-          ),
+          client.query('update public.accounts set name = $1 where id = $2', [
+            'Renamed By Editor',
+            targetId,
+          ]),
         );
         expect(renameRes.rowCount).toBe(1);
       } finally {
@@ -632,7 +640,9 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
     it('16. A closed account CANNOT be updated (using status <> closed filters it out): closing succeeds while active, afterwards updates affect ZERO rows and stored values stay unchanged', async () => {
       const closingId = subject(981);
       try {
-        await seedAccount(closingId, ws1Id, ownerA, { name: 'Closing Candidate' });
+        await seedAccount(closingId, ws1Id, ownerA, {
+          name: 'Closing Candidate',
+        });
 
         // Positive control: closing is reachable — active -> closed succeeds.
         const closeRes = await asSubject(ownerA, (client) =>
@@ -653,10 +663,10 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
         expect(reopenRes.rowCount).toBe(0);
 
         const renameRes = await asSubject(adminC, (client) =>
-          client.query(
-            'update public.accounts set name = $1 where id = $2',
-            ['Mutated While Closed', closingId],
-          ),
+          client.query('update public.accounts set name = $1 where id = $2', [
+            'Mutated While Closed',
+            closingId,
+          ]),
         );
         expect(renameRes.rowCount).toBe(0);
 
