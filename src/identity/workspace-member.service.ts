@@ -341,6 +341,7 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
           subject,
           route,
           idempotencyKey,
+          workspaceId,
         );
         if (existing !== undefined) {
           if (existing.requestFingerprint !== fingerprint) {
@@ -538,6 +539,7 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
           status,
           null,
           responseBody,
+          workspaceId,
         );
 
         if (!written) {
@@ -546,6 +548,7 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
             subject,
             route,
             idempotencyKey,
+            workspaceId,
           );
           if (reread !== undefined) {
             if (reread.requestFingerprint !== fingerprint) {

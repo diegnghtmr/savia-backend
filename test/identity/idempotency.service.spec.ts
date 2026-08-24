@@ -118,6 +118,7 @@ describe('IdempotencyService', () => {
       subject,
       route,
       idempotencyKey,
+      null,
     );
     expect(store.write).toHaveBeenCalledWith(
       expect.anything(),
@@ -128,6 +129,57 @@ describe('IdempotencyService', () => {
       201,
       '"v1"',
       { id: 'ws-123', name: 'Acme' },
+      null,
+    );
+  });
+
+  it('passes explicit workspaceId to store read and write when provided', async () => {
+    const transaction = createMockTransaction();
+    const store = createMockStore();
+    const service = new IdempotencyService(transaction, store);
+
+    const wsId = '00000000-0000-0000-0000-000000000001';
+    const payload = { name: 'Acme' };
+    const request: IdempotencyRequest = {
+      subject,
+      route,
+      idempotencyKey,
+      workspaceId: wsId,
+      payload,
+    };
+
+    const expectedResponse: StoredResponse = {
+      status: 201,
+      etag: '"v1"',
+      body: { id: 'acc-1' },
+    };
+
+    const operation = vi.fn().mockResolvedValue(expectedResponse);
+
+    const outcome = await service.execute(request, operation);
+
+    expect(outcome).toEqual({
+      kind: IDEMPOTENCY_OUTCOME_KINDS.EXECUTED,
+      response: expectedResponse,
+    });
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(store.read).toHaveBeenCalledWith(
+      expect.anything(),
+      subject,
+      route,
+      idempotencyKey,
+      wsId,
+    );
+    expect(store.write).toHaveBeenCalledWith(
+      expect.anything(),
+      subject,
+      route,
+      idempotencyKey,
+      computeRequestFingerprint(payload),
+      201,
+      '"v1"',
+      { id: 'acc-1' },
+      wsId,
     );
   });
 

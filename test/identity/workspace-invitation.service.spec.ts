@@ -417,6 +417,7 @@ describe('WorkspaceInvitationService', () => {
         expect.objectContaining({
           type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
         }),
+        dummyWorkspaceId,
       );
     });
 
@@ -747,6 +748,7 @@ describe('WorkspaceInvitationService', () => {
         expect.objectContaining({
           type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
         }),
+        dummyWorkspaceId,
       );
     });
 
@@ -1233,6 +1235,7 @@ describe('WorkspaceInvitationService', () => {
           expect.objectContaining({
             type: PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
           }),
+          dummyWorkspaceId,
         );
       }
     });
@@ -1279,6 +1282,7 @@ describe('WorkspaceInvitationService', () => {
         200,
         null,
         revokedInvitation,
+        dummyWorkspaceId,
       );
     });
 

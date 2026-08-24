@@ -28,6 +28,7 @@ export interface IdempotencyRequest<T = unknown> {
   readonly subject: string;
   readonly route: string;
   readonly idempotencyKey: string;
+  readonly workspaceId?: string | null;
   readonly payload: T;
 }
 
@@ -56,6 +57,7 @@ export interface IdempotencyStore {
     subject: string,
     route: string,
     idempotencyKey: string,
+    workspaceId?: string | null,
   ): Promise<IdempotencyRecord | undefined>;
   write(
     client: TransactionClient,
@@ -66,6 +68,7 @@ export interface IdempotencyStore {
     status: number,
     etag: string | null,
     body: unknown,
+    workspaceId?: string | null,
   ): Promise<boolean>;
 }
 
