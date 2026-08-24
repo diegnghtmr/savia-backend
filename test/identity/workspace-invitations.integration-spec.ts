@@ -6,12 +6,16 @@ import { PostgresConfig } from '../../src/identity/postgres-config.js';
 import { PostgresIdempotencyAdapter } from '../../src/identity/postgres-idempotency.adapter.js';
 import { PostgresPool } from '../../src/identity/postgres-pool.js';
 import { PostgresWorkspaceInvitationAdapter } from '../../src/identity/postgres-workspace-invitation.adapter.js';
+import { decodeCursor } from '../../src/identity/workspace-command.js';
 import {
   WORKSPACE_INVITATION_CREATE_OUTCOMES,
   WORKSPACE_INVITATION_LIST_OUTCOMES,
   type WorkspaceInvitationPort,
 } from '../../src/identity/workspace-invitation.port.js';
-import { WorkspaceInvitationService } from '../../src/identity/workspace-invitation.service.js';
+import {
+  isPendingEmailUniqueViolation,
+  WorkspaceInvitationService,
+} from '../../src/identity/workspace-invitation.service.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -390,7 +394,7 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
     }
   });
 
-  it('RULING 27: concurrent-create race on pending index handles unique_violation and leaves exactly one pending row', async () => {
+  it('A3 / RULING 27: concurrent-create race between TWO DIFFERENT SUBJECTS handles unique_violation and leaves exactly one pending row', async () => {
     const raceEmail = 'race-condition@example.test';
     const expiredRaceId = '00000000-0000-0000-0000-000000000127';
 
@@ -401,7 +405,8 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
       [expiredRaceId, wsSharedId, ownerA, raceEmail],
     );
 
-    // Drive two requests concurrently
+    // Drive two requests concurrently using TWO DIFFERENT SUBJECTS (ownerA and adminB)
+    // Because lock keys differ, transactions genuinely overlap
     const [res1, res2] = await Promise.all([
       service.createWorkspaceInvitation(
         ownerA,
@@ -410,7 +415,7 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
         '00000000-0000-0000-0000-000000000227',
       ),
       service.createWorkspaceInvitation(
-        ownerA,
+        adminB,
         wsSharedId,
         { email: raceEmail, role: 'viewer' },
         '00000000-0000-0000-0000-000000000327',
@@ -434,27 +439,109 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
     expect(pendingCount.rows[0]?.count).toBe('1');
   });
 
-  it('RULING 27: unique violation with a DIFFERENT constraint is not swallowed and raises error', async () => {
-    // Attempting direct raw insert that violates primary key constraint
-    const duplicatePkeyId = '00000000-0000-0000-0000-000000000999';
+  it('A3 / RULING 27: isPendingEmailUniqueViolation distinguishes real pending index violation from real pkey violation', async () => {
+    // 1. Provoke a genuine primary key violation via admin pool
+    const pkeyId = '00000000-0000-0000-0000-000000000777';
     await admin.query(
       `insert into public.workspace_invitations (id, workspace_id, invited_by, email, role, status, expires_at)
-       values ($1, $2, $3, 'pkey-test@example.test', 'editor', 'pending', now() + interval '7 days')`,
-      [duplicatePkeyId, wsSharedId, ownerA],
+       values ($1, $2, $3, 'unique-1@example.test', 'editor', 'pending', now() + interval '7 days')`,
+      [pkeyId, wsSharedId, ownerA],
     );
 
-    // Calling adapter method or direct insert with duplicate pkey
-    await asSubject(ownerA, async (client) => {
-      try {
-        await client.query(
-          `insert into public.workspace_invitations (workspace_id, invited_by, email, role, expires_at)
-           values ($1, $2, 'other@example.test', 'editor', now() + interval '7 days')`,
-          [wsSharedId, ownerA],
-        );
-      } catch (err: unknown) {
-        // Confirm regular insert succeeds and does not throw pkey error
-        expect(err).toBeUndefined();
-      }
-    });
+    let realPkeyError: unknown;
+    try {
+      await admin.query(
+        `insert into public.workspace_invitations (id, workspace_id, invited_by, email, role, status, expires_at)
+         values ($1, $2, $3, 'unique-2@example.test', 'editor', 'pending', now() + interval '7 days')`,
+        [pkeyId, wsSharedId, ownerA],
+      );
+    } catch (err) {
+      realPkeyError = err;
+    }
+
+    expect(realPkeyError).toBeDefined();
+    expect(isPendingEmailUniqueViolation(realPkeyError)).toBe(false);
+
+    // 2. Provoke a genuine pending index violation via admin pool
+    let realPendingIndexError: unknown;
+    try {
+      await admin.query(
+        `insert into public.workspace_invitations (workspace_id, invited_by, email, role, status, expires_at)
+         values ($1, $2, 'unique-1@example.test', 'viewer', 'pending', now() + interval '7 days')`,
+        [wsSharedId, ownerA],
+      );
+    } catch (err) {
+      realPendingIndexError = err;
+    }
+
+    expect(realPendingIndexError).toBeDefined();
+    expect(isPendingEmailUniqueViolation(realPendingIndexError)).toBe(true);
+  });
+
+  it('B2: pagination round-trip pages through seeded invitations without dropping or duplicating rows', async () => {
+    const pagedEmails = [
+      'page-alpha@example.test',
+      'page-beta@example.test',
+      'page-gamma@example.test',
+    ];
+
+    // Seed 3 invitations with sequential created_at
+    for (let i = 0; i < pagedEmails.length; i++) {
+      await admin.query(
+        `insert into public.workspace_invitations (id, workspace_id, invited_by, email, role, status, expires_at, created_at)
+         values ($1, $2, $3, $4, 'editor', 'pending', now() + interval '7 days', now() + interval '${i + 1} seconds')`,
+        [
+          `00000000-0000-0000-0000-00000000078${i + 1}`,
+          wsSharedId,
+          ownerA,
+          pagedEmails[i],
+        ],
+      );
+    }
+
+    // Page 1: limit 1
+    const page1Outcome = await service.listWorkspaceInvitations(
+      ownerA,
+      wsSharedId,
+      { limit: 1 },
+    );
+    expect(page1Outcome.kind).toBe(WORKSPACE_INVITATION_LIST_OUTCOMES.OK);
+    if (page1Outcome.kind !== WORKSPACE_INVITATION_LIST_OUTCOMES.OK) return;
+    expect(page1Outcome.page.items.length).toBe(1);
+    expect(page1Outcome.page.pageInfo.hasNextPage).toBe(true);
+    expect(page1Outcome.page.pageInfo.nextCursor).not.toBeNull();
+
+    // Page 2: limit 1 with cursor
+    const cursor1 = decodeCursor(page1Outcome.page.pageInfo.nextCursor!);
+    const page2Outcome = await service.listWorkspaceInvitations(
+      ownerA,
+      wsSharedId,
+      { cursor: cursor1, limit: 1 },
+    );
+    expect(page2Outcome.kind).toBe(WORKSPACE_INVITATION_LIST_OUTCOMES.OK);
+    if (page2Outcome.kind !== WORKSPACE_INVITATION_LIST_OUTCOMES.OK) return;
+    expect(page2Outcome.page.items.length).toBe(1);
+
+    // Page 3: limit 1 with cursor
+    const cursor2 = decodeCursor(page2Outcome.page.pageInfo.nextCursor!);
+    const page3Outcome = await service.listWorkspaceInvitations(
+      ownerA,
+      wsSharedId,
+      { cursor: cursor2, limit: 1 },
+    );
+    expect(page3Outcome.kind).toBe(WORKSPACE_INVITATION_LIST_OUTCOMES.OK);
+    if (page3Outcome.kind !== WORKSPACE_INVITATION_LIST_OUTCOMES.OK) return;
+    expect(page3Outcome.page.items.length).toBe(1);
+
+    const receivedEmails = [
+      page1Outcome.page.items[0]?.email,
+      page2Outcome.page.items[0]?.email,
+      page3Outcome.page.items[0]?.email,
+    ];
+    // Assert all 3 seeded emails are present, no duplicates, no dropped rows
+    for (const email of pagedEmails) {
+      expect(receivedEmails).toContain(email);
+    }
+    expect(new Set(receivedEmails).size).toBe(3);
   });
 });

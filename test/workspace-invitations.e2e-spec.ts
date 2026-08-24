@@ -252,6 +252,55 @@ describe('listWorkspaceInvitations HTTP boundary', () => {
     expect(response.statusCode).toBe(400);
     expect(listSpy).not.toHaveBeenCalled();
   });
+
+  it('returns 400 when cursor parameter is malformed', async () => {
+    const listSpy = vi.fn();
+    const appInstance = await createApplication(listSpy);
+    const response = await listWorkspaceInvitationsRequest(
+      appInstance,
+      WORKSPACE_ID,
+      { cursor: 'not-valid-base64-json' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(400);
+    const body = response.json();
+    expect(body.type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+    expect(body.code).toBe('bad-request');
+    expect(listSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when limit parameter is out of range or not a number', async () => {
+    const listSpy = vi.fn();
+    const appInstance = await createApplication(listSpy);
+
+    // limit = 0
+    const res0 = await listWorkspaceInvitationsRequest(
+      appInstance,
+      WORKSPACE_ID,
+      { limit: 0 },
+      { token: TOKEN },
+    );
+    expect(res0.statusCode).toBe(400);
+
+    // limit = 201
+    const res201 = await listWorkspaceInvitationsRequest(
+      appInstance,
+      WORKSPACE_ID,
+      { limit: 201 },
+      { token: TOKEN },
+    );
+    expect(res201.statusCode).toBe(400);
+
+    // limit = not a number
+    const resAbc = await listWorkspaceInvitationsRequest(
+      appInstance,
+      WORKSPACE_ID,
+      { limit: 'abc' },
+      { token: TOKEN },
+    );
+    expect(resAbc.statusCode).toBe(400);
+    expect(listSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('createWorkspaceInvitation HTTP boundary', () => {

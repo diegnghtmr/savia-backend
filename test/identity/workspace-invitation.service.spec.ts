@@ -612,13 +612,8 @@ describe('WorkspaceInvitationService', () => {
       }
     });
 
-    it('row 13: order-sensitive residual test ensures target is re-read FIRST and caller membership LAST', async () => {
-      // Order sensitivity design:
-      // If target state is re-read first, it flips `targetStateReread = true`.
-      // When caller membership is re-read LAST in residual branch:
-      // If targetStateReread is true -> returns suspended membership -> returns FORBIDDEN (403).
-      // If caller membership is read BEFORE target state (swapped bug) -> returns active owner -> returns NOT_FOUND (404).
-      let targetStateReread = false;
+    it('SQLSTATE 42501: order-sensitive catch re-reads kind first (call 2) and caller membership last (call 2)', async () => {
+      let kindReadCount = 0;
       let callerReadCount = 0;
 
       const fakeStore = {
@@ -631,28 +626,35 @@ describe('WorkspaceInvitationService', () => {
               status: WORKSPACE_MEMBER_STATUS.ACTIVE,
             };
           }
-          // Residual check: if target was read first, caller is now suspended
-          if (targetStateReread) {
+          // Residual diagnosis in 42501 catch:
+          // If kind was already re-read in catch (kindReadCount >= 2), caller is now suspended -> FORBIDDEN (403)
+          // If caller was re-read before kind (swapped bug), kindReadCount is still 1 -> returns active owner -> NOT_FOUND (404)
+          if (kindReadCount >= 2) {
             return {
               role: WORKSPACE_ROLE.OWNER,
               status: WORKSPACE_MEMBER_STATUS.SUSPENDED,
             };
           }
-          // Target was not read first (swapped order bug): returns active owner
           return {
             role: WORKSPACE_ROLE.OWNER,
             status: WORKSPACE_MEMBER_STATUS.ACTIVE,
           };
         }),
         readWorkspaceKind: vi.fn().mockImplementation(async () => {
-          if (callerReadCount > 0) {
-            targetStateReread = true;
+          kindReadCount++;
+          if (kindReadCount === 1) {
+            return WORKSPACE_KIND.FAMILY;
           }
-          return WORKSPACE_KIND.FAMILY;
+          // Call 2 (in catch): workspace is deleted/absent
+          return undefined;
         }),
         hasActiveMember: vi.fn().mockResolvedValue(false),
         findPendingInvitation: vi.fn().mockResolvedValue(undefined),
-        createInvitation: vi.fn().mockResolvedValue(undefined), // 0 rows affected
+        createInvitation: vi.fn().mockRejectedValue(
+          Object.assign(new Error('insufficient privilege'), {
+            code: '42501',
+          }),
+        ),
       } as unknown as WorkspaceInvitationStore;
 
       const fakeTransaction: WorkspaceInvitationTransaction = {
@@ -671,29 +673,74 @@ describe('WorkspaceInvitationService', () => {
         defaultCommand,
         '00000000-0000-0000-0000-000000000001',
       );
-      // Because target is re-read FIRST, residual caller read returns suspended -> FORBIDDEN
       expect(outcome.kind).toBe(WORKSPACE_INVITATION_CREATE_OUTCOMES.FORBIDDEN);
     });
 
-    it('row 13: residual branch returns not-found (404) when caller remains active owner but target workspace is absent', async () => {
-      let callerReadCount = 0;
+    it('SQLSTATE 42501: maps to personal-workspace (422) when caller is active owner but workspace kind is personal', async () => {
+      let kindReadCount = 0;
       const fakeStore = {
-        readMembership: vi.fn().mockImplementation(async () => {
-          callerReadCount++;
-          return {
-            role: WORKSPACE_ROLE.OWNER,
-            status: WORKSPACE_MEMBER_STATUS.ACTIVE,
-          };
+        readMembership: vi.fn().mockResolvedValue({
+          role: WORKSPACE_ROLE.OWNER,
+          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
         }),
         readWorkspaceKind: vi.fn().mockImplementation(async () => {
-          if (callerReadCount > 0) {
-            return undefined; // Target absent on re-read
+          kindReadCount++;
+          if (kindReadCount === 1) {
+            return WORKSPACE_KIND.FAMILY;
           }
-          return WORKSPACE_KIND.FAMILY;
+          return WORKSPACE_KIND.PERSONAL;
         }),
         hasActiveMember: vi.fn().mockResolvedValue(false),
         findPendingInvitation: vi.fn().mockResolvedValue(undefined),
-        createInvitation: vi.fn().mockResolvedValue(undefined), // 0 rows affected
+        createInvitation: vi.fn().mockRejectedValue(
+          Object.assign(new Error('insufficient privilege'), {
+            code: '42501',
+          }),
+        ),
+      } as unknown as WorkspaceInvitationStore;
+
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        createDummyIdempotencyStore(),
+      );
+
+      const outcome = await service.createWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        defaultCommand,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(
+        WORKSPACE_INVITATION_CREATE_OUTCOMES.PERSONAL_WORKSPACE,
+      );
+    });
+
+    it('SQLSTATE 42501: maps to not-found (404) when caller remains active owner but workspace is absent', async () => {
+      let kindReadCount = 0;
+      const fakeStore = {
+        readMembership: vi.fn().mockResolvedValue({
+          role: WORKSPACE_ROLE.OWNER,
+          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+        }),
+        readWorkspaceKind: vi.fn().mockImplementation(async () => {
+          kindReadCount++;
+          if (kindReadCount === 1) {
+            return WORKSPACE_KIND.FAMILY;
+          }
+          return undefined;
+        }),
+        hasActiveMember: vi.fn().mockResolvedValue(false),
+        findPendingInvitation: vi.fn().mockResolvedValue(undefined),
+        createInvitation: vi.fn().mockRejectedValue(
+          Object.assign(new Error('insufficient privilege'), {
+            code: '42501',
+          }),
+        ),
       } as unknown as WorkspaceInvitationStore;
 
       const fakeTransaction: WorkspaceInvitationTransaction = {
@@ -713,6 +760,137 @@ describe('WorkspaceInvitationService', () => {
         '00000000-0000-0000-0000-000000000001',
       );
       expect(outcome.kind).toBe(WORKSPACE_INVITATION_CREATE_OUTCOMES.NOT_FOUND);
+    });
+
+    it('SQLSTATE 23503: workspace deleted mid-flight maps to not-found (404)', async () => {
+      const fakeStore = {
+        readMembership: vi.fn().mockResolvedValue({
+          role: WORKSPACE_ROLE.OWNER,
+          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+        }),
+        readWorkspaceKind: vi.fn().mockResolvedValue(WORKSPACE_KIND.FAMILY),
+        hasActiveMember: vi.fn().mockResolvedValue(false),
+        findPendingInvitation: vi.fn().mockResolvedValue(undefined),
+        createInvitation: vi.fn().mockRejectedValue(
+          Object.assign(new Error('foreign key violation'), {
+            code: '23503',
+          }),
+        ),
+      } as unknown as WorkspaceInvitationStore;
+
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        createDummyIdempotencyStore(),
+      );
+
+      const outcome = await service.createWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        defaultCommand,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(WORKSPACE_INVITATION_CREATE_OUTCOMES.NOT_FOUND);
+    });
+
+    it('B3: idempotency lost-write path where write resolves false re-reads and replays (201)', async () => {
+      const fakeStore = {
+        readMembership: vi.fn().mockResolvedValue({
+          role: WORKSPACE_ROLE.OWNER,
+          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+        }),
+        readWorkspaceKind: vi.fn().mockResolvedValue(WORKSPACE_KIND.FAMILY),
+        hasActiveMember: vi.fn().mockResolvedValue(false),
+        findPendingInvitation: vi.fn().mockResolvedValue(undefined),
+        createInvitation: vi.fn().mockResolvedValue(fakeInvitation1),
+      } as unknown as WorkspaceInvitationStore;
+
+      const fakeIdempotencyStore = {
+        read: vi
+          .fn()
+          .mockResolvedValueOnce(undefined) // Initial read: no record
+          .mockResolvedValueOnce({
+            // Lost-write recovery read
+            requestFingerprint: fingerprint,
+            responseStatus: 201,
+            responseEtag: null,
+            responseBody: fakeInvitation1,
+          }),
+        write: vi.fn().mockResolvedValue(false), // Lost-write: race resolved false
+      };
+
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        fakeIdempotencyStore,
+      );
+
+      const outcome = await service.createWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        defaultCommand,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(WORKSPACE_INVITATION_CREATE_OUTCOMES.REPLAYED);
+      if (outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.REPLAYED) {
+        expect(outcome.status).toBe(201);
+        expect(outcome.body).toEqual(fakeInvitation1);
+      }
+    });
+
+    it('B3: idempotency lost-write path where write resolves false and re-read reveals different fingerprint returns conflict (409)', async () => {
+      const fakeStore = {
+        readMembership: vi.fn().mockResolvedValue({
+          role: WORKSPACE_ROLE.OWNER,
+          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+        }),
+        readWorkspaceKind: vi.fn().mockResolvedValue(WORKSPACE_KIND.FAMILY),
+        hasActiveMember: vi.fn().mockResolvedValue(false),
+        findPendingInvitation: vi.fn().mockResolvedValue(undefined),
+        createInvitation: vi.fn().mockResolvedValue(fakeInvitation1),
+      } as unknown as WorkspaceInvitationStore;
+
+      const fakeIdempotencyStore = {
+        read: vi
+          .fn()
+          .mockResolvedValueOnce(undefined) // Initial read: no record
+          .mockResolvedValueOnce({
+            // Lost-write recovery read with mismatched fingerprint
+            requestFingerprint: 'different-fingerprint-mismatch',
+            status: 201,
+            etag: null,
+            body: fakeInvitation1,
+          }),
+        write: vi.fn().mockResolvedValue(false), // Lost-write: race resolved false
+      };
+
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        fakeIdempotencyStore,
+      );
+
+      const outcome = await service.createWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        defaultCommand,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(
+        WORKSPACE_INVITATION_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+      );
     });
 
     it('RULING 27: unique violation 23505 with constraint workspace_invitations_one_pending_per_email is caught and mapped to already-pending (409)', async () => {
