@@ -10,8 +10,8 @@ create table public.workspace_invitations (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
   email text not null
-    check (char_length(email) between 3 and 320)
-    check (position('\x00' in email) = 0),
+    check (char_length(email) between 3 and 320),
+  -- NUL byte exclusion is enforced by the PostgreSQL type system (22021), not a check constraint.
   role text not null check (role in ('owner', 'administrator', 'editor', 'viewer')),
   status text not null default 'pending' check (status in ('pending', 'accepted', 'revoked')),
   expires_at timestamptz not null,
@@ -88,8 +88,13 @@ create policy application_inserts_administered_invitation
       workspace_invitations.role <> 'owner'
       or public.workspace_actor_active_role(workspace_invitations.workspace_id) = 'owner'
     )
+    -- Adapter-supplied attribution is forgeable; bind invited_by to authenticated subject (202607150007, 202607150011).
+    and workspace_invitations.invited_by
+          = nullif(current_setting('app.subject_id', true), '')::uuid
   );
 
+-- Lifecycle is one-way: pending -> accepted or pending -> revoked.
+-- PostgreSQL evaluates `using` against the OLD row and `with check` against the NEW row.
 create policy application_updates_administered_invitation
   on public.workspace_invitations
   for update
@@ -97,10 +102,12 @@ create policy application_updates_administered_invitation
   using (
     public.workspace_actor_active_role(workspace_invitations.workspace_id)
       in ('owner', 'administrator')
+    and workspace_invitations.status = 'pending'
   )
   with check (
     public.workspace_actor_active_role(workspace_invitations.workspace_id)
       in ('owner', 'administrator')
+    and workspace_invitations.status in ('accepted', 'revoked')
   );
 
 -- 3. Security-definer helper for slice 6: email already belongs to an active member (RULING 6).
