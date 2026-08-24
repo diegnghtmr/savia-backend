@@ -1098,6 +1098,7 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
         retainsActiveOwner: (c, w, e) => realStore.retainsActiveOwner(c, w, e),
         updateMemberRole: (c, w, m, r, ev) =>
           realStore.updateMemberRole(c, w, m, r, ev),
+        deleteMember: (c, w, m) => realStore.deleteMember(c, w, m),
         enforceDeferredConstraints: (c) =>
           realStore.enforceDeferredConstraints(c),
         readRosterMember: (c, w, m) => realStore.readRosterMember(c, w, m),

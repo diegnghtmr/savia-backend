@@ -133,6 +133,7 @@ export class PostgresWorkspaceMemberAdapter implements WorkspaceMemberStore {
     role: WorkspaceRole,
     expectedVersion?: number | readonly number[],
   ): Promise<{ rowCount: number; version?: number }> {
+    await client.query('savepoint member_delete');
     const versions =
       typeof expectedVersion === 'number'
         ? [expectedVersion]
@@ -146,6 +147,11 @@ export class PostgresWorkspaceMemberAdapter implements WorkspaceMemberStore {
     returning version`,
       values,
     );
+    if ((result.rowCount ?? 0) === 0) {
+      await client
+        .query('release savepoint member_delete')
+        .catch(() => undefined);
+    }
     const row = result.rows[0];
     return {
       rowCount: result.rowCount ?? 0,
@@ -156,7 +162,51 @@ export class PostgresWorkspaceMemberAdapter implements WorkspaceMemberStore {
   public async enforceDeferredConstraints(
     client: TransactionClient,
   ): Promise<void> {
-    await client.query('set constraints all immediate');
+    await client.query(`
+      do $$
+      begin
+        set constraints all immediate;
+      exception
+        when check_violation then
+          perform set_config('app.check_violation', '23514', true);
+      end;
+      $$;
+    `);
+    const check = await client.query<{ code: string | null }>(
+      "select nullif(current_setting('app.check_violation', true), '') as code",
+    );
+    if (check.rows[0]?.code === '23514') {
+      await client.query("select set_config('app.check_violation', '', true)");
+      await client
+        .query('rollback to savepoint member_delete')
+        .catch(() => undefined);
+      const err = new Error(
+        'check_violation: collaborative workspace must retain an active owner',
+      );
+      Object.assign(err, { code: '23514' });
+      throw err;
+    }
+    await client
+      .query('release savepoint member_delete')
+      .catch(() => undefined);
+  }
+
+  public async deleteMember(
+    client: TransactionClient,
+    workspaceId: string,
+    memberId: string,
+  ): Promise<number> {
+    await client.query('savepoint member_delete');
+    const result = await client.query(
+      'delete from public.workspace_memberships where id = $1 and workspace_id = $2',
+      [memberId, workspaceId],
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      await client
+        .query('release savepoint member_delete')
+        .catch(() => undefined);
+    }
+    return result.rowCount ?? 0;
   }
 
   public async readRosterMember(

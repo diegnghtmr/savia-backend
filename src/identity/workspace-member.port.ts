@@ -100,6 +100,50 @@ export type WorkspaceMemberUpdateOutcome =
   | WorkspaceMemberUpdateVersionConflict
   | WorkspaceMemberUpdateConflict;
 
+export const WORKSPACE_MEMBER_REMOVE_OUTCOMES = {
+  REMOVED: 'removed',
+  REPLAYED: 'replayed',
+  NOT_FOUND: 'not-found',
+  FORBIDDEN: 'forbidden',
+  PERSONAL_WORKSPACE: 'personal-workspace',
+  LAST_OWNER_REQUIRED: 'last-owner-required',
+  IDEMPOTENCY_CONFLICT: 'idempotency-conflict',
+} as const;
+export type WorkspaceMemberRemoveOutcomeKind =
+  (typeof WORKSPACE_MEMBER_REMOVE_OUTCOMES)[keyof typeof WORKSPACE_MEMBER_REMOVE_OUTCOMES];
+
+export interface WorkspaceMemberRemoveRemoved {
+  readonly kind: typeof WORKSPACE_MEMBER_REMOVE_OUTCOMES.REMOVED;
+}
+export interface WorkspaceMemberRemoveReplayed {
+  readonly kind: typeof WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED;
+  readonly status: number;
+  readonly problemType?: string;
+}
+export interface WorkspaceMemberRemoveNotFound {
+  readonly kind: typeof WORKSPACE_MEMBER_REMOVE_OUTCOMES.NOT_FOUND;
+}
+export interface WorkspaceMemberRemoveForbidden {
+  readonly kind: typeof WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN;
+}
+export interface WorkspaceMemberRemovePersonalWorkspace {
+  readonly kind: typeof WORKSPACE_MEMBER_REMOVE_OUTCOMES.PERSONAL_WORKSPACE;
+}
+export interface WorkspaceMemberRemoveLastOwnerRequired {
+  readonly kind: typeof WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED;
+}
+export interface WorkspaceMemberRemoveIdempotencyConflict {
+  readonly kind: typeof WORKSPACE_MEMBER_REMOVE_OUTCOMES.IDEMPOTENCY_CONFLICT;
+}
+export type WorkspaceMemberRemoveOutcome =
+  | WorkspaceMemberRemoveRemoved
+  | WorkspaceMemberRemoveReplayed
+  | WorkspaceMemberRemoveNotFound
+  | WorkspaceMemberRemoveForbidden
+  | WorkspaceMemberRemovePersonalWorkspace
+  | WorkspaceMemberRemoveLastOwnerRequired
+  | WorkspaceMemberRemoveIdempotencyConflict;
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -186,4 +230,10 @@ export interface WorkspaceMemberPort {
     command: WorkspaceMemberUpdateCommand,
     expectedVersion?: number | readonly number[],
   ): Promise<WorkspaceMemberUpdateOutcome>;
+  removeWorkspaceMember(
+    subject: string,
+    workspaceId: string,
+    memberId: string,
+    idempotencyKey: string,
+  ): Promise<WorkspaceMemberRemoveOutcome>;
 }
