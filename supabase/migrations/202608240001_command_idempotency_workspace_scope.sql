@@ -11,20 +11,26 @@ begin;
 alter table public.command_idempotency_records
   add column workspace_id uuid;
 
+-- STRICT lookup: a plain SELECT ... INTO caps retrieval at one row, so ROW_COUNT
+-- can never exceed 1 and a `<> 1` guard only ever catches the zero case -- with
+-- two unique constraints the old guard passed and dropped an arbitrary one.
+-- STRICT raises NO_DATA_FOUND (P0002) on zero and TOO_MANY_ROWS (P0003) on more
+-- than one, making both the silent-additive outcomes impossible.
 do $$
 declare
   v_constraint_name text;
-  v_count integer;
 begin
-  select conname into v_constraint_name
-  from pg_constraint
-  where conrelid = 'public.command_idempotency_records'::regclass
-    and contype = 'u';
-
-  get diagnostics v_count = row_count;
-  if v_count <> 1 then
-    raise exception 'Expected exactly 1 unique constraint on command_idempotency_records, found %', v_count;
-  end if;
+  begin
+    select conname into strict v_constraint_name
+    from pg_constraint
+    where conrelid = 'public.command_idempotency_records'::regclass
+      and contype = 'u';
+  exception
+    when no_data_found then
+      raise exception 'Expected exactly 1 unique constraint on command_idempotency_records, found 0';
+    when too_many_rows then
+      raise exception 'Expected exactly 1 unique constraint on command_idempotency_records, found more than 1; refusing to guess which to drop';
+  end;
 
   execute format('alter table public.command_idempotency_records drop constraint %I', v_constraint_name);
 end $$;
