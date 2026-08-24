@@ -29,6 +29,7 @@
     "test:integration:update-workspace-member": "bash scripts/run-disposable-database-suite.sh test/identity/update-workspace-member.integration-spec.ts",
     "test:integration:remove-workspace-member": "bash scripts/run-disposable-database-suite.sh test/identity/remove-workspace-member.integration-spec.ts",
     "test:integration:workspace-invitations-schema": "bash scripts/run-disposable-database-suite.sh test/identity/workspace-invitations-schema.integration-spec.ts",
+    "test:integration:workspace-invitations": "bash scripts/run-disposable-database-suite.sh test/identity/workspace-invitations.integration-spec.ts",
     "test:integration:command-idempotency": "bash scripts/run-disposable-database-suite.sh test/identity/command-idempotency.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",

@@ -89,6 +89,8 @@ describe('health endpoint', () => {
       'DELETE /v1/workspaces/:workspaceId/members/:memberId',
       'PATCH /v1/workspaces/:workspaceId',
       'DELETE /v1/workspaces/:workspaceId',
+      'GET /v1/workspaces/:workspaceId/invitations',
+      'POST /v1/workspaces/:workspaceId/invitations',
     ]);
 
     await app.close();

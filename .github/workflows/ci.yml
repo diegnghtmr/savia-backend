@@ -119,6 +119,9 @@ jobs:
       - name: workspace invitations schema integration
         shell: bash
         run: pnpm test:integration:workspace-invitations-schema
+      - name: workspace invitations integration
+        shell: bash
+        run: pnpm test:integration:workspace-invitations
       - name: command idempotency integration
         shell: bash
         run: pnpm test:integration:command-idempotency
