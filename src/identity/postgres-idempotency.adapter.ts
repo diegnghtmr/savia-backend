@@ -10,7 +10,7 @@ export class PostgresIdempotencyAdapter implements IdempotencyStore {
     subject: string,
     route: string,
     idempotencyKey: string,
-    workspaceId?: string | null,
+    workspaceId: string | null = null,
   ): Promise<IdempotencyRecord | undefined> {
     const result = await client.query<IdempotencyRow>(
       `select request_fingerprint as "requestFingerprint",
@@ -19,8 +19,9 @@ export class PostgresIdempotencyAdapter implements IdempotencyStore {
        response_body       as "responseBody"
   from public.command_idempotency_records
  where subject_id = $1 and route = $2 and idempotency_key = $3
+   and workspace_id is not distinct from $4::uuid
    and created_at > now() - interval '24 hours'`,
-      [subject, route, idempotencyKey],
+      [subject, route, idempotencyKey, workspaceId ?? null],
     );
     const row = result.rows[0];
     if (row === undefined) return undefined;
@@ -41,14 +42,14 @@ export class PostgresIdempotencyAdapter implements IdempotencyStore {
     status: number,
     etag: string | null,
     body: unknown,
-    workspaceId?: string | null,
+    workspaceId: string | null = null,
   ): Promise<boolean> {
     const result = await client.query<{ id: string }>(
       `insert into public.command_idempotency_records
-       (subject_id, route, idempotency_key, request_fingerprint,
+       (subject_id, route, idempotency_key, workspace_id, request_fingerprint,
         response_status, response_etag, response_body)
-values ($1, $2, $3, $4, $5, $6, $7::jsonb)
-on conflict (subject_id, route, idempotency_key) do update
+values ($1, $2, $3, $4::uuid, $5, $6, $7, $8::jsonb)
+on conflict (subject_id, route, idempotency_key, workspace_id) do update
    set request_fingerprint = excluded.request_fingerprint,
        response_status     = excluded.response_status,
        response_etag       = excluded.response_etag,
@@ -60,6 +61,7 @@ returning id`,
         subject,
         route,
         idempotencyKey,
+        workspaceId ?? null,
         fingerprint,
         status,
         etag,

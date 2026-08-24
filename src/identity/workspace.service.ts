@@ -185,6 +185,7 @@ export class WorkspaceService implements WorkspacePort {
         subject,
         route,
         idempotencyKey,
+        null,
       );
       if (existing !== undefined) {
         if (existing.requestFingerprint !== fingerprint) {
@@ -227,6 +228,7 @@ export class WorkspaceService implements WorkspacePort {
         201,
         `"${workspace.version}"`,
         workspace,
+        null,
       );
 
       if (!written) {
@@ -236,6 +238,7 @@ export class WorkspaceService implements WorkspacePort {
           subject,
           route,
           idempotencyKey,
+          null,
         );
         if (reread !== undefined) {
           if (reread.requestFingerprint !== fingerprint) {
@@ -350,6 +353,7 @@ export class WorkspaceService implements WorkspacePort {
         subject,
         route,
         idempotencyKey,
+        workspaceId,
       );
       if (existing !== undefined) {
         if (existing.requestFingerprint !== fingerprint) {
@@ -421,6 +425,7 @@ export class WorkspaceService implements WorkspacePort {
         status,
         null,
         null,
+        workspaceId,
       );
 
       if (!written) {
@@ -429,6 +434,7 @@ export class WorkspaceService implements WorkspacePort {
           subject,
           route,
           idempotencyKey,
+          workspaceId,
         );
         if (reread !== undefined) {
           if (reread.requestFingerprint !== fingerprint) {

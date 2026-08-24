@@ -961,6 +961,7 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
       204,
       null,
       null,
+      dummyWorkspaceId,
     );
   });
 
@@ -1129,6 +1130,7 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
       409,
       null,
       { type: PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP },
+      dummyWorkspaceId,
     );
   });
 
@@ -1411,6 +1413,7 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
       409,
       null,
       { type: PROBLEM_TYPES.LAST_OWNER_REQUIRED },
+      dummyWorkspaceId,
     );
 
     // Replay of that key returns 409 with that exact type

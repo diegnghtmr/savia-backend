@@ -57,12 +57,14 @@ export class IdempotencyService implements IdempotencyPort {
     operation: (client: TransactionClient) => Promise<TResult>,
   ): Promise<IdempotencyOutcome> {
     return this.transaction.run(request.subject, async (client) => {
+      const workspaceId = request.workspaceId ?? null;
       const fingerprint = computeRequestFingerprint(request.payload);
       const existing = await this.store.read(
         client,
         request.subject,
         request.route,
         request.idempotencyKey,
+        workspaceId,
       );
 
       if (existing !== undefined) {
@@ -92,6 +94,7 @@ export class IdempotencyService implements IdempotencyPort {
         result.status,
         result.etag,
         result.body,
+        workspaceId,
       );
 
       if (!written) {
@@ -102,6 +105,7 @@ export class IdempotencyService implements IdempotencyPort {
           request.subject,
           request.route,
           request.idempotencyKey,
+          workspaceId,
         );
         if (reRead !== undefined && reRead.requestFingerprint === fingerprint) {
           return {

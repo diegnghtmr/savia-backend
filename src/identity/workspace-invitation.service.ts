@@ -167,6 +167,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
         subject,
         route,
         idempotencyKey,
+        workspaceId,
       );
       if (existing !== undefined) {
         if (existing.requestFingerprint !== fingerprint) {
@@ -195,6 +196,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
           status,
           null,
           body,
+          workspaceId,
         );
         if (!written) {
           const reread = await this.idempotencyStore.read(
@@ -202,6 +204,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
             subject,
             route,
             idempotencyKey,
+            workspaceId,
           );
           if (reread !== undefined) {
             if (reread.requestFingerprint !== fingerprint) {
@@ -478,6 +481,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
         subject,
         route,
         idempotencyKey,
+        workspaceId,
       );
       if (existing !== undefined) {
         if (existing.requestFingerprint !== fingerprint) {
@@ -506,6 +510,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
           status,
           null,
           body,
+          workspaceId,
         );
         if (!written) {
           const reread = await this.idempotencyStore.read(
@@ -513,6 +518,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
             subject,
             route,
             idempotencyKey,
+            workspaceId,
           );
           if (reread !== undefined) {
             if (reread.requestFingerprint !== fingerprint) {
