@@ -1237,7 +1237,10 @@ describe('WorkspaceInvitationService', () => {
       }
     });
 
-    it('row 10: pending invitation (including expired) transitions to revoked and returns ok (200)', async () => {
+    // RULING 28 (an already-expired pending invitation is still revocable) cannot be pinned at this
+    // level: the service never inspects expiresAt. The UPDATE matches on the STORED status, so expiry
+    // is decided in SQL. It is pinned end-to-end in revoke-workspace-invitation.integration-spec.ts.
+    it('row 10: a pending invitation transitions to revoked and returns ok (200)', async () => {
       const revokedInvitation: WorkspaceInvitation = {
         ...fakeInvitation1,
         status: 'revoked',
