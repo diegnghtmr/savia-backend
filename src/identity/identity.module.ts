@@ -95,11 +95,16 @@ import { WorkspaceInvitationService } from './workspace-invitation.service.js';
     PostgresWorkspaceMemberAdapter,
     {
       provide: WorkspaceMemberService,
-      inject: [PgTransaction, PostgresWorkspaceMemberAdapter],
+      inject: [
+        PgTransaction,
+        PostgresWorkspaceMemberAdapter,
+        PostgresIdempotencyAdapter,
+      ],
       useFactory: (
         transaction: PgTransaction,
         adapter: PostgresWorkspaceMemberAdapter,
-      ) => new WorkspaceMemberService(transaction, adapter),
+        idempotency: PostgresIdempotencyAdapter,
+      ) => new WorkspaceMemberService(transaction, adapter, idempotency),
     },
     { provide: WORKSPACE_MEMBER_PORT, useExisting: WorkspaceMemberService },
     PostgresWorkspaceInvitationAdapter,

@@ -8,14 +8,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IdentityModule } from '../src/identity/identity.module.js';
 import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
+import { PROBLEM_TYPES } from '../src/identity/problem-details.js';
 import {
   encodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   WORKSPACE_MEMBER_PORT,
+  WORKSPACE_MEMBER_REMOVE_OUTCOMES,
   WORKSPACE_MEMBER_UPDATE_OUTCOMES,
   type WorkspaceMember,
   type WorkspaceMemberListOutcome,
   type WorkspaceMemberPort,
+  type WorkspaceMemberRemoveOutcome,
   type WorkspaceMemberUpdateOutcome,
 } from '../src/identity/workspace-member.port.js';
 import {
@@ -26,6 +29,7 @@ import {
 const SUBJECT = '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d';
 const WORKSPACE_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
 const MEMBER_ID = '11111111-1111-1111-1111-111111111111';
+const IDEMPOTENCY_KEY = 'a0000000-0000-0000-0000-000000000001';
 const TOKEN = 'accepted-token';
 
 const authEnvironment = {
@@ -94,6 +98,11 @@ async function createApplication(
       member: defaultMember,
       version: 2,
     } satisfies WorkspaceMemberUpdateOutcome),
+  removeWorkspaceMember: WorkspaceMemberPort['removeWorkspaceMember'] = vi
+    .fn()
+    .mockResolvedValue({
+      kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.REMOVED,
+    } satisfies WorkspaceMemberRemoveOutcome),
 ): Promise<NestFastifyApplication> {
   const dummyWorkspacePort: WorkspacePort = {
     read: vi.fn(),
@@ -111,7 +120,11 @@ async function createApplication(
     .overrideProvider(WORKSPACE_PORT)
     .useValue(dummyWorkspacePort)
     .overrideProvider(WORKSPACE_MEMBER_PORT)
-    .useValue({ listWorkspaceMembers, updateWorkspaceMember })
+    .useValue({
+      listWorkspaceMembers,
+      updateWorkspaceMember,
+      removeWorkspaceMember,
+    })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -997,5 +1010,381 @@ describe('updateWorkspaceMember HTTP boundary', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(Object.hasOwn(body, 'email')).toBe(false);
+  });
+});
+
+function removeWorkspaceMemberRequest(
+  appInstance: NestFastifyApplication,
+  workspaceId: string,
+  memberId: string,
+  options: {
+    token?: string;
+    idempotencyKey?: string;
+  } = {},
+) {
+  const headers: Record<string, string> = {};
+  if (options.token !== undefined) {
+    headers.authorization = `Bearer ${options.token}`;
+  }
+  if (options.idempotencyKey !== undefined) {
+    headers['idempotency-key'] = options.idempotencyKey;
+  }
+  return appInstance.inject({
+    method: 'DELETE',
+    url: `/v1/workspaces/${workspaceId}/members/${memberId}`,
+    headers,
+  });
+}
+
+describe('removeWorkspaceMember HTTP boundary', () => {
+  it('returns 204 No Content with empty body on successful removal', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.REMOVED,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe('');
+  });
+
+  it('rejects missing, malformed, NUL byte, and overlong Idempotency-Key headers with 400 bad-request', async () => {
+    const appInstance = await createApplication();
+
+    const missingKey = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN },
+    );
+    expect(missingKey.statusCode).toBe(400);
+    expect(missingKey.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+    expect(missingKey.json().code).toBe('bad-request');
+
+    const nonUuid = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: 'not-a-uuid' },
+    );
+    expect(nonUuid.statusCode).toBe(400);
+    expect(nonUuid.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+    expect(nonUuid.json().code).toBe('bad-request');
+
+    const nulByte = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: `${IDEMPOTENCY_KEY}\0extra` },
+    );
+    expect(nulByte.statusCode).toBe(400);
+    expect(nulByte.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+    expect(nulByte.json().code).toBe('bad-request');
+
+    const overlong = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: 'a'.repeat(256) },
+    );
+    expect(overlong.statusCode).toBe(400);
+    expect(overlong.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+    expect(overlong.json().code).toBe('bad-request');
+  });
+
+  it('rejects invalid workspaceId or memberId with 400 bad-request', async () => {
+    const appInstance = await createApplication();
+
+    for (const badWs of [
+      'invalid-ws-id',
+      `workspace\0${WORKSPACE_ID}`,
+      'a'.repeat(80),
+    ]) {
+      const badWsRes = await removeWorkspaceMemberRequest(
+        appInstance,
+        badWs,
+        MEMBER_ID,
+        { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+      );
+      expect(badWsRes.statusCode).toBe(400);
+      expect(badWsRes.statusCode).not.toBe(500);
+      expect(badWsRes.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(badWsRes.json().code).toBe('bad-request');
+    }
+    const overlongWs = await removeWorkspaceMemberRequest(
+      appInstance,
+      'a'.repeat(10_000),
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(overlongWs.statusCode).toBeGreaterThanOrEqual(400);
+    expect(overlongWs.statusCode).toBeLessThan(500);
+    expect(overlongWs.statusCode).not.toBe(500);
+
+    for (const badMem of [
+      'invalid-member-id',
+      `member\0${MEMBER_ID}`,
+      'b'.repeat(80),
+    ]) {
+      const badMemberRes = await removeWorkspaceMemberRequest(
+        appInstance,
+        WORKSPACE_ID,
+        badMem,
+        { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+      );
+      expect(badMemberRes.statusCode).toBe(400);
+      expect(badMemberRes.statusCode).not.toBe(500);
+      expect(badMemberRes.json().type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(badMemberRes.json().code).toBe('bad-request');
+    }
+    const overlongMem = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      'b'.repeat(10_000),
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(overlongMem.statusCode).toBeGreaterThanOrEqual(400);
+    expect(overlongMem.statusCode).toBeLessThan(500);
+    expect(overlongMem.statusCode).not.toBe(500);
+  });
+
+  it('rejects unauthenticated requests with 401 unauthorized', async () => {
+    const appInstance = await createApplication();
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(401);
+    expect(response.json().type).toBe(PROBLEM_TYPES.UNAUTHORIZED);
+    expect(response.json().code).toBe('unauthorized');
+  });
+
+  it('maps forbidden outcome to 403 problem details', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(403);
+    expect(response.json().type).toBe(PROBLEM_TYPES.FORBIDDEN);
+    expect(response.json().code).toBe('forbidden');
+  });
+
+  it('maps not-found outcome to 404 problem details', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.NOT_FOUND,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(404);
+    expect(response.json().type).toBe(PROBLEM_TYPES.NOT_FOUND);
+    expect(response.json().code).toBe('not-found');
+  });
+
+  it('maps personal-workspace outcome to 409 personal-workspace-membership problem details', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.PERSONAL_WORKSPACE,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(409);
+    expect(response.json().type).toBe(
+      PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+    );
+    expect(response.json().code).toBe('personal-workspace-membership');
+  });
+
+  it('maps last-owner-required outcome to 409 last-owner-required problem details', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(409);
+    expect(response.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+    expect(response.json().code).toBe('last-owner-required');
+  });
+
+  it('maps idempotency-conflict outcome to 409 conflict problem details', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(409);
+    expect(response.json().type).toBe(PROBLEM_TYPES.CONFLICT);
+    expect(response.json().code).toBe('conflict');
+  });
+
+  it('replays 204 No Content with empty body', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED,
+        status: 204,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe('');
+  });
+
+  it('replays 403 forbidden refusal', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED,
+        status: 403,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(403);
+    expect(response.json().type).toBe(PROBLEM_TYPES.FORBIDDEN);
+    expect(response.json().code).toBe('forbidden');
+  });
+
+  it('replays 404 not-found refusal', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED,
+        status: 404,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(404);
+    expect(response.json().type).toBe(PROBLEM_TYPES.NOT_FOUND);
+    expect(response.json().code).toBe('not-found');
+  });
+
+  it('replays 409 personal-workspace-membership refusal', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED,
+        status: 409,
+        problemType: PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(409);
+    expect(response.json().type).toBe(
+      PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+    );
+    expect(response.json().code).toBe('personal-workspace-membership');
+  });
+
+  it('replays 409 last-owner-required refusal', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED,
+        status: 409,
+        problemType: PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(409);
+    expect(response.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+    expect(response.json().code).toBe('last-owner-required');
+  });
+
+  it('replays 409 conflict refusal', async () => {
+    const appInstance = await createApplication(
+      undefined,
+      undefined,
+      vi.fn().mockResolvedValue({
+        kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED,
+        status: 409,
+      }),
+    );
+    const response = await removeWorkspaceMemberRequest(
+      appInstance,
+      WORKSPACE_ID,
+      MEMBER_ID,
+      { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
+    );
+    expect(response.statusCode).toBe(409);
+    expect(response.json().type).toBe(PROBLEM_TYPES.CONFLICT);
+    expect(response.json().code).toBe('conflict');
   });
 });

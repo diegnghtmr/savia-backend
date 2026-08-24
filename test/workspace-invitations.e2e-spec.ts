@@ -107,6 +107,7 @@ async function createApplication(
   const dummyMemberPort: WorkspaceMemberPort = {
     listWorkspaceMembers: vi.fn(),
     updateWorkspaceMember: vi.fn(),
+    removeWorkspaceMember: vi.fn(),
   };
 
   const moduleRef = await Test.createTestingModule({
