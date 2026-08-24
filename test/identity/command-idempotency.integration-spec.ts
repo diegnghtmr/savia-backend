@@ -654,5 +654,86 @@ describe('Command Idempotency database boundary and concurrency', () => {
     );
     expect(record?.requestFingerprint).toBe(f2);
     expect(record?.responseStatus).toBe(200);
+
+    // The read-back above cannot tell "overwrote the aged row" from "inserted a
+    // second row beside it": its created_at > now() - interval '24 hours'
+    // predicate hides a 25h-old leftover either way. Only the raw count
+    // discriminates the two worlds -- exactly one row must exist.
+    const rowCountResult = await admin.query<{ count: string }>(
+      `select count(*)::text as count from public.command_idempotency_records
+        where subject_id = $1 and route = $2 and idempotency_key = $3 and workspace_id is null`,
+      [subjectA, route, key],
+    );
+    expect(rowCountResult.rows[0]?.count).toBe('1');
+  });
+
+  // T3 proves cross-workspace slots do not COLLIDE using different payloads per
+  // workspace; a workspace-blind READ regression then surfaces as a detected
+  // CONFLICT. This test pins the harsher, fully silent path: with the SAME key
+  // AND the SAME payload in both workspaces, a workspace-blind read finds
+  // workspace A's live record, fingerprints match, and workspace B silently
+  // receives workspace A's stored response without any error anywhere.
+  it("T5: same subject, same route, same key AND same payload across workspace A and workspace B both execute and never return the other workspace's stored response", async () => {
+    const key = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb15';
+    const route = 'POST /v1/workspaces/{workspaceId}/accounts';
+    const payload = { name: 'Same Payload Account' };
+
+    let executionsA = 0;
+    let executionsB = 0;
+
+    const outcomeA = await service.execute(
+      {
+        subject: subjectA,
+        route,
+        idempotencyKey: key,
+        workspaceId: workspaceAId,
+        payload,
+      },
+      async () => {
+        executionsA++;
+        return {
+          status: 201,
+          etag: '"same-v1"',
+          body: { id: 'acc-same-a', workspaceId: workspaceAId },
+        };
+      },
+    );
+
+    const outcomeB = await service.execute(
+      {
+        subject: subjectA,
+        route,
+        idempotencyKey: key,
+        workspaceId: workspaceBId,
+        payload,
+      },
+      async () => {
+        executionsB++;
+        return {
+          status: 201,
+          etag: '"same-v1"',
+          body: { id: 'acc-same-b', workspaceId: workspaceBId },
+        };
+      },
+    );
+
+    expect(outcomeA).toEqual({
+      kind: IDEMPOTENCY_OUTCOME_KINDS.EXECUTED,
+      response: {
+        status: 201,
+        etag: '"same-v1"',
+        body: { id: 'acc-same-a', workspaceId: workspaceAId },
+      },
+    });
+    expect(outcomeB).toEqual({
+      kind: IDEMPOTENCY_OUTCOME_KINDS.EXECUTED,
+      response: {
+        status: 201,
+        etag: '"same-v1"',
+        body: { id: 'acc-same-b', workspaceId: workspaceBId },
+      },
+    });
+    expect(executionsA).toBe(1);
+    expect(executionsB).toBe(1);
   });
 });
