@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { IdempotencyStore } from '../../src/identity/idempotency.port.js';
 import { computeRequestFingerprint } from '../../src/identity/idempotency.service.js';
 import type { TransactionClient } from '../../src/identity/pg-transaction.js';
+import { PROBLEM_TYPES } from '../../src/identity/problem-details.js';
 import {
   WORKSPACE_INVITATION_CREATE_OUTCOMES,
   WORKSPACE_INVITATION_LIST_OUTCOMES,
@@ -386,10 +387,11 @@ describe('WorkspaceInvitationService', () => {
         run: vi.fn(async (_subject, callback) => callback(dummyClient)),
         runRead: vi.fn(),
       };
+      const idempotencyStore = createDummyIdempotencyStore();
       const service = new WorkspaceInvitationService(
         fakeTransaction,
         fakeStore,
-        createDummyIdempotencyStore(),
+        idempotencyStore,
       );
 
       const outcome = await service.createWorkspaceInvitation(
@@ -400,6 +402,18 @@ describe('WorkspaceInvitationService', () => {
       );
       expect(outcome.kind).toBe(
         WORKSPACE_INVITATION_CREATE_OUTCOMES.PERSONAL_WORKSPACE,
+      );
+      expect(idempotencyStore.write).toHaveBeenCalledWith(
+        dummyClient,
+        dummySubject,
+        'POST /v1/workspaces/{workspaceId}/invitations',
+        '00000000-0000-0000-0000-000000000001',
+        expect.any(String),
+        422,
+        null,
+        expect.objectContaining({
+          type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
+        }),
       );
     });
 
@@ -703,10 +717,11 @@ describe('WorkspaceInvitationService', () => {
         run: vi.fn(async (_subject, callback) => callback(dummyClient)),
         runRead: vi.fn(),
       };
+      const idempotencyStore = createDummyIdempotencyStore();
       const service = new WorkspaceInvitationService(
         fakeTransaction,
         fakeStore,
-        createDummyIdempotencyStore(),
+        idempotencyStore,
       );
 
       const outcome = await service.createWorkspaceInvitation(
@@ -717,6 +732,18 @@ describe('WorkspaceInvitationService', () => {
       );
       expect(outcome.kind).toBe(
         WORKSPACE_INVITATION_CREATE_OUTCOMES.PERSONAL_WORKSPACE,
+      );
+      expect(idempotencyStore.write).toHaveBeenCalledWith(
+        dummyClient,
+        dummySubject,
+        'POST /v1/workspaces/{workspaceId}/invitations',
+        '00000000-0000-0000-0000-000000000001',
+        expect.any(String),
+        422,
+        null,
+        expect.objectContaining({
+          type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
+        }),
       );
     });
 

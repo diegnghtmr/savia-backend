@@ -256,8 +256,8 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
         return persistAndReturn(
           422,
           {
-            type: PROBLEM_TYPES.UNPROCESSABLE,
-            title: 'Personal workspace cannot have invitations',
+            type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
+            title: 'Personal workspaces cannot have invitations',
             status: 422,
           },
           { kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.PERSONAL_WORKSPACE },
@@ -383,7 +383,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
             return persistAndReturn(
               422,
               {
-                type: PROBLEM_TYPES.UNPROCESSABLE,
+                type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
                 title: 'Personal workspaces cannot have invitations',
                 status: 422,
               },

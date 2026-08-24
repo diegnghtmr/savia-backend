@@ -18,6 +18,7 @@ export const PROBLEM_TYPES = {
   FORBIDDEN: `${BASE_URI}/forbidden`,
   PERSONAL_WORKSPACE_MEMBERSHIP: `${BASE_URI}/personal-workspace-membership`,
   LAST_OWNER_REQUIRED: `${BASE_URI}/last-owner-required`,
+  PERSONAL_WORKSPACE_INVITATION: `${BASE_URI}/personal-workspace-invitation`,
   WORKSPACE_INVITATION_EXISTING_MEMBER: `${BASE_URI}/workspace-invitation-existing-member`,
   WORKSPACE_INVITATION_ALREADY_PENDING: `${BASE_URI}/workspace-invitation-already-pending`,
 } as const;

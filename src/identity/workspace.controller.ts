@@ -861,8 +861,8 @@ export class WorkspaceController {
       outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.PERSONAL_WORKSPACE
     ) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.UNPROCESSABLE,
-        title: 'Personal workspace cannot have invitations',
+        type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
+        title: 'Personal workspaces cannot have invitations',
         status: 422,
       });
       return;

@@ -455,7 +455,7 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
     expect(body.code).toBe('workspace-invitation-already-pending');
   });
 
-  it('returns 422 when workspace kind is personal (RULING 21)', async () => {
+  it('returns 422 personal-workspace-invitation when workspace kind is personal (RULING 21 / B1)', async () => {
     const createSpy = vi.fn().mockResolvedValue({
       kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.PERSONAL_WORKSPACE,
     });
@@ -468,8 +468,8 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
     );
     expect(response.statusCode).toBe(422);
     const body = response.json();
-    expect(body.type).toBe(PROBLEM_TYPES.UNPROCESSABLE);
-    expect(body.code).toBe('unprocessable');
+    expect(body.type).toBe(PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION);
+    expect(body.code).toBe('personal-workspace-invitation');
   });
 
   it('returns 422 when request body fails validation', async () => {
