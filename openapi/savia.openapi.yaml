@@ -1347,3 +1347,74 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/workspaces/{workspaceId}/invitations/{invitationId}/revoke:
+    post:
+      operationId: revokeWorkspaceInvitation
+      tags:
+        - Members
+      summary: Revoke workspace invitation
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: invitationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      responses:
+        '200':
+          description: Invitation revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceInvitation'
+        '400':
+          description: The workspace identifier, invitation identifier, or idempotency key failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Revoking workspace invitation is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Workspace or invitation not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Workspace invitation is not pending or idempotency key reused with different payload.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
