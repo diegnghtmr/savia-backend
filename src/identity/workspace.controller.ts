@@ -39,6 +39,7 @@ import {
 import {
   WORKSPACE_INVITATION_CREATE_OUTCOMES,
   WORKSPACE_INVITATION_LIST_OUTCOMES,
+  WORKSPACE_INVITATION_REVOKE_OUTCOMES,
   WORKSPACE_INVITATION_PORT,
   type WorkspaceInvitationPort,
 } from './workspace-invitation.port.js';
@@ -1034,6 +1035,103 @@ export class WorkspaceController {
       sendProblem(reply, {
         type: PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
         title: 'Pending invitation already exists for this email',
+        status: 409,
+      });
+      return;
+    }
+  }
+
+  @Post(':workspaceId/invitations/:invitationId/revoke')
+  public async revokeWorkspaceInvitation(
+    @Param('workspaceId') workspaceId: string,
+    @Param('invitationId') invitationId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const keyResult = validateIdempotencyKey(
+      request.headers['idempotency-key'],
+    );
+    if (keyResult.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid Idempotency-Key header',
+        detail: keyResult.reason,
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(workspaceId) || !UUID_PATTERN.test(invitationId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid identifier parameter',
+        status: 400,
+      });
+      return;
+    }
+
+    const outcome = await this.invitations.revokeWorkspaceInvitation(
+      request.identity.subject,
+      workspaceId,
+      invitationId,
+      keyResult.key,
+    );
+
+    if (outcome.kind === WORKSPACE_INVITATION_REVOKE_OUTCOMES.OK) {
+      void reply.status(200).send(outcome.invitation);
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED) {
+      if (outcome.status === 200) {
+        void reply.status(200).send(outcome.body);
+        return;
+      }
+      if (
+        typeof outcome.body === 'object' &&
+        outcome.body !== null &&
+        'type' in outcome.body
+      ) {
+        sendProblem(reply, outcome.body as Problem);
+        return;
+      }
+      void reply.status(outcome.status).send(outcome.body);
+      return;
+    }
+
+    if (
+      outcome.kind === WORKSPACE_INVITATION_REVOKE_OUTCOMES.IDEMPOTENCY_CONFLICT
+    ) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency conflict',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Workspace or invitation not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_INVITATION_REVOKE_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_PENDING) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+        title: 'Workspace invitation is not pending',
         status: 409,
       });
       return;

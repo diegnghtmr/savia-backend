@@ -6,6 +6,7 @@ import type { CreateWorkspaceInvitationCommand } from './workspace-invitation-co
 import {
   WORKSPACE_INVITATION_CREATE_OUTCOMES,
   WORKSPACE_INVITATION_LIST_OUTCOMES,
+  WORKSPACE_INVITATION_REVOKE_OUTCOMES,
   type WorkspaceInvitation,
   type WorkspaceInvitationCreateOutcome,
   type WorkspaceInvitationListOutcome,
@@ -458,16 +459,167 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
   }
 
   public revokeWorkspaceInvitation(
-    _subject: string,
-    _workspaceId: string,
-    _invitationId: string,
-    _idempotencyKey: string,
+    subject: string,
+    workspaceId: string,
+    invitationId: string,
+    idempotencyKey: string,
   ): Promise<WorkspaceInvitationRevokeOutcome> {
-    void _subject;
-    void _workspaceId;
-    void _invitationId;
-    void _idempotencyKey;
-    return Promise.reject(new Error('Not implemented'));
+    const route =
+      'POST /v1/workspaces/{workspaceId}/invitations/{invitationId}/revoke';
+    const fingerprint = computeRequestFingerprint({
+      workspaceId,
+      invitationId,
+    });
+
+    return this.transaction.run(subject, async (client) => {
+      // Rows 3, 4: Idempotency preamble
+      const existing = await this.idempotencyStore.read(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+      );
+      if (existing !== undefined) {
+        if (existing.requestFingerprint !== fingerprint) {
+          return {
+            kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+          };
+        }
+        return {
+          kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED,
+          status: existing.responseStatus,
+          body: existing.responseBody,
+        };
+      }
+
+      const persistAndReturn = async (
+        status: number,
+        body: unknown,
+        outcome: WorkspaceInvitationRevokeOutcome,
+      ): Promise<WorkspaceInvitationRevokeOutcome> => {
+        const written = await this.idempotencyStore.write(
+          client,
+          subject,
+          route,
+          idempotencyKey,
+          fingerprint,
+          status,
+          null,
+          body,
+        );
+        if (!written) {
+          const reread = await this.idempotencyStore.read(
+            client,
+            subject,
+            route,
+            idempotencyKey,
+          );
+          if (reread !== undefined) {
+            if (reread.requestFingerprint !== fingerprint) {
+              return {
+                kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+              };
+            }
+            return {
+              kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED,
+              status: reread.responseStatus,
+              body: reread.responseBody,
+            };
+          }
+        }
+        return outcome;
+      };
+
+      // Perform UPDATE: transitions pending invitation to revoked
+      const revoked = await this.store.revokePendingInvitation(
+        client,
+        workspaceId,
+        invitationId,
+      );
+
+      if (revoked !== undefined) {
+        return persistAndReturn(200, revoked, {
+          kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.OK,
+          invitation: revoked,
+        });
+      }
+
+      // Residual (zero-row) branch disambiguation:
+      // 1. Re-read the target invitation FIRST by (id, workspace_id)
+      const residualInvitation = await this.store.readInvitation(
+        client,
+        workspaceId,
+        invitationId,
+      );
+      if (
+        residualInvitation !== undefined &&
+        residualInvitation.status !== 'pending'
+      ) {
+        return persistAndReturn(
+          409,
+          {
+            type: PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+            title: 'Workspace invitation is not pending',
+            status: 409,
+          },
+          { kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_PENDING },
+        );
+      }
+
+      // 2. Re-read the caller's own membership LAST
+      const callerMembership = await this.store.readMembership(
+        client,
+        workspaceId,
+        subject,
+      );
+      if (callerMembership === undefined) {
+        return persistAndReturn(
+          404,
+          {
+            type: PROBLEM_TYPES.NOT_FOUND,
+            title: 'Workspace or invitation not found',
+            status: 404,
+          },
+          { kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_FOUND },
+        );
+      }
+      if (callerMembership.status === WORKSPACE_MEMBER_STATUS.SUSPENDED) {
+        return persistAndReturn(
+          403,
+          {
+            type: PROBLEM_TYPES.FORBIDDEN,
+            title: 'Workspace access forbidden',
+            status: 403,
+          },
+          { kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.FORBIDDEN },
+        );
+      }
+      if (
+        callerMembership.role !== WORKSPACE_ROLE.OWNER &&
+        callerMembership.role !== WORKSPACE_ROLE.ADMINISTRATOR
+      ) {
+        return persistAndReturn(
+          403,
+          {
+            type: PROBLEM_TYPES.FORBIDDEN,
+            title: 'Workspace access forbidden',
+            status: 403,
+          },
+          { kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.FORBIDDEN },
+        );
+      }
+
+      // 3. Otherwise (caller is active owner/administrator, but invitation was not found in step 1) -> 404
+      return persistAndReturn(
+        404,
+        {
+          type: PROBLEM_TYPES.NOT_FOUND,
+          title: 'Workspace or invitation not found',
+          status: 404,
+        },
+        { kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_FOUND },
+      );
+    });
   }
 }
 
