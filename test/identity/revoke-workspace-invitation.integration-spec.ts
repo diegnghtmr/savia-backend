@@ -471,4 +471,14 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
     );
     expect(result).toBeUndefined();
   });
+
+  it('RULING 19 / adapter: readInvitation projects expired when expires_at is in past on a stored pending row', async () => {
+    const adapter = new PostgresWorkspaceInvitationAdapter();
+    const result = await adapter.readInvitation(
+      admin,
+      wsMainId,
+      invExpiredPendingId,
+    );
+    expect(result?.status).toBe('expired');
+  });
 });
