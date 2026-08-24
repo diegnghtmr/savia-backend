@@ -124,7 +124,7 @@ export class PostgresWorkspaceInvitationAdapter
     subject: string,
     email: string,
     role: WorkspaceRole,
-  ): Promise<WorkspaceInvitation | undefined> {
+  ): Promise<WorkspaceInvitation> {
     const result = await client.query<WorkspaceInvitationRow>(
       `insert into public.workspace_invitations (workspace_id, invited_by, email, role, expires_at)
        values ($1, $2, $3, $4, now() + interval '7 days')
@@ -137,7 +137,6 @@ export class PostgresWorkspaceInvitationAdapter
       [workspaceId, subject, email, role],
     );
     const row = result.rows[0];
-    if (row === undefined) return undefined;
     return {
       id: row.id,
       email: row.email,

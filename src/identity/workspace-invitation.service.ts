@@ -72,7 +72,7 @@ export interface WorkspaceInvitationStore {
     subject: string,
     email: string,
     role: WorkspaceRole,
-  ): Promise<WorkspaceInvitation | undefined>;
+  ): Promise<WorkspaceInvitation>;
 }
 
 export class WorkspaceInvitationService implements WorkspaceInvitationPort {
@@ -321,8 +321,8 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
         await this.store.revokeInvitation(client, pending.id);
       }
 
-      // Row 12: Insert fresh invitation (with RULING 27 23505 handling)
-      let invitation: WorkspaceInvitation | undefined;
+      // Row 12: Insert fresh invitation (with failure classification)
+      let invitation: WorkspaceInvitation;
       try {
         invitation = await this.store.createInvitation(
           client,
@@ -331,7 +331,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
           command.email,
           command.role,
         );
-      } catch (error) {
+      } catch (error: unknown) {
         if (isPendingEmailUniqueViolation(error)) {
           return persistAndReturn(
             409,
@@ -343,30 +343,68 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
             { kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.ALREADY_PENDING },
           );
         }
-        throw error;
-      }
 
-      // Row 13: Residual zero-row write
-      if (invitation === undefined) {
-        // 1. Re-read target state first
-        const residualTarget = await this.store.readWorkspaceKind(
-          client,
-          workspaceId,
-        );
-        void residualTarget;
+        const sqlState = getSqlStateCode(error);
 
-        // 2. Re-read caller's own membership LAST
-        const residualCaller = await this.store.readMembership(
-          client,
-          workspaceId,
-          subject,
-        );
-        if (
-          residualCaller === undefined ||
-          residualCaller.status === WORKSPACE_MEMBER_STATUS.SUSPENDED ||
-          (residualCaller.role !== WORKSPACE_ROLE.OWNER &&
-            residualCaller.role !== WORKSPACE_ROLE.ADMINISTRATOR)
-        ) {
+        if (sqlState === '42501') {
+          // 1. Re-read the workspace kind first
+          const residualKind = await this.store.readWorkspaceKind(
+            client,
+            workspaceId,
+          );
+
+          // 2. Re-read the caller's own membership LAST
+          const residualCaller = await this.store.readMembership(
+            client,
+            workspaceId,
+            subject,
+          );
+
+          // 3. Caller is no longer an active owner or administrator -> 403
+          if (
+            residualCaller === undefined ||
+            residualCaller.status === WORKSPACE_MEMBER_STATUS.SUSPENDED ||
+            (residualCaller.role !== WORKSPACE_ROLE.OWNER &&
+              residualCaller.role !== WORKSPACE_ROLE.ADMINISTRATOR)
+          ) {
+            return persistAndReturn(
+              403,
+              {
+                type: PROBLEM_TYPES.FORBIDDEN,
+                title: 'Workspace access forbidden',
+                status: 403,
+              },
+              { kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.FORBIDDEN },
+            );
+          }
+
+          // 4. Else kind is personal -> 422
+          if (residualKind === WORKSPACE_KIND.PERSONAL) {
+            return persistAndReturn(
+              422,
+              {
+                type: PROBLEM_TYPES.UNPROCESSABLE,
+                title: 'Personal workspaces cannot have invitations',
+                status: 422,
+              },
+              { kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.PERSONAL_WORKSPACE },
+            );
+          }
+
+          // 5. Else workspace absent -> 404
+          if (residualKind === undefined) {
+            return persistAndReturn(
+              404,
+              {
+                type: PROBLEM_TYPES.NOT_FOUND,
+                title: 'Workspace not found',
+                status: 404,
+              },
+              { kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.NOT_FOUND },
+            );
+          }
+
+          // 6. Else -> 403
           return persistAndReturn(
             403,
             {
@@ -378,15 +416,20 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
           );
         }
 
-        return persistAndReturn(
-          404,
-          {
-            type: PROBLEM_TYPES.NOT_FOUND,
-            title: 'Workspace not found',
-            status: 404,
-          },
-          { kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.NOT_FOUND },
-        );
+        if (sqlState === '23503') {
+          // Workspace was deleted mid-flight -> 404
+          return persistAndReturn(
+            404,
+            {
+              type: PROBLEM_TYPES.NOT_FOUND,
+              title: 'Workspace not found',
+              status: 404,
+            },
+            { kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.NOT_FOUND },
+          );
+        }
+
+        throw error;
       }
 
       return persistAndReturn(201, invitation, {
@@ -397,11 +440,17 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
   }
 }
 
-function isPendingEmailUniqueViolation(error: unknown): boolean {
+export function isPendingEmailUniqueViolation(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const err = error as { code?: unknown; constraint?: unknown };
   return (
     String(err.code) === '23505' &&
     err.constraint === 'workspace_invitations_one_pending_per_email'
   );
+}
+
+function getSqlStateCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
 }
