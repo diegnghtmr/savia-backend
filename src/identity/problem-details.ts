@@ -21,6 +21,7 @@ export const PROBLEM_TYPES = {
   PERSONAL_WORKSPACE_INVITATION: `${BASE_URI}/personal-workspace-invitation`,
   WORKSPACE_INVITATION_EXISTING_MEMBER: `${BASE_URI}/workspace-invitation-existing-member`,
   WORKSPACE_INVITATION_ALREADY_PENDING: `${BASE_URI}/workspace-invitation-already-pending`,
+  WORKSPACE_INVITATION_NOT_PENDING: `${BASE_URI}/workspace-invitation-not-pending`,
 } as const;
 export interface Problem {
   readonly type: string;

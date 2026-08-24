@@ -11,6 +11,7 @@ import {
   type WorkspaceInvitationListOutcome,
   type WorkspaceInvitationListQuery,
   type WorkspaceInvitationPort,
+  type WorkspaceInvitationRevokeOutcome,
 } from './workspace-invitation.port.js';
 import {
   encodeCursor,
@@ -66,6 +67,16 @@ export interface WorkspaceInvitationStore {
     client: TransactionClient,
     invitationId: string,
   ): Promise<void>;
+  revokePendingInvitation(
+    client: TransactionClient,
+    workspaceId: string,
+    invitationId: string,
+  ): Promise<WorkspaceInvitation | undefined>;
+  readInvitation(
+    client: TransactionClient,
+    workspaceId: string,
+    invitationId: string,
+  ): Promise<WorkspaceInvitation | undefined>;
   createInvitation(
     client: TransactionClient,
     workspaceId: string,
@@ -444,6 +455,19 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
         invitation,
       });
     });
+  }
+
+  public revokeWorkspaceInvitation(
+    _subject: string,
+    _workspaceId: string,
+    _invitationId: string,
+    _idempotencyKey: string,
+  ): Promise<WorkspaceInvitationRevokeOutcome> {
+    void _subject;
+    void _workspaceId;
+    void _invitationId;
+    void _idempotencyKey;
+    return Promise.reject(new Error('Not implemented'));
   }
 }
 

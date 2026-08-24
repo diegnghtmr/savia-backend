@@ -12,11 +12,13 @@ import { PROBLEM_TYPES } from '../src/identity/problem-details.js';
 import {
   WORKSPACE_INVITATION_CREATE_OUTCOMES,
   WORKSPACE_INVITATION_LIST_OUTCOMES,
+  WORKSPACE_INVITATION_REVOKE_OUTCOMES,
   WORKSPACE_INVITATION_PORT,
   type WorkspaceInvitation,
   type WorkspaceInvitationCreateOutcome,
   type WorkspaceInvitationListOutcome,
   type WorkspaceInvitationPort,
+  type WorkspaceInvitationRevokeOutcome,
 } from '../src/identity/workspace-invitation.port.js';
 import {
   WORKSPACE_MEMBER_PORT,
@@ -96,6 +98,12 @@ async function createApplication(
       kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.CREATED,
       invitation: defaultInvitation,
     } satisfies WorkspaceInvitationCreateOutcome),
+  revokeWorkspaceInvitation: WorkspaceInvitationPort['revokeWorkspaceInvitation'] = vi
+    .fn()
+    .mockResolvedValue({
+      kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.OK,
+      invitation: { ...defaultInvitation, status: 'revoked' },
+    } satisfies WorkspaceInvitationRevokeOutcome),
 ): Promise<NestFastifyApplication> {
   const dummyWorkspacePort: WorkspacePort = {
     read: vi.fn(),
@@ -120,7 +128,11 @@ async function createApplication(
     .overrideProvider(WORKSPACE_MEMBER_PORT)
     .useValue(dummyMemberPort)
     .overrideProvider(WORKSPACE_INVITATION_PORT)
-    .useValue({ listWorkspaceInvitations, createWorkspaceInvitation })
+    .useValue({
+      listWorkspaceInvitations,
+      createWorkspaceInvitation,
+      revokeWorkspaceInvitation,
+    })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -166,6 +178,28 @@ function createWorkspaceInvitationRequest(
     method: 'POST',
     url: `/v1/workspaces/${workspaceId}/invitations`,
     payload: body as Record<string, unknown>,
+    headers: {
+      ...(options.token === undefined
+        ? {}
+        : { authorization: `Bearer ${options.token}` }),
+      ...(options.idempotencyKey === undefined
+        ? { 'idempotency-key': IDEMPOTENCY_KEY }
+        : options.idempotencyKey === ''
+          ? {}
+          : { 'idempotency-key': options.idempotencyKey }),
+    },
+  });
+}
+
+function revokeWorkspaceInvitationRequest(
+  application: NestFastifyApplication,
+  workspaceId: string,
+  invitationId: string,
+  options: { token?: string; idempotencyKey?: string } = {},
+) {
+  return application.inject({
+    method: 'POST',
+    url: `/v1/workspaces/${workspaceId}/invitations/${invitationId}/revoke`,
     headers: {
       ...(options.token === undefined
         ? {}
@@ -588,5 +622,259 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
     const body = response.json();
     expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING);
     expect(body.code).toBe('workspace-invitation-already-pending');
+  });
+
+  describe('POST /v1/workspaces/:workspaceId/invitations/:invitationId/revoke', () => {
+    const INVITATION_ID = '11111111-1111-1111-1111-111111111111';
+
+    it('returns 401 when bearer token is missing or invalid', async () => {
+      const revokeSpy = vi.fn();
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+
+      const resMissing = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        INVITATION_ID,
+      );
+      expect(resMissing.statusCode).toBe(401);
+
+      const resInvalid = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        INVITATION_ID,
+        { token: 'bad-token' },
+      );
+      expect(resInvalid.statusCode).toBe(401);
+      expect(revokeSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when workspaceId is not a valid UUID', async () => {
+      const revokeSpy = vi.fn();
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+      const response = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        'not-a-uuid',
+        INVITATION_ID,
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(400);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(revokeSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when invitationId is not a valid UUID', async () => {
+      const revokeSpy = vi.fn();
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+      const response = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        'not-a-uuid',
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(400);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(revokeSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when Idempotency-Key header is missing', async () => {
+      const revokeSpy = vi.fn();
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+      const response = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        INVITATION_ID,
+        { token: TOKEN, idempotencyKey: '' },
+      );
+      expect(response.statusCode).toBe(400);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+      expect(revokeSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns 200 with revoked invitation body on success', async () => {
+      const revokedInvitation = {
+        ...defaultInvitation,
+        id: INVITATION_ID,
+        status: 'revoked' as const,
+      };
+      const revokeSpy = vi.fn().mockResolvedValue({
+        kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.OK,
+        invitation: revokedInvitation,
+      });
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+      const response = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        INVITATION_ID,
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(revokedInvitation);
+      expect(revokeSpy).toHaveBeenCalledWith(
+        SUBJECT,
+        WORKSPACE_ID,
+        INVITATION_ID,
+        IDEMPOTENCY_KEY,
+      );
+    });
+
+    it('returns 403 when service returns forbidden', async () => {
+      const revokeSpy = vi.fn().mockResolvedValue({
+        kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.FORBIDDEN,
+      });
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+      const response = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        INVITATION_ID,
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(403);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.FORBIDDEN);
+      expect(body.code).toBe('forbidden');
+    });
+
+    it('returns 404 when service returns not-found', async () => {
+      const revokeSpy = vi.fn().mockResolvedValue({
+        kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_FOUND,
+      });
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+      const response = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        INVITATION_ID,
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(404);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.NOT_FOUND);
+      expect(body.code).toBe('not-found');
+    });
+
+    it('returns 409 workspace-invitation-not-pending when invitation is not pending', async () => {
+      const revokeSpy = vi.fn().mockResolvedValue({
+        kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_PENDING,
+      });
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+      const response = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        INVITATION_ID,
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(409);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING);
+      expect(body.code).toBe('workspace-invitation-not-pending');
+    });
+
+    it('idempotency: same key same payload replays stored 200', async () => {
+      const revokedInvitation = {
+        ...defaultInvitation,
+        id: INVITATION_ID,
+        status: 'revoked' as const,
+      };
+      const revokeSpy = vi.fn().mockResolvedValue({
+        kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED,
+        status: 200,
+        body: revokedInvitation,
+      });
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+      const response = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        INVITATION_ID,
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(revokedInvitation);
+    });
+
+    it('idempotency: same key different payload returns 409 generic conflict', async () => {
+      const revokeSpy = vi.fn().mockResolvedValue({
+        kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+      });
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+      const response = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        INVITATION_ID,
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(409);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.CONFLICT);
+      expect(body.code).toBe('conflict');
+    });
+
+    it('idempotency: replaying a stored 409 not-pending re-renders with type and code', async () => {
+      const revokeSpy = vi.fn().mockResolvedValue({
+        kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED,
+        status: 409,
+        body: {
+          type: PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+          title: 'Workspace invitation is not pending',
+          status: 409,
+        },
+      });
+      const appInstance = await createApplication(
+        undefined,
+        undefined,
+        revokeSpy,
+      );
+      const response = await revokeWorkspaceInvitationRequest(
+        appInstance,
+        WORKSPACE_ID,
+        INVITATION_ID,
+        { token: TOKEN },
+      );
+      expect(response.statusCode).toBe(409);
+      const body = response.json();
+      expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING);
+      expect(body.code).toBe('workspace-invitation-not-pending');
+    });
   });
 });

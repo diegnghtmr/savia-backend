@@ -118,6 +118,28 @@ export class PostgresWorkspaceInvitationAdapter
     );
   }
 
+  public async revokePendingInvitation(
+    _client: TransactionClient,
+    _workspaceId: string,
+    _invitationId: string,
+  ): Promise<WorkspaceInvitation | undefined> {
+    void _client;
+    void _workspaceId;
+    void _invitationId;
+    return Promise.reject(new Error('Not implemented'));
+  }
+
+  public async readInvitation(
+    _client: TransactionClient,
+    _workspaceId: string,
+    _invitationId: string,
+  ): Promise<WorkspaceInvitation | undefined> {
+    void _client;
+    void _workspaceId;
+    void _invitationId;
+    return Promise.reject(new Error('Not implemented'));
+  }
+
   public async createInvitation(
     client: TransactionClient,
     workspaceId: string,

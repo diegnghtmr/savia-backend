@@ -7,6 +7,7 @@ import { PROBLEM_TYPES } from '../../src/identity/problem-details.js';
 import {
   WORKSPACE_INVITATION_CREATE_OUTCOMES,
   WORKSPACE_INVITATION_LIST_OUTCOMES,
+  WORKSPACE_INVITATION_REVOKE_OUTCOMES,
   type WorkspaceInvitation,
 } from '../../src/identity/workspace-invitation.port.js';
 import {
@@ -999,6 +1000,415 @@ describe('WorkspaceInvitationService', () => {
           '00000000-0000-0000-0000-000000000001',
         ),
       ).rejects.toThrow(pgOtherUniqueError);
+    });
+  });
+
+  describe('revokeWorkspaceInvitation (§3 Decision Table)', () => {
+    const dummyInvitationId = '11111111-1111-1111-1111-111111111111';
+    const fingerprint = computeRequestFingerprint({
+      workspaceId: dummyWorkspaceId,
+      invitationId: dummyInvitationId,
+    });
+
+    it('row 3: replay with same key and same fingerprint replays stored response verbatim', async () => {
+      const fakeIdempotencyStore = {
+        read: vi.fn().mockResolvedValue({
+          requestFingerprint: fingerprint,
+          responseStatus: 200,
+          responseEtag: null,
+          responseBody: { ...fakeInvitation1, status: 'revoked' },
+        }),
+        write: vi.fn(),
+      } as unknown as IdempotencyStore;
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const fakeStore = {} as WorkspaceInvitationStore;
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        fakeIdempotencyStore,
+      );
+
+      const outcome = await service.revokeWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        dummyInvitationId,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED);
+      if (outcome.kind === WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED) {
+        expect(outcome.status).toBe(200);
+        expect(outcome.body).toEqual({ ...fakeInvitation1, status: 'revoked' });
+      }
+    });
+
+    it('row 4: replay with same key and different fingerprint returns idempotency conflict (409)', async () => {
+      const fakeIdempotencyStore = {
+        read: vi.fn().mockResolvedValue({
+          requestFingerprint: 'different-fingerprint-sha',
+          responseStatus: 200,
+          responseEtag: null,
+          responseBody: fakeInvitation1,
+        }),
+        write: vi.fn(),
+      } as unknown as IdempotencyStore;
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const fakeStore = {} as WorkspaceInvitationStore;
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        fakeIdempotencyStore,
+      );
+
+      const outcome = await service.revokeWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        dummyInvitationId,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(
+        WORKSPACE_INVITATION_REVOKE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+      );
+    });
+
+    it('row 5: caller has no membership in this workspace returns not-found (404)', async () => {
+      const fakeStore = {
+        revokePendingInvitation: vi.fn().mockResolvedValue(undefined),
+        readInvitation: vi.fn().mockResolvedValue(undefined),
+        readMembership: vi.fn().mockResolvedValue(undefined),
+      } as unknown as WorkspaceInvitationStore;
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        createDummyIdempotencyStore(),
+      );
+
+      const outcome = await service.revokeWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        dummyInvitationId,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_FOUND);
+    });
+
+    it("row 6: caller's membership is suspended returns forbidden (403)", async () => {
+      const fakeStore = {
+        revokePendingInvitation: vi.fn().mockResolvedValue(undefined),
+        readInvitation: vi.fn().mockResolvedValue(undefined),
+        readMembership: vi.fn().mockResolvedValue({
+          role: WORKSPACE_ROLE.OWNER,
+          status: WORKSPACE_MEMBER_STATUS.SUSPENDED,
+        }),
+      } as unknown as WorkspaceInvitationStore;
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        createDummyIdempotencyStore(),
+      );
+
+      const outcome = await service.revokeWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        dummyInvitationId,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(WORKSPACE_INVITATION_REVOKE_OUTCOMES.FORBIDDEN);
+    });
+
+    it("row 7: caller's role is editor or viewer returns forbidden (403)", async () => {
+      for (const role of [WORKSPACE_ROLE.EDITOR, WORKSPACE_ROLE.VIEWER]) {
+        const fakeStore = {
+          revokePendingInvitation: vi.fn().mockResolvedValue(undefined),
+          readInvitation: vi.fn().mockResolvedValue(undefined),
+          readMembership: vi.fn().mockResolvedValue({
+            role,
+            status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+          }),
+        } as unknown as WorkspaceInvitationStore;
+        const fakeTransaction: WorkspaceInvitationTransaction = {
+          run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+          runRead: vi.fn(),
+        };
+        const service = new WorkspaceInvitationService(
+          fakeTransaction,
+          fakeStore,
+          createDummyIdempotencyStore(),
+        );
+
+        const outcome = await service.revokeWorkspaceInvitation(
+          dummySubject,
+          dummyWorkspaceId,
+          dummyInvitationId,
+          '00000000-0000-0000-0000-000000000001',
+        );
+        expect(outcome.kind).toBe(
+          WORKSPACE_INVITATION_REVOKE_OUTCOMES.FORBIDDEN,
+        );
+      }
+    });
+
+    it('row 8: invitation does not exist in that workspace returns not-found (404)', async () => {
+      const fakeStore = {
+        revokePendingInvitation: vi.fn().mockResolvedValue(undefined),
+        readInvitation: vi.fn().mockResolvedValue(undefined),
+        readMembership: vi.fn().mockResolvedValue({
+          role: WORKSPACE_ROLE.OWNER,
+          status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+        }),
+      } as unknown as WorkspaceInvitationStore;
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        createDummyIdempotencyStore(),
+      );
+
+      const outcome = await service.revokeWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        dummyInvitationId,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_FOUND);
+    });
+
+    it('row 9: invitation exists but stored status is not pending returns not-pending (409)', async () => {
+      for (const status of ['accepted', 'revoked'] as const) {
+        const fakeStore = {
+          revokePendingInvitation: vi.fn().mockResolvedValue(undefined),
+          readInvitation: vi.fn().mockResolvedValue({
+            ...fakeInvitation1,
+            status,
+          }),
+          readMembership: vi.fn().mockResolvedValue({
+            role: WORKSPACE_ROLE.OWNER,
+            status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+          }),
+        } as unknown as WorkspaceInvitationStore;
+        const fakeTransaction: WorkspaceInvitationTransaction = {
+          run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+          runRead: vi.fn(),
+        };
+        const idempotencyStore = createDummyIdempotencyStore();
+        const service = new WorkspaceInvitationService(
+          fakeTransaction,
+          fakeStore,
+          idempotencyStore,
+        );
+
+        const outcome = await service.revokeWorkspaceInvitation(
+          dummySubject,
+          dummyWorkspaceId,
+          fakeInvitation1.id,
+          '00000000-0000-0000-0000-000000000001',
+        );
+        expect(outcome.kind).toBe(
+          WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_PENDING,
+        );
+        expect(idempotencyStore.write).toHaveBeenCalledWith(
+          dummyClient,
+          dummySubject,
+          'POST /v1/workspaces/{workspaceId}/invitations/{invitationId}/revoke',
+          '00000000-0000-0000-0000-000000000001',
+          expect.any(String),
+          409,
+          null,
+          expect.objectContaining({
+            type: PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+          }),
+        );
+      }
+    });
+
+    it('row 10: pending invitation (including expired) transitions to revoked and returns ok (200)', async () => {
+      const revokedInvitation: WorkspaceInvitation = {
+        ...fakeInvitation1,
+        status: 'revoked',
+      };
+      const fakeStore = {
+        revokePendingInvitation: vi.fn().mockResolvedValue(revokedInvitation),
+      } as unknown as WorkspaceInvitationStore;
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const idempotencyStore = createDummyIdempotencyStore();
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        idempotencyStore,
+      );
+
+      const outcome = await service.revokeWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        fakeInvitation1.id,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(WORKSPACE_INVITATION_REVOKE_OUTCOMES.OK);
+      if (outcome.kind === WORKSPACE_INVITATION_REVOKE_OUTCOMES.OK) {
+        expect(outcome.invitation.status).toBe('revoked');
+        expect(outcome.invitation).toEqual(revokedInvitation);
+      }
+      expect(idempotencyStore.write).toHaveBeenCalledWith(
+        dummyClient,
+        dummySubject,
+        'POST /v1/workspaces/{workspaceId}/invitations/{invitationId}/revoke',
+        '00000000-0000-0000-0000-000000000001',
+        expect.any(String),
+        200,
+        null,
+        revokedInvitation,
+      );
+    });
+
+    it('residual branch: order-sensitive disambiguation re-reads target FIRST and caller membership LAST', async () => {
+      let invitationReadCount = 0;
+      let callerReadCount = 0;
+
+      const fakeStore = {
+        revokePendingInvitation: vi.fn().mockResolvedValue(undefined),
+        readInvitation: vi.fn().mockImplementation(async () => {
+          invitationReadCount++;
+          return {
+            ...fakeInvitation1,
+            status: 'accepted',
+          };
+        }),
+        readMembership: vi.fn().mockImplementation(async () => {
+          callerReadCount++;
+          if (invitationReadCount === 0) {
+            return {
+              role: WORKSPACE_ROLE.VIEWER,
+              status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+            };
+          }
+          return {
+            role: WORKSPACE_ROLE.OWNER,
+            status: WORKSPACE_MEMBER_STATUS.ACTIVE,
+          };
+        }),
+      } as unknown as WorkspaceInvitationStore;
+
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        createDummyIdempotencyStore(),
+      );
+
+      const outcome = await service.revokeWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        fakeInvitation1.id,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(
+        WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_PENDING,
+      );
+      expect(callerReadCount).toBe(0);
+    });
+
+    it('idempotency lost-write path where write resolves false re-reads and replays (200)', async () => {
+      const revokedInvitation: WorkspaceInvitation = {
+        ...fakeInvitation1,
+        status: 'revoked',
+      };
+      const fakeStore = {
+        revokePendingInvitation: vi.fn().mockResolvedValue(revokedInvitation),
+      } as unknown as WorkspaceInvitationStore;
+
+      const fakeIdempotencyStore = {
+        read: vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+          requestFingerprint: fingerprint,
+          responseStatus: 200,
+          responseEtag: null,
+          responseBody: revokedInvitation,
+        }),
+        write: vi.fn().mockResolvedValue(false),
+      };
+
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        fakeIdempotencyStore,
+      );
+
+      const outcome = await service.revokeWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        dummyInvitationId,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED);
+      if (outcome.kind === WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED) {
+        expect(outcome.status).toBe(200);
+        expect(outcome.body).toEqual(revokedInvitation);
+      }
+    });
+
+    it('idempotency lost-write path where write resolves false and re-read reveals different fingerprint returns conflict (409)', async () => {
+      const revokedInvitation: WorkspaceInvitation = {
+        ...fakeInvitation1,
+        status: 'revoked',
+      };
+      const fakeStore = {
+        revokePendingInvitation: vi.fn().mockResolvedValue(revokedInvitation),
+      } as unknown as WorkspaceInvitationStore;
+
+      const fakeIdempotencyStore = {
+        read: vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+          requestFingerprint: 'different-fingerprint-mismatch',
+          responseStatus: 200,
+          responseEtag: null,
+          responseBody: revokedInvitation,
+        }),
+        write: vi.fn().mockResolvedValue(false),
+      };
+
+      const fakeTransaction: WorkspaceInvitationTransaction = {
+        run: vi.fn(async (_subject, callback) => callback(dummyClient)),
+        runRead: vi.fn(),
+      };
+      const service = new WorkspaceInvitationService(
+        fakeTransaction,
+        fakeStore,
+        fakeIdempotencyStore,
+      );
+
+      const outcome = await service.revokeWorkspaceInvitation(
+        dummySubject,
+        dummyWorkspaceId,
+        dummyInvitationId,
+        '00000000-0000-0000-0000-000000000001',
+      );
+      expect(outcome.kind).toBe(
+        WORKSPACE_INVITATION_REVOKE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+      );
     });
   });
 });
