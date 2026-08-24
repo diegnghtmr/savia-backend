@@ -324,13 +324,20 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
       // Row 12: Insert fresh invitation (with failure classification)
       let invitation: WorkspaceInvitation;
       try {
-        invitation = await this.store.createInvitation(
-          client,
-          workspaceId,
-          subject,
-          command.email,
-          command.role,
-        );
+        await client.query('SAVEPOINT sp_create_invitation');
+        try {
+          invitation = await this.store.createInvitation(
+            client,
+            workspaceId,
+            subject,
+            command.email,
+            command.role,
+          );
+          await client.query('RELEASE SAVEPOINT sp_create_invitation');
+        } catch (error) {
+          await client.query('ROLLBACK TO SAVEPOINT sp_create_invitation');
+          throw error;
+        }
       } catch (error: unknown) {
         if (isPendingEmailUniqueViolation(error)) {
           return persistAndReturn(

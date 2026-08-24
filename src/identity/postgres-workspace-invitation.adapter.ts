@@ -41,9 +41,9 @@ export class PostgresWorkspaceInvitationAdapter
         where invitation.workspace_id = $1
           and (
             $2::timestamptz is null
-            or (invitation.created_at, invitation.id) > ($2::timestamptz, $3::uuid)
+            or (date_trunc('milliseconds', invitation.created_at), invitation.id) > ($2::timestamptz, $3::uuid)
           )
-        order by invitation.created_at, invitation.id
+        order by date_trunc('milliseconds', invitation.created_at), invitation.id
         limit $4`,
       [workspaceId, cursor?.createdAt ?? null, cursor?.id ?? null, limit],
     );
