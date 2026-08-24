@@ -15,6 +15,7 @@ case "$spec" in
   test/identity/workspace.integration-spec.ts) ;;
   test/identity/workspace-write-rls.integration-spec.ts) ;;
   test/identity/command-idempotency.integration-spec.ts) ;;
+  test/identity/accounts-schema.integration-spec.ts) ;;
   test/identity/membership-write-rls.integration-spec.ts) ;;
   test/identity/last-owner-guard.integration-spec.ts) ;;
   test/identity/workspace-members.integration-spec.ts) ;;
