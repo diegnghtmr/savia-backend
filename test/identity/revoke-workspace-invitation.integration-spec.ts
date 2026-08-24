@@ -54,6 +54,7 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
   const invConcurId = '00000000-0000-0000-0000-000000007307';
   const invReplayId = '00000000-0000-0000-0000-000000007308';
   const invConflictId = '00000000-0000-0000-0000-000000007309';
+  const invDiffPayloadId = '00000000-0000-0000-0000-000000007310';
 
   const verifier = {
     verify: (token: string) => {
@@ -173,7 +174,8 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
               ($8, $9, $3, 'other-ws@example.test', 'editor', 'pending', now() + interval '7 days', now()),
               ($10, $2, $3, 'concur@example.test', 'editor', 'pending', now() + interval '7 days', now()),
               ($11, $2, $3, 'replay@example.test', 'editor', 'pending', now() + interval '7 days', now()),
-              ($12, $2, $3, 'conflict@example.test', 'editor', 'accepted', now() + interval '7 days', now())
+              ($12, $2, $3, 'conflict@example.test', 'editor', 'accepted', now() + interval '7 days', now()),
+              ($13, $2, $3, 'diff-payload@example.test', 'editor', 'pending', now() + interval '7 days', now())
        on conflict (id) do nothing`,
       [
         invPendingId,
@@ -188,6 +190,7 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
         invConcurId,
         invReplayId,
         invConflictId,
+        invDiffPayloadId,
       ],
     );
     await admin.query('commit');
@@ -417,9 +420,14 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
 
   it('idempotency: same key with different payload returns 409 generic conflict', async () => {
     const key = '00000000-0000-0000-0000-000000008014';
-    const res1 = await revokeInvitation(wsMainId, invPendingId, ownerSubject, {
-      idempotencyKey: key,
-    });
+    const res1 = await revokeInvitation(
+      wsMainId,
+      invDiffPayloadId,
+      ownerSubject,
+      {
+        idempotencyKey: key,
+      },
+    );
     expect(res1.statusCode).toBe(200);
 
     const res2 = await revokeInvitation(wsMainId, invReplayId, ownerSubject, {
