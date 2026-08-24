@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { IdentityModule } from '../../src/identity/identity.module.js';
 import { JoseJwtVerifier } from '../../src/identity/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { PostgresWorkspaceInvitationAdapter } from '../../src/identity/postgres-workspace-invitation.adapter.js';
 import { PROBLEM_TYPES } from '../../src/identity/problem-details.js';
 
 const url = process.env.DATABASE_URL;
@@ -459,5 +460,15 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
     expect(res409.json().type).toBe(
       PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
     );
+  });
+
+  it('row 9 / adapter: revokePendingInvitation on a non-pending row returns undefined without updating', async () => {
+    const adapter = new PostgresWorkspaceInvitationAdapter();
+    const result = await adapter.revokePendingInvitation(
+      admin,
+      wsMainId,
+      invAcceptedId,
+    );
+    expect(result).toBeUndefined();
   });
 });
