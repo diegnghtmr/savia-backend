@@ -18,7 +18,7 @@ import type { AuthenticatedRequest } from './authenticated-request.js';
 import { validateIdempotencyKey } from './idempotency-key.js';
 import { parseIfMatch } from './if-match.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
-import { PROBLEM_TYPES, sendProblem } from './problem-details.js';
+import { PROBLEM_TYPES, sendProblem, type Problem } from './problem-details.js';
 import {
   createWorkspaceCreateCommand,
   createWorkspaceUpdateCommand,
@@ -27,10 +27,21 @@ import {
   type WorkspaceUpdateCommand,
 } from './workspace-command.js';
 import {
+  createWorkspaceInvitationCommand,
+  WorkspaceInvitationCommandValidationError,
+  type CreateWorkspaceInvitationCommand,
+} from './workspace-invitation-command.js';
+import {
   createWorkspaceMemberUpdateCommand,
   WorkspaceMemberCommandValidationError,
   type WorkspaceMemberUpdateCommand,
 } from './workspace-member-command.js';
+import {
+  WORKSPACE_INVITATION_CREATE_OUTCOMES,
+  WORKSPACE_INVITATION_LIST_OUTCOMES,
+  WORKSPACE_INVITATION_PORT,
+  type WorkspaceInvitationPort,
+} from './workspace-invitation.port.js';
 import {
   decodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
@@ -60,6 +71,8 @@ export class WorkspaceController {
     @Inject(WORKSPACE_PORT) private readonly workspace: WorkspacePort,
     @Inject(WORKSPACE_MEMBER_PORT)
     private readonly members: WorkspaceMemberPort,
+    @Inject(WORKSPACE_INVITATION_PORT)
+    private readonly invitations: WorkspaceInvitationPort,
   ) {}
 
   @Post()
@@ -654,6 +667,222 @@ export class WorkspaceController {
         return;
       }
       void reply.status(outcome.status).send();
+      return;
+    }
+  }
+
+  @Get(':workspaceId/invitations')
+  public async listWorkspaceInvitations(
+    @Param('workspaceId') workspaceId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Query('cursor') cursorParam?: string,
+    @Query('limit') limitParam?: string,
+  ): Promise<void> {
+    if (!UUID_PATTERN.test(workspaceId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid workspace identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    let limit = 50;
+    if (limitParam !== undefined) {
+      if (!/^\d+$/.test(limitParam)) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid limit parameter',
+          status: 400,
+        });
+        return;
+      }
+      limit = Number(limitParam);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid limit parameter',
+          status: 400,
+        });
+        return;
+      }
+    }
+
+    let cursor: WorkspaceCursor | undefined;
+    if (cursorParam !== undefined) {
+      cursor = decodeCursor(cursorParam);
+      if (cursor === undefined) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid cursor parameter',
+          status: 400,
+        });
+        return;
+      }
+    }
+
+    const outcome = await this.invitations.listWorkspaceInvitations(
+      request.identity.subject,
+      workspaceId,
+      { cursor, limit },
+    );
+
+    if (outcome.kind === WORKSPACE_INVITATION_LIST_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Workspace not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_INVITATION_LIST_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    void reply.status(200).send(outcome.page);
+  }
+
+  @Post(':workspaceId/invitations')
+  public async createWorkspaceInvitation(
+    @Param('workspaceId') workspaceId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Body() body: unknown,
+  ): Promise<void> {
+    const keyResult = validateIdempotencyKey(
+      request.headers['idempotency-key'],
+    );
+    if (keyResult.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid Idempotency-Key header',
+        detail: keyResult.reason,
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(workspaceId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid workspace identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    let command: CreateWorkspaceInvitationCommand;
+    try {
+      command = createWorkspaceInvitationCommand(body);
+    } catch (error) {
+      if (error instanceof WorkspaceInvitationCommandValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Unprocessable entity',
+          status: 422,
+          errors: error.violations,
+        });
+        return;
+      }
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Bad request',
+        status: 400,
+      });
+      return;
+    }
+
+    const outcome = await this.invitations.createWorkspaceInvitation(
+      request.identity.subject,
+      workspaceId,
+      command,
+      keyResult.key,
+    );
+
+    if (outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.CREATED) {
+      void reply.status(201).send(outcome.invitation);
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.REPLAYED) {
+      if (outcome.status === 201) {
+        void reply.status(201).send(outcome.body);
+        return;
+      }
+      if (
+        typeof outcome.body === 'object' &&
+        outcome.body !== null &&
+        'type' in outcome.body
+      ) {
+        sendProblem(reply, outcome.body as Problem);
+        return;
+      }
+      void reply.status(outcome.status).send(outcome.body);
+      return;
+    }
+
+    if (
+      outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT
+    ) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency conflict',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Workspace not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (
+      outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.PERSONAL_WORKSPACE
+    ) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Personal workspace cannot have invitations',
+        status: 422,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.EXISTING_MEMBER) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER,
+        title: 'Workspace member already active with this email',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.ALREADY_PENDING) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
+        title: 'Pending invitation already exists for this email',
+        status: 409,
+      });
       return;
     }
   }

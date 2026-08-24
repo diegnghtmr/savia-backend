@@ -24,6 +24,9 @@ import { WorkspaceService } from './workspace.service.js';
 import { PostgresWorkspaceMemberAdapter } from './postgres-workspace-member.adapter.js';
 import { WORKSPACE_MEMBER_PORT } from './workspace-member.port.js';
 import { WorkspaceMemberService } from './workspace-member.service.js';
+import { PostgresWorkspaceInvitationAdapter } from './postgres-workspace-invitation.adapter.js';
+import { WORKSPACE_INVITATION_PORT } from './workspace-invitation.port.js';
+import { WorkspaceInvitationService } from './workspace-invitation.service.js';
 
 @Module({
   controllers: [OnboardingController, ProfileController, WorkspaceController],
@@ -99,6 +102,24 @@ import { WorkspaceMemberService } from './workspace-member.service.js';
       ) => new WorkspaceMemberService(transaction, adapter),
     },
     { provide: WORKSPACE_MEMBER_PORT, useExisting: WorkspaceMemberService },
+    PostgresWorkspaceInvitationAdapter,
+    {
+      provide: WorkspaceInvitationService,
+      inject: [
+        PgTransaction,
+        PostgresWorkspaceInvitationAdapter,
+        PostgresIdempotencyAdapter,
+      ],
+      useFactory: (
+        transaction: PgTransaction,
+        adapter: PostgresWorkspaceInvitationAdapter,
+        idempotency: PostgresIdempotencyAdapter,
+      ) => new WorkspaceInvitationService(transaction, adapter, idempotency),
+    },
+    {
+      provide: WORKSPACE_INVITATION_PORT,
+      useExisting: WorkspaceInvitationService,
+    },
     {
       provide: IdempotencyService,
       inject: [PgTransaction, PostgresIdempotencyAdapter],
@@ -117,6 +138,7 @@ import { WorkspaceMemberService } from './workspace-member.service.js';
     PROFILE_PORT,
     WORKSPACE_PORT,
     WORKSPACE_MEMBER_PORT,
+    WORKSPACE_INVITATION_PORT,
     IDEMPOTENCY_PORT,
   ],
 })

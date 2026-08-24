@@ -1,7 +1,6 @@
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { IdempotencyService } from '../../src/identity/idempotency.service.js';
 import { PgTransaction } from '../../src/identity/pg-transaction.js';
 import { PostgresConfig } from '../../src/identity/postgres-config.js';
 import { PostgresIdempotencyAdapter } from '../../src/identity/postgres-idempotency.adapter.js';
@@ -26,7 +25,6 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
   let transaction: PgTransaction;
   const adapter = new PostgresWorkspaceInvitationAdapter();
   const idempotencyAdapter = new PostgresIdempotencyAdapter();
-  let idempotencyService: IdempotencyService;
   let service: WorkspaceInvitationPort;
 
   const ownerA = subject(821);
@@ -74,10 +72,6 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
     admin = new Pool({ connectionString: url });
     pool = new PostgresPool(PostgresConfig.fromUrl(url));
     transaction = new PgTransaction(pool, { callbackTimeoutMs: 5_000 });
-    idempotencyService = new IdempotencyService(
-      transaction,
-      idempotencyAdapter,
-    );
     service = new WorkspaceInvitationService(
       transaction,
       adapter,
@@ -121,6 +115,7 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
       );
     }
 
+    await admin.query('begin');
     await admin.query(
       `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
        values ($1, 'Shared Workspace Invitations', 'shared', 'USD', null, $2),
@@ -161,6 +156,7 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
         ownerA,
       ],
     );
+    await admin.query('commit');
   });
 
   afterAll(async () => {
@@ -328,8 +324,8 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
   });
 
   it('RULING 24: column-scoped INSERT grant refuses a forged id, status, or created_at', async () => {
+    // Trying to insert with forged id
     await asSubject(ownerA, async (client) => {
-      // Trying to insert with forged id
       await expect(
         client.query(
           `insert into public.workspace_invitations (id, workspace_id, invited_by, email, role, expires_at)
@@ -337,8 +333,10 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
           [wsSharedId, ownerA],
         ),
       ).rejects.toThrow(/permission denied/i);
+    });
 
-      // Trying to insert with forged status
+    // Trying to insert with forged status
+    await asSubject(ownerA, async (client) => {
       await expect(
         client.query(
           `insert into public.workspace_invitations (workspace_id, invited_by, email, role, status, expires_at)
@@ -346,8 +344,10 @@ describe('Workspace invitations integration suite (RULINGS 18, 19, 20, 22, 24, 2
           [wsSharedId, ownerA],
         ),
       ).rejects.toThrow(/permission denied/i);
+    });
 
-      // Trying to insert with forged created_at
+    // Trying to insert with forged created_at
+    await asSubject(ownerA, async (client) => {
       await expect(
         client.query(
           `insert into public.workspace_invitations (workspace_id, invited_by, email, role, created_at, expires_at)

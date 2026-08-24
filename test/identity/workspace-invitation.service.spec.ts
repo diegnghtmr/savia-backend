@@ -137,10 +137,7 @@ describe('WorkspaceInvitationService', () => {
     });
 
     it('row 4: returns ok with invitation page for owner or administrator', async () => {
-      for (const role of [
-        WORKSPACE_ROLE.OWNER,
-        WORKSPACE_ROLE.ADMINISTRATOR,
-      ]) {
+      for (const role of [WORKSPACE_ROLE.OWNER, WORKSPACE_ROLE.ADMINISTRATOR]) {
         const fakeStore = {
           readMembership: vi.fn().mockResolvedValue({
             role,
@@ -226,7 +223,6 @@ describe('WorkspaceInvitationService', () => {
       email: 'newbie@example.test',
       role: 'editor' as const,
     };
-    const route = 'POST /v1/workspaces/{workspaceId}/invitations';
     const fingerprint = computeRequestFingerprint({
       workspaceId: dummyWorkspaceId,
       email: defaultCommand.email,
