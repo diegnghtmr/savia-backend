@@ -371,6 +371,17 @@ describe('Workspace invitations schema, constraints, RLS, and helper (2026071500
       ).rejects.toMatchObject({ code: '23514' });
     });
 
+    it('8b. An email shorter than 3 characters is refused with 23514', async () => {
+      const future = new Date(Date.now() + 86400000).toISOString();
+      await expect(
+        admin.query(
+          `insert into public.workspace_invitations (workspace_id, email, role, expires_at, invited_by)
+           values ($1, $2, 'editor', $3, $4)`,
+          [ws1Id, 'ab', future, ownerA],
+        ),
+      ).rejects.toMatchObject({ code: '23514' });
+    });
+
     it('9. An email containing a NUL byte fails, and the test asserts the SQLSTATE it actually produces', async () => {
       const future = new Date(Date.now() + 86400000).toISOString();
       let capturedError: { code?: string } | undefined;
@@ -749,6 +760,47 @@ describe('Workspace invitations schema, constraints, RLS, and helper (2026071500
       }
     });
 
+    it('20b. Inserting with invited_by set to a different active profile in the same workspace is refused with 42501', async () => {
+      await expect(
+        asSubject(ownerA, async (client) => {
+          return client.query(
+            `insert into public.workspace_invitations (workspace_id, email, role, expires_at, invited_by)
+             values ($1, 'forged-inviter@example.test', 'editor', $2, $3)`,
+            [ws1Id, future, ownerB],
+          );
+        }),
+      ).rejects.toMatchObject({ code: '42501' });
+    });
+
+    it('20c. Positive control: inserting with invited_by set to the acting subject succeeds', async () => {
+      let legitInsId: string | undefined;
+      try {
+        const res = await asSubject(ownerA, async (client) => {
+          return client.query(
+            `insert into public.workspace_invitations (workspace_id, email, role, expires_at, invited_by)
+             values ($1, 'legit-inviter@example.test', 'editor', $2, $3)
+             returning id`,
+            [ws1Id, future, ownerA],
+          );
+        });
+        legitInsId = res.rows[0]?.id;
+        expect(legitInsId).toBeDefined();
+
+        const checkLegit = await admin.query(
+          'select 1 from public.workspace_invitations where id = $1',
+          [legitInsId],
+        );
+        expect(checkLegit.rows).toHaveLength(1);
+      } finally {
+        if (legitInsId) {
+          await admin.query(
+            'delete from public.workspace_invitations where id = $1',
+            [legitInsId],
+          );
+        }
+      }
+    });
+
     it('21. An INSERT into a personal workspace is refused for every role including its owner; positive control: the same insert into a family workspace succeeds', async () => {
       // Negative: personal workspace owner inserts invitation
       await expect(
@@ -865,6 +917,187 @@ describe('Workspace invitations schema, constraints, RLS, and helper (2026071500
       expect(check2.rows[0].status).toBe('pending');
     });
 
+    it('22b. accepted -> pending as an owner updates zero rows and leaves stored status as accepted', async () => {
+      const invId = '00000000-0000-0000-0000-000000000894';
+      await admin.query(
+        `insert into public.workspace_invitations (id, workspace_id, email, role, status, expires_at, invited_by)
+         values ($1, $2, 'accepted-to-pending@example.test', 'editor', 'accepted', $3, $4)`,
+        [invId, ws1Id, future, ownerA],
+      );
+
+      try {
+        const res = await asSubject(ownerA, async (client) => {
+          return client.query(
+            `update public.workspace_invitations set status = 'pending' where id = $1`,
+            [invId],
+          );
+        });
+        expect(res.rowCount).toBe(0);
+
+        const check = await admin.query(
+          `select status from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+        expect(check.rows[0].status).toBe('accepted');
+      } finally {
+        await admin.query(
+          `delete from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+      }
+    });
+
+    it('22c. revoked -> pending as an owner updates zero rows and leaves stored status as revoked', async () => {
+      const invId = '00000000-0000-0000-0000-000000000895';
+      await admin.query(
+        `insert into public.workspace_invitations (id, workspace_id, email, role, status, expires_at, invited_by)
+         values ($1, $2, 'revoked-to-pending@example.test', 'editor', 'revoked', $3, $4)`,
+        [invId, ws1Id, future, ownerA],
+      );
+
+      try {
+        const res = await asSubject(ownerA, async (client) => {
+          return client.query(
+            `update public.workspace_invitations set status = 'pending' where id = $1`,
+            [invId],
+          );
+        });
+        expect(res.rowCount).toBe(0);
+
+        const check = await admin.query(
+          `select status from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+        expect(check.rows[0].status).toBe('revoked');
+      } finally {
+        await admin.query(
+          `delete from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+      }
+    });
+
+    it('22d. Positive control: pending -> revoked as an owner updates exactly one row', async () => {
+      const invId = '00000000-0000-0000-0000-000000000896';
+      await admin.query(
+        `insert into public.workspace_invitations (id, workspace_id, email, role, status, expires_at, invited_by)
+         values ($1, $2, 'pending-to-revoked@example.test', 'editor', 'pending', $3, $4)`,
+        [invId, ws1Id, future, ownerA],
+      );
+
+      try {
+        const res = await asSubject(ownerA, async (client) => {
+          return client.query(
+            `update public.workspace_invitations set status = 'revoked' where id = $1`,
+            [invId],
+          );
+        });
+        expect(res.rowCount).toBe(1);
+
+        const check = await admin.query(
+          `select status from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+        expect(check.rows[0].status).toBe('revoked');
+      } finally {
+        await admin.query(
+          `delete from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+      }
+    });
+
+    it('22e. Positive control: pending -> accepted as an owner updates exactly one row', async () => {
+      const invId = '00000000-0000-0000-0000-000000000897';
+      await admin.query(
+        `insert into public.workspace_invitations (id, workspace_id, email, role, status, expires_at, invited_by)
+         values ($1, $2, 'pending-to-accepted@example.test', 'editor', 'pending', $3, $4)`,
+        [invId, ws1Id, future, ownerA],
+      );
+
+      try {
+        const res = await asSubject(ownerA, async (client) => {
+          return client.query(
+            `update public.workspace_invitations set status = 'accepted' where id = $1`,
+            [invId],
+          );
+        });
+        expect(res.rowCount).toBe(1);
+
+        const check = await admin.query(
+          `select status from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+        expect(check.rows[0].status).toBe('accepted');
+      } finally {
+        await admin.query(
+          `delete from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+      }
+    });
+
+    it('22f. pending -> pending as an owner is refused by with-check and raises 42501', async () => {
+      const invId = '00000000-0000-0000-0000-000000000899';
+      await admin.query(
+        `insert into public.workspace_invitations (id, workspace_id, email, role, status, expires_at, invited_by)
+         values ($1, $2, 'pending-to-pending@example.test', 'editor', 'pending', $3, $4)`,
+        [invId, ws1Id, future, ownerA],
+      );
+
+      try {
+        await expect(
+          asSubject(ownerA, async (client) => {
+            return client.query(
+              `update public.workspace_invitations set status = 'pending' where id = $1`,
+              [invId],
+            );
+          }),
+        ).rejects.toMatchObject({ code: '42501' });
+
+        const check = await admin.query(
+          `select status from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+        expect(check.rows[0].status).toBe('pending');
+      } finally {
+        await admin.query(
+          `delete from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+      }
+    });
+
+    it('22g. An administrator (not an owner) performs pending -> revoked and it updates exactly one row', async () => {
+      const invId = '00000000-0000-0000-0000-00000000089a';
+      await admin.query(
+        `insert into public.workspace_invitations (id, workspace_id, email, role, status, expires_at, invited_by)
+         values ($1, $2, 'admin-revoke-test@example.test', 'editor', 'pending', $3, $4)`,
+        [invId, ws1Id, future, ownerA],
+      );
+
+      try {
+        const res = await asSubject(adminC, async (client) => {
+          return client.query(
+            `update public.workspace_invitations set status = 'revoked' where id = $1`,
+            [invId],
+          );
+        });
+        expect(res.rowCount).toBe(1);
+
+        const check = await admin.query(
+          `select status from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+        expect(check.rows[0].status).toBe('revoked');
+      } finally {
+        await admin.query(
+          `delete from public.workspace_invitations where id = $1`,
+          [invId],
+        );
+      }
+    });
+
     it('23. Column-scope proof: an UPDATE attempting to change workspace_id fails with 42501 (permission denied), because the grant covers only status; positive control: an UPDATE of status alone succeeds', async () => {
       // Attempting to update workspace_id fails with 42501 at GRANT level
       await expect(
@@ -886,27 +1119,35 @@ describe('Workspace invitations schema, constraints, RLS, and helper (2026071500
         }),
       ).rejects.toMatchObject({ code: '42501' });
 
-      // Positive control: update of status alone succeeds
-      const updateRes = await asSubject(ownerA, async (client) => {
-        return client.query(
-          `update public.workspace_invitations set status = 'accepted' where id = $1`,
-          [invWs1Id],
-        );
-      });
-      expect(updateRes.rowCount).toBe(1);
-
-      const check = await admin.query(
-        'select status, workspace_id from public.workspace_invitations where id = $1',
-        [invWs1Id],
-      );
-      expect(check.rows[0].status).toBe('accepted');
-      expect(check.rows[0].workspace_id).toBe(ws1Id);
-
-      // Restore to pending
+      // Positive control: update of status alone succeeds on a dedicated fixture row
+      const fixtureInvId = '00000000-0000-0000-0000-000000000898';
       await admin.query(
-        `update public.workspace_invitations set status = 'pending' where id = $1`,
-        [invWs1Id],
+        `insert into public.workspace_invitations (id, workspace_id, email, role, status, expires_at, invited_by)
+         values ($1, $2, 'col-scope-fixture@example.test', 'editor', 'pending', $3, $4)`,
+        [fixtureInvId, ws1Id, future, ownerA],
       );
+
+      try {
+        const updateRes = await asSubject(ownerA, async (client) => {
+          return client.query(
+            `update public.workspace_invitations set status = 'accepted' where id = $1`,
+            [fixtureInvId],
+          );
+        });
+        expect(updateRes.rowCount).toBe(1);
+
+        const check = await admin.query(
+          'select status, workspace_id from public.workspace_invitations where id = $1',
+          [fixtureInvId],
+        );
+        expect(check.rows[0].status).toBe('accepted');
+        expect(check.rows[0].workspace_id).toBe(ws1Id);
+      } finally {
+        await admin.query(
+          `delete from public.workspace_invitations where id = $1`,
+          [fixtureInvId],
+        );
+      }
     });
   });
 
