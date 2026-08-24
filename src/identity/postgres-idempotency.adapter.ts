@@ -10,6 +10,7 @@ export class PostgresIdempotencyAdapter implements IdempotencyStore {
     subject: string,
     route: string,
     idempotencyKey: string,
+    workspaceId?: string | null,
   ): Promise<IdempotencyRecord | undefined> {
     const result = await client.query<IdempotencyRow>(
       `select request_fingerprint as "requestFingerprint",
@@ -40,6 +41,7 @@ export class PostgresIdempotencyAdapter implements IdempotencyStore {
     status: number,
     etag: string | null,
     body: unknown,
+    workspaceId?: string | null,
   ): Promise<boolean> {
     const result = await client.query<{ id: string }>(
       `insert into public.command_idempotency_records

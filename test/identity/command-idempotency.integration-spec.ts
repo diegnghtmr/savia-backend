@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { IDEMPOTENCY_OUTCOME_KINDS } from '../../src/identity/idempotency.port.js';
 import { IdempotencyService } from '../../src/identity/idempotency.service.js';
@@ -16,7 +16,7 @@ const subject = (number: number) =>
 
 /**
  * Verifies Idempotency-Key storage and replay semantics against a real PostgreSQL database,
- * exercising migration: 202607150010_command_idempotency.sql
+ * exercising migrations: 202607150010_command_idempotency.sql and 202608240001_command_idempotency_workspace_scope.sql
  */
 describe('Command Idempotency database boundary and concurrency', () => {
   let admin: Pool;
@@ -28,6 +28,8 @@ describe('Command Idempotency database boundary and concurrency', () => {
   const subjectA = subject(901);
   const subjectB = subject(902);
   const subjectConcurrency = subject(903);
+  const workspaceAId = '00000000-0000-0000-0000-000000000911';
+  const workspaceBId = '00000000-0000-0000-0000-000000000912';
 
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
@@ -58,6 +60,13 @@ describe('Command Idempotency database boundary and concurrency', () => {
         [id, email, name],
       );
     }
+
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+       values ($1, 'Workspace A', 'shared', 'USD', null, $3),
+              ($2, 'Workspace B', 'shared', 'USD', null, $3)`,
+      [workspaceAId, workspaceBId, subjectA],
+    );
   });
 
   afterAll(async () => {
@@ -418,5 +427,232 @@ describe('Command Idempotency database boundary and concurrency', () => {
     );
     expect(updatedRecord?.requestFingerprint).toBe(f2);
     expect(updatedRecord?.responseStatus).toBe(200);
+  });
+
+  it('T1: constraint level: inserting two rows with identical (subject_id, route, idempotency_key) and workspace_id = null raises 23505', async () => {
+    const key = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb11';
+    const route = 'POST /v1/workspaces';
+    const f1 =
+      '1111111111111111111111111111111111111111111111111111111111111111';
+
+    await admin.query(
+      `insert into public.command_idempotency_records
+       (subject_id, route, idempotency_key, workspace_id, request_fingerprint, response_status, response_etag, response_body)
+       values ($1, $2, $3, null, $4, 201, null, null)`,
+      [subjectA, route, key, f1],
+    );
+
+    let capturedError: unknown;
+    try {
+      await admin.query(
+        `insert into public.command_idempotency_records
+         (subject_id, route, idempotency_key, workspace_id, request_fingerprint, response_status, response_etag, response_body)
+         values ($1, $2, $3, null, $4, 201, null, null)`,
+        [subjectA, route, key, f1],
+      );
+    } catch (error) {
+      capturedError = error;
+    }
+
+    expect(capturedError).toBeDefined();
+    expect(capturedError).toBeInstanceOf(Error);
+    expect((capturedError as { code?: string }).code).toBe('23505');
+  });
+
+  it('T2: behavioural replay for workspace-less routes: returns executed then replayed, spy called once, exactly one row stored', async () => {
+    const key = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb12';
+    const route = 'POST /v1/workspaces';
+    const payload = { name: 'Workspace Without Scope', baseCurrency: 'USD' };
+
+    const operationSpy = vi.fn(async () => {
+      return {
+        status: 201,
+        etag: '"ws-etag-1"',
+        body: { id: 'ws-none', name: 'Workspace Without Scope' },
+      };
+    });
+
+    const firstOutcome = await service.execute(
+      {
+        subject: subjectA,
+        route,
+        idempotencyKey: key,
+        workspaceId: null,
+        payload,
+      },
+      operationSpy,
+    );
+
+    expect(firstOutcome).toEqual({
+      kind: IDEMPOTENCY_OUTCOME_KINDS.EXECUTED,
+      response: {
+        status: 201,
+        etag: '"ws-etag-1"',
+        body: { id: 'ws-none', name: 'Workspace Without Scope' },
+      },
+    });
+    expect(operationSpy).toHaveBeenCalledTimes(1);
+
+    const secondOutcome = await service.execute(
+      {
+        subject: subjectA,
+        route,
+        idempotencyKey: key,
+        workspaceId: null,
+        payload,
+      },
+      operationSpy,
+    );
+
+    expect(secondOutcome).toEqual({
+      kind: IDEMPOTENCY_OUTCOME_KINDS.REPLAYED,
+      response: {
+        status: 201,
+        etag: '"ws-etag-1"',
+        body: { id: 'ws-none', name: 'Workspace Without Scope' },
+      },
+    });
+    expect(operationSpy).toHaveBeenCalledTimes(1);
+
+    const countResult = await admin.query<{ count: string }>(
+      `select count(*)::text as count
+         from public.command_idempotency_records
+        where subject_id = $1 and route = $2 and idempotency_key = $3`,
+      [subjectA, route, key],
+    );
+    expect(countResult.rows[0]?.count).toBe('1');
+  });
+
+  it('T3: same subject, same route, same idempotency key across workspace A and workspace B both execute and produce distinct resources', async () => {
+    const key = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb13';
+    const route = 'POST /v1/workspaces/{workspaceId}/accounts';
+    const payloadA = { name: 'Account in WS A' };
+    const payloadB = { name: 'Account in WS B' };
+
+    let executionsA = 0;
+    let executionsB = 0;
+
+    const outcomeA = await service.execute(
+      {
+        subject: subjectA,
+        route,
+        idempotencyKey: key,
+        workspaceId: workspaceAId,
+        payload: payloadA,
+      },
+      async () => {
+        executionsA++;
+        return {
+          status: 201,
+          etag: '"acc-v1"',
+          body: {
+            id: 'acc-1',
+            workspaceId: workspaceAId,
+            name: 'Account in WS A',
+          },
+        };
+      },
+    );
+
+    const outcomeB = await service.execute(
+      {
+        subject: subjectA,
+        route,
+        idempotencyKey: key,
+        workspaceId: workspaceBId,
+        payload: payloadB,
+      },
+      async () => {
+        executionsB++;
+        return {
+          status: 201,
+          etag: '"acc-v1"',
+          body: {
+            id: 'acc-2',
+            workspaceId: workspaceBId,
+            name: 'Account in WS B',
+          },
+        };
+      },
+    );
+
+    expect(outcomeA).toEqual({
+      kind: IDEMPOTENCY_OUTCOME_KINDS.EXECUTED,
+      response: {
+        status: 201,
+        etag: '"acc-v1"',
+        body: {
+          id: 'acc-1',
+          workspaceId: workspaceAId,
+          name: 'Account in WS A',
+        },
+      },
+    });
+    expect(outcomeB).toEqual({
+      kind: IDEMPOTENCY_OUTCOME_KINDS.EXECUTED,
+      response: {
+        status: 201,
+        etag: '"acc-v1"',
+        body: {
+          id: 'acc-2',
+          workspaceId: workspaceBId,
+          name: 'Account in WS B',
+        },
+      },
+    });
+    expect(executionsA).toBe(1);
+    expect(executionsB).toBe(1);
+  });
+
+  it('T4: on conflict arbiter inference: a 25-hour-old row with workspace_id = null is overwritten and write returns true', async () => {
+    const key = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb14';
+    const route = 'POST /v1/workspaces';
+    const f1 =
+      '1111111111111111111111111111111111111111111111111111111111111111';
+    const f2 =
+      '2222222222222222222222222222222222222222222222222222222222222222';
+
+    const write1 = await transaction.run(subjectA, (client) =>
+      adapter.write(
+        client,
+        subjectA,
+        route,
+        key,
+        f1,
+        201,
+        '"v1"',
+        { v: 1 },
+        null,
+      ),
+    );
+    expect(write1).toBe(true);
+
+    await admin.query(
+      `update public.command_idempotency_records
+          set created_at = now() - interval '25 hours'
+        where subject_id = $1 and route = $2 and idempotency_key = $3`,
+      [subjectA, route, key],
+    );
+
+    const write2 = await transaction.run(subjectA, (client) =>
+      adapter.write(
+        client,
+        subjectA,
+        route,
+        key,
+        f2,
+        200,
+        '"v2"',
+        { v: 2 },
+        null,
+      ),
+    );
+    expect(write2).toBe(true);
+
+    const record = await transaction.runRead(subjectA, (client) =>
+      adapter.read(client, subjectA, route, key, null),
+    );
+    expect(record?.requestFingerprint).toBe(f2);
+    expect(record?.responseStatus).toBe(200);
   });
 });
