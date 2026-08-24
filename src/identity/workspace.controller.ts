@@ -35,6 +35,7 @@ import {
   decodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   WORKSPACE_MEMBER_PORT,
+  WORKSPACE_MEMBER_REMOVE_OUTCOMES,
   WORKSPACE_MEMBER_UPDATE_OUTCOMES,
   type WorkspaceMemberCursor,
   type WorkspaceMemberPort,
@@ -433,6 +434,158 @@ export class WorkspaceController {
         title: 'Conflict',
         status: 409,
       });
+      return;
+    }
+  }
+
+  @Delete(':workspaceId/members/:memberId')
+  public async removeWorkspaceMember(
+    @Param('workspaceId') workspaceId: string,
+    @Param('memberId') memberId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const keyResult = validateIdempotencyKey(
+      request.headers['idempotency-key'],
+    );
+    if (keyResult.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid Idempotency-Key header',
+        detail: keyResult.reason,
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(workspaceId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid workspace identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(memberId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid member identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    const outcome = await this.members.removeWorkspaceMember(
+      request.identity.subject,
+      workspaceId,
+      memberId,
+      keyResult.key,
+    );
+
+    if (outcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.REMOVED) {
+      void reply.status(204).send();
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Workspace or member not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.PERSONAL_WORKSPACE) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+        title: 'Personal workspace membership cannot be removed',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+        title: 'Collaborative workspace requires at least one active owner',
+        status: 409,
+      });
+      return;
+    }
+
+    if (
+      outcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.IDEMPOTENCY_CONFLICT
+    ) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency conflict',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED) {
+      if (outcome.status === 204) {
+        void reply.status(204).send();
+        return;
+      }
+      // A replayed refusal re-renders through sendProblem from a status->problem map rather than
+      // echoing a stored body, so traceId and instance stay bound to the actual replaying
+      // request. Note this in a comment as a deliberate, narrow deviation from byte-identical replay.
+      if (outcome.status === 403) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.FORBIDDEN,
+          title: 'Workspace access forbidden',
+          status: 403,
+        });
+        return;
+      }
+      if (outcome.status === 404) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.NOT_FOUND,
+          title: 'Workspace or member not found',
+          status: 404,
+        });
+        return;
+      }
+      if (outcome.status === 409) {
+        if (
+          outcome.problemType === PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP
+        ) {
+          sendProblem(reply, {
+            type: PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+            title: 'Personal workspace membership cannot be removed',
+            status: 409,
+          });
+          return;
+        }
+        if (outcome.problemType === PROBLEM_TYPES.LAST_OWNER_REQUIRED) {
+          sendProblem(reply, {
+            type: PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+            title: 'Collaborative workspace requires at least one active owner',
+            status: 409,
+          });
+          return;
+        }
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.CONFLICT,
+          title: 'Idempotency conflict',
+          status: 409,
+        });
+        return;
+      }
+      void reply.status(outcome.status).send();
       return;
     }
   }
