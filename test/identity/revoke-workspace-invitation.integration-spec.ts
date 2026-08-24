@@ -56,6 +56,7 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
   const invReplayId = '00000000-0000-0000-0000-000000007308';
   const invConflictId = '00000000-0000-0000-0000-000000007309';
   const invDiffPayloadId = '00000000-0000-0000-0000-000000007310';
+  const invExpiredReadId = '00000000-0000-0000-0000-000000007311';
 
   const verifier = {
     verify: (token: string) => {
@@ -176,7 +177,8 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
               ($10, $2, $3, 'concur@example.test', 'editor', 'pending', now() + interval '7 days', now()),
               ($11, $2, $3, 'replay@example.test', 'editor', 'pending', now() + interval '7 days', now()),
               ($12, $2, $3, 'conflict@example.test', 'editor', 'accepted', now() + interval '7 days', now()),
-              ($13, $2, $3, 'diff-payload@example.test', 'editor', 'pending', now() + interval '7 days', now())
+              ($13, $2, $3, 'diff-payload@example.test', 'editor', 'pending', now() + interval '7 days', now()),
+              ($14, $2, $3, 'expired-read@example.test', 'editor', 'pending', now() - interval '1 day', now() - interval '8 days')
        on conflict (id) do nothing`,
       [
         invPendingId,
@@ -192,6 +194,7 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
         invReplayId,
         invConflictId,
         invDiffPayloadId,
+        invExpiredReadId,
       ],
     );
     await admin.query('commit');
@@ -477,7 +480,7 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
     const result = await adapter.readInvitation(
       admin,
       wsMainId,
-      invExpiredPendingId,
+      invExpiredReadId,
     );
     expect(result?.status).toBe('expired');
   });
