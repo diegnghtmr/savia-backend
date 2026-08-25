@@ -6,8 +6,10 @@ import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ACCOUNT_CREATE_OUTCOMES,
   ACCOUNTS_PORT,
   type Account,
+  type AccountCreateOutcome,
   type AccountListOutcome,
   type AccountListQuery,
   type AccountReadOutcome,
@@ -87,10 +89,15 @@ async function createApplication(
     kind: 'ok',
     account: ACCOUNT,
   } satisfies AccountReadOutcome),
+  create: AccountsPort['create'] = vi.fn().mockResolvedValue({
+    kind: 'created',
+    account: ACCOUNT,
+  } satisfies AccountCreateOutcome),
 ): Promise<{
   application: NestFastifyApplication;
   list: AccountsPort['list'];
   read: AccountsPort['read'];
+  create: AccountsPort['create'];
 }> {
   const moduleRef = await Test.createTestingModule({
     imports: [AccountsModule],
@@ -98,7 +105,7 @@ async function createApplication(
     .overrideProvider(JoseJwtVerifier)
     .useValue(verifier)
     .overrideProvider(ACCOUNTS_PORT)
-    .useValue({ list, read })
+    .useValue({ list, read, create })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -106,7 +113,33 @@ async function createApplication(
   registerProblemFilter(app);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
-  return { application: app, list, read };
+  return { application: app, list, read, create };
+}
+
+function postAccount(
+  application: NestFastifyApplication,
+  body: unknown,
+  options: {
+    token?: string;
+    workspaceHeader?: string;
+    idempotencyKey?: string;
+  } = {},
+) {
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+  };
+  if (options.token !== undefined)
+    headers.authorization = `Bearer ${options.token}`;
+  if (options.workspaceHeader !== undefined)
+    headers['x-workspace-id'] = options.workspaceHeader;
+  if (options.idempotencyKey !== undefined)
+    headers['idempotency-key'] = options.idempotencyKey;
+  return application.inject({
+    method: 'POST',
+    url: '/v1/accounts',
+    headers,
+    payload: typeof body === 'string' ? body : JSON.stringify(body),
+  });
 }
 
 function getAccounts(
@@ -510,5 +543,310 @@ describe('GET /v1/accounts/:accountId', () => {
     expect(body.title).toBe('Account not found');
     expect(body.status).toBe(404);
     expect(read).toHaveBeenCalledWith(SUBJECT, WORKSPACE_ID, ACCOUNT.id);
+  });
+});
+
+describe('POST /v1/accounts', () => {
+  const IDEMPOTENCY_KEY = 'a0000000-0000-0000-0000-000000000001';
+  const VALID_BODY = {
+    name: 'Cash wallet',
+    type: 'cash',
+    currency: 'USD',
+  };
+
+  it('answers 201 with created account and exact quoted version ETag header', async () => {
+    const create = vi.fn<AccountsPort['create']>().mockResolvedValue({
+      kind: 'created',
+      account: ACCOUNT,
+    } satisfies AccountCreateOutcome);
+    const { application } = await createApplication(undefined, undefined, create);
+
+    const response = await postAccount(application, VALID_BODY, {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.headers['content-type']).toContain('application/json');
+    expect(response.headers.etag).toBe(`"${ACCOUNT.version}"`);
+    expect(JSON.parse(response.payload)).toEqual(ACCOUNT);
+    expect(create).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      {
+        name: 'Cash wallet',
+        type: 'cash',
+        currency: 'USD',
+        institution: null,
+        maskedNumber: null,
+        description: null,
+        includeInNetWorth: true,
+      },
+      IDEMPOTENCY_KEY,
+    );
+  });
+
+  it('answers 201 replayed with stored status, etag, and body when idempotency replay matches', async () => {
+    const create = vi.fn<AccountsPort['create']>().mockResolvedValue({
+      kind: 'replayed',
+      status: 201,
+      etag: `"${ACCOUNT.version}"`,
+      body: ACCOUNT,
+    } satisfies AccountCreateOutcome);
+    const { application } = await createApplication(undefined, undefined, create);
+
+    const response = await postAccount(application, VALID_BODY, {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.headers.etag).toBe(`"${ACCOUNT.version}"`);
+    expect(JSON.parse(response.payload)).toEqual(ACCOUNT);
+  });
+
+  it('answers 400 when X-Workspace-Id header is missing', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(application, VALID_BODY, {
+      token: TOKEN,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Invalid X-Workspace-Id header');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 when X-Workspace-Id header is not a valid UUID', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(application, VALID_BODY, {
+      token: TOKEN,
+      workspaceHeader: 'not-a-valid-uuid',
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Invalid X-Workspace-Id header');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 when Idempotency-Key header is missing', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(application, VALID_BODY, {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Invalid Idempotency-Key header');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 when Idempotency-Key header is not a valid UUID', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(application, VALID_BODY, {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+      idempotencyKey: 'not-a-valid-uuid',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Invalid Idempotency-Key header');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 when body is not valid JSON', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(application, '{ invalid json', {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 when Authorization header is missing', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(application, VALID_BODY, {
+      workspaceHeader: WORKSPACE_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 when bearer token is rejected', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(application, VALID_BODY, {
+      token: 'invalid-token',
+      workspaceHeader: WORKSPACE_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('answers 403 problem+json when the port reports forbidden', async () => {
+    const create = vi.fn<AccountsPort['create']>().mockResolvedValue({
+      kind: 'forbidden',
+    } satisfies AccountCreateOutcome);
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(application, VALID_BODY, {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Workspace access forbidden');
+    expect(body.status).toBe(403);
+  });
+
+  it('answers 409 problem+json when the port reports idempotency conflict', async () => {
+    const create = vi.fn<AccountsPort['create']>().mockResolvedValue({
+      kind: 'idempotency_conflict',
+    } satisfies AccountCreateOutcome);
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(application, VALID_BODY, {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Idempotency key reused with different payload');
+    expect(body.status).toBe(409);
+  });
+
+  it('answers 422 problem+json when request body fails validation', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(
+      application,
+      { name: '', type: 'bad_type', currency: 'INVALID' },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.status).toBe(422);
+    expect(body.errors).toBeDefined();
+    expect(body.errors.length).toBeGreaterThan(0);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('answers 422 problem+json when openingBalance is supplied (refused in slice 6a)', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(
+      application,
+      {
+        ...VALID_BODY,
+        openingBalance: { amountMinor: '10000', currency: 'USD' },
+      },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.status).toBe(422);
+    expect(body.errors).toContainEqual(
+      expect.objectContaining({
+        field: 'openingBalance',
+        code: 'unsupported',
+      }),
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('answers 422 problem+json when openingBalanceDate is supplied (refused in slice 6a)', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(undefined, undefined, create);
+    const response = await postAccount(
+      application,
+      {
+        ...VALID_BODY,
+        openingBalanceDate: '2026-08-25',
+      },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.status).toBe(422);
+    expect(body.errors).toContainEqual(
+      expect.objectContaining({
+        field: 'openingBalanceDate',
+        code: 'unsupported',
+      }),
+    );
+    expect(create).not.toHaveBeenCalled();
   });
 });
