@@ -16,15 +16,29 @@ module.exports = {
       },
     },
     {
-      name: 'identity-health-isolation',
+      name: 'feature-isolation',
       severity: 'error',
-      comment: 'Identity and health features must not import from each other',
+      comment:
+        'Feature modules must not import from each other; shared code belongs in src/platform',
       from: {
-        path: '^src/(identity|health)',
+        path: '^src/([^/]+)/',
+        pathNot: '^src/platform/',
       },
       to: {
-        path: '^src/(identity|health)',
-        pathNot: '^src/$1',
+        path: '^src/([^/]+)/',
+        pathNot: ['^src/$1/', '^src/platform/'],
+      },
+    },
+    {
+      name: 'platform-to-feature-isolation',
+      severity: 'error',
+      comment: 'Platform layer must not import from any feature module',
+      from: {
+        path: '^src/platform/',
+      },
+      to: {
+        path: '^src/([^/]+)/',
+        pathNot: '^src/platform/',
       },
     },
   ],
