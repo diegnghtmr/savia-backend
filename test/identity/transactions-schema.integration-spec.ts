@@ -589,7 +589,12 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
          values ($1, $2, 'Disposable Tx Account', 'cash', 'USD', $3)`,
         [disposableAccId, disposableWsId, ownerA],
       );
-      await seedTransaction(disposableTxId, disposableWsId, disposableAccId, ownerA);
+      await seedTransaction(
+        disposableTxId,
+        disposableWsId,
+        disposableAccId,
+        ownerA,
+      );
 
       const beforeRes = await admin.query(
         'select 1 from public.transactions where id = $1',
