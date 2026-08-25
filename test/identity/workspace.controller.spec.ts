@@ -1,7 +1,7 @@
 import type { FastifyReply } from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AuthenticatedRequest } from '../../src/identity/authenticated-request.js';
+import type { AuthenticatedRequest } from '../../src/platform/authenticated-request.js';
 import { WorkspaceController } from '../../src/identity/workspace.controller.js';
 import {
   WORKSPACE_INVITATION_REVOKE_OUTCOMES,

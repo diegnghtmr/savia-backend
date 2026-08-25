@@ -7,16 +7,16 @@ import {
   PgTransaction,
   TransactionAcquisitionTimeoutError,
   TransactionTimeoutError,
-} from '../../src/identity/pg-transaction.js';
+} from '../../src/platform/pg-transaction.js';
 import {
   PostgresPool,
   type PgClient,
   type PgPool,
-} from '../../src/identity/postgres-pool.js';
+} from '../../src/platform/postgres-pool.js';
 import {
   PostgresConfig,
   PostgresConfigurationError,
-} from '../../src/identity/postgres-config.js';
+} from '../../src/platform/postgres-config.js';
 const subject = '00000000-0000-0000-0000-000000000301';
 const environment = {
   DATABASE_URL: 'postgresql://user:secret@unreachable.invalid:5432/savia',

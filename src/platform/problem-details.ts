@@ -1,6 +1,10 @@
 import type { FastifyReply } from 'fastify';
 
-import type { FieldViolation } from './bootstrap-command.js';
+export interface FieldViolation {
+  readonly field: string;
+  readonly code: string;
+  readonly message: string;
+}
 
 const BASE_URI = 'https://savia.app/problems';
 export const PROBLEM_CONTENT_TYPE = 'application/problem+json';

@@ -8,11 +8,11 @@ import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
-import { AuthConfig } from '../src/identity/auth-config.js';
-import type { AuthenticatedRequest } from '../src/identity/authenticated-request.js';
-import { IdentityModule } from '../src/identity/identity.module.js';
-import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
-import { JwtAuthGuard } from '../src/identity/jwt-auth.guard.js';
+import { AuthConfig } from '../src/platform/auth-config.js';
+import type { AuthenticatedRequest } from '../src/platform/authenticated-request.js';
+import { PlatformModule } from '../src/platform/platform.module.js';
+import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
+import { JwtAuthGuard } from '../src/platform/jwt-auth.guard.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 import { createJwksServer, type JwksServer } from './helpers/jwks-server.js';
 
@@ -57,7 +57,7 @@ async function createApplication(
   verifier?: JoseJwtVerifier,
 ): Promise<NestFastifyApplication> {
   const builder = Test.createTestingModule({
-    imports: verifier === undefined ? [AppModule] : [IdentityModule],
+    imports: verifier === undefined ? [AppModule] : [PlatformModule],
     controllers: verifier === undefined ? [] : [IdentityHarnessController],
   });
   if (verifier !== undefined) {

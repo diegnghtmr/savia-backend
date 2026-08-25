@@ -18,13 +18,11 @@ import {
 } from './accounts.port.js';
 import { createAccountListQuery } from './account-query.js';
 import { AccountQueryValidationError } from './account-query.js';
-import type { AuthenticatedRequest } from '../identity/authenticated-request.js';
-import { JwtAuthGuard } from '../identity/jwt-auth.guard.js';
-import { PROBLEM_TYPES, sendProblem } from '../identity/problem-details.js';
-import { parseWorkspaceHeader } from '../identity/workspace-header.js';
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
+import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
+import { parseWorkspaceHeader } from '../platform/workspace-header.js';
+import { UUID_PATTERN } from '../platform/uuid.js';
 
 @Controller('v1/accounts')
 @UseGuards(JwtAuthGuard)

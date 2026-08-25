@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 
-import type { AuthenticatedRequest } from './authenticated-request.js';
+import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { createBootstrapCommand } from './bootstrap-command.js';
 import {
   BOOTSTRAP_CONFLICT_KINDS,
@@ -18,9 +18,9 @@ import {
   BOOTSTRAP_RESULT_KINDS,
   type BootstrapPort,
 } from './bootstrap.port.js';
-import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { OnboardingProblemFilter } from './onboarding-problem.filter.js';
-import { PROBLEM_TYPES, sendProblem } from './problem-details.js';
+import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 
 const SUCCESS_STATUS = {
   [BOOTSTRAP_RESULT_KINDS.CREATED]: 201,

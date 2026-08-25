@@ -14,9 +14,9 @@ import {
   type AccountsPort,
 } from '../src/accounts/accounts.port.js';
 import { AccountsModule } from '../src/accounts/accounts.module.js';
-import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
+import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
-import { PROBLEM_TYPES } from '../src/identity/problem-details.js';
+import { PROBLEM_TYPES } from '../src/platform/problem-details.js';
 
 const SUBJECT = '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d';
 const WORKSPACE_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';

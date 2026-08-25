@@ -8,10 +8,10 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { IdentityModule } from '../../src/identity/identity.module.js';
-import { JoseJwtVerifier } from '../../src/identity/jose-jwt-verifier.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { PostgresWorkspaceInvitationAdapter } from '../../src/identity/postgres-workspace-invitation.adapter.js';
-import { PROBLEM_TYPES } from '../../src/identity/problem-details.js';
+import { PROBLEM_TYPES } from '../../src/platform/problem-details.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');

@@ -14,11 +14,16 @@ import {
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 
-import type { AuthenticatedRequest } from './authenticated-request.js';
+import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { validateIdempotencyKey } from './idempotency-key.js';
-import { parseIfMatch } from './if-match.js';
-import { JwtAuthGuard } from './jwt-auth.guard.js';
-import { PROBLEM_TYPES, sendProblem, type Problem } from './problem-details.js';
+import { parseIfMatch } from '../platform/if-match.js';
+import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import {
+  PROBLEM_TYPES,
+  sendProblem,
+  type Problem,
+} from '../platform/problem-details.js';
+import { UUID_PATTERN } from '../platform/uuid.js';
 import {
   createWorkspaceCreateCommand,
   createWorkspaceUpdateCommand,
@@ -62,9 +67,6 @@ import {
   type WorkspaceCursor,
   type WorkspacePort,
 } from './workspace.port.js';
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Controller('v1/workspaces')
 @UseGuards(JwtAuthGuard)

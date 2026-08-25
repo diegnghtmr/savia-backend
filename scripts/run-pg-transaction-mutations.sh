@@ -55,13 +55,13 @@ mutate() {
 # Each mutation names the invariant it must kill. If the suite still passes with
 # the mutation applied, that invariant is unprotected.
 # Invariant: connecting after the pool ended is rejected rather than reopening it.
-mutate "$workdir/copy/src/identity/postgres-pool.ts" 's/if \(this\.endPromise\)/if (false)/'
+mutate "$workdir/copy/src/platform/postgres-pool.ts" 's/if \(this\.endPromise\)/if (false)/'
 # Invariant: pool configuration is resolved from the environment at first use.
-mutate "$workdir/copy/src/identity/identity.module.ts" 's/PostgresConfig\.fromEnvironment\(process\.env\)/PostgresConfig.fromEnvironment({ ...process.env, DATABASE_URL: undefined })/'
+mutate "$workdir/copy/src/platform/platform.module.ts" 's/PostgresConfig\.fromEnvironment\(process\.env\)/PostgresConfig.fromEnvironment({ ...process.env, DATABASE_URL: undefined })/'
 # Invariant: only a transaction that actually began is rolled back.
-mutate "$workdir/copy/src/identity/pg-transaction.ts" 's/let began = false;/let began = true;/'
+mutate "$workdir/copy/src/platform/pg-transaction.ts" 's/let began = false;/let began = true;/'
 # Invariant: a client broken during rollback is destroyed, not returned to the pool.
-mutate "$workdir/copy/src/identity/pg-transaction.ts" 's/client\.release\(rollbackError instanceof Error \? rollbackError : undefined\);/client.release();/'
+mutate "$workdir/copy/src/platform/pg-transaction.ts" 's/client\.release\(rollbackError instanceof Error \? rollbackError : undefined\);/client.release();/'
 
 for signal in EXIT INT TERM; do
   record="$(mktemp)"

@@ -13,7 +13,7 @@ import {
   type AccountItem,
   type AccountsStore,
 } from '../../src/accounts/accounts.service.js';
-import type { TransactionClient } from '../../src/identity/pg-transaction.js';
+import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 
 const SUBJECT = '00000000-0000-0000-0000-000000000901';
 const WORKSPACE_ID = '00000000-0000-0000-0000-000000000951';

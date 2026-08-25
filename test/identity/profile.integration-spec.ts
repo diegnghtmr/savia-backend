@@ -1,10 +1,10 @@
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { PgTransaction } from '../../src/identity/pg-transaction.js';
+import { PgTransaction } from '../../src/platform/pg-transaction.js';
 import { PostgresProfileAdapter } from '../../src/identity/postgres-profile.adapter.js';
-import { PostgresConfig } from '../../src/identity/postgres-config.js';
-import { PostgresPool } from '../../src/identity/postgres-pool.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');

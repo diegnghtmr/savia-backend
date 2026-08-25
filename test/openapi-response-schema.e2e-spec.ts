@@ -24,7 +24,7 @@ import {
   WORKSPACE_PORT,
   type WorkspacePort,
 } from '../src/identity/workspace.port.js';
-import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
+import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 
 interface OpenApiOperation {

@@ -8,14 +8,14 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { IdentityModule } from '../../src/identity/identity.module.js';
-import { JoseJwtVerifier } from '../../src/identity/jose-jwt-verifier.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
-import { PgTransaction } from '../../src/identity/pg-transaction.js';
-import { PostgresConfig } from '../../src/identity/postgres-config.js';
+import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresIdempotencyAdapter } from '../../src/identity/postgres-idempotency.adapter.js';
-import { PostgresPool } from '../../src/identity/postgres-pool.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { PostgresWorkspaceMemberAdapter } from '../../src/identity/postgres-workspace-member.adapter.js';
-import { PROBLEM_TYPES } from '../../src/identity/problem-details.js';
+import { PROBLEM_TYPES } from '../../src/platform/problem-details.js';
 import { WORKSPACE_MEMBER_REMOVE_OUTCOMES } from '../../src/identity/workspace-member.port.js';
 import {
   WorkspaceMemberService,

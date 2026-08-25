@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseIfMatch } from '../../src/identity/if-match.js';
+import { parseIfMatch } from '../../src/platform/if-match.js';
 
 describe('parseIfMatch', () => {
   it('returns absent when header is undefined', () => {

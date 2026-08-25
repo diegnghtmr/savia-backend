@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseWorkspaceHeader } from '../../src/identity/workspace-header.js';
+import { parseWorkspaceHeader } from '../../src/platform/workspace-header.js';
 
 describe('parseWorkspaceHeader', () => {
   it('accepts a canonical uuid', () => {

@@ -10,10 +10,10 @@ import {
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import type { FastifyReply } from 'fastify';
 
-import type { AuthenticatedRequest } from './authenticated-request.js';
+import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { BootstrapCommandValidationError } from './bootstrap-command.js';
-import { CommitOutcomeUnknownError } from './pg-transaction.js';
-import { PROBLEM_TYPES, sendProblem } from './problem-details.js';
+import { CommitOutcomeUnknownError } from '../platform/pg-transaction.js';
+import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 
 const RETRY_AFTER_SECONDS = 5;
 

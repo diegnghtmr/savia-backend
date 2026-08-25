@@ -10,8 +10,8 @@ import {
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 
-import type { AuthenticatedRequest } from './authenticated-request.js';
-import { PROBLEM_TYPES, sendProblem } from './problem-details.js';
+import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
+import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import {
   PROFILE_PORT,
   PROFILE_UPDATE_OUTCOMES,
@@ -22,8 +22,8 @@ import {
   ProfileUpdateValidationError,
   type ProfileUpdateCommand,
 } from './profile-update-command.js';
-import { parseIfMatch } from './if-match.js';
-import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { parseIfMatch } from '../platform/if-match.js';
+import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 
 @Controller('v1/me')
 @UseGuards(JwtAuthGuard)

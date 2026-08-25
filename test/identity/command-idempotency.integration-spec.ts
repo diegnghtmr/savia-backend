@@ -3,10 +3,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { IDEMPOTENCY_OUTCOME_KINDS } from '../../src/identity/idempotency.port.js';
 import { IdempotencyService } from '../../src/identity/idempotency.service.js';
-import { PgTransaction } from '../../src/identity/pg-transaction.js';
-import { PostgresConfig } from '../../src/identity/postgres-config.js';
+import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresIdempotencyAdapter } from '../../src/identity/postgres-idempotency.adapter.js';
-import { PostgresPool } from '../../src/identity/postgres-pool.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');

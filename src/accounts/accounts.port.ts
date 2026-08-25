@@ -1,3 +1,5 @@
+import { UUID_PATTERN } from '../platform/uuid.js';
+
 export const ACCOUNTS_PORT = Symbol('AccountsPort');
 
 export const ACCOUNT_TYPE = {
@@ -88,8 +90,6 @@ export interface AccountListQuery {
   readonly status?: AccountStatus;
 }
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const ISO_TIMESTAMP_PATTERN =
   /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;

@@ -1,7 +1,7 @@
 import type { IdempotencyStore } from './idempotency.port.js';
 import { computeRequestFingerprint } from './idempotency.service.js';
-import type { TransactionClient } from './pg-transaction.js';
-import { PROBLEM_TYPES } from './problem-details.js';
+import type { TransactionClient } from '../platform/pg-transaction.js';
+import { PROBLEM_TYPES } from '../platform/problem-details.js';
 import type { WorkspaceMemberUpdateCommand } from './workspace-member-command.js';
 import {
   encodeMemberCursor,

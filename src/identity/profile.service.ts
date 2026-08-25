@@ -1,4 +1,4 @@
-import type { TransactionClient } from './pg-transaction.js';
+import type { TransactionClient } from '../platform/pg-transaction.js';
 import type { ProfileUpdateCommand } from './profile-update-command.js';
 import {
   PROFILE_UPDATE_OUTCOMES,

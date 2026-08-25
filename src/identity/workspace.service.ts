@@ -1,6 +1,6 @@
 import type { IdempotencyStore } from './idempotency.port.js';
 import { computeRequestFingerprint } from './idempotency.service.js';
-import type { TransactionClient } from './pg-transaction.js';
+import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   WorkspaceCreateCommand,
   WorkspaceUpdateCommand,

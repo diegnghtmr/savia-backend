@@ -11,8 +11,8 @@ import {
   type BootstrapPort,
 } from '../src/identity/bootstrap.port.js';
 import { IdentityModule } from '../src/identity/identity.module.js';
-import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
-import { CommitOutcomeUnknownError } from '../src/identity/pg-transaction.js';
+import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
+import { CommitOutcomeUnknownError } from '../src/platform/pg-transaction.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 
 const SUBJECT = '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d';

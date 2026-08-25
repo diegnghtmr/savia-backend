@@ -1,4 +1,5 @@
 import type { WorkspaceMemberUpdateCommand } from './workspace-member-command.js';
+import { UUID_PATTERN } from '../platform/uuid.js';
 import type {
   PageInfo,
   WorkspaceMemberStatus,
@@ -144,8 +145,6 @@ export type WorkspaceMemberRemoveOutcome =
   | WorkspaceMemberRemoveLastOwnerRequired
   | WorkspaceMemberRemoveIdempotencyConflict;
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const ISO_TIMESTAMP_PATTERN =
   /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;

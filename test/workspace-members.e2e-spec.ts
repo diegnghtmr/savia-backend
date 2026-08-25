@@ -6,9 +6,9 @@ import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IdentityModule } from '../src/identity/identity.module.js';
-import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
+import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
-import { PROBLEM_TYPES } from '../src/identity/problem-details.js';
+import { PROBLEM_TYPES } from '../src/platform/problem-details.js';
 import {
   encodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,

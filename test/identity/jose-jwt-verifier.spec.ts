@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { exportJWK, generateKeyPair, generateSecret, SignJWT } from 'jose';
-import { AuthConfig } from '../../src/identity/auth-config.js';
-import { JoseJwtVerifier } from '../../src/identity/jose-jwt-verifier.js';
+import { AuthConfig } from '../../src/platform/auth-config.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { createJwksServer, type JwksServer } from '../helpers/jwks-server.js';
 const issuer = 'https://issuer.example.test';
 const audience = 'savia-api';

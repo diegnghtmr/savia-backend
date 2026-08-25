@@ -1,4 +1,4 @@
-import type { FieldViolation } from '../identity/bootstrap-command.js';
+import type { FieldViolation } from '../platform/problem-details.js';
 import {
   decodeAccountCursor,
   isAccountStatus,

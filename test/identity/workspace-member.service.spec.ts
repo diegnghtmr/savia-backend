@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { IdempotencyStore } from '../../src/identity/idempotency.port.js';
 import { computeRequestFingerprint } from '../../src/identity/idempotency.service.js';
-import type { TransactionClient } from '../../src/identity/pg-transaction.js';
-import { PROBLEM_TYPES } from '../../src/identity/problem-details.js';
+import type { TransactionClient } from '../../src/platform/pg-transaction.js';
+import { PROBLEM_TYPES } from '../../src/platform/problem-details.js';
 import {
   decodeMemberCursor,
   encodeMemberCursor,

@@ -12,14 +12,14 @@ import { IdentityModule } from '../../src/identity/identity.module.js';
 import {
   CommitOutcomeUnknownError,
   PgTransaction,
-} from '../../src/identity/pg-transaction.js';
+} from '../../src/platform/pg-transaction.js';
 import { PostgresBootstrapAdapter } from '../../src/identity/postgres-bootstrap.adapter.js';
-import { PostgresConfig } from '../../src/identity/postgres-config.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import {
   type PgClient,
   type PgPool,
   PostgresPool,
-} from '../../src/identity/postgres-pool.js';
+} from '../../src/platform/postgres-pool.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');

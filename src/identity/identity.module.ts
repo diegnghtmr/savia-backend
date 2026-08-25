@@ -1,14 +1,8 @@
 import { Module } from '@nestjs/common';
 
-import { AuthConfig } from './auth-config.js';
 import { BOOTSTRAP_PORT } from './bootstrap.port.js';
 import { BootstrapService } from './bootstrap.service.js';
-import { JoseJwtVerifier } from './jose-jwt-verifier.js';
-import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { OnboardingController } from './onboarding.controller.js';
-import { PgTransaction } from './pg-transaction.js';
-import { PostgresConfig } from './postgres-config.js';
-import { PostgresPool } from './postgres-pool.js';
 import { PostgresBootstrapAdapter } from './postgres-bootstrap.adapter.js';
 import { PostgresProfileAdapter } from './postgres-profile.adapter.js';
 import { PostgresWorkspaceAdapter } from './postgres-workspace.adapter.js';
@@ -27,35 +21,13 @@ import { WorkspaceMemberService } from './workspace-member.service.js';
 import { PostgresWorkspaceInvitationAdapter } from './postgres-workspace-invitation.adapter.js';
 import { WORKSPACE_INVITATION_PORT } from './workspace-invitation.port.js';
 import { WorkspaceInvitationService } from './workspace-invitation.service.js';
+import { PgTransaction } from '../platform/pg-transaction.js';
+import { PlatformModule } from '../platform/platform.module.js';
 
 @Module({
+  imports: [PlatformModule],
   controllers: [OnboardingController, ProfileController, WorkspaceController],
   providers: [
-    {
-      provide: AuthConfig,
-      useFactory: (): AuthConfig => AuthConfig.fromEnvironment(process.env),
-    },
-    {
-      provide: JoseJwtVerifier,
-      inject: [AuthConfig],
-      useFactory: (config: AuthConfig): JoseJwtVerifier =>
-        new JoseJwtVerifier(config),
-    },
-    JwtAuthGuard,
-    {
-      provide: PostgresPool,
-      useFactory: (): PostgresPool =>
-        new PostgresPool(() => PostgresConfig.fromEnvironment(process.env)),
-    },
-    {
-      // The inner thunk is load bearing: reading pool.checkoutTimeoutMs eagerly
-      // would resolve the pool configuration during module construction and
-      // reintroduce the requirement for a reachable database.
-      provide: PgTransaction,
-      inject: [PostgresPool],
-      // prettier-ignore
-      useFactory: (pool: PostgresPool): PgTransaction => new PgTransaction(pool, () => ({ checkoutTimeoutMs: pool.checkoutTimeoutMs })),
-    },
     PostgresBootstrapAdapter,
     {
       provide: BootstrapService,
@@ -136,9 +108,6 @@ import { WorkspaceInvitationService } from './workspace-invitation.service.js';
     { provide: IDEMPOTENCY_PORT, useExisting: IdempotencyService },
   ],
   exports: [
-    JoseJwtVerifier,
-    JwtAuthGuard,
-    PgTransaction,
     BOOTSTRAP_PORT,
     PROFILE_PORT,
     WORKSPACE_PORT,
@@ -147,8 +116,4 @@ import { WorkspaceInvitationService } from './workspace-invitation.service.js';
     IDEMPOTENCY_PORT,
   ],
 })
-export class IdentityModule {
-  public constructor(authConfig: AuthConfig) {
-    void authConfig;
-  }
-}
+export class IdentityModule {}
