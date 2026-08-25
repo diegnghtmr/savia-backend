@@ -48,13 +48,12 @@ import {
   WORKSPACE_INVITATION_PORT,
   type WorkspaceInvitationPort,
 } from './workspace-invitation.port.js';
-import { decodeCursor } from '../platform/cursor.js';
+import { parseListQuery } from '../platform/list-query.js';
 import {
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   WORKSPACE_MEMBER_PORT,
   WORKSPACE_MEMBER_REMOVE_OUTCOMES,
   WORKSPACE_MEMBER_UPDATE_OUTCOMES,
-  type WorkspaceMemberCursor,
   type WorkspaceMemberPort,
 } from './workspace-member.port.js';
 import {
@@ -63,7 +62,6 @@ import {
   WORKSPACE_DELETE_OUTCOME_KINDS,
   WORKSPACE_PORT,
   WORKSPACE_UPDATE_OUTCOMES,
-  type WorkspaceCursor,
   type WorkspacePort,
 } from './workspace.port.js';
 import { IDENTITY_PROBLEM_TYPES } from './identity-problem-types.js';
@@ -157,43 +155,20 @@ export class WorkspaceController {
     @Query('cursor') cursorParam?: string,
     @Query('limit') limitParam?: string,
   ): Promise<void> {
-    let limit = 50;
-    if (limitParam !== undefined) {
-      if (!/^\d+$/.test(limitParam)) {
-        sendProblem(reply, {
-          type: PROBLEM_TYPES.BAD_REQUEST,
-          title: 'Invalid limit parameter',
-          status: 400,
-        });
-        return;
-      }
-      limit = Number(limitParam);
-      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
-        sendProblem(reply, {
-          type: PROBLEM_TYPES.BAD_REQUEST,
-          title: 'Invalid limit parameter',
-          status: 400,
-        });
-        return;
-      }
-    }
-
-    let cursor: WorkspaceCursor | undefined;
-    if (cursorParam !== undefined) {
-      cursor = decodeCursor(cursorParam);
-      if (cursor === undefined) {
-        sendProblem(reply, {
-          type: PROBLEM_TYPES.BAD_REQUEST,
-          title: 'Invalid cursor parameter',
-          status: 400,
-        });
-        return;
-      }
+    const listQuery = parseListQuery({ cursorParam, limitParam });
+    if (listQuery.violations.length > 0) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid list workspaces query',
+        status: 400,
+        errors: listQuery.violations,
+      });
+      return;
     }
 
     const page = await this.workspace.list(request.identity.subject, {
-      cursor,
-      limit,
+      cursor: listQuery.cursor,
+      limit: listQuery.limit,
     });
 
     void reply.status(200).send(page);
@@ -260,44 +235,25 @@ export class WorkspaceController {
       return;
     }
 
-    let limit = 50;
-    if (limitParam !== undefined) {
-      if (!/^\d+$/.test(limitParam)) {
-        sendProblem(reply, {
-          type: PROBLEM_TYPES.BAD_REQUEST,
-          title: 'Invalid limit parameter',
-          status: 400,
-        });
-        return;
-      }
-      limit = Number(limitParam);
-      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
-        sendProblem(reply, {
-          type: PROBLEM_TYPES.BAD_REQUEST,
-          title: 'Invalid limit parameter',
-          status: 400,
-        });
-        return;
-      }
-    }
-
-    let cursor: WorkspaceMemberCursor | undefined;
-    if (cursorParam !== undefined) {
-      cursor = decodeCursor(cursorParam, workspaceId);
-      if (cursor === undefined) {
-        sendProblem(reply, {
-          type: PROBLEM_TYPES.BAD_REQUEST,
-          title: 'Invalid cursor parameter',
-          status: 400,
-        });
-        return;
-      }
+    const listQuery = parseListQuery({
+      cursorParam,
+      limitParam,
+      expectedWorkspaceId: workspaceId,
+    });
+    if (listQuery.violations.length > 0) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid list workspace members query',
+        status: 400,
+        errors: listQuery.violations,
+      });
+      return;
     }
 
     const outcome = await this.members.listWorkspaceMembers(
       request.identity.subject,
       workspaceId,
-      { cursor, limit },
+      { cursor: listQuery.cursor, limit: listQuery.limit },
     );
 
     if (outcome.kind === WORKSPACE_MEMBER_LIST_OUTCOMES.NOT_FOUND) {
@@ -847,44 +803,21 @@ export class WorkspaceController {
       return;
     }
 
-    let limit = 50;
-    if (limitParam !== undefined) {
-      if (!/^\d+$/.test(limitParam)) {
-        sendProblem(reply, {
-          type: PROBLEM_TYPES.BAD_REQUEST,
-          title: 'Invalid limit parameter',
-          status: 400,
-        });
-        return;
-      }
-      limit = Number(limitParam);
-      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
-        sendProblem(reply, {
-          type: PROBLEM_TYPES.BAD_REQUEST,
-          title: 'Invalid limit parameter',
-          status: 400,
-        });
-        return;
-      }
-    }
-
-    let cursor: WorkspaceCursor | undefined;
-    if (cursorParam !== undefined) {
-      cursor = decodeCursor(cursorParam);
-      if (cursor === undefined) {
-        sendProblem(reply, {
-          type: PROBLEM_TYPES.BAD_REQUEST,
-          title: 'Invalid cursor parameter',
-          status: 400,
-        });
-        return;
-      }
+    const listQuery = parseListQuery({ cursorParam, limitParam });
+    if (listQuery.violations.length > 0) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid list workspace invitations query',
+        status: 400,
+        errors: listQuery.violations,
+      });
+      return;
     }
 
     const outcome = await this.invitations.listWorkspaceInvitations(
       request.identity.subject,
       workspaceId,
-      { cursor, limit },
+      { cursor: listQuery.cursor, limit: listQuery.limit },
     );
 
     if (outcome.kind === WORKSPACE_INVITATION_LIST_OUTCOMES.NOT_FOUND) {

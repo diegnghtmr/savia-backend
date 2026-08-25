@@ -1,13 +1,12 @@
 import type { FieldViolation } from '../platform/problem-details.js';
-import { decodeCursor } from '../platform/cursor.js';
+import { parseListQuery, DEFAULT_LIST_LIMIT } from '../platform/list-query.js';
 import {
   isAccountStatus,
   type AccountListQuery,
   type AccountStatus,
 } from './accounts.port.js';
 
-export const ACCOUNT_LIST_DEFAULT_LIMIT = 50;
-const LIMIT_PATTERN = /^\d+$/;
+export const ACCOUNT_LIST_DEFAULT_LIMIT = DEFAULT_LIST_LIMIT;
 
 export class AccountQueryValidationError extends Error {
   public constructor(public readonly violations: readonly FieldViolation[]) {
@@ -26,41 +25,11 @@ export interface AccountListQueryInput {
 export function createAccountListQuery(
   input: AccountListQueryInput,
 ): AccountListQuery {
-  const violations: FieldViolation[] = [];
-
-  let limit = ACCOUNT_LIST_DEFAULT_LIMIT;
-  if (input.limitParam !== undefined) {
-    if (!LIMIT_PATTERN.test(input.limitParam)) {
-      violations.push({
-        field: 'limit',
-        code: 'invalid',
-        message: 'limit must be a plain integer.',
-      });
-    } else {
-      const parsed = Number(input.limitParam);
-      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 200) {
-        violations.push({
-          field: 'limit',
-          code: 'out-of-range',
-          message: 'limit must be between 1 and 200.',
-        });
-      } else {
-        limit = parsed;
-      }
-    }
-  }
-
-  let cursor: AccountListQuery['cursor'];
-  if (input.cursorParam !== undefined) {
-    cursor = decodeCursor(input.cursorParam);
-    if (cursor === undefined) {
-      violations.push({
-        field: 'cursor',
-        code: 'invalid',
-        message: 'cursor is not a valid opaque cursor.',
-      });
-    }
-  }
+  const base = parseListQuery({
+    cursorParam: input.cursorParam,
+    limitParam: input.limitParam,
+  });
+  const violations: FieldViolation[] = [...base.violations];
 
   let status: AccountStatus | undefined;
   if (input.statusParam !== undefined) {
@@ -81,8 +50,8 @@ export function createAccountListQuery(
 
   return {
     workspaceId: input.workspaceId,
-    ...(cursor === undefined ? {} : { cursor }),
-    limit,
+    ...(base.cursor === undefined ? {} : { cursor: base.cursor }),
+    limit: base.limit,
     ...(status === undefined ? {} : { status }),
   };
 }
