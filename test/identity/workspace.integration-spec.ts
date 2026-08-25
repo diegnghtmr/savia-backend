@@ -42,6 +42,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   const subjectExactFull = subject(711);
   const subjectCreator = subject(720);
   const subjectCreator2 = subject(721);
+  const subjectMicroseconds = subject(730);
 
   const sharedWorkspaceId = '00000000-0000-0000-0000-000000000750';
   const ws1Id = '00000000-0000-0000-0000-000000000801';
@@ -55,6 +56,13 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   const exactFull2Id = '00000000-0000-0000-0000-000000000852';
   const exactFull3Id = '00000000-0000-0000-0000-000000000853';
   const exactFull4Id = '00000000-0000-0000-0000-000000000854';
+
+  const wsMicro1Id = '00000000-0000-0000-0000-000000000871';
+  const wsMicro2Id = '00000000-0000-0000-0000-000000000872';
+  const wsMicro3Id = '00000000-0000-0000-0000-000000000873';
+  const wsMicro4Id = '00000000-0000-0000-0000-000000000874';
+  const wsMicro5Id = '00000000-0000-0000-0000-000000000875';
+  const wsMicro6Id = '00000000-0000-0000-0000-000000000876';
 
   const wsPersonalId = '00000000-0000-0000-0000-000000000860';
   const wsDeletePositiveId = '00000000-0000-0000-0000-000000000861';
@@ -73,7 +81,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     service = new WorkspaceService(transaction, adapter, idempotencyAdapter);
 
     await admin.query(
-      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12), ($13, $14), ($15, $16), ($17, $18)`,
+      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12), ($13, $14), ($15, $16), ($17, $18), ($19, $20)`,
       [
         subjectOwner,
         'owner@example.test',
@@ -93,6 +101,8 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         'creator@example.test',
         subjectCreator2,
         'creator2@example.test',
+        subjectMicroseconds,
+        'microseconds@example.test',
       ],
     );
 
@@ -106,6 +116,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       [subjectExactFull, 'exactfull@example.test', 'Exact Full User'],
       [subjectCreator, 'creator@example.test', 'Creator User'],
       [subjectCreator2, 'creator2@example.test', 'Creator User 2'],
+      [subjectMicroseconds, 'microseconds@example.test', 'Microseconds User'],
     ]) {
       await admin.query(
         `insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency, privacy_mode_enabled)
@@ -172,6 +183,28 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
          values ($1, $2, $3, 'active')`,
         [id, subjectExactFull, role],
+      );
+    }
+
+    // Seed 6 workspaces for subjectMicroseconds whose created_at differ only in microseconds,
+    // with 4 sharing the .123 millisecond bucket and 2 sharing the .456 millisecond bucket.
+    for (const [id, name, role, createdAt] of [
+      [wsMicro1Id, 'Micro 1', 'owner', '2026-07-20 12:00:00.123450+00'],
+      [wsMicro2Id, 'Micro 2', 'editor', '2026-07-20 12:00:00.123456+00'],
+      [wsMicro3Id, 'Micro 3', 'viewer', '2026-07-20 12:00:00.123789+00'],
+      [wsMicro4Id, 'Micro 4', 'administrator', '2026-07-20 12:00:00.123999+00'],
+      [wsMicro5Id, 'Micro 5', 'editor', '2026-07-20 12:00:00.456100+00'],
+      [wsMicro6Id, 'Micro 6', 'owner', '2026-07-20 12:00:00.456200+00'],
+    ]) {
+      await admin.query(
+        `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_at)
+         values ($1, $2, 'shared', 'USD', null, $3::timestamptz)`,
+        [id, name, createdAt],
+      );
+      await admin.query(
+        `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'active')`,
+        [id, subjectMicroseconds, role],
       );
     }
 
@@ -406,6 +439,42 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     // Exactly full page (items.length === 2 === limit) must report hasNextPage: false
     expect(page2.pageInfo.hasNextPage).toBe(false);
     expect(page2.pageInfo.nextCursor).toBeNull();
+  });
+
+  it('pages through workspaces whose created_at differs only in microseconds without repeating or dropping items', async () => {
+    const expectedIds = [
+      wsMicro1Id,
+      wsMicro2Id,
+      wsMicro3Id,
+      wsMicro4Id,
+      wsMicro5Id,
+      wsMicro6Id,
+    ];
+    const walkedIds: string[] = [];
+    let cursor: ReturnType<typeof decodeCursor> = undefined;
+
+    for (let i = 0; i < expectedIds.length; i++) {
+      const page = await service.list(subjectMicroseconds, {
+        cursor,
+        limit: 1,
+      });
+      expect(page.items).toHaveLength(1);
+      const item = page.items[0]!;
+      walkedIds.push(item.id);
+
+      if (i < expectedIds.length - 1) {
+        expect(page.pageInfo.hasNextPage).toBe(true);
+        expect(page.pageInfo.nextCursor).toBeTypeOf('string');
+        cursor = decodeCursor(page.pageInfo.nextCursor!);
+        expect(cursor).toBeDefined();
+      } else {
+        expect(page.pageInfo.hasNextPage).toBe(false);
+        expect(page.pageInfo.nextCursor).toBeNull();
+      }
+    }
+
+    expect(walkedIds).toEqual(expectedIds);
+    expect(new Set(walkedIds).size).toBe(walkedIds.length);
   });
 
   it("a suspended member's workspace does not appear in their list", async () => {
