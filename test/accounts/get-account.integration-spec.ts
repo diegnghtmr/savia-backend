@@ -32,6 +32,7 @@ describe('AccountsService getAccount database boundary', () => {
 
   const accountW1AId = id(1001);
   const accountW1BId = id(1002);
+  const accountW1CId = id(1003);
   const accountW2Id = id(2001);
   const absentAccountId = id(9999);
 
@@ -92,12 +93,20 @@ describe('AccountsService getAccount database boundary', () => {
     await admin.query(
       `insert into public.accounts
          (id, workspace_id, name, type, currency, status, institution, masked_number,
-          description, color_token, icon, include_in_net_worth, created_by, created_at, updated_at, version)
+          description, color_token, icon, include_in_net_worth, created_by, created_at, updated_at, version, closed_at)
        values ($1, $2, 'Primary Checking', 'checking', 'USD', 'active', 'Acme Bank', '**** 1234',
-               'Main operational account', '#112233', 'bank', true, $3, '2026-07-01T00:00:00.000Z'::timestamptz, '2026-07-01T00:00:00.000Z'::timestamptz, 1),
+               'Main operational account', '#112233', 'bank', true, $3, '2026-07-01T00:00:00.000Z'::timestamptz, '2026-07-01T00:00:00.000Z'::timestamptz, 1, null),
               ($4, $2, 'Reserve Cash', 'cash', 'USD', 'archived', null, null,
-               null, null, null, false, $3, '2026-07-02T00:00:00.000Z'::timestamptz, '2026-07-02T00:00:00.000Z'::timestamptz, 2)`,
-      [accountW1AId, workspace1Id, subjectDualMember, accountW1BId],
+               null, null, null, false, $3, '2026-07-02T00:00:00.000Z'::timestamptz, '2026-07-02T00:00:00.000Z'::timestamptz, 2, null),
+              ($5, $2, 'Retired Wallet', 'digital_wallet', 'USD', 'closed', null, null,
+               null, null, null, false, $3, '2026-07-04T00:00:00.000Z'::timestamptz, '2026-07-04T00:00:00.000Z'::timestamptz, 3, '2026-07-04T12:00:00.000Z'::timestamptz)`,
+      [
+        accountW1AId,
+        workspace1Id,
+        subjectDualMember,
+        accountW1BId,
+        accountW1CId,
+      ],
     );
 
     // Workspace 2 account
@@ -227,6 +236,40 @@ describe('AccountsService getAccount database boundary', () => {
         createdAt: '2026-07-02T00:00:00.000Z',
         updatedAt: '2026-07-02T00:00:00.000Z',
         version: 2,
+      },
+    });
+  });
+
+  it('reads a CLOSED account with a 200-shaped ok outcome: closure is a lifecycle state, not a visibility boundary', async () => {
+    // The authority declares only 200/401/403/404 on getAccount and no status
+    // parameter, so there is no contract mechanism to hide a lifecycle state,
+    // and listAccounts serves closed rows from the same resource. The risk this
+    // pins is real rather than theoretical: the UPDATE policy in 202608240002
+    // filters closed rows (`using ... status <> 'closed'`), so the schema
+    // already couples closure to row visibility on the write path. Nothing
+    // stopped that coupling from leaking into the read path unnoticed.
+    const outcome = await service.read(
+      subjectDualMember,
+      workspace1Id,
+      accountW1CId,
+    );
+    expect(outcome).toEqual({
+      kind: ACCOUNT_READ_OUTCOMES.OK,
+      account: {
+        id: accountW1CId,
+        name: 'Retired Wallet',
+        type: 'digital_wallet',
+        currency: 'USD',
+        status: 'closed',
+        institution: null,
+        maskedNumber: null,
+        description: null,
+        colorToken: null,
+        icon: null,
+        includeInNetWorth: false,
+        createdAt: '2026-07-04T00:00:00.000Z',
+        updatedAt: '2026-07-04T00:00:00.000Z',
+        version: 3,
       },
     });
   });
