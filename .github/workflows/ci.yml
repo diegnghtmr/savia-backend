@@ -134,6 +134,9 @@ jobs:
       - name: list accounts integration
         shell: bash
         run: pnpm test:integration:list-accounts
+      - name: get account integration
+        shell: bash
+        run: pnpm test:integration:get-account
       - name: transactions schema integration
         shell: bash
         run: pnpm test:integration:transactions-schema
