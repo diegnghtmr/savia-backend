@@ -84,6 +84,10 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
   // Superuser path: bypasses RLS and every grant so that ONLY the named
   // mechanism under test (a CHECK, a foreign key, or the balance trigger) can
   // refuse. Approved isolation technique from the slice 3 suites.
+  //
+  // USE ONLY FOR STATEMENT-TIME REFUSAL PROBES. A lone leg can never COMMIT:
+  // the deferred balance trigger refuses any group with fewer than two legs,
+  // so every SUCCESS-path fixture must go through seedBalancedPair below.
   async function seedPosting(posting: PostingSeed): Promise<string> {
     const res = await admin.query<{ id: string }>(
       `insert into public.ledger_postings
@@ -103,6 +107,34 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       ],
     );
     return res.rows[0].id;
+  }
+
+  // One statement, one complete set: an account debit (+amount) and its
+  // external credit (-amount). Both ids are returned so cleanup always removes
+  // WHOLE groups — deleting half a group would trip the balance trigger at the
+  // cleanup statement's own commit.
+  async function seedBalancedPair(options: {
+    workspaceId: string;
+    transactionId: string;
+    accountId: string;
+    amountMinor?: string;
+    accountStatus?: string;
+  }): Promise<string[]> {
+    const res = await admin.query<{ id: string }>(
+      `insert into public.ledger_postings
+         (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+       values ($1, $2, $3, 'account', $4, 'USD', $5, '2026-08-24T12:00:00Z'),
+              ($1, $2, null, 'external', -$4, 'USD', 'confirmed', '2026-08-24T12:00:00Z')
+       returning id`,
+      [
+        options.workspaceId,
+        options.transactionId,
+        options.accountId,
+        options.amountMinor ?? '100',
+        options.accountStatus ?? 'confirmed',
+      ],
+    );
+    return res.rows.map((r) => r.id);
   }
 
   async function deletePostings(ids: string[]): Promise<void> {
@@ -216,14 +248,17 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
     // then the workspace cascade removes the rest. Leftover UNBALANCED legs
     // would poison every later commit through the global balance trigger.
     if (admin) {
-      await admin.query(
-        'delete from public.ledger_postings where workspace_id = any($1::uuid[])',
-        [[ws1Id, ws2Id, dosWsId]],
-      ).catch(() => {});
-      await admin.query(
-        'delete from public.workspaces where id = any($1::uuid[])',
-        [[ws1Id, ws2Id, dosWsId]],
-      ).catch(() => {});
+      await admin
+        .query(
+          'delete from public.ledger_postings where workspace_id = any($1::uuid[])',
+          [[ws1Id, ws2Id, dosWsId]],
+        )
+        .catch(() => {});
+      await admin
+        .query('delete from public.workspaces where id = any($1::uuid[])', [
+          [ws1Id, ws2Id, dosWsId],
+        ])
+        .catch(() => {});
       await admin.end();
     }
   });
@@ -348,13 +383,11 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       }>(
         `select p.polname,
                 p.polcmd::text as polcmd,
-                coalesce(pg_get_userbyid(r.grantee), null) as grantee
+                min(pg_get_userbyid(role_oid)) as grantee
            from pg_policy p
-           left join lateral (
-             select unnest(p.polroles::oid[]) as grantee
-           ) roles on true
-           left join pg_roles r on r.oid = roles.grantee
+           cross join lateral unnest(p.polroles::oid[]) as role_oids(role_oid)
           where p.polrelid = 'public.ledger_postings'::regclass
+          group by p.polname, p.polcmd
           order by p.polname`,
       );
 
@@ -362,15 +395,15 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       // role helper, plus the elevated read policy the security-definer
       // balance scan needs (FORCE row level security would otherwise filter
       // savia_elevated out of its own aggregate). NO 'd' (delete) policy.
-      expect(policiesRes.rows.map((r) => [r.polname, r.polcmd, r.grantee])).toEqual([
+      expect(
+        policiesRes.rows.map((r) => [r.polname, r.polcmd, r.grantee]),
+      ).toEqual([
         ['application_inserts_workspace_posting', 'a', 'savia_application'],
         ['application_reads_workspace_posting', 'r', 'savia_application'],
         ['application_updates_workspace_posting', 'w', 'savia_application'],
         ['elevated_reads_ledger_postings', 'r', 'savia_elevated'],
       ]);
-      expect(
-        policiesRes.rows.some((r) => r.polcmd === 'd'),
-      ).toBe(false);
+      expect(policiesRes.rows.some((r) => r.polcmd === 'd')).toBe(false);
     });
 
     it('6. The balance index covers exactly (workspace_id, account_id, status, occurred_at) include (amount_minor), plus single-column parent indexes', async () => {
@@ -455,6 +488,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       //   pinned here, or the raise is unreachable and the "invariant" is a
       //   silent no-op.
       const triggerRes = await admin.query<{
+        tgisinternal: boolean;
         tgdeferrable: boolean;
         tginitdeferred: boolean;
         tgtype: number;
@@ -462,7 +496,8 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         prosecdef: boolean;
         proowner: string;
       }>(
-        `select t.tgdeferrable,
+        `select t.tgisinternal,
+                t.tgdeferrable,
                 t.tginitdeferred,
                 t.tgtype,
                 p.proname::text as proname,
@@ -475,16 +510,19 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       );
       expect(triggerRes.rows).toHaveLength(1);
       const trigger = triggerRes.rows[0];
+      // A CREATE CONSTRAINT TRIGGER is a user trigger (tgisinternal false),
+      // deferrable and INITIALLY DEFERRED.
+      expect(trigger.tgisinternal).toBe(false);
       expect(trigger.tgdeferrable).toBe(true);
       expect(trigger.tginitdeferred).toBe(true);
       expect(trigger.proname).toBe('enforce_balanced_ledger_postings');
       expect(trigger.prosecdef).toBe(true);
       expect(trigger.proowner).toBe('savia_elevated');
-      // CONSTRAINT trigger (bit 128), firing FOR EACH ROW on INSERT+UPDATE+
-      // DELETE (bits 4+8+16), never BEFORE (bit 2 clear).
-      expect(trigger.tgtype & 128).not.toBe(0);
-      expect(trigger.tgtype & 2).toBe(0);
+      // FOR EACH ROW on INSERT+UPDATE+DELETE (bits 4+8+16), never BEFORE
+      // (bit 2 clear). Observed tgtype for this constraint trigger is 29: the
+      // deferrable columns above are what mark it, not catalog bit 128.
       expect(trigger.tgtype & 28).toBe(28);
+      expect(trigger.tgtype & 2).toBe(0);
 
       const elevatedReadRes = await admin.query<{
         can_read: boolean;
@@ -651,9 +689,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       );
       expect(voidedErr.code).toBe('23514');
       expect(voidedErr.message ?? '').toContain('check constraint');
-      expect(voidedErr.message ?? '').toContain(
-        'ledger_postings_status_check',
-      );
+      expect(voidedErr.message ?? '').toContain('ledger_postings_status_check');
       expect(voidedErr.message ?? '').not.toContain('row-level security');
       expect(voidedErr.message ?? '').not.toContain('permission denied');
 
@@ -670,27 +706,28 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       }
       expect(defRes.rows[0].def).not.toContain('voided');
 
-      // Positive control on the identical path.
-      const okId = await seedPosting({
+      // Positive control on the identical path: the same single-statement
+      // superuser insert with 'reconciled' commits (as part of a balanced
+      // pair, because a lone leg can never survive the balance trigger).
+      const okIds = await seedBalancedPair({
         workspaceId: ws1Id,
         transactionId: transaction1Id,
         accountId: account1Id,
-        legKind: 'account',
-        amountMinor: '100',
-        status: 'reconciled',
+        amountMinor: '130',
+        accountStatus: 'reconciled',
       });
       try {
-        const check = await admin.query(
-          'select 1 from public.ledger_postings where id = $1',
-          [okId],
+        const check = await admin.query<{ n: number }>(
+          `select count(*)::int as n from public.ledger_postings where transaction_id = $1`,
+          [transaction1Id],
         );
-        expect(check.rows).toHaveLength(1);
+        expect(check.rows[0].n).toBe(2);
       } finally {
-        await deletePostings([okId]);
+        await deletePostings(okIds);
       }
     });
 
-    it('14. num_nonnulls(transaction_id, transfer_id) = 1 refuses TWO parents and ZERO parents with 23514 naming ledger_postings_parent_exactly_one_check; one parent is accepted', async () => {
+    it('14. num_nonnulls(transaction_id, transfer_id) = 1 refuses TWO parents and ZERO parents with 23514 naming ledger_postings_parent_exactly_one_check; exactly one parent is accepted', async () => {
       const twoParentsErr = await capturePgError(() =>
         seedPosting({
           workspaceId: ws1Id,
@@ -722,22 +759,26 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       expect(zeroParentsErr.message ?? '').not.toContain('row-level security');
       expect(zeroParentsErr.message ?? '').not.toContain('permission denied');
 
-      // Positive control on the identical path: exactly one parent inserts.
-      const okId = await seedPosting({
-        workspaceId: ws1Id,
-        accountId: null,
-        transferId: randomUUID(),
-        legKind: 'external',
-        amountMinor: '100',
-      });
+      // Positive control on the identical path: exactly-one-parent rows
+      // commit (a balanced transfer-parented pair, one statement).
+      const transferId = randomUUID();
+      const okInsert = await admin.query<{ id: string }>(
+        `insert into public.ledger_postings
+           (workspace_id, transaction_id, transfer_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+         values ($1, null, $2, null, 'external', '100', 'USD', 'confirmed', '2026-08-24T12:00:00Z'),
+                ($1, null, $2, null, 'external', '-100', 'USD', 'confirmed', '2026-08-24T12:00:00Z')
+         returning id`,
+        [ws1Id, transferId],
+      );
+      const okIds = okInsert.rows.map((r) => r.id);
       try {
-        const check = await admin.query(
-          'select 1 from public.ledger_postings where id = $1',
-          [okId],
+        const check = await admin.query<{ n: number }>(
+          'select count(*)::int as n from public.ledger_postings where id = any($1::uuid[])',
+          [okIds],
         );
-        expect(check.rows).toHaveLength(1);
+        expect(check.rows[0].n).toBe(2);
       } finally {
-        await deletePostings([okId]);
+        await deletePostings(okIds);
       }
     });
 
@@ -752,7 +793,9 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         }),
       );
       expect(externalWithAccountErr.code).toBe('23514');
-      expect(externalWithAccountErr.message ?? '').toContain('check constraint');
+      expect(externalWithAccountErr.message ?? '').toContain(
+        'check constraint',
+      );
       expect(externalWithAccountErr.message ?? '').toContain(
         'ledger_postings_account_leg_parity_check',
       );
@@ -777,29 +820,28 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         'permission denied',
       );
 
-      // Positive controls: both valid shapes on the identical path.
-      const okAccountId = await seedPosting({
+      // Positive controls: both valid shapes in one balanced set on the
+      // identical superuser path.
+      const okIds = await seedBalancedPair({
         workspaceId: ws1Id,
         transactionId: transaction1Id,
         accountId: account1Id,
-        legKind: 'account',
-        amountMinor: '100',
-      });
-      const okExternalId = await seedPosting({
-        workspaceId: ws1Id,
-        transactionId: transaction1Id,
-        accountId: null,
-        legKind: 'external',
-        amountMinor: '-100',
+        amountMinor: '140',
       });
       try {
-        const check = await admin.query<{ n: number }>(
-          'select count(*)::int as n from public.ledger_postings where id = any($1::uuid[])',
-          [[okAccountId, okExternalId]],
+        const shapes = await admin.query<{
+          account_legs: number;
+          external_legs: number;
+        }>(
+          `select count(*) filter (where leg_kind = 'account')::int as account_legs,
+                  count(*) filter (where leg_kind = 'external')::int as external_legs
+             from public.ledger_postings where transaction_id = $1`,
+          [transaction1Id],
         );
-        expect(check.rows[0].n).toBe(2);
+        expect(shapes.rows[0].account_legs).toBe(1);
+        expect(shapes.rows[0].external_legs).toBe(1);
       } finally {
-        await deletePostings([okAccountId, okExternalId]);
+        await deletePostings(okIds);
       }
     });
 
@@ -856,21 +898,21 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
     });
 
     it('18. Positive control on the identical path: the same posting with a SAME-WORKSPACE account succeeds', async () => {
-      const okId = await seedPosting({
+      const okIds = await seedBalancedPair({
         workspaceId: ws1Id,
         transactionId: transaction1Id,
         accountId: account1Id,
-        legKind: 'account',
-        amountMinor: '100',
+        amountMinor: '110',
       });
+      expect(okIds).toHaveLength(2);
       try {
-        const check = await admin.query(
-          'select 1 from public.ledger_postings where id = $1',
-          [okId],
+        const check = await admin.query<{ n: number }>(
+          `select count(*)::int as n from public.ledger_postings where transaction_id = $1`,
+          [transaction1Id],
         );
-        expect(check.rows).toHaveLength(1);
+        expect(check.rows[0].n).toBe(2);
       } finally {
-        await deletePostings([okId]);
+        await deletePostings(okIds);
       }
     });
 
@@ -894,8 +936,9 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       expect(crossErr.message ?? '').not.toContain('row-level security');
       expect(crossErr.message ?? '').not.toContain('permission denied');
 
-      // Structural pin, plus: exactly TWO foreign keys exist on the table —
-      // transfer_id deliberately has none until slice 15.
+      // Structural pin, plus: no SINGLE-COLUMN foreign key against either
+      // sibling exists (a revert cannot pass silently), and the table carries
+      // exactly three FKs — the two composites plus the workspace cascade.
       const fkRes = await admin.query<{ def: string; confdeltype: string }>(
         `select pg_get_constraintdef(oid) as def, confdeltype
            from pg_constraint
@@ -908,37 +951,54 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       );
       expect(fkRes.rows[0].confdeltype).toBe('r');
 
-      const countRes = await admin.query<{ n: number }>(
-        `select count(*)::int as n from pg_constraint
-          where conrelid = 'public.ledger_postings'::regclass and contype = 'f'`,
+      const countRes = await admin.query<{
+        total: number;
+        single_column_siblings: number;
+      }>(
+        `select count(*)::int as total,
+                count(*) filter (
+                  where c.confrelid in ('public.accounts'::regclass, 'public.transactions'::regclass)
+                    and cardinality(c.conkey) <> 2
+                )::int as single_column_siblings
+           from pg_constraint c
+          where c.conrelid = 'public.ledger_postings'::regclass
+            and c.contype = 'f'`,
       );
-      expect(countRes.rows[0].n).toBe(2);
+      expect(countRes.rows[0].total).toBe(3);
+      expect(countRes.rows[0].single_column_siblings).toBe(0);
     });
 
     it('20. Positive control on the identical path: the same posting with a SAME-WORKSPACE transaction succeeds', async () => {
-      const okId = await seedPosting({
-        workspaceId: ws1Id,
-        transactionId: transaction1Id,
-        accountId: null,
-        legKind: 'external',
-        amountMinor: '-100',
-      });
+      const okInsert = await admin.query<{ id: string }>(
+        `insert into public.ledger_postings
+           (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+         values ($1, $2, null, 'external', '50', 'USD', 'confirmed', '2026-08-24T12:00:00Z'),
+                ($1, $2, null, 'external', '-50', 'USD', 'confirmed', '2026-08-24T12:00:00Z')
+         returning id`,
+        [ws1Id, transaction1Id],
+      );
+      const okIds = okInsert.rows.map((r) => r.id);
+      expect(okIds).toHaveLength(2);
       try {
-        const check = await admin.query(
-          'select 1 from public.ledger_postings where id = $1',
-          [okId],
+        const check = await admin.query<{ n: number }>(
+          'select count(*)::int as n from public.ledger_postings where id = any($1::uuid[])',
+          [okIds],
         );
-        expect(check.rows).toHaveLength(1);
+        expect(check.rows[0].n).toBe(2);
       } finally {
-        await deletePostings([okId]);
+        await deletePostings(okIds);
       }
     });
 
-    it('21. ON DELETE RESTRICT, both directions: deleting a referenced ACCOUNT or TRANSACTION while postings exist is refused with 23503; after the postings go, the same deletes succeed', async () => {
+    it('21. ON DELETE RESTRICT, both directions: deleting a referenced TRANSACTION or ACCOUNT while postings exist is refused with 23503 naming the concrete foreign key; after the postings go, the same deletes succeed', async () => {
       const dispWsId = '00000000-0000-0000-0000-000000000754';
       const dispMemId = '00000000-0000-0000-0000-000000000716';
       const dispAccId = '00000000-0000-0000-0000-000000000774';
       const dispTxId = '00000000-0000-0000-0000-000000000784';
+      // A SECOND account with NO transaction pointing at it: its only
+      // referencer will be transfer-parented postings, so the account-delete
+      // refusal has exactly one possible refuser — ours.
+      const dispAcc2Id = '00000000-0000-0000-0000-000000000776';
 
       await admin.query(
         `insert into public.workspaces (id, name, kind, base_currency, created_by)
@@ -952,8 +1012,9 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       );
       await admin.query(
         `insert into public.accounts (id, workspace_id, name, type, currency, created_by)
-         values ($1, $2, 'Ledger Restrict Account', 'cash', 'USD', $3)`,
-        [dispAccId, dispWsId, ownerA],
+         values ($1, $2, 'Ledger Restrict Account', 'cash', 'USD', $3),
+                ($4, $5, 'Ledger Restrict Account 2', 'cash', 'USD', $6)`,
+        [dispAccId, dispWsId, ownerA, dispAcc2Id, dispWsId, ownerA],
       );
       await admin.query(
         `insert into public.transactions
@@ -961,32 +1022,36 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
          values ($1, $2, $3, 'income', 'confirmed', '500', 'USD', '2026-08-24T12:00:00Z', $4)`,
         [dispTxId, dispWsId, dispAccId, ownerA],
       );
-      const postingIds = [
-        await seedPosting({
-          workspaceId: dispWsId,
-          transactionId: dispTxId,
-          accountId: dispAccId,
-          legKind: 'account',
-          amountMinor: '500',
-        }),
-        await seedPosting({
-          workspaceId: dispWsId,
-          transactionId: dispTxId,
-          accountId: null,
-          legKind: 'external',
-          amountMinor: '-500',
-        }),
-      ];
+      // Two complete sets, one statement each: a transaction-parented pair
+      // (pins the transaction side) and a transfer-parented pair on the
+      // second account (pins the account side unambiguously).
+      const txPairIds = (
+        await admin.query<{ id: string }>(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           values ($1, $2, $3, 'account', '500', 'USD', 'confirmed', '2026-08-24T12:00:00Z'),
+                  ($1, $2, null, 'external', '-500', 'USD', 'confirmed', '2026-08-24T12:00:00Z')
+           returning id`,
+          [dispWsId, dispTxId, dispAccId],
+        )
+      ).rows.map((r) => r.id);
+      const transferId = randomUUID();
+      const accPairIds = (
+        await admin.query<{ id: string }>(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, transfer_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           values ($1, null, $2, $3, 'account', '200', 'USD', 'confirmed', '2026-08-24T12:00:00Z'),
+                  ($1, null, $2, null, 'external', '-200', 'USD', 'confirmed', '2026-08-24T12:00:00Z')
+           returning id`,
+          [dispWsId, transferId, dispAcc2Id],
+        )
+      ).rows.map((r) => r.id);
+      expect(txPairIds).toHaveLength(2);
+      expect(accPairIds).toHaveLength(2);
 
       try {
-        const accDelErr = await capturePgError(() =>
-          admin.query('delete from public.accounts where id = $1', [dispAccId]),
-        );
-        expect(accDelErr.code).toBe('23503');
-        expect(accDelErr.message ?? '').toContain(
-          'ledger_postings_account_workspace_fkey',
-        );
-
+        // Direction 1: the transaction's only referencers are OUR postings —
+        // the refusal is unambiguously ours.
         const txDelErr = await capturePgError(() =>
           admin.query('delete from public.transactions where id = $1', [
             dispTxId,
@@ -994,10 +1059,28 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         );
         expect(txDelErr.code).toBe('23503');
         expect(txDelErr.message ?? '').toContain(
+          'violates foreign key constraint',
+        );
+        expect(txDelErr.message ?? '').toContain(
           'ledger_postings_transaction_workspace_fkey',
         );
+
+        // Direction 2: dispAcc2 is referenced by NOTHING but our postings —
+        // again exactly one possible refuser.
+        const accDelErr = await capturePgError(() =>
+          admin.query('delete from public.accounts where id = $1', [
+            dispAcc2Id,
+          ]),
+        );
+        expect(accDelErr.code).toBe('23503');
+        expect(accDelErr.message ?? '').toContain(
+          'violates foreign key constraint',
+        );
+        expect(accDelErr.message ?? '').toContain(
+          'ledger_postings_account_workspace_fkey',
+        );
       } finally {
-        await deletePostings(postingIds);
+        await deletePostings([...txPairIds, ...accPairIds]);
       }
 
       // Positive controls: with the referencing postings gone, restrict no
@@ -1005,15 +1088,16 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       await admin.query('delete from public.transactions where id = $1', [
         dispTxId,
       ]);
-      await admin.query('delete from public.accounts where id = $1', [
-        dispAccId,
-      ]);
+      await admin.query(
+        'delete from public.accounts where id = any($1::uuid[])',
+        [[dispAccId, dispAcc2Id]],
+      );
       await admin.query('delete from public.workspaces where id = $1', [
         dispWsId,
       ]);
       const gone = await admin.query<{ n: number }>(
         'select count(*)::int as n from public.accounts where id = $1',
-        [dispAccId],
+        [dispAcc2Id],
       );
       expect(gone.rows[0].n).toBe(0);
     });
@@ -1027,11 +1111,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       await admin.query(
         `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
          values ($1, $2, $3, 'owner', 'active')`,
-        [
-          '00000000-0000-0000-0000-000000000717',
-          dosWsId,
-          ownerA,
-        ],
+        ['00000000-0000-0000-0000-000000000717', dosWsId, ownerA],
       );
       const dosAccId = '00000000-0000-0000-0000-000000000775';
       const dosTxId = '00000000-0000-0000-0000-000000000785';
@@ -1046,22 +1126,16 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
          values ($1, $2, $3, 'income', 'confirmed', '900', 'USD', '2026-08-24T12:00:00Z', $4)`,
         [dosTxId, dosWsId, dosAccId, ownerA],
       );
-      const postingIds = [
-        await seedPosting({
-          workspaceId: dosWsId,
-          transactionId: dosTxId,
-          accountId: dosAccId,
-          legKind: 'account',
-          amountMinor: '900',
-        }),
-        await seedPosting({
-          workspaceId: dosWsId,
-          transactionId: dosTxId,
-          accountId: null,
-          legKind: 'external',
-          amountMinor: '-900',
-        }),
-      ];
+      const postingIds = (
+        await admin.query<{ id: string }>(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           values ($1, $2, $3, 'account', '900', 'USD', 'confirmed', '2026-08-24T12:00:00Z'),
+                  ($1, $2, null, 'external', '-900', 'USD', 'confirmed', '2026-08-24T12:00:00Z')
+           returning id`,
+          [dosWsId, dosTxId, dosAccId],
+        )
+      ).rows.map((r) => r.id);
       expect(postingIds).toHaveLength(2);
 
       // Before the fix shape (single-column FKs) a cross-workspace poison row
@@ -1145,7 +1219,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       expect(viewerErr.message ?? '').toContain('row-level security policy');
       expect(viewerErr.message ?? '').not.toContain('permission denied');
 
-      const controlId = await asSubject(ownerA, async (client) => {
+      const controlIds = await asSubject(ownerA, async (client) => {
         const res = await client.query<{ id: string }>(
           `insert into public.ledger_postings
              (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
@@ -1154,36 +1228,26 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
            returning id`,
           [ws1Id, transaction1Id, account1Id],
         );
-        return res.rows[0].id;
+        return res.rows.map((r) => r.id);
       });
       try {
-        const check = await admin.query(
-          'select 1 from public.ledger_postings where id = $1',
-          [controlId],
+        const check = await admin.query<{ n: number }>(
+          'select count(*)::int as n from public.ledger_postings where id = any($1::uuid[])',
+          [controlIds],
         );
-        expect(check.rows).toHaveLength(1);
+        expect(check.rows[0].n).toBe(2);
       } finally {
-        await deletePostings([controlId]);
+        await deletePostings(controlIds);
       }
     });
 
     it('25. An EDITOR CANNOT update amount_minor — refused by the COLUMN-SCOPED GRANT ("permission denied", NOT a row-level-security message); has_column_privilege pins the structural fact; positive control: the same editor updates status', async () => {
-      const targetIds = [
-        await seedPosting({
-          workspaceId: ws1Id,
-          transactionId: transaction1Id,
-          accountId: account1Id,
-          legKind: 'account',
-          amountMinor: '600',
-        }),
-        await seedPosting({
-          workspaceId: ws1Id,
-          transactionId: transaction1Id,
-          accountId: null,
-          legKind: 'external',
-          amountMinor: '-600',
-        }),
-      ];
+      const targetIds = await seedBalancedPair({
+        workspaceId: ws1Id,
+        transactionId: transaction1Id,
+        accountId: account1Id,
+        amountMinor: '600',
+      });
       try {
         const grantRes = await admin.query<{
           amount_updatable: boolean;
@@ -1239,22 +1303,12 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
     });
 
     it('26. No delete is possible, BY GRANT: DELETE raises 42501 with a permission-denied message, not a row-level-security one', async () => {
-      const targetIds = [
-        await seedPosting({
-          workspaceId: ws1Id,
-          transactionId: transaction1Id,
-          accountId: account1Id,
-          legKind: 'account',
-          amountMinor: '150',
-        }),
-        await seedPosting({
-          workspaceId: ws1Id,
-          transactionId: transaction1Id,
-          accountId: null,
-          legKind: 'external',
-          amountMinor: '-150',
-        }),
-      ];
+      const targetIds = await seedBalancedPair({
+        workspaceId: ws1Id,
+        transactionId: transaction1Id,
+        accountId: account1Id,
+        amountMinor: '150',
+      });
       try {
         const delErr = await capturePgError(() =>
           asSubject(ownerA, (client) =>
@@ -1278,22 +1332,12 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
     });
 
     it('27. An owner reads workspace postings, a viewer reads them too, an outsider reads none', async () => {
-      const visibleIds = [
-        await seedPosting({
-          workspaceId: ws1Id,
-          transactionId: transaction1Id,
-          accountId: account1Id,
-          legKind: 'account',
-          amountMinor: '80',
-        }),
-        await seedPosting({
-          workspaceId: ws1Id,
-          transactionId: transaction1Id,
-          accountId: null,
-          legKind: 'external',
-          amountMinor: '-80',
-        }),
-      ];
+      const visibleIds = await seedBalancedPair({
+        workspaceId: ws1Id,
+        transactionId: transaction1Id,
+        accountId: account1Id,
+        amountMinor: '80',
+      });
       try {
         const ownerRes = await asSubject(ownerA, (client) =>
           client.query(
