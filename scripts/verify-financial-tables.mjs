@@ -40,9 +40,8 @@ export function findFinancialTableViolations(sqlSources) {
   // from the matches and identifiers never contain the sentinel, so no
   // restore pass is needed.
   const escapedQuoteSentinel = '\uE000';
-  const normalisedSql = strippedSql.replace(
-    /'(?:[^']|'')*'/g,
-    (literal) => literal.replaceAll("''", escapedQuoteSentinel),
+  const normalisedSql = strippedSql.replace(/'(?:[^']|'')*'/g, (literal) =>
+    literal.replaceAll("''", escapedQuoteSentinel),
   );
   const commentRegex =
     /comment\s+on\s+table\s+([a-zA-Z0-9_."]+)\s+is\s+['"]([^'"]*fitness:financial[^'"]*)['"]/gi;
