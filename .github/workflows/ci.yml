@@ -134,6 +134,9 @@ jobs:
       - name: transactions schema integration
         shell: bash
         run: pnpm test:integration:transactions-schema
+      - name: ledger postings schema integration
+        shell: bash
+        run: pnpm test:integration:ledger-postings-schema
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
