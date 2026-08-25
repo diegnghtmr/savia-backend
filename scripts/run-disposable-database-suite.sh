@@ -17,6 +17,7 @@ case "$spec" in
   test/identity/command-idempotency.integration-spec.ts) ;;
   test/identity/accounts-schema.integration-spec.ts) ;;
   test/accounts/list-accounts.integration-spec.ts) ;;
+  test/accounts/get-account.integration-spec.ts) ;;
   test/identity/transactions-schema.integration-spec.ts) ;;
   test/identity/ledger-postings-schema.integration-spec.ts) ;;
   test/identity/membership-write-rls.integration-spec.ts) ;;
