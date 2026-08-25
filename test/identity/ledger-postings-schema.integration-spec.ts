@@ -246,7 +246,8 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
   afterAll(async () => {
     // Defensive sweep: postings die first (they carry restrict references),
     // then the workspace cascade removes the rest. Leftover UNBALANCED legs
-    // would poison every later commit through the global balance trigger.
+    // would poison any later commit that writes to their own group through
+    // the balance trigger's scoped scan.
     if (admin) {
       await admin
         .query(

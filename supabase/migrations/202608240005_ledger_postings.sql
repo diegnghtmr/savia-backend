@@ -191,10 +191,22 @@ security definer
 set search_path = pg_catalog, public
 as $$
 begin
+  -- Scoped to the affected parent: NEW on insert/update, OLD on delete
+  -- (reading the unassigned row's field yields NULL in PL/pgSQL, hence the
+  -- coalesce pair). ledger_postings_parent_exactly_one_check guarantees
+  -- exactly one term is non-null, so no cross-parent OR-leak is possible;
+  -- the where has already scoped the scan to one parent, so grouping by
+  -- currency alone is exact. The parent indexes make this Theta(group size)
+  -- per firing. A whole-table scan here was Theta(N*M) per commit inside the
+  -- commit critical path with no usable index, and coupled every workspace's
+  -- writes to any out-of-band unbalanced group anywhere in the database,
+  -- reported with an error naming no group.
   if exists (
     select 1
     from public.ledger_postings posting
-    group by posting.transaction_id, posting.transfer_id, posting.currency
+    where posting.transaction_id = coalesce(new.transaction_id, old.transaction_id)
+       or posting.transfer_id    = coalesce(new.transfer_id, old.transfer_id)
+    group by posting.currency
     having sum(posting.amount_minor) <> 0
         or count(*) < 2
   ) then
