@@ -1,4 +1,5 @@
-// Migrations under test: 202608240003_transaction_tables.sql
+// Migrations under test: 202608240003_transaction_tables.sql,
+// 202608240004_transaction_account_workspace_binding.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -915,6 +916,148 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
         [visibleTxId],
       );
       expect(stillThere.rows).toHaveLength(1);
+    });
+  });
+
+  describe('Cross-workspace account binding (202608240004_transaction_account_workspace_binding.sql)', () => {
+    // Disposable fixtures, isolated from the shared ones above: test 14
+    // already deleted account2Id by the time these run.
+    const bindAttackWsId = '00000000-0000-0000-0000-000000000854';
+    const bindVictimWsId = '00000000-0000-0000-0000-000000000855';
+    const bindAccAttackId = '00000000-0000-0000-0000-000000000874';
+    const bindAccVictimId = '00000000-0000-0000-0000-000000000875';
+
+    beforeAll(async () => {
+      await admin.query(
+        `insert into public.workspaces (id, name, kind, base_currency, created_by)
+         values ($1, 'Binding Attack WS', 'shared', 'USD', $2),
+                ($3, 'Binding Victim WS', 'shared', 'USD', $4)`,
+        [bindAttackWsId, ownerA, bindVictimWsId, ownerB],
+      );
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, created_by)
+         values ($1, $2, 'Binding Attack Account', 'cash', 'USD', $3),
+                ($4, $5, 'Binding Victim Account', 'cash', 'USD', $6)`,
+        [
+          bindAccAttackId,
+          bindAttackWsId,
+          ownerA,
+          bindAccVictimId,
+          bindVictimWsId,
+          ownerB,
+        ],
+      );
+    });
+
+    afterAll(async () => {
+      // Defensive isolation: if the binding ever regresses, a poisoned
+      // cross-workspace row left behind by test 22 must not brick this
+      // cleanup with 23503 the same way it bricks production deletes.
+      await admin.query(
+        'delete from public.transactions where workspace_id = any($1::uuid[])',
+        [[bindAttackWsId, bindVictimWsId]],
+      );
+      // Workspace deletes cascade accounts and any surviving transactions
+      // away; the victim workspace may already be gone (test 24).
+      await admin.query(
+        'delete from public.workspaces where id = any($1::uuid[])',
+        [[bindAttackWsId, bindVictimWsId]],
+      );
+    });
+
+    it('22. Inserting a transaction whose account belongs to a DIFFERENT workspace is refused with 23503 naming transactions_account_workspace_fkey — superuser path, so neither RLS nor grants can be the refuser', async () => {
+      // The approved superuser-isolation technique: this insert runs as
+      // superuser, bypassing RLS and every grant, so the ONLY mechanism that
+      // can refuse it is the foreign key. The old single-column
+      // `references public.accounts(id)` FK ACCEPTED this insert (RI checks
+      // bypass row security), which is exactly the defect being fixed.
+      const crossErr = await capturePgError(() =>
+        seedTransaction(subject(893), bindAttackWsId, bindAccVictimId, ownerA),
+      );
+      expect(crossErr.code).toBe('23503');
+      expect(crossErr.message ?? '').toContain(
+        'violates foreign key constraint',
+      );
+      // Pin the CONCRETE constraint name, not just the message family.
+      expect(crossErr.message ?? '').toContain(
+        'transactions_account_workspace_fkey',
+      );
+      expect(crossErr.message ?? '').not.toContain('row-level security');
+      expect(crossErr.message ?? '').not.toContain('permission denied');
+
+      // Structural pin: exactly one FK on transactions carries the composite
+      // shape and restrict action, so a future revert cannot pass silently.
+      const fkRes = await admin.query<{ def: string; confdeltype: string }>(
+        `select pg_get_constraintdef(oid) as def, confdeltype
+           from pg_constraint
+          where conrelid = 'public.transactions'::regclass
+            and conname = 'transactions_account_workspace_fkey'`,
+      );
+      expect(fkRes.rows).toHaveLength(1);
+      expect(fkRes.rows[0].def).toMatch(
+        /foreign key \(workspace_id, account_id\) references accounts\(workspace_id, id\) on delete restrict/i,
+      );
+      expect(fkRes.rows[0].confdeltype).toBe('r');
+    });
+
+    it('23. Positive control on the identical superuser path: the same insert with a SAME-WORKSPACE account succeeds', async () => {
+      // Without this control, a binding constraint that refuses EVERYTHING
+      // would still pass test 22.
+      const controlId = subject(894);
+      try {
+        await seedTransaction(
+          controlId,
+          bindAttackWsId,
+          bindAccAttackId,
+          ownerA,
+        );
+        const check = await admin.query(
+          'select 1 from public.transactions where id = $1',
+          [controlId],
+        );
+        expect(check.rows).toHaveLength(1);
+      } finally {
+        await deleteTransactions([controlId]);
+      }
+    });
+
+    it('24. REGRESSION (the DoS this binding removes): deleting a workspace holding an account referenced by its OWN transaction SUCCEEDS — both rows die together in the cascade', async () => {
+      // Before the fix this shape was safe only by convention: the poison was
+      // a CROSS-workspace reference. After it, every reference is necessarily
+      // same-workspace, so this must keep working — if it broke, the fix
+      // would have RELOCATED the DoS instead of removing it.
+      const dosTxId = subject(895);
+      // Defensive isolation: purge anything earlier tests may have left in
+      // these fixtures (a poison row from a refused-refusal state would
+      // otherwise fail THIS delete for reasons this test does not own), so
+      // the assertion below is exclusively about same-workspace references.
+      await admin.query(
+        'delete from public.transactions where workspace_id = any($1::uuid[])',
+        [[bindAttackWsId, bindVictimWsId]],
+      );
+      await seedTransaction(dosTxId, bindVictimWsId, bindAccVictimId, ownerB);
+
+      const beforeRes = await admin.query(
+        'select 1 from public.transactions where id = $1',
+        [dosTxId],
+      );
+      expect(beforeRes.rows).toHaveLength(1);
+
+      await admin.query('delete from public.workspaces where id = $1', [
+        bindVictimWsId,
+      ]);
+
+      const txGoneRes = await admin.query(
+        'select 1 from public.transactions where id = $1',
+        [dosTxId],
+      );
+      expect(txGoneRes.rows).toHaveLength(0);
+
+      const accGoneRes = await admin.query(
+        'select 1 from public.accounts where id = $1',
+        [bindAccVictimId],
+      );
+      expect(accGoneRes.rows).toHaveLength(0);
     });
   });
 });
