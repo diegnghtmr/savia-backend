@@ -1,6 +1,6 @@
 import type { FieldViolation } from '../platform/problem-details.js';
+import { decodeCursor } from '../platform/cursor.js';
 import {
-  decodeAccountCursor,
   isAccountStatus,
   type AccountListQuery,
   type AccountStatus,
@@ -52,7 +52,7 @@ export function createAccountListQuery(
 
   let cursor: AccountListQuery['cursor'];
   if (input.cursorParam !== undefined) {
-    cursor = decodeAccountCursor(input.cursorParam);
+    cursor = decodeCursor(input.cursorParam);
     if (cursor === undefined) {
       violations.push({
         field: 'cursor',

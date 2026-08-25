@@ -1,15 +1,12 @@
+import type { Cursor } from '../platform/cursor.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   WorkspaceCreateCommand,
   WorkspaceUpdateCommand,
 } from './workspace-command.js';
+import type { WorkspaceMemberStatus, WorkspaceRole } from './workspace.port.js';
 import type {
-  Workspace,
-  WorkspaceCursor,
-  WorkspaceMemberStatus,
-  WorkspaceRole,
-} from './workspace.port.js';
-import type {
+  WorkspaceItem,
   WorkspaceMembershipRecord,
   WorkspaceRecord,
   WorkspaceStore,
@@ -82,28 +79,54 @@ values ($1, $2, $3, $4)`,
   public async listWorkspaces(
     client: TransactionClient,
     subject: string,
-    cursor: WorkspaceCursor | undefined,
+    cursor: Cursor | undefined,
     limit: number,
-  ): Promise<readonly Workspace[]> {
+  ): Promise<readonly WorkspaceItem[]> {
     const result = await client.query<WorkspaceListRow>(
       cursor === undefined
-        ? 'select w.id::text, w.name, w.kind, w.base_currency as "baseCurrency", m.role, w.created_at as "createdAt", w.version from public.workspaces w join public.workspace_memberships m on m.workspace_id = w.id and m.profile_id = $1 order by w.created_at, w.id limit $2'
-        : 'select w.id::text, w.name, w.kind, w.base_currency as "baseCurrency", m.role, w.created_at as "createdAt", w.version from public.workspaces w join public.workspace_memberships m on m.workspace_id = w.id and m.profile_id = $1 where (w.created_at, w.id) > ($2, $3) order by w.created_at, w.id limit $4',
+        ? `select w.id::text,
+                  w.name,
+                  w.kind,
+                  w.base_currency as "baseCurrency",
+                  m.role,
+                  w.created_at as "createdAt",
+                  w.version,
+                  to_char(w.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
+             from public.workspaces w
+             join public.workspace_memberships m on m.workspace_id = w.id and m.profile_id = $1
+            order by w.created_at, w.id
+            limit $2`
+        : `select w.id::text,
+                  w.name,
+                  w.kind,
+                  w.base_currency as "baseCurrency",
+                  m.role,
+                  w.created_at as "createdAt",
+                  w.version,
+                  to_char(w.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
+             from public.workspaces w
+             join public.workspace_memberships m on m.workspace_id = w.id and m.profile_id = $1
+            where (w.created_at, w.id) > ($2::timestamptz, $3::uuid)
+            order by w.created_at, w.id
+            limit $4`,
       cursor === undefined
         ? [subject, limit]
         : [subject, cursor.createdAt, cursor.id, limit],
     );
     return result.rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      kind: row.kind,
-      baseCurrency: row.baseCurrency,
-      role: row.role,
-      createdAt:
-        row.createdAt instanceof Date
-          ? row.createdAt.toISOString()
-          : String(row.createdAt),
-      version: row.version,
+      workspace: {
+        id: row.id,
+        name: row.name,
+        kind: row.kind,
+        baseCurrency: row.baseCurrency,
+        role: row.role,
+        createdAt:
+          row.createdAt instanceof Date
+            ? row.createdAt.toISOString()
+            : String(row.createdAt),
+        version: row.version,
+      },
+      cursorAt: row.cursorAt,
     }));
   }
 
@@ -182,4 +205,5 @@ interface WorkspaceListRow extends Record<string, unknown> {
   readonly role: WorkspaceRole;
   readonly createdAt: Date | string;
   readonly version: number;
+  readonly cursorAt: string;
 }

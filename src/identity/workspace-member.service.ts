@@ -2,8 +2,8 @@ import type { IdempotencyStore } from './idempotency.port.js';
 import { computeRequestFingerprint } from './idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type { WorkspaceMemberUpdateCommand } from './workspace-member-command.js';
+import { encodeCursor } from '../platform/cursor.js';
 import {
-  encodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   WORKSPACE_MEMBER_REMOVE_OUTCOMES,
   WORKSPACE_MEMBER_UPDATE_OUTCOMES,
@@ -48,6 +48,11 @@ export interface WorkspaceMembershipDetailRecord {
   readonly version: number;
 }
 
+export interface WorkspaceMemberItem {
+  readonly member: WorkspaceMember;
+  readonly cursorAt: string;
+}
+
 export interface WorkspaceMemberStore {
   readMembership(
     client: TransactionClient,
@@ -59,7 +64,7 @@ export interface WorkspaceMemberStore {
     workspaceId: string,
     cursor: WorkspaceMemberCursor | undefined,
     limit: number,
-  ): Promise<readonly WorkspaceMember[]>;
+  ): Promise<readonly WorkspaceMemberItem[]>;
   readWorkspaceKind(
     client: TransactionClient,
     workspaceId: string,
@@ -131,14 +136,15 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
         query.limit + 1,
       );
       const hasNextPage = rows.length > query.limit;
-      const items = hasNextPage ? rows.slice(0, query.limit) : rows;
-      const lastItem = items[items.length - 1];
+      const visible = hasNextPage ? rows.slice(0, query.limit) : rows;
+      const items = visible.map((entry) => entry.member);
+      const lastItem = visible[visible.length - 1];
       const nextCursor =
         hasNextPage && lastItem !== undefined
-          ? encodeMemberCursor({
+          ? encodeCursor({
               workspaceId,
-              joinedAt: lastItem.joinedAt,
-              membershipId: lastItem.id,
+              createdAt: lastItem.cursorAt,
+              id: lastItem.member.id,
             })
           : null;
       return {

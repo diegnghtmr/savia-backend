@@ -3,9 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   ACCOUNT_LIST_OUTCOMES,
-  decodeAccountCursor,
   type Account,
 } from '../../src/accounts/accounts.port.js';
+import { decodeCursor } from '../../src/platform/cursor.js';
 import { AccountsService } from '../../src/accounts/accounts.service.js';
 import { PostgresAccountsAdapter } from '../../src/accounts/postgres-accounts.adapter.js';
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
@@ -274,8 +274,8 @@ describe('AccountsService listAccounts database boundary', () => {
       if (nextCursor === null) {
         throw new Error('hasNextPage true but nextCursor null');
       }
-      expect(decodeAccountCursor(nextCursor)).toBeDefined();
-      cursor = decodeAccountCursor(nextCursor);
+      expect(decodeCursor(nextCursor)).toBeDefined();
+      cursor = decodeCursor(nextCursor);
     }
     expect(walked).toEqual(expectedOrder);
     expect(new Set(walked).size).toBe(walked.length);
@@ -345,8 +345,8 @@ describe('AccountsService listAccounts database boundary', () => {
       if (nextCursor === null) {
         throw new Error('hasNextPage true but nextCursor null');
       }
-      expect(decodeAccountCursor(nextCursor)).toBeDefined();
-      cursor = decodeAccountCursor(nextCursor);
+      expect(decodeCursor(nextCursor)).toBeDefined();
+      cursor = decodeCursor(nextCursor);
     }
     const expectedActiveOrder = [
       accountId(1006),

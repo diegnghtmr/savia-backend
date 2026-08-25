@@ -9,10 +9,8 @@ import { IdempotencyService } from '../../src/identity/idempotency.service.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import type { WorkspaceCreateCommand } from '../../src/identity/workspace-command.js';
-import {
-  decodeCursor,
-  WORKSPACE_CREATE_OUTCOME_KINDS,
-} from '../../src/identity/workspace.port.js';
+import { decodeCursor } from '../../src/platform/cursor.js';
+import { WORKSPACE_CREATE_OUTCOME_KINDS } from '../../src/identity/workspace.port.js';
 import {
   WorkspaceService,
   type WorkspaceStore,

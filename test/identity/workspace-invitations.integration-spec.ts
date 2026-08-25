@@ -6,7 +6,7 @@ import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresIdempotencyAdapter } from '../../src/identity/postgres-idempotency.adapter.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { PostgresWorkspaceInvitationAdapter } from '../../src/identity/postgres-workspace-invitation.adapter.js';
-import { decodeCursor } from '../../src/identity/workspace.port.js';
+import { decodeCursor } from '../../src/platform/cursor.js';
 import {
   WORKSPACE_INVITATION_CREATE_OUTCOMES,
   WORKSPACE_INVITATION_LIST_OUTCOMES,

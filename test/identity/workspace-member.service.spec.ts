@@ -4,9 +4,11 @@ import type { IdempotencyStore } from '../../src/identity/idempotency.port.js';
 import { computeRequestFingerprint } from '../../src/identity/idempotency.service.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
-  decodeMemberCursor,
-  encodeMemberCursor,
-  MAX_MEMBER_CURSOR_LENGTH,
+  decodeCursor,
+  encodeCursor,
+  MAX_CURSOR_LENGTH,
+} from '../../src/platform/cursor.js';
+import {
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   WORKSPACE_MEMBER_REMOVE_OUTCOMES,
   WORKSPACE_MEMBER_UPDATE_OUTCOMES,
@@ -108,7 +110,10 @@ describe('WorkspaceMemberService.listWorkspaceMembers', () => {
         role: 'owner',
         status: WORKSPACE_MEMBER_STATUS.ACTIVE,
       }),
-      listRoster: vi.fn().mockResolvedValue([fakeMember1, fakeMember2]),
+      listRoster: vi.fn().mockResolvedValue([
+        { member: fakeMember1, cursorAt: '2026-07-15T01:00:00.000000Z' },
+        { member: fakeMember2, cursorAt: '2026-07-15T02:00:00.000000Z' },
+      ]),
     } as unknown as WorkspaceMemberStore;
     const fakeTransaction: WorkspaceMemberReadTransaction = {
       run: vi.fn(),
@@ -135,9 +140,11 @@ describe('WorkspaceMemberService.listWorkspaceMembers', () => {
         role: 'owner',
         status: WORKSPACE_MEMBER_STATUS.ACTIVE,
       }),
-      listRoster: vi
-        .fn()
-        .mockResolvedValue([fakeMember1, fakeMember2, fakeMember3]),
+      listRoster: vi.fn().mockResolvedValue([
+        { member: fakeMember1, cursorAt: '2026-07-15T01:00:00.000000Z' },
+        { member: fakeMember2, cursorAt: '2026-07-15T02:00:00.000000Z' },
+        { member: fakeMember3, cursorAt: '2026-07-15T03:00:00.000000Z' },
+      ]),
     } as unknown as WorkspaceMemberStore;
     const fakeTransaction: WorkspaceMemberReadTransaction = {
       run: vi.fn(),
@@ -170,7 +177,10 @@ describe('WorkspaceMemberService.listWorkspaceMembers', () => {
         role: 'owner',
         status: WORKSPACE_MEMBER_STATUS.ACTIVE,
       }),
-      listRoster: vi.fn().mockResolvedValue([fakeMember1, fakeMember2]),
+      listRoster: vi.fn().mockResolvedValue([
+        { member: fakeMember1, cursorAt: '2026-07-15T01:00:00.000000Z' },
+        { member: fakeMember2, cursorAt: '2026-07-15T02:00:00.000000Z' },
+      ]),
     } as unknown as WorkspaceMemberStore;
     const fakeTransaction: WorkspaceMemberReadTransaction = {
       run: vi.fn(),
@@ -197,9 +207,11 @@ describe('WorkspaceMemberService.listWorkspaceMembers', () => {
         role: 'owner',
         status: WORKSPACE_MEMBER_STATUS.ACTIVE,
       }),
-      listRoster: vi
-        .fn()
-        .mockResolvedValue([fakeMember1, fakeMember2, fakeMember3]),
+      listRoster: vi.fn().mockResolvedValue([
+        { member: fakeMember1, cursorAt: '2026-07-15T01:00:00.000000Z' },
+        { member: fakeMember2, cursorAt: '2026-07-15T02:00:00.000000Z' },
+        { member: fakeMember3, cursorAt: '2026-07-15T03:00:00.000000Z' },
+      ]),
     } as unknown as WorkspaceMemberStore;
     const fakeTransaction: WorkspaceMemberReadTransaction = {
       run: vi.fn(),
@@ -216,11 +228,11 @@ describe('WorkspaceMemberService.listWorkspaceMembers', () => {
     if (outcome.kind === WORKSPACE_MEMBER_LIST_OUTCOMES.OK) {
       const nextCursor = outcome.page.pageInfo.nextCursor;
       expect(nextCursor).not.toBeNull();
-      const decoded = decodeMemberCursor(nextCursor!, dummyWorkspaceId);
+      const decoded = decodeCursor(nextCursor!, dummyWorkspaceId);
       expect(decoded).toEqual({
         workspaceId: dummyWorkspaceId,
-        joinedAt: fakeMember2.joinedAt,
-        membershipId: fakeMember2.id,
+        createdAt: '2026-07-15T02:00:00.000000Z',
+        id: fakeMember2.id,
       });
     }
   });
@@ -790,53 +802,53 @@ describe('WorkspaceMemberService.updateWorkspaceMember', () => {
   });
 });
 
-describe('encodeMemberCursor and decodeMemberCursor', () => {
+describe('encodeCursor and decodeCursor with workspaceId binding', () => {
   const wsId = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
   const otherWsId = '8c9e6679-7425-40de-944b-e07fc1f90ae8';
-  const joinedAt = '2026-07-15T01:00:00.000Z';
+  const createdAt = '2026-07-15T01:00:00.000000Z';
   const memId = '11111111-1111-1111-1111-111111111111';
 
   it('round-trips a valid member cursor', () => {
-    const raw = encodeMemberCursor({
+    const raw = encodeCursor({
       workspaceId: wsId,
-      joinedAt,
-      membershipId: memId,
+      createdAt,
+      id: memId,
     });
-    expect(decodeMemberCursor(raw)).toEqual({
+    expect(decodeCursor(raw)).toEqual({
       workspaceId: wsId,
-      joinedAt,
-      membershipId: memId,
+      createdAt,
+      id: memId,
     });
-    expect(decodeMemberCursor(raw, wsId)).toEqual({
+    expect(decodeCursor(raw, wsId)).toEqual({
       workspaceId: wsId,
-      joinedAt,
-      membershipId: memId,
+      createdAt,
+      id: memId,
     });
   });
 
   it('rejects a cursor encoded for another workspace when expectedWorkspaceId is provided', () => {
-    const raw = encodeMemberCursor({
+    const raw = encodeCursor({
       workspaceId: otherWsId,
-      joinedAt,
-      membershipId: memId,
+      createdAt,
+      id: memId,
     });
-    expect(decodeMemberCursor(raw, wsId)).toBeUndefined();
+    expect(decodeCursor(raw, wsId)).toBeUndefined();
   });
 
-  it('rejects an over-long cursor exceeding MAX_MEMBER_CURSOR_LENGTH before JSON parsing', () => {
-    const raw = encodeMemberCursor({
+  it('rejects an over-long cursor exceeding MAX_CURSOR_LENGTH before JSON parsing', () => {
+    const raw = encodeCursor({
       workspaceId: wsId,
-      joinedAt,
-      membershipId: memId,
+      createdAt,
+      id: memId,
     });
-    expect(raw.length).toBeLessThanOrEqual(MAX_MEMBER_CURSOR_LENGTH);
-    const overlong = raw + 'A'.repeat(MAX_MEMBER_CURSOR_LENGTH);
-    expect(overlong.length).toBeGreaterThan(MAX_MEMBER_CURSOR_LENGTH);
+    expect(raw.length).toBeLessThanOrEqual(MAX_CURSOR_LENGTH);
+    const overlong = raw + 'A'.repeat(MAX_CURSOR_LENGTH);
+    expect(overlong.length).toBeGreaterThan(MAX_CURSOR_LENGTH);
 
     const parseSpy = vi.spyOn(JSON, 'parse');
     try {
       parseSpy.mockClear();
-      expect(decodeMemberCursor(overlong)).toBeUndefined();
+      expect(decodeCursor(overlong)).toBeUndefined();
       expect(parseSpy).not.toHaveBeenCalled();
     } finally {
       parseSpy.mockRestore();
@@ -845,39 +857,39 @@ describe('encodeMemberCursor and decodeMemberCursor', () => {
 
   it('rejects a cursor with non-canonical payload such as trailing whitespace', () => {
     const padded = Buffer.from(
-      JSON.stringify([wsId, joinedAt, memId]) + '   ',
+      JSON.stringify([wsId, createdAt, memId]) + '   ',
     ).toString('base64url');
-    expect(decodeMemberCursor(padded)).toBeUndefined();
+    expect(decodeCursor(padded)).toBeUndefined();
   });
 
   it('rejects non-base64url characters and empty string', () => {
-    expect(decodeMemberCursor('')).toBeUndefined();
-    expect(decodeMemberCursor('!!!not-base64url!!!')).toBeUndefined();
-    expect(decodeMemberCursor('abc\0def')).toBeUndefined();
+    expect(decodeCursor('')).toBeUndefined();
+    expect(decodeCursor('!!!not-base64url!!!')).toBeUndefined();
+    expect(decodeCursor('abc\0def')).toBeUndefined();
   });
 
   it('rejects year-0000 timestamp and extended-year timestamp', () => {
     const y0000 = Buffer.from(
-      JSON.stringify([wsId, '0000-01-01T00:00:00.000Z', memId]),
+      JSON.stringify([wsId, '0000-01-01T00:00:00.000000Z', memId]),
     ).toString('base64url');
-    expect(decodeMemberCursor(y0000)).toBeUndefined();
+    expect(decodeCursor(y0000)).toBeUndefined();
 
     const extended = Buffer.from(
-      JSON.stringify([wsId, '+275760-09-13T00:00:00.000Z', memId]),
+      JSON.stringify([wsId, '+275760-09-13T00:00:00.000000Z', memId]),
     ).toString('base64url');
-    expect(decodeMemberCursor(extended)).toBeUndefined();
+    expect(decodeCursor(extended)).toBeUndefined();
   });
 
   it('rejects non-UUID workspaceId or membershipId', () => {
     const badWs = Buffer.from(
-      JSON.stringify(['not-a-uuid', joinedAt, memId]),
+      JSON.stringify(['not-a-uuid', createdAt, memId]),
     ).toString('base64url');
-    expect(decodeMemberCursor(badWs)).toBeUndefined();
+    expect(decodeCursor(badWs)).toBeUndefined();
 
     const badMem = Buffer.from(
-      JSON.stringify([wsId, joinedAt, 'not-a-uuid']),
+      JSON.stringify([wsId, createdAt, 'not-a-uuid']),
     ).toString('base64url');
-    expect(decodeMemberCursor(badMem)).toBeUndefined();
+    expect(decodeCursor(badMem)).toBeUndefined();
   });
 });
 
