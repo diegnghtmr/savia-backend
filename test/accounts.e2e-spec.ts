@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ACCOUNTS_PORT,
-  ACCOUNT_READ_OUTCOMES,
   type Account,
   type AccountListOutcome,
   type AccountListQuery,
@@ -513,4 +512,3 @@ describe('GET /v1/accounts/:accountId', () => {
     expect(read).toHaveBeenCalledWith(SUBJECT, WORKSPACE_ID, ACCOUNT.id);
   });
 });
-

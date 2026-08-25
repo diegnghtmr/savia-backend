@@ -138,4 +138,35 @@ export function decodeAccountCursor(raw: string): AccountCursor | undefined {
 
 export interface AccountsPort {
   list(subject: string, query: AccountListQuery): Promise<AccountListOutcome>;
+  read(
+    subject: string,
+    workspaceId: string,
+    accountId: string,
+  ): Promise<AccountReadOutcome>;
 }
+
+export const ACCOUNT_READ_OUTCOMES = {
+  OK: 'ok',
+  FORBIDDEN: 'forbidden',
+  NOT_FOUND: 'not_found',
+} as const;
+export type AccountReadOutcomeKind =
+  (typeof ACCOUNT_READ_OUTCOMES)[keyof typeof ACCOUNT_READ_OUTCOMES];
+
+export interface AccountReadOk {
+  readonly kind: typeof ACCOUNT_READ_OUTCOMES.OK;
+  readonly account: Account;
+}
+export interface AccountReadForbidden {
+  readonly kind: typeof ACCOUNT_READ_OUTCOMES.FORBIDDEN;
+}
+export interface AccountReadNotFound {
+  readonly kind: typeof ACCOUNT_READ_OUTCOMES.NOT_FOUND;
+}
+// getAccount declares 200, 401, 403 and 404 in the authority:
+// - 403 when the caller has no active role in the workspace (or workspace is absent)
+// - 404 when the account does not exist or belongs to another workspace (scoped SQL predicate)
+export type AccountReadOutcome =
+  | AccountReadOk
+  | AccountReadForbidden
+  | AccountReadNotFound;

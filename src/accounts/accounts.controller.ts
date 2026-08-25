@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Inject,
+  Param,
   Query,
   Req,
   Res,
@@ -11,6 +12,7 @@ import type { FastifyReply } from 'fastify';
 
 import {
   ACCOUNT_LIST_OUTCOMES,
+  ACCOUNT_READ_OUTCOMES,
   ACCOUNTS_PORT,
   type AccountsPort,
 } from './accounts.port.js';
@@ -20,6 +22,9 @@ import type { AuthenticatedRequest } from '../identity/authenticated-request.js'
 import { JwtAuthGuard } from '../identity/jwt-auth.guard.js';
 import { PROBLEM_TYPES, sendProblem } from '../identity/problem-details.js';
 import { parseWorkspaceHeader } from '../identity/workspace-header.js';
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Controller('v1/accounts')
 @UseGuards(JwtAuthGuard)
@@ -85,5 +90,60 @@ export class AccountsController {
     }
 
     void reply.status(200).send(outcome.page);
+  }
+
+  @Get(':accountId')
+  public async getAccount(
+    @Param('accountId') accountId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(accountId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid account identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    const outcome = await this.accounts.read(
+      request.identity.subject,
+      header.workspaceId,
+      accountId,
+    );
+
+    if (outcome.kind === ACCOUNT_READ_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_READ_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Account not found',
+        status: 404,
+      });
+      return;
+    }
+
+    void reply
+      .header('etag', `"${outcome.account.version}"`)
+      .status(200)
+      .send(outcome.account);
   }
 }

@@ -1,11 +1,7 @@
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import {
-  ACCOUNT_READ_OUTCOMES,
-  type Account,
-  type AccountReadOutcome,
-} from '../../src/accounts/accounts.port.js';
+import { ACCOUNT_READ_OUTCOMES } from '../../src/accounts/accounts.port.js';
 import { AccountsService } from '../../src/accounts/accounts.service.js';
 import { PostgresAccountsAdapter } from '../../src/accounts/postgres-accounts.adapter.js';
 import { PgTransaction } from '../../src/identity/pg-transaction.js';

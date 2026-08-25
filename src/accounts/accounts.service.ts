@@ -1,11 +1,13 @@
 import type { TransactionClient } from '../identity/pg-transaction.js';
 import {
   ACCOUNT_LIST_OUTCOMES,
+  ACCOUNT_READ_OUTCOMES,
   encodeAccountCursor,
   type Account,
   type AccountCursor,
   type AccountListOutcome,
   type AccountListQuery,
+  type AccountReadOutcome,
   type AccountStatus,
   type AccountsPort,
 } from './accounts.port.js';
@@ -39,6 +41,11 @@ export interface AccountsStore {
     limit: number,
     status: AccountStatus | undefined,
   ): Promise<readonly AccountItem[]>;
+  readAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+  ): Promise<Account | undefined>;
 }
 
 export class AccountsService implements AccountsPort {
@@ -87,6 +94,34 @@ export class AccountsService implements AccountsPort {
             nextCursor,
           },
         },
+      };
+    });
+  }
+
+  public read(
+    subject: string,
+    workspaceId: string,
+    accountId: string,
+  ): Promise<AccountReadOutcome> {
+    return this.transaction.runRead(subject, async (client) => {
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (role === undefined) {
+        // Workspace-level refusal happens before any account lookup.
+        return { kind: ACCOUNT_READ_OUTCOMES.FORBIDDEN };
+      }
+      // The account lookup is scoped strictly by workspace_id in the store predicate,
+      // so an absent account and a foreign workspace's account both return undefined (404).
+      const account = await this.store.readAccount(
+        client,
+        workspaceId,
+        accountId,
+      );
+      if (account === undefined) {
+        return { kind: ACCOUNT_READ_OUTCOMES.NOT_FOUND };
+      }
+      return {
+        kind: ACCOUNT_READ_OUTCOMES.OK,
+        account,
       };
     });
   }

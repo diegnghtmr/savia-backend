@@ -111,4 +111,56 @@ select a.id::text,
       cursorAt: row.cursorAt,
     }));
   }
+
+  public async readAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+  ): Promise<Account | undefined> {
+    // The account lookup is scoped by workspace_id in the SQL predicate itself,
+    // not filtered afterward, so a foreign account is indistinguishable from an absent one.
+    const sql = `
+select a.id::text,
+       a.name,
+       a.type,
+       a.currency,
+       a.status,
+       a.institution,
+       a.masked_number as "maskedNumber",
+       a.description,
+       a.color_token as "colorToken",
+       a.icon,
+       a.include_in_net_worth as "includeInNetWorth",
+       a.created_at as "createdAt",
+       a.updated_at as "updatedAt",
+       a.version,
+       to_char(a.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
+  from public.accounts a
+ where a.workspace_id = $1::uuid
+   and a.id = $2::uuid`;
+    const result = await client.query<AccountRow>(sql, [
+      workspaceId,
+      accountId,
+    ]);
+    const row = result.rows[0];
+    if (!row) {
+      return undefined;
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      currency: row.currency,
+      status: row.status,
+      institution: row.institution,
+      maskedNumber: row.maskedNumber,
+      description: row.description,
+      colorToken: row.colorToken,
+      icon: row.icon,
+      includeInNetWorth: row.includeInNetWorth,
+      createdAt: toIso(row.createdAt),
+      updatedAt: toIso(row.updatedAt),
+      version: row.version,
+    };
+  }
 }
