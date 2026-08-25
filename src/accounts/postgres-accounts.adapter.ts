@@ -19,7 +19,7 @@ interface AccountRow extends Record<string, unknown> {
   readonly version: number;
 }
 
-function toIso(value: Date | string): string {
+export function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : String(value);
 }
 
