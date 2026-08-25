@@ -179,7 +179,7 @@ create policy elevated_reads_ledger_postings
 -- security definer here is LOAD-BEARING, not decoration: as an invoker-rights
 -- function, the scan below would run under the writing subject, whose reads
 -- this table's own FORCE row level security filters -- the exact blindness
--- documented at 202607150001:3-9 -- and could aggregate a PARTIAL group: an
+-- documented at 202607150007:3-9 -- and could aggregate a PARTIAL group: an
 -- invariant that silently fails while appearing to work.
 grant usage, create on schema public to savia_elevated;   -- revoked below (RULING 13)
 grant select on public.ledger_postings to savia_elevated;

@@ -483,7 +483,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       //   right after the FIRST leg must not be rejected;
       // - security definer owned by savia_elevated: an invoker-rights scan
       //   would be filtered by this table's own FORCE row level security and
-      //   could aggregate a PARTIAL group (202607150001:3-9 blindness);
+      //   could aggregate a PARTIAL group (202607150007:3-9 blindness);
       // - savia_elevated is nobypassrls, so the grant alone yields zero rows
       //   (202607150013:11-15 precedent) — it needs its own select POLICY,
       //   pinned here, or the raise is unreachable and the "invariant" is a
