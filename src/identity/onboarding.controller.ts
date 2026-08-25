@@ -21,6 +21,7 @@ import {
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { OnboardingProblemFilter } from './onboarding-problem.filter.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
+import { IDENTITY_PROBLEM_TYPES } from './identity-problem-types.js';
 
 const SUCCESS_STATUS = {
   [BOOTSTRAP_RESULT_KINDS.CREATED]: 201,
@@ -56,7 +57,7 @@ export class OnboardingController {
     }
     if (outcome.kind === BOOTSTRAP_CONFLICT_KINDS.DIFFERENT_REQUEST) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.ONBOARDING_CONFLICT,
+        type: IDENTITY_PROBLEM_TYPES.ONBOARDING_CONFLICT,
         title: 'Onboarding already exists with different data',
         status: 409,
       });

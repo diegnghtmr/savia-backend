@@ -67,6 +67,7 @@ import {
   type WorkspaceCursor,
   type WorkspacePort,
 } from './workspace.port.js';
+import { IDENTITY_PROBLEM_TYPES } from './identity-problem-types.js';
 
 @Controller('v1/workspaces')
 @UseGuards(JwtAuthGuard)
@@ -419,7 +420,7 @@ export class WorkspaceController {
 
     if (outcome.kind === WORKSPACE_MEMBER_UPDATE_OUTCOMES.PERSONAL_WORKSPACE) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+        type: IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
         title: 'Personal workspace membership cannot be updated',
         status: 409,
       });
@@ -428,7 +429,7 @@ export class WorkspaceController {
 
     if (outcome.kind === WORKSPACE_MEMBER_UPDATE_OUTCOMES.LAST_OWNER_REQUIRED) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+        type: IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
         title: 'Collaborative workspace requires at least one active owner',
         status: 409,
       });
@@ -524,7 +525,7 @@ export class WorkspaceController {
 
     if (outcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.PERSONAL_WORKSPACE) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+        type: IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
         title: 'Personal workspace membership cannot be removed',
         status: 409,
       });
@@ -533,7 +534,7 @@ export class WorkspaceController {
 
     if (outcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+        type: IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
         title: 'Collaborative workspace requires at least one active owner',
         status: 409,
       });
@@ -577,18 +578,21 @@ export class WorkspaceController {
       }
       if (outcome.status === 409) {
         if (
-          outcome.problemType === PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP
+          outcome.problemType ===
+          IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP
         ) {
           sendProblem(reply, {
-            type: PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+            type: IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
             title: 'Personal workspace membership cannot be removed',
             status: 409,
           });
           return;
         }
-        if (outcome.problemType === PROBLEM_TYPES.LAST_OWNER_REQUIRED) {
+        if (
+          outcome.problemType === IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED
+        ) {
           sendProblem(reply, {
-            type: PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+            type: IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
             title: 'Collaborative workspace requires at least one active owner',
             status: 409,
           });
@@ -1017,7 +1021,7 @@ export class WorkspaceController {
       outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.PERSONAL_WORKSPACE
     ) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
+        type: IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
         title: 'Personal workspaces cannot have invitations',
         status: 422,
       });
@@ -1026,7 +1030,7 @@ export class WorkspaceController {
 
     if (outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.EXISTING_MEMBER) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER,
+        type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER,
         title: 'Workspace member already active with this email',
         status: 409,
       });
@@ -1035,7 +1039,7 @@ export class WorkspaceController {
 
     if (outcome.kind === WORKSPACE_INVITATION_CREATE_OUTCOMES.ALREADY_PENDING) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
+        type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
         title: 'Pending invitation already exists for this email',
         status: 409,
       });
@@ -1132,7 +1136,7 @@ export class WorkspaceController {
 
     if (outcome.kind === WORKSPACE_INVITATION_REVOKE_OUTCOMES.NOT_PENDING) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+        type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
         title: 'Workspace invitation is not pending',
         status: 409,
       });

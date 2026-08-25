@@ -21,6 +21,7 @@ import {
   type WorkspaceMemberStore,
   type WorkspaceMemberTransaction,
 } from '../../src/identity/workspace-member.service.js';
+import { IDENTITY_PROBLEM_TYPES } from '../../src/identity/identity-problem-types.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -942,7 +943,9 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       );
       expect(response.statusCode).toBe(409);
       const body = response.json();
-      expect(body.type).toBe(PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP);
+      expect(body.type).toBe(
+        IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+      );
       expect(body.code).toBe('personal-workspace-membership');
     });
 
@@ -957,7 +960,7 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       expect(response.statusCode).not.toBe(503);
       expect(response.headers['retry-after']).toBeUndefined();
       const body = response.json();
-      expect(body.type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(body.type).toBe(IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED);
       expect(body.code).toBe('last-owner-required');
 
       const check = await admin.query<{ role: string }>(
@@ -1006,7 +1009,7 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       );
       expect(response.statusCode).toBe(409);
       const body = response.json();
-      expect(body.type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(body.type).toBe(IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED);
       expect(body.code).toBe('last-owner-required');
     });
   });
@@ -1379,7 +1382,9 @@ describe('updateWorkspaceMember integration (PATCH /v1/workspaces/{workspaceId}/
       expect(statusCodes).toContain(409);
 
       const loser = res1.statusCode === 409 ? res1 : res2;
-      expect(loser.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(loser.json().type).toBe(
+        IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+      );
       expect(loser.json().code).toBe('last-owner-required');
 
       // Verify at least one active owner remains

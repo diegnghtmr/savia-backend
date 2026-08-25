@@ -11,7 +11,6 @@ export const PROBLEM_CONTENT_TYPE = 'application/problem+json';
 export const PROBLEM_TYPES = {
   VALIDATION_FAILED: `${BASE_URI}/validation-failed`,
   UNAUTHORIZED: `${BASE_URI}/unauthorized`,
-  ONBOARDING_CONFLICT: `${BASE_URI}/onboarding-conflict`,
   CONFLICT: `${BASE_URI}/conflict`,
   INTERNAL: `${BASE_URI}/internal`,
   OUTCOME_UNKNOWN: `${BASE_URI}/outcome-unknown`,
@@ -20,12 +19,6 @@ export const PROBLEM_TYPES = {
   UNPROCESSABLE: `${BASE_URI}/unprocessable`,
   PRECONDITION_FAILED: `${BASE_URI}/precondition-failed`,
   FORBIDDEN: `${BASE_URI}/forbidden`,
-  PERSONAL_WORKSPACE_MEMBERSHIP: `${BASE_URI}/personal-workspace-membership`,
-  LAST_OWNER_REQUIRED: `${BASE_URI}/last-owner-required`,
-  PERSONAL_WORKSPACE_INVITATION: `${BASE_URI}/personal-workspace-invitation`,
-  WORKSPACE_INVITATION_EXISTING_MEMBER: `${BASE_URI}/workspace-invitation-existing-member`,
-  WORKSPACE_INVITATION_ALREADY_PENDING: `${BASE_URI}/workspace-invitation-already-pending`,
-  WORKSPACE_INVITATION_NOT_PENDING: `${BASE_URI}/workspace-invitation-not-pending`,
 } as const;
 export interface Problem {
   readonly type: string;

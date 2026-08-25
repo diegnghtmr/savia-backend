@@ -1,7 +1,6 @@
 import type { IdempotencyStore } from './idempotency.port.js';
 import { computeRequestFingerprint } from './idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
-import { PROBLEM_TYPES } from '../platform/problem-details.js';
 import type { WorkspaceMemberUpdateCommand } from './workspace-member-command.js';
 import {
   encodeMemberCursor,
@@ -26,6 +25,7 @@ import {
   type WorkspaceRole,
 } from './workspace.port.js';
 import type { WorkspaceMembershipRecord } from './workspace.service.js';
+import { IDENTITY_PROBLEM_TYPES } from './identity-problem-types.js';
 
 export interface WorkspaceMemberTransaction {
   run<T>(
@@ -400,7 +400,7 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
         if (kind === WORKSPACE_KIND.PERSONAL) {
           outcomeKind = WORKSPACE_MEMBER_REMOVE_OUTCOMES.PERSONAL_WORKSPACE;
           status = 409;
-          problemType = PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP;
+          problemType = IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP;
         } else {
           // Step 9: Target membership row not found in this workspace
           const targetMembership = await this.store.readMembershipById(
@@ -432,7 +432,7 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
               outcomeKind =
                 WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED;
               status = 409;
-              problemType = PROBLEM_TYPES.LAST_OWNER_REQUIRED;
+              problemType = IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED;
             } else {
               const rowCount = await this.store.deleteMember(
                 client,
@@ -453,7 +453,7 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
                     outcomeKind =
                       WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED;
                     status = 409;
-                    problemType = PROBLEM_TYPES.LAST_OWNER_REQUIRED;
+                    problemType = IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED;
                   } else {
                     throw error;
                   }
@@ -503,12 +503,13 @@ export class WorkspaceMemberService implements WorkspaceMemberPort {
                     outcomeKind =
                       WORKSPACE_MEMBER_REMOVE_OUTCOMES.PERSONAL_WORKSPACE;
                     status = 409;
-                    problemType = PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP;
+                    problemType =
+                      IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP;
                   } else if (residual.role === WORKSPACE_ROLE.OWNER) {
                     outcomeKind =
                       WORKSPACE_MEMBER_REMOVE_OUTCOMES.LAST_OWNER_REQUIRED;
                     status = 409;
-                    problemType = PROBLEM_TYPES.LAST_OWNER_REQUIRED;
+                    problemType = IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED;
                   } else {
                     outcomeKind = WORKSPACE_MEMBER_REMOVE_OUTCOMES.FORBIDDEN;
                     status = 403;

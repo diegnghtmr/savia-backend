@@ -28,6 +28,7 @@ import {
   WORKSPACE_PORT,
   type WorkspacePort,
 } from '../src/identity/workspace.port.js';
+import { IDENTITY_PROBLEM_TYPES } from '../src/identity/identity-problem-types.js';
 
 const SUBJECT = '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d';
 const WORKSPACE_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
@@ -469,7 +470,9 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
     );
     expect(response.statusCode).toBe(409);
     const body = response.json();
-    expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER);
+    expect(body.type).toBe(
+      IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER,
+    );
     expect(body.code).toBe('workspace-invitation-existing-member');
   });
 
@@ -486,7 +489,9 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
     );
     expect(response.statusCode).toBe(409);
     const body = response.json();
-    expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING);
+    expect(body.type).toBe(
+      IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
+    );
     expect(body.code).toBe('workspace-invitation-already-pending');
   });
 
@@ -503,7 +508,9 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
     );
     expect(response.statusCode).toBe(422);
     const body = response.json();
-    expect(body.type).toBe(PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION);
+    expect(body.type).toBe(
+      IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
+    );
     expect(body.code).toBe('personal-workspace-invitation');
   });
 
@@ -583,7 +590,7 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
       kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.REPLAYED,
       status: 409,
       body: {
-        type: PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER,
+        type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER,
         title: 'Workspace member already active with this email',
         status: 409,
       },
@@ -597,7 +604,9 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
     );
     expect(response.statusCode).toBe(409);
     const body = response.json();
-    expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER);
+    expect(body.type).toBe(
+      IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER,
+    );
     expect(body.code).toBe('workspace-invitation-existing-member');
   });
 
@@ -606,7 +615,7 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
       kind: WORKSPACE_INVITATION_CREATE_OUTCOMES.REPLAYED,
       status: 409,
       body: {
-        type: PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
+        type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
         title: 'Pending invitation already exists for this email',
         status: 409,
       },
@@ -620,7 +629,9 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
     );
     expect(response.statusCode).toBe(409);
     const body = response.json();
-    expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING);
+    expect(body.type).toBe(
+      IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
+    );
     expect(body.code).toBe('workspace-invitation-already-pending');
   });
 
@@ -799,7 +810,9 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
       );
       expect(response.statusCode).toBe(409);
       const body = response.json();
-      expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING);
+      expect(body.type).toBe(
+        IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+      );
       expect(body.code).toBe('workspace-invitation-not-pending');
     });
 
@@ -855,7 +868,7 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
         kind: WORKSPACE_INVITATION_REVOKE_OUTCOMES.REPLAYED,
         status: 409,
         body: {
-          type: PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+          type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
           title: 'Workspace invitation is not pending',
           status: 409,
         },
@@ -873,7 +886,9 @@ describe('createWorkspaceInvitation HTTP boundary', () => {
       );
       expect(response.statusCode).toBe(409);
       const body = response.json();
-      expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING);
+      expect(body.type).toBe(
+        IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+      );
       expect(body.code).toBe('workspace-invitation-not-pending');
     });
   });

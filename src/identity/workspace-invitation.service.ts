@@ -24,6 +24,7 @@ import {
   type WorkspaceRole,
 } from './workspace.port.js';
 import type { WorkspaceMembershipRecord } from './workspace.service.js';
+import { IDENTITY_PROBLEM_TYPES } from './identity-problem-types.js';
 
 export interface WorkspaceInvitationTransaction {
   run<T>(
@@ -271,7 +272,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
         return persistAndReturn(
           422,
           {
-            type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
+            type: IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
             title: 'Personal workspaces cannot have invitations',
             status: 422,
           },
@@ -305,7 +306,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
         return persistAndReturn(
           409,
           {
-            type: PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER,
+            type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_EXISTING_MEMBER,
             title: 'Workspace member already active with this email',
             status: 409,
           },
@@ -325,7 +326,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
           return persistAndReturn(
             409,
             {
-              type: PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
+              type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
               title: 'Pending invitation already exists for this email',
               status: 409,
             },
@@ -358,7 +359,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
           return persistAndReturn(
             409,
             {
-              type: PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
+              type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_ALREADY_PENDING,
               title: 'Pending invitation already exists for this email',
               status: 409,
             },
@@ -405,7 +406,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
             return persistAndReturn(
               422,
               {
-                type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
+                type: IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
                 title: 'Personal workspaces cannot have invitations',
                 status: 422,
               },
@@ -564,7 +565,7 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
         return persistAndReturn(
           409,
           {
-            type: PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+            type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
             title: 'Workspace invitation is not pending',
             status: 409,
           },

@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import type { IdempotencyStore } from '../../src/identity/idempotency.port.js';
 import { computeRequestFingerprint } from '../../src/identity/idempotency.service.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
-import { PROBLEM_TYPES } from '../../src/platform/problem-details.js';
 import {
   decodeMemberCursor,
   encodeMemberCursor,
@@ -25,6 +24,7 @@ import {
   WORKSPACE_MEMBER_STATUS,
   WORKSPACE_ROLE,
 } from '../../src/identity/workspace.port.js';
+import { IDENTITY_PROBLEM_TYPES } from '../../src/identity/identity-problem-types.js';
 
 describe('WorkspaceMemberService.listWorkspaceMembers', () => {
   const dummySubject = '3f084ac5-18a6-4e09-920d-2e3da29df7c8';
@@ -1029,7 +1029,7 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
           requestFingerprint: matchingFingerprint,
           responseStatus: 409,
           responseEtag: null,
-          responseBody: { type: PROBLEM_TYPES.LAST_OWNER_REQUIRED },
+          responseBody: { type: IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED },
         }),
       },
     );
@@ -1042,7 +1042,9 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
     expect(outcome.kind).toBe(WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED);
     if (outcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED) {
       expect(outcome.status).toBe(409);
-      expect(outcome.problemType).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(outcome.problemType).toBe(
+        IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+      );
     }
   });
 
@@ -1129,7 +1131,7 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
       expect.any(String),
       409,
       null,
-      { type: PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP },
+      { type: IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP },
       dummyWorkspaceId,
     );
   });
@@ -1412,7 +1414,7 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
       expect.any(String),
       409,
       null,
-      { type: PROBLEM_TYPES.LAST_OWNER_REQUIRED },
+      { type: IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED },
       dummyWorkspaceId,
     );
 
@@ -1429,7 +1431,7 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
           requestFingerprint: matchingFingerprint,
           responseStatus: 409,
           responseEtag: null,
-          responseBody: { type: PROBLEM_TYPES.LAST_OWNER_REQUIRED },
+          responseBody: { type: IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED },
         }),
       },
     );
@@ -1442,7 +1444,9 @@ describe('WorkspaceMemberService.removeWorkspaceMember', () => {
     expect(replayOutcome.kind).toBe(WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED);
     if (replayOutcome.kind === WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED) {
       expect(replayOutcome.status).toBe(409);
-      expect(replayOutcome.problemType).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(replayOutcome.problemType).toBe(
+        IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+      );
     }
   });
 
