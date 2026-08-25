@@ -46,6 +46,12 @@ module.exports = {
     doNotFollow: {
       path: 'node_modules',
     },
+    // Without this, dependency-cruiser sees only what survives compilation, so a
+    // type-only import crosses any boundary rule undetected. That is not
+    // hypothetical: the cross-feature import this layer was created to stop --
+    // accounts reaching into identity's bootstrap-command for FieldViolation --
+    // was `import type`, and the rules below would have let it through.
+    tsPreCompilationDeps: true,
     tsConfig: {
       fileName: path.resolve(__dirname, 'tsconfig.json'),
     },

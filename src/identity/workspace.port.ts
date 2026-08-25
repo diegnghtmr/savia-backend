@@ -6,13 +6,8 @@ import { UUID_PATTERN } from '../platform/uuid.js';
 
 export const WORKSPACE_PORT = Symbol('WorkspacePort');
 
-export const WORKSPACE_KIND = {
-  PERSONAL: 'personal',
-  FAMILY: 'family',
-  SHARED: 'shared',
-} as const;
-export type WorkspaceKind =
-  (typeof WORKSPACE_KIND)[keyof typeof WORKSPACE_KIND];
+import { WORKSPACE_KIND, type WorkspaceKind } from './workspace-kind.js';
+export { WORKSPACE_KIND, type WorkspaceKind };
 
 export const WORKSPACE_ROLE = {
   OWNER: 'owner',

@@ -5,7 +5,7 @@ import {
   stringValue,
   type FieldViolation,
 } from './bootstrap-command.js';
-import type { WorkspaceKind } from './workspace.port.js';
+import type { WorkspaceKind } from './workspace-kind.js';
 
 // prettier-ignore
 const WORKSPACE_CREATE_FIELDS = ['name', 'kind', 'baseCurrency'] as const;
