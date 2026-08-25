@@ -855,11 +855,18 @@ describe('GET /v1/workspaces', () => {
       );
       expect(JSON.parse(response.payload)).toEqual({
         type: 'https://savia.app/problems/bad-request',
-        title: 'Invalid cursor parameter',
+        title: 'Invalid list workspaces query',
         status: 400,
         code: 'bad-request',
         traceId: expect.stringMatching(/.+/),
         instance: expect.stringContaining('/v1/workspaces'),
+        errors: [
+          {
+            field: 'cursor',
+            code: 'invalid',
+            message: 'cursor is not a valid opaque cursor.',
+          },
+        ],
       });
     }
 
@@ -894,11 +901,18 @@ describe('GET /v1/workspaces', () => {
       );
       expect(JSON.parse(response.payload)).toEqual({
         type: 'https://savia.app/problems/bad-request',
-        title: 'Invalid cursor parameter',
+        title: 'Invalid list workspaces query',
         status: 400,
         code: 'bad-request',
         traceId: expect.stringMatching(/.+/),
         instance: expect.stringContaining('/v1/workspaces'),
+        errors: [
+          {
+            field: 'cursor',
+            code: 'invalid',
+            message: 'cursor is not a valid opaque cursor.',
+          },
+        ],
       });
       expect(list).not.toHaveBeenCalled();
     },
@@ -949,17 +963,67 @@ describe('GET /v1/workspaces', () => {
       expect(response.headers['content-type']).toContain(
         'application/problem+json',
       );
+      const expectedCode =
+        badLimit === '0' || badLimit === '201' ? 'out-of-range' : 'invalid';
+      const expectedMessage =
+        expectedCode === 'out-of-range'
+          ? 'limit must be between 1 and 200.'
+          : 'limit must be a plain integer.';
       expect(JSON.parse(response.payload)).toEqual({
         type: 'https://savia.app/problems/bad-request',
-        title: 'Invalid limit parameter',
+        title: 'Invalid list workspaces query',
         status: 400,
         code: 'bad-request',
         traceId: expect.stringMatching(/.+/),
         instance: expect.stringContaining('/v1/workspaces'),
+        errors: [
+          {
+            field: 'limit',
+            code: expectedCode,
+            message: expectedMessage,
+          },
+        ],
       });
       expect(list).not.toHaveBeenCalled();
     },
   );
+
+  it('accumulates multiple field violations into errors when both limit and cursor are invalid', async () => {
+    const list = vi.fn<WorkspacePort['list']>();
+    const application = await createApplication(undefined, list);
+
+    const response = await listWorkspaces(
+      application,
+      { limit: 'abc', cursor: 'invalid-cursor' },
+      { token: TOKEN },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/bad-request',
+      title: 'Invalid list workspaces query',
+      status: 400,
+      code: 'bad-request',
+      traceId: expect.stringMatching(/.+/),
+      instance: expect.stringContaining('/v1/workspaces'),
+      errors: [
+        {
+          field: 'limit',
+          code: 'invalid',
+          message: 'limit must be a plain integer.',
+        },
+        {
+          field: 'cursor',
+          code: 'invalid',
+          message: 'cursor is not a valid opaque cursor.',
+        },
+      ],
+    });
+    expect(list).not.toHaveBeenCalled();
+  });
 
   it('answers 401 problem+json with no bearer token', async () => {
     const list = vi.fn<WorkspacePort['list']>();
