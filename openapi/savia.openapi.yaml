@@ -348,6 +348,85 @@ components:
         role:
           type: string
           enum: [owner, administrator, editor, viewer]
+    AccountType:
+      type: string
+      enum:
+        - cash
+        - savings
+        - checking
+        - digital_wallet
+        - credit_card
+        - loan
+        - investment_manual
+        - receivable
+        - generic
+    AccountStatus:
+      type: string
+      enum: [active, archived, closed]
+    CurrencyCode:
+      type: string
+      pattern: '^[A-Z]{3}$'
+    Account:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - type
+        - currency
+        - status
+        - includeInNetWorth
+        - createdAt
+        - updatedAt
+        - version
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        type:
+          $ref: '#/components/schemas/AccountType'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        status:
+          $ref: '#/components/schemas/AccountStatus'
+        institution:
+          type:
+            - string
+            - 'null'
+          maxLength: 120
+        maskedNumber:
+          type:
+            - string
+            - 'null'
+          maxLength: 32
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+        colorToken:
+          type:
+            - string
+            - 'null'
+        icon:
+          type:
+            - string
+            - 'null'
+        includeInNetWorth:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          minimum: 1
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -1406,6 +1485,83 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '409':
           description: Workspace invitation is not pending or idempotency key reused with different payload.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /v1/accounts:
+    get:
+      operationId: listAccounts
+      tags:
+        - Accounts
+      summary: List accounts
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, archived, closed]
+      responses:
+        '200':
+          description: Paginated workspace accounts.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - items
+                  - pageInfo
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Account'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+        '400':
+          description: The workspace identifier or the query parameters failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden. An absent workspace is indistinguishable from a denied one; no 404 is declared.
           content:
             application/problem+json:
               schema:
