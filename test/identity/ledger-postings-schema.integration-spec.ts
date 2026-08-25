@@ -518,11 +518,16 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       expect(trigger.proname).toBe('enforce_balanced_ledger_postings');
       expect(trigger.prosecdef).toBe(true);
       expect(trigger.proowner).toBe('savia_elevated');
-      // FOR EACH ROW on INSERT+UPDATE+DELETE (bits 4+8+16), never BEFORE
-      // (bit 2 clear). Observed tgtype for this constraint trigger is 29: the
-      // deferrable columns above are what mark it, not catalog bit 128.
+      // Fires on INSERT+UPDATE+DELETE. Per pg_trigger.h the bits are
+      // BEFORE=1, ROW=2, INSERT=4, DELETE=8, UPDATE=16, so bits 4+8+16 are
+      // exactly the event mask pinned below. Constraint triggers carry a
+      // catalog storage quirk: they are stored with the BEFORE bit set and
+      // the ROW bit clear even though the trigger is row-level and
+      // effectively AFTER (deferred). Because of that quirk no tgtype
+      // assertion here can discriminate row-level from statement-level
+      // firing; test 11 proves that behaviour live, so nothing below claims
+      // to pin it.
       expect(trigger.tgtype & 28).toBe(28);
-      expect(trigger.tgtype & 2).toBe(0);
 
       const elevatedReadRes = await admin.query<{
         can_read: boolean;
@@ -669,6 +674,115 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       } finally {
         await deletePostings(ids);
       }
+    });
+
+    it('12b. SCOPED-SCAN PROOF: a committed UNBALANCED group in workspace 2 does not refuse a balanced commit for an unrelated parent in workspace 1 — the trigger scans only the affected posting group, never the whole table', async () => {
+      // The application can never create this state by itself: the balance
+      // trigger refuses any unbalanced set at its own commit. It arrives
+      // out-of-band — support SQL, a seeding migration, restore tooling — so
+      // the poison is planted with the trigger temporarily disabled, then the
+      // trigger is re-enabled exactly as a real operator would leave it.
+      // Under a WHOLE-TABLE scan the balanced ws1 commit below fails with
+      // 23514 caused entirely by ws2's poison rows: the cross-tenant coupling,
+      // made observable, with an error naming no group. Under the scoped scan
+      // it must succeed.
+      const disableTrigger = () =>
+        admin.query(
+          'alter table public.ledger_postings disable trigger enforce_balanced_ledger_postings_from_posting',
+        );
+      const enableTrigger = () =>
+        admin.query(
+          'alter table public.ledger_postings enable trigger enforce_balanced_ledger_postings_from_posting',
+        );
+
+      await disableTrigger();
+      let poisonIds: string[] = [];
+      try {
+        poisonIds = [
+          await seedPosting({
+            workspaceId: ws2Id,
+            transactionId: transaction2Id,
+            accountId: null,
+            legKind: 'external',
+            amountMinor: '500',
+          }),
+        ];
+      } finally {
+        await enableTrigger();
+      }
+
+      try {
+        // An unrelated parent in a DIFFERENT workspace, perfectly balanced.
+        const okIds = await seedBalancedPair({
+          workspaceId: ws1Id,
+          transactionId: transaction1Id,
+          accountId: account1Id,
+          amountMinor: '170',
+        });
+        try {
+          const stored = await admin.query<{ n: number }>(
+            'select count(*)::int as n from public.ledger_postings where id = any($1::uuid[])',
+            [okIds],
+          );
+          expect(stored.rows[0].n).toBe(2);
+        } finally {
+          await deletePostings(okIds);
+        }
+      } finally {
+        // Poison cleanup happens with the trigger disabled again, mirroring
+        // how a superuser must repair out-of-band data; deleting the lone leg
+        // with the trigger live would be refused under the scoped scan too.
+        await disableTrigger();
+        try {
+          await deletePostings(poisonIds);
+        } finally {
+          await enableTrigger();
+        }
+      }
+
+      const residue = await admin.query<{ n: number }>(
+        `select count(*)::int as n from public.ledger_postings
+          where workspace_id = $1 or workspace_id = $2`,
+        [ws1Id, ws2Id],
+      );
+      expect(residue.rows[0].n).toBe(0);
+    });
+
+    it('12c. DELETE PATH PROOF: removing ONE leg of a committed balanced pair is REFUSED at commit with 23514 — the scan resolves the affected group from OLD, because NEW is unassigned on DELETE', async () => {
+      const pairIds = await seedBalancedPair({
+        workspaceId: ws1Id,
+        transactionId: transaction1Id,
+        accountId: account1Id,
+        amountMinor: '210',
+      });
+      expect(pairIds).toHaveLength(2);
+      try {
+        // Half a group must never survive a commit. On DELETE the row-level
+        // trigger receives only OLD; reading NEW yields NULL, so the scan's
+        // filter must resolve the parent through coalesce(new, old). A filter
+        // that read NEW alone would match nothing on DELETE and silently
+        // strand this unbalanced single-leg group behind a successful commit.
+        const partialDeleteErr = await capturePgError(() =>
+          admin.query('delete from public.ledger_postings where id = $1', [
+            pairIds[0],
+          ]),
+        );
+        // Assert against the REAL captured pg error, never a hand-built literal.
+        expect(partialDeleteErr.code).toBe('23514');
+        expect(partialDeleteErr.message ?? '').toContain(
+          'ledger postings must balance to zero per currency',
+        );
+      } finally {
+        // Whole group in one statement: the surviving leg goes with the
+        // deleted one, so the group vanishes entirely and the trigger passes.
+        await deletePostings(pairIds);
+      }
+
+      const gone = await admin.query<{ n: number }>(
+        'select count(*)::int as n from public.ledger_postings where id = any($1::uuid[])',
+        [pairIds],
+      );
+      expect(gone.rows[0].n).toBe(0);
     });
   });
 
