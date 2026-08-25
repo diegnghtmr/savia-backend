@@ -814,11 +814,9 @@ describe('encodeCursor and decodeCursor with workspaceId binding', () => {
       createdAt,
       id: memId,
     });
-    expect(decodeCursor(raw)).toEqual({
-      workspaceId: wsId,
-      createdAt,
-      id: memId,
-    });
+    // A member cursor is bound, so only the bound site accepts it: what a call
+    // site emits is exactly what that same site accepts.
+    expect(decodeCursor(raw)).toBeUndefined();
     expect(decodeCursor(raw, wsId)).toEqual({
       workspaceId: wsId,
       createdAt,

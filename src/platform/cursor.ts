@@ -74,6 +74,16 @@ export function decodeCursor(
     }
 
     if (parsed.length === 3) {
+      // A caller that did not ask for a binding must not be handed a bound
+      // cursor: what the decoder accepts has to equal what the encoder emits.
+      // An unbound site emits two elements, so a three-element payload here is
+      // a cursor minted somewhere else -- today only the member roster mints
+      // bound ones, and replaying one at an unbound list merely shifts that
+      // caller's own window, but accepting a shape we never emit is how the
+      // binding quietly stops meaning anything.
+      if (expectedWorkspaceId === undefined) {
+        return undefined;
+      }
       const [workspaceId, createdAt, id] = parsed;
       if (
         typeof workspaceId !== 'string' ||
@@ -85,10 +95,7 @@ export function decodeCursor(
       if (!UUID_PATTERN.test(workspaceId)) {
         return undefined;
       }
-      if (
-        expectedWorkspaceId !== undefined &&
-        workspaceId !== expectedWorkspaceId
-      ) {
+      if (workspaceId !== expectedWorkspaceId) {
         return undefined;
       }
       if (!isValidTimestamp(createdAt) || !UUID_PATTERN.test(id)) {

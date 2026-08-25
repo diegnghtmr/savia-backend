@@ -28,7 +28,6 @@ describe('shared cursor encoding and decoding', () => {
       id: VALID_ID,
     };
     const raw = encodeCursor(cursor);
-    expect(decodeCursor(raw)).toEqual(cursor);
     expect(decodeCursor(raw, VALID_WORKSPACE_ID)).toEqual(cursor);
   });
 
@@ -51,7 +50,11 @@ describe('shared cursor encoding and decoding', () => {
     expect(decodeCursor(raw, VALID_WORKSPACE_ID)).toBeUndefined();
   });
 
-  it('satisfies the round-trip invariant: every encodeCursor output is accepted by decodeCursor', () => {
+  it('satisfies the round-trip invariant: what a site emits, that same site accepts', () => {
+    // The invariant is scoped to the call site, not global. A bound site emits
+    // three elements and decodes with its binding; an unbound site emits two and
+    // decodes without one. Stating it globally would force the decoder to accept
+    // shapes a given site never emits.
     const samples: Cursor[] = [
       { createdAt: '2026-01-01T00:00:00.000000Z', id: VALID_ID },
       { createdAt: '2026-06-01T00:00:00.000500Z', id: VALID_ID },
@@ -65,7 +68,7 @@ describe('shared cursor encoding and decoding', () => {
     ];
     for (const sample of samples) {
       const encoded = encodeCursor(sample);
-      expect(decodeCursor(encoded)).toEqual(sample);
+      expect(decodeCursor(encoded, sample.workspaceId)).toEqual(sample);
     }
   });
 
@@ -144,5 +147,25 @@ describe('shared cursor encoding and decoding', () => {
         ),
       ),
     ).toBeUndefined();
+  });
+
+  it('rejects a bound cursor at an unbound call site: the accepted shape must equal the emitted one', () => {
+    const bound = encodeCursor({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      createdAt: '2026-06-01T12:34:56.123456Z',
+      id: '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d',
+    });
+    // An unbound site emits two elements, so a three-element payload is a
+    // cursor minted elsewhere. Accepting a shape we never emit is how the
+    // binding quietly stops meaning anything.
+    expect(decodeCursor(bound)).toBeUndefined();
+    // ...and it still decodes where it was minted.
+    expect(decodeCursor(bound, '11111111-1111-4111-8111-111111111111')).toEqual(
+      {
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+        createdAt: '2026-06-01T12:34:56.123456Z',
+        id: '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d',
+      },
+    );
   });
 });
