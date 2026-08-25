@@ -31,10 +31,23 @@ export function findFinancialTableViolations(sqlSources) {
 
   // 1. Find all tables tagged with 'fitness:financial'
   const taggedTables = [];
+  // SQL escapes a literal quote by doubling it (''), and the tag regex below
+  // cannot span a quote character, so an ordinary apostrophe in a comment
+  // ('Workspace''s financial account. fitness:financial') used to make the
+  // statement unmatchable and silently dropped the table from this rule.
+  // Collapse every doubled-quote escape inside a single-quoted literal to a
+  // sentinel that is not a quote before matching. Only table names are kept
+  // from the matches and identifiers never contain the sentinel, so no
+  // restore pass is needed.
+  const escapedQuoteSentinel = '\uE000';
+  const normalisedSql = strippedSql.replace(
+    /'(?:[^']|'')*'/g,
+    (literal) => literal.replaceAll("''", escapedQuoteSentinel),
+  );
   const commentRegex =
     /comment\s+on\s+table\s+([a-zA-Z0-9_."]+)\s+is\s+['"]([^'"]*fitness:financial[^'"]*)['"]/gi;
   let commentMatch;
-  while ((commentMatch = commentRegex.exec(strippedSql)) !== null) {
+  while ((commentMatch = commentRegex.exec(normalisedSql)) !== null) {
     const rawName = commentMatch[1];
     taggedTables.push({
       rawName,

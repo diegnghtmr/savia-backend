@@ -40,9 +40,9 @@ create index accounts_workspace_keyset_idx
   on public.accounts (workspace_id, created_at, id);
 
 -- fitness:financial is OPT-IN: scripts/verify-financial-tables.mjs only asserts
--- rules for tables whose comment carries this tag, and its regex captures up to
--- the FIRST quote character, so an apostrophe inside the text silently un-tags
--- the table. Keep both comments apostrophe-free.
+-- rules for tables whose comment carries this tag. Its matcher collapses SQL
+-- doubled-quote escapes ('') before looking for the tag, so an ordinary
+-- apostrophe inside the text no longer un-tags the table.
 comment on table public.accounts is 'Workspace financial account. fitness:financial';
 
 -- Carry-over from slice 1 (202608240001): that migration gave

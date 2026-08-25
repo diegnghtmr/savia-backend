@@ -41,6 +41,42 @@ describe('architecture fitness tripwires', () => {
       expect(violations).toEqual([]);
     });
 
+    // Ordinary SQL escaping doubles a literal quote (''). The verifier used to
+    // stop matching at any quote character, so an apostrophe in the comment
+    // silently un-tagged the table and the rule went blind to exactly the
+    // regression it exists to catch.
+    const escapedApostropheComment =
+      "comment on table public.financial_ledgers is 'Workspace''s financial account. fitness:financial';";
+
+    it('recognises a fitness:financial tag written with an SQL-escaped apostrophe: a compliant table yields no violations', () => {
+      const compliantSql = `
+        create table public.financial_ledgers (
+          id uuid primary key default gen_random_uuid(),
+          workspace_id uuid not null references public.workspaces(id),
+          amount numeric not null
+        );
+        ${escapedApostropheComment}
+      `;
+
+      const violations = findFinancialTableViolations(compliantSql);
+
+      expect(violations).toEqual([]);
+    });
+
+    it('reports a workspace_id violation for a financial table whose fitness:financial comment contains an SQL-escaped apostrophe', () => {
+      const violatingSql = `
+        create table public.financial_ledgers (
+          id uuid primary key default gen_random_uuid(),
+          amount numeric not null
+        );
+        ${escapedApostropheComment}
+      `;
+
+      const violations = findFinancialTableViolations(violatingSql);
+
+      expect(violations).toEqual(['public.financial_ledgers']);
+    });
+
     it('verifies real migrations have no financial table violations (vacuous today)', () => {
       const migrationsDir = resolve(root, 'supabase/migrations');
       const files = readdirSync(migrationsDir)
