@@ -408,6 +408,43 @@ describe('listWorkspaceMembers HTTP boundary', () => {
     expect(responseOver.json().code).toBe('bad-request');
   });
 
+  it('accumulates multiple field violations into errors when both limit and cursor are invalid', async () => {
+    const appInstance = await createApplication();
+    const response = await listWorkspaceMembersRequest(
+      appInstance,
+      WORKSPACE_ID,
+      { limit: 'abc', cursor: 'invalid-cursor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = response.json();
+    expect(body).toEqual({
+      type: 'https://savia.app/problems/bad-request',
+      title: 'Invalid list workspace members query',
+      status: 400,
+      code: 'bad-request',
+      traceId: expect.stringMatching(/.+/),
+      instance: expect.stringContaining(
+        `/v1/workspaces/${WORKSPACE_ID}/members`,
+      ),
+      errors: [
+        {
+          field: 'limit',
+          code: 'invalid',
+          message: 'limit must be a plain integer.',
+        },
+        {
+          field: 'cursor',
+          code: 'invalid',
+          message: 'cursor is not a valid opaque cursor.',
+        },
+      ],
+    });
+  });
+
   it('returns 400 for a workspace identifier that is not a UUID', async () => {
     const appInstance = await createApplication();
     const response = await listWorkspaceMembersRequest(

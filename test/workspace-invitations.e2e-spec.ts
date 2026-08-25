@@ -337,6 +337,45 @@ describe('listWorkspaceInvitations HTTP boundary', () => {
     expect(resAbc.statusCode).toBe(400);
     expect(listSpy).not.toHaveBeenCalled();
   });
+
+  it('accumulates multiple field violations into errors when both limit and cursor are invalid', async () => {
+    const listSpy = vi.fn();
+    const appInstance = await createApplication(listSpy);
+    const response = await listWorkspaceInvitationsRequest(
+      appInstance,
+      WORKSPACE_ID,
+      { limit: 'abc', cursor: 'invalid-cursor' },
+      { token: TOKEN },
+    );
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = response.json();
+    expect(body).toEqual({
+      type: 'https://savia.app/problems/bad-request',
+      title: 'Invalid list workspace invitations query',
+      status: 400,
+      code: 'bad-request',
+      traceId: expect.stringMatching(/.+/),
+      instance: expect.stringContaining(
+        `/v1/workspaces/${WORKSPACE_ID}/invitations`,
+      ),
+      errors: [
+        {
+          field: 'limit',
+          code: 'invalid',
+          message: 'limit must be a plain integer.',
+        },
+        {
+          field: 'cursor',
+          code: 'invalid',
+          message: 'cursor is not a valid opaque cursor.',
+        },
+      ],
+    });
+    expect(listSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('createWorkspaceInvitation HTTP boundary', () => {
