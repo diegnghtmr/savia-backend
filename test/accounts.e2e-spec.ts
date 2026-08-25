@@ -82,7 +82,10 @@ async function createApplication(
       pageInfo: { hasNextPage: false, nextCursor: null },
     },
   } satisfies AccountListOutcome),
-): Promise<{ application: NestFastifyApplication; list: AccountsPort['list'] }> {
+): Promise<{
+  application: NestFastifyApplication;
+  list: AccountsPort['list'];
+}> {
   const moduleRef = await Test.createTestingModule({
     imports: [AccountsModule],
   })
@@ -279,12 +282,17 @@ describe('GET /v1/accounts', () => {
 
   it('defaults the limit to 50, honours bounds 1 and 200, and forwards the status filter', async () => {
     const captured: AccountListQuery[] = [];
-    const list = vi.fn<AccountsPort['list']>().mockImplementation(
-      async (_subject: string, query: AccountListQuery): Promise<AccountListOutcome> => {
-        captured.push(query);
-        return okPage();
-      },
-    );
+    const list = vi
+      .fn<AccountsPort['list']>()
+      .mockImplementation(
+        async (
+          _subject: string,
+          query: AccountListQuery,
+        ): Promise<AccountListOutcome> => {
+          captured.push(query);
+          return okPage();
+        },
+      );
     const { application } = await createApplication(list);
 
     await getAccounts(application, {

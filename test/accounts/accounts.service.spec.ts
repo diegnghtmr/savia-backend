@@ -73,10 +73,7 @@ describe('AccountsService.list', () => {
     const store = fakeStore(undefined);
     const outcome = await list(store, { workspaceId: WORKSPACE_ID, limit: 50 });
     expect(outcome.kind).toBe(ACCOUNT_LIST_OUTCOMES.FORBIDDEN);
-    expect(store.readActiveRole).toHaveBeenCalledWith(
-      CLIENT,
-      WORKSPACE_ID,
-    );
+    expect(store.readActiveRole).toHaveBeenCalledWith(CLIENT, WORKSPACE_ID);
     expect(store.listAccounts).not.toHaveBeenCalled();
   });
 

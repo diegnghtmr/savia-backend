@@ -1,9 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AccountsController } from './accounts.controller.js';
-import {
-  ACCOUNTS_PORT,
-} from './accounts.port.js';
+import { ACCOUNTS_PORT } from './accounts.port.js';
 import { AccountsService } from './accounts.service.js';
 import { PostgresAccountsAdapter } from './postgres-accounts.adapter.js';
 import { IdentityModule } from '../identity/identity.module.js';

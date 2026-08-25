@@ -1,9 +1,5 @@
 import type { TransactionClient } from '../identity/pg-transaction.js';
-import type {
-  Account,
-  AccountCursor,
-  AccountStatus,
-} from './accounts.port.js';
+import type { Account, AccountCursor, AccountStatus } from './accounts.port.js';
 import type { AccountsStore } from './accounts.service.js';
 
 interface AccountRow extends Record<string, unknown> {

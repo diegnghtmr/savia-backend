@@ -18,10 +18,10 @@ export const ACCOUNT_STATUS = {
   ARCHIVED: 'archived',
   CLOSED: 'closed',
 } as const;
-export type AccountStatus = (typeof ACCOUNT_STATUS)[keyof typeof ACCOUNT_STATUS];
+export type AccountStatus =
+  (typeof ACCOUNT_STATUS)[keyof typeof ACCOUNT_STATUS];
 
-const ACCOUNT_STATUS_VALUES: readonly string[] =
-  Object.values(ACCOUNT_STATUS);
+const ACCOUNT_STATUS_VALUES: readonly string[] = Object.values(ACCOUNT_STATUS);
 
 export function isAccountStatus(value: string): value is AccountStatus {
   return ACCOUNT_STATUS_VALUES.includes(value);

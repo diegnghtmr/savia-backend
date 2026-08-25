@@ -4,14 +4,18 @@ import { parseWorkspaceHeader } from '../../src/identity/workspace-header.js';
 
 describe('parseWorkspaceHeader', () => {
   it('accepts a canonical uuid', () => {
-    expect(parseWorkspaceHeader('7c9e6679-7425-40de-944b-e07fc1f90ae7')).toEqual({
+    expect(
+      parseWorkspaceHeader('7c9e6679-7425-40de-944b-e07fc1f90ae7'),
+    ).toEqual({
       kind: 'ok',
       workspaceId: '7c9e6679-7425-40de-944b-e07fc1f90ae7',
     });
   });
 
   it('accepts an uppercase uuid and lowercases it', () => {
-    expect(parseWorkspaceHeader('7C9E6679-7425-40DE-944B-E07FC1F90AE7')).toEqual({
+    expect(
+      parseWorkspaceHeader('7C9E6679-7425-40DE-944B-E07FC1F90AE7'),
+    ).toEqual({
       kind: 'ok',
       workspaceId: '7c9e6679-7425-40de-944b-e07fc1f90ae7',
     });

@@ -10,9 +10,7 @@ export const ACCOUNT_LIST_DEFAULT_LIMIT = 50;
 const LIMIT_PATTERN = /^\d+$/;
 
 export class AccountQueryValidationError extends Error {
-  public constructor(
-    public readonly violations: readonly FieldViolation[],
-  ) {
+  public constructor(public readonly violations: readonly FieldViolation[]) {
     super('Account list query validation failed.');
     this.name = 'AccountQueryValidationError';
   }

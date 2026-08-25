@@ -102,9 +102,15 @@ describe('AccountsService listAccounts database boundary', () => {
   async function listIds(
     subjectId: string,
     workspaceId: string,
-    options: { readonly limit?: number; readonly status?: Account['status'] } = {},
+    options: {
+      readonly limit?: number;
+      readonly status?: Account['status'];
+    } = {},
   ): Promise<
-    | { readonly kind: typeof ACCOUNT_LIST_OUTCOMES.OK; readonly ids: readonly string[] }
+    | {
+        readonly kind: typeof ACCOUNT_LIST_OUTCOMES.OK;
+        readonly ids: readonly string[];
+      }
     | { readonly kind: typeof ACCOUNT_LIST_OUTCOMES.FORBIDDEN }
   > {
     const outcome = await service.list(subjectId, {
@@ -123,10 +129,7 @@ describe('AccountsService listAccounts database boundary', () => {
     admin = new Pool({ connectionString: url });
     pool = new PostgresPool(PostgresConfig.fromUrl(url));
     transaction = new PgTransaction(pool, { callbackTimeoutMs: 3_000 });
-    service = new AccountsService(
-      transaction,
-      new PostgresAccountsAdapter(),
-    );
+    service = new AccountsService(transaction, new PostgresAccountsAdapter());
 
     await admin.query(
       `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8)`,
@@ -145,7 +148,11 @@ describe('AccountsService listAccounts database boundary', () => {
     for (const [id, email, name] of [
       [subjectOwner, 'accounts-owner@example.test', 'Accounts Owner'],
       [subjectViewer, 'accounts-viewer@example.test', 'Accounts Viewer'],
-      [subjectNonMember, 'accounts-nonmember@example.test', 'Accounts Non Member'],
+      [
+        subjectNonMember,
+        'accounts-nonmember@example.test',
+        'Accounts Non Member',
+      ],
       [
         subjectEmptyWorkspaceMember,
         'accounts-empty@example.test',
@@ -279,7 +286,8 @@ describe('AccountsService listAccounts database boundary', () => {
     const limited = await listIds(subjectOwner, workspaceWithAccountsId, {
       limit: 2,
     });
-    if (limited.kind !== ACCOUNT_LIST_OUTCOMES.OK) throw new Error('expected ok');
+    if (limited.kind !== ACCOUNT_LIST_OUTCOMES.OK)
+      throw new Error('expected ok');
     expect(limited.ids).toEqual(expectedOrder.slice(0, 2));
 
     const wide = await listIds(subjectOwner, workspaceWithAccountsId, {
@@ -309,7 +317,8 @@ describe('AccountsService listAccounts database boundary', () => {
     const active = await listIds(subjectOwner, workspaceWithAccountsId, {
       status: 'active',
     });
-    if (active.kind !== ACCOUNT_LIST_OUTCOMES.OK) throw new Error('expected ok');
+    if (active.kind !== ACCOUNT_LIST_OUTCOMES.OK)
+      throw new Error('expected ok');
     expect(active.ids).toEqual([
       accountId(1006),
       accountId(1001),
