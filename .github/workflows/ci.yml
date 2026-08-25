@@ -131,6 +131,9 @@ jobs:
       - name: accounts schema integration
         shell: bash
         run: pnpm test:integration:accounts-schema
+      - name: transactions schema integration
+        shell: bash
+        run: pnpm test:integration:transactions-schema
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
