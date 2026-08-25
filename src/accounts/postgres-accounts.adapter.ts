@@ -19,8 +19,13 @@ interface AccountRow extends Record<string, unknown> {
   readonly version: number;
 }
 
-export function toIso(value: Date | string): string {
-  return value instanceof Date ? value.toISOString() : String(value);
+export function toIso(value: unknown): string {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  throw new TypeError(
+    `Expected Date instance from database timestamp column, got ${typeof value}`,
+  );
 }
 
 export class PostgresAccountsAdapter implements AccountsStore {
