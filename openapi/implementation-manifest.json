@@ -81,6 +81,11 @@
       "operationId": "listAccounts",
       "method": "GET",
       "path": "/v1/accounts"
+    },
+    {
+      "operationId": "getAccount",
+      "method": "GET",
+      "path": "/v1/accounts/{accountId}"
     }
   ]
 }
