@@ -30,6 +30,24 @@ module.exports = {
       },
     },
     {
+      // src/app.module.ts and src/main.ts sit at the root, so they match neither
+      // side of the two rules below (`^src/([^/]+)/` needs a second slash). Both
+      // are legitimate composition roots, but any OTHER root-level file would be
+      // an invisible tunnel: feature -> src/tunnel.ts -> other feature passes
+      // both rules unmatched. Forbid features from importing root files at all;
+      // composition flows one way, from the root into the features.
+      name: 'no-root-level-tunnel',
+      severity: 'error',
+      comment:
+        'Feature and platform modules must not import root-level src files; composition flows root -> module only',
+      from: {
+        path: '^src/([^/]+)/',
+      },
+      to: {
+        path: '^src/[^/]+\\.ts$',
+      },
+    },
+    {
       name: 'platform-to-feature-isolation',
       severity: 'error',
       comment: 'Platform layer must not import from any feature module',
@@ -42,6 +60,9 @@ module.exports = {
       },
     },
   ],
+  // NOTE: `pnpm architecture:check` cruises `src` only. test/, scripts/ and
+  // supabase/ are NOT governed by these rules -- do not mistake a green gate for
+  // whole-repo coverage.
   options: {
     doNotFollow: {
       path: 'node_modules',
