@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   decodeAccountCursor,
   ACCOUNT_LIST_OUTCOMES,
+  ACCOUNT_READ_OUTCOMES,
   type Account,
   type AccountListOutcome,
+  type AccountReadOutcome,
 } from '../../src/accounts/accounts.port.js';
 import {
   AccountsService,
@@ -58,9 +60,11 @@ function toItem(
 function fakeStore(
   role: string | undefined,
   rows: readonly (Account | AccountItem)[] = [],
+  singleAccount: Account | undefined = undefined,
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
   listAccounts: ReturnType<typeof vi.fn>;
+  readAccount: ReturnType<typeof vi.fn>;
 } {
   const normalized: AccountItem[] = rows.map((r) =>
     'account' in r ? r : toItem(r),
@@ -68,6 +72,7 @@ function fakeStore(
   return {
     readActiveRole: vi.fn().mockResolvedValue(role),
     listAccounts: vi.fn().mockResolvedValue(normalized),
+    readAccount: vi.fn().mockResolvedValue(singleAccount),
   };
 }
 
@@ -77,6 +82,15 @@ async function list(
 ): Promise<AccountListOutcome> {
   const service = new AccountsService(new FakeReadTransaction(), store);
   return service.list(SUBJECT, query);
+}
+
+async function read(
+  store: AccountsStore,
+  workspaceId: string,
+  accountId: string,
+): Promise<AccountReadOutcome> {
+  const service = new AccountsService(new FakeReadTransaction(), store);
+  return service.read(SUBJECT, workspaceId, accountId);
 }
 
 describe('AccountsService.list', () => {
@@ -188,5 +202,57 @@ describe('AccountsService.list', () => {
       11,
       undefined,
     );
+  });
+});
+
+describe('AccountsService.read', () => {
+  it('answers forbidden when the actor holds no active role in the workspace and never queries the account', async () => {
+    const store = fakeStore(undefined, [], account());
+    const outcome = await read(store, WORKSPACE_ID, account().id);
+    expect(outcome.kind).toBe(ACCOUNT_READ_OUTCOMES.FORBIDDEN);
+    expect(store.readActiveRole).toHaveBeenCalledWith(CLIENT, WORKSPACE_ID);
+    expect(store.readAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers forbidden for a workspace that does not exist', async () => {
+    const store = fakeStore(undefined, [], account());
+    const outcome = await read(store, WORKSPACE_ID, account().id);
+    expect(outcome.kind).toBe(ACCOUNT_READ_OUTCOMES.FORBIDDEN);
+  });
+
+  it('answers not_found when the account does not exist in the store', async () => {
+    const store = fakeStore('owner', [], undefined);
+    const outcome = await read(store, WORKSPACE_ID, account().id);
+    expect(outcome.kind).toBe(ACCOUNT_READ_OUTCOMES.NOT_FOUND);
+    expect(store.readAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      account().id,
+    );
+  });
+
+  it('returns ok with the account when the actor is authorized and the account exists', async () => {
+    const acc = account();
+    const store = fakeStore('owner', [], acc);
+    const outcome = await read(store, WORKSPACE_ID, acc.id);
+    expect(outcome).toEqual({
+      kind: ACCOUNT_READ_OUTCOMES.OK,
+      account: acc,
+    });
+    expect(store.readAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      acc.id,
+    );
+  });
+
+  it('admits a viewer because the select policy admits all four roles', async () => {
+    const acc = account();
+    const store = fakeStore('viewer', [], acc);
+    const outcome = await read(store, WORKSPACE_ID, acc.id);
+    expect(outcome).toEqual({
+      kind: ACCOUNT_READ_OUTCOMES.OK,
+      account: acc,
+    });
   });
 });
