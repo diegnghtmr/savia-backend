@@ -1,13 +1,13 @@
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { PgTransaction } from '../../src/identity/pg-transaction.js';
+import { PgTransaction } from '../../src/platform/pg-transaction.js';
 import { PostgresWorkspaceAdapter } from '../../src/identity/postgres-workspace.adapter.js';
 import { PostgresIdempotencyAdapter } from '../../src/identity/postgres-idempotency.adapter.js';
 import { IDEMPOTENCY_OUTCOME_KINDS } from '../../src/identity/idempotency.port.js';
 import { IdempotencyService } from '../../src/identity/idempotency.service.js';
-import { PostgresConfig } from '../../src/identity/postgres-config.js';
-import { PostgresPool } from '../../src/identity/postgres-pool.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import type { WorkspaceCreateCommand } from '../../src/identity/workspace-command.js';
 import {
   decodeCursor,

@@ -6,9 +6,9 @@ import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IdentityModule } from '../src/identity/identity.module.js';
-import { JoseJwtVerifier } from '../src/identity/jose-jwt-verifier.js';
+import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
-import { PROBLEM_TYPES } from '../src/identity/problem-details.js';
+import { PROBLEM_TYPES } from '../src/platform/problem-details.js';
 import {
   encodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
@@ -25,6 +25,7 @@ import {
   WORKSPACE_PORT,
   type WorkspacePort,
 } from '../src/identity/workspace.port.js';
+import { IDENTITY_PROBLEM_TYPES } from '../src/identity/identity-problem-types.js';
 
 const SUBJECT = '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d';
 const WORKSPACE_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
@@ -1222,7 +1223,7 @@ describe('removeWorkspaceMember HTTP boundary', () => {
     );
     expect(response.statusCode).toBe(409);
     expect(response.json().type).toBe(
-      PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+      IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
     );
     expect(response.json().code).toBe('personal-workspace-membership');
   });
@@ -1242,7 +1243,9 @@ describe('removeWorkspaceMember HTTP boundary', () => {
       { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
     );
     expect(response.statusCode).toBe(409);
-    expect(response.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+    expect(response.json().type).toBe(
+      IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+    );
     expect(response.json().code).toBe('last-owner-required');
   });
 
@@ -1331,7 +1334,7 @@ describe('removeWorkspaceMember HTTP boundary', () => {
       vi.fn().mockResolvedValue({
         kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED,
         status: 409,
-        problemType: PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+        problemType: IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
       }),
     );
     const response = await removeWorkspaceMemberRequest(
@@ -1342,7 +1345,7 @@ describe('removeWorkspaceMember HTTP boundary', () => {
     );
     expect(response.statusCode).toBe(409);
     expect(response.json().type).toBe(
-      PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+      IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
     );
     expect(response.json().code).toBe('personal-workspace-membership');
   });
@@ -1354,7 +1357,7 @@ describe('removeWorkspaceMember HTTP boundary', () => {
       vi.fn().mockResolvedValue({
         kind: WORKSPACE_MEMBER_REMOVE_OUTCOMES.REPLAYED,
         status: 409,
-        problemType: PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+        problemType: IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
       }),
     );
     const response = await removeWorkspaceMemberRequest(
@@ -1364,7 +1367,9 @@ describe('removeWorkspaceMember HTTP boundary', () => {
       { token: TOKEN, idempotencyKey: IDEMPOTENCY_KEY },
     );
     expect(response.statusCode).toBe(409);
-    expect(response.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+    expect(response.json().type).toBe(
+      IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+    );
     expect(response.json().code).toBe('last-owner-required');
   });
 

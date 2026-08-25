@@ -1,7 +1,7 @@
 import type { BootstrapCommand } from './bootstrap-command.js';
 import type { BootstrapAggregate } from './bootstrap.port.js';
 import type { BootstrapEvidence } from './bootstrap-classification.js';
-import type { TransactionClient } from './pg-transaction.js';
+import type { TransactionClient } from '../platform/pg-transaction.js';
 
 export class PostgresBootstrapAdapter {
   // Scope the evidence to the subject's personal onboarding aggregate. Row level

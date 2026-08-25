@@ -1,5 +1,4 @@
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { UUID_PATTERN } from '../platform/uuid.js';
 
 export interface IdempotencyKeyValid {
   readonly kind: 'ok';

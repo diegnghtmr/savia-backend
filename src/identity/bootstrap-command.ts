@@ -26,11 +26,9 @@ export interface BootstrapCommand {
   readonly workspaceName: string;
   readonly baseCurrency: string;
 }
-export interface FieldViolation {
-  readonly field: string;
-  readonly code: string;
-  readonly message: string;
-}
+import type { FieldViolation } from '../platform/problem-details.js';
+
+export type { FieldViolation };
 export class BootstrapCommandValidationError extends Error {
   public constructor(public readonly violations: readonly FieldViolation[]) {
     super('Onboarding command validation failed.');

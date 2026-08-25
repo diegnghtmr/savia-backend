@@ -1,4 +1,4 @@
-import type { TransactionClient } from './pg-transaction.js';
+import type { TransactionClient } from '../platform/pg-transaction.js';
 
 export const IDEMPOTENCY_PORT = Symbol('IdempotencyPort');
 

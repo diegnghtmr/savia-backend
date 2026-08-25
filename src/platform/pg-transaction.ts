@@ -1,6 +1,7 @@
 import type { OnApplicationShutdown } from '@nestjs/common';
 
 import type { PgClient, PgPool } from './postgres-pool.js';
+import { UUID_PATTERN } from './uuid.js';
 const TIMEOUTS = {
   checkoutTimeoutMs: 1_000,
   lockTimeoutMs: 1_000,
@@ -31,7 +32,7 @@ export class CommitOutcomeUnknownError extends Error {
     this.name = 'CommitOutcomeUnknownError';
   }
 }
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID = UUID_PATTERN;
 // prettier-ignore
 export class PgTransaction implements OnApplicationShutdown {
   // Timeouts may arrive as a thunk for the same reason the pool configuration

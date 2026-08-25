@@ -8,10 +8,11 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { IdentityModule } from '../../src/identity/identity.module.js';
-import { JoseJwtVerifier } from '../../src/identity/jose-jwt-verifier.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { PostgresWorkspaceInvitationAdapter } from '../../src/identity/postgres-workspace-invitation.adapter.js';
-import { PROBLEM_TYPES } from '../../src/identity/problem-details.js';
+import { PROBLEM_TYPES } from '../../src/platform/problem-details.js';
+import { IDENTITY_PROBLEM_TYPES } from '../../src/identity/identity-problem-types.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -295,7 +296,9 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
 
     expect(response.statusCode).toBe(409);
     const body = response.json();
-    expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING);
+    expect(body.type).toBe(
+      IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+    );
     expect(body.code).toBe('workspace-invitation-not-pending');
   });
 
@@ -310,7 +313,9 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
 
     expect(response.statusCode).toBe(409);
     const body = response.json();
-    expect(body.type).toBe(PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING);
+    expect(body.type).toBe(
+      IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+    );
     expect(body.code).toBe('workspace-invitation-not-pending');
   });
 
@@ -410,7 +415,7 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
     });
     expect(res1.statusCode).toBe(409);
     expect(res1.json().type).toBe(
-      PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+      IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
     );
 
     const res2 = await revokeInvitation(wsMainId, invConflictId, ownerSubject, {
@@ -418,7 +423,7 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
     });
     expect(res2.statusCode).toBe(409);
     expect(res2.json().type).toBe(
-      PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+      IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
     );
   });
 
@@ -461,7 +466,7 @@ describe('revokeWorkspaceInvitation integration (POST /v1/workspaces/{workspaceI
 
     const res409 = res1.statusCode === 409 ? res1 : res2;
     expect(res409.json().type).toBe(
-      PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+      IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
     );
   });
 

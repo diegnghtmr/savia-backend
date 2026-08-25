@@ -1,4 +1,4 @@
-import type { TransactionClient } from '../identity/pg-transaction.js';
+import type { TransactionClient } from '../platform/pg-transaction.js';
 import type { Account, AccountCursor, AccountStatus } from './accounts.port.js';
 import type { AccountItem, AccountsStore } from './accounts.service.js';
 

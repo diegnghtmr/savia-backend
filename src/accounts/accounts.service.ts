@@ -1,4 +1,4 @@
-import type { TransactionClient } from '../identity/pg-transaction.js';
+import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,

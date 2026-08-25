@@ -8,19 +8,20 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { IdentityModule } from '../../src/identity/identity.module.js';
-import { JoseJwtVerifier } from '../../src/identity/jose-jwt-verifier.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
-import { PgTransaction } from '../../src/identity/pg-transaction.js';
-import { PostgresConfig } from '../../src/identity/postgres-config.js';
+import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresIdempotencyAdapter } from '../../src/identity/postgres-idempotency.adapter.js';
-import { PostgresPool } from '../../src/identity/postgres-pool.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { PostgresWorkspaceMemberAdapter } from '../../src/identity/postgres-workspace-member.adapter.js';
-import { PROBLEM_TYPES } from '../../src/identity/problem-details.js';
+import { PROBLEM_TYPES } from '../../src/platform/problem-details.js';
 import { WORKSPACE_MEMBER_REMOVE_OUTCOMES } from '../../src/identity/workspace-member.port.js';
 import {
   WorkspaceMemberService,
   type WorkspaceMemberStore,
 } from '../../src/identity/workspace-member.service.js';
+import { IDENTITY_PROBLEM_TYPES } from '../../src/identity/identity-problem-types.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -658,7 +659,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(first.statusCode).toBe(409);
       expect(first.json().type).toBe(
-        PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+        IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
       );
       expect(first.json().code).toBe('personal-workspace-membership');
 
@@ -672,7 +673,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       );
       expect(replay.statusCode).toBe(409);
       expect(replay.json().type).toBe(
-        PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+        IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
       );
       expect(replay.json().code).toBe('personal-workspace-membership');
       expect(replay.json().status).toBe(409);
@@ -689,7 +690,9 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
         },
       );
       expect(first.statusCode).toBe(409);
-      expect(first.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(first.json().type).toBe(
+        IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+      );
       expect(first.json().code).toBe('last-owner-required');
 
       const replay = await deleteMember(
@@ -701,7 +704,9 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
         },
       );
       expect(replay.statusCode).toBe(409);
-      expect(replay.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(replay.json().type).toBe(
+        IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+      );
       expect(replay.json().code).toBe('last-owner-required');
     });
 
@@ -906,7 +911,9 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
         },
       );
       expect(res.statusCode).toBe(409);
-      expect(res.json().type).toBe(PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP);
+      expect(res.json().type).toBe(
+        IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_MEMBERSHIP,
+      );
       expect(res.json().code).toBe('personal-workspace-membership');
 
       const check = await admin.query(
@@ -927,7 +934,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
         },
       );
       expect(res.statusCode).toBe(409);
-      expect(res.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(res.json().type).toBe(IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED);
       expect(res.json().code).toBe('last-owner-required');
 
       const check = await admin.query(
@@ -948,7 +955,7 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
         },
       );
       expect(res.statusCode).toBe(409);
-      expect(res.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+      expect(res.json().type).toBe(IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED);
       expect(res.json().code).toBe('last-owner-required');
 
       const check = await admin.query(
@@ -988,7 +995,9 @@ describe('removeWorkspaceMember integration (DELETE /v1/workspaces/{workspaceId}
       expect([404, 409]).toContain(failedRes.statusCode);
 
       if (failedRes.statusCode === 409) {
-        expect(failedRes.json().type).toBe(PROBLEM_TYPES.LAST_OWNER_REQUIRED);
+        expect(failedRes.json().type).toBe(
+          IDENTITY_PROBLEM_TYPES.LAST_OWNER_REQUIRED,
+        );
         expect(failedRes.json().code).toBe('last-owner-required');
       } else {
         expect(failedRes.json().type).toBe(PROBLEM_TYPES.NOT_FOUND);

@@ -58,7 +58,7 @@ function runDepcruise(fixtureDir: string): DepcruiseResult {
 }
 
 describe('architecture fitness functions (dependency-cruiser)', () => {
-  it('rejects cross-module import from health to identity (rule 3: identity-health-isolation)', () => {
+  it('rejects cross-module import from health to identity (rule 3: feature-isolation)', () => {
     const fixtureDir = resolve(
       root,
       'test/architecture/fixtures/deep-import-violation',
@@ -66,7 +66,7 @@ describe('architecture fitness functions (dependency-cruiser)', () => {
     const result = runDepcruise(fixtureDir);
 
     expect(result.status).not.toBe(0);
-    expect(result.output).toContain('identity-health-isolation');
+    expect(result.output).toContain('feature-isolation');
     expect(result.output).toContain('src/health/leaks.ts');
     expect(result.output).toContain('src/identity/internal.ts');
   });

@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   PostgresConfig,
   PostgresConfigurationError,
-} from '../../src/identity/postgres-config.js';
-import { PostgresPool } from '../../src/identity/postgres-pool.js';
+} from '../../src/platform/postgres-config.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const pools: PostgresPool[] = [];

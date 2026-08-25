@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { TransactionClient } from '../../src/identity/pg-transaction.js';
+import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
   IDEMPOTENCY_OUTCOME_KINDS,
   type IdempotencyRecord,

@@ -1,4 +1,4 @@
-import type { TransactionClient } from './pg-transaction.js';
+import type { TransactionClient } from '../platform/pg-transaction.js';
 import type { WorkspaceInvitation } from './workspace-invitation.port.js';
 import type { WorkspaceInvitationStore } from './workspace-invitation.service.js';
 import type {

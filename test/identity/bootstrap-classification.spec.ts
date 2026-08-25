@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { BootstrapCommand } from '../../src/identity/bootstrap-command.js';
 import { BootstrapService } from '../../src/identity/bootstrap.service.js';
-import type { TransactionClient } from '../../src/identity/pg-transaction.js';
+import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
   BOOTSTRAP_CLASSIFICATIONS,
   classifyBootstrap,

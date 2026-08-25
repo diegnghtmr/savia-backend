@@ -4,13 +4,11 @@ import { AccountsController } from './accounts.controller.js';
 import { ACCOUNTS_PORT } from './accounts.port.js';
 import { AccountsService } from './accounts.service.js';
 import { PostgresAccountsAdapter } from './postgres-accounts.adapter.js';
-import { IdentityModule } from '../identity/identity.module.js';
-import { PgTransaction } from '../identity/pg-transaction.js';
+import { PgTransaction } from '../platform/pg-transaction.js';
+import { PlatformModule } from '../platform/platform.module.js';
 
-// PgTransaction and JwtAuthGuard are shared infrastructure imported from
-// IdentityModule, never duplicated (no src/shared/ extraction in scope).
 @Module({
-  imports: [IdentityModule],
+  imports: [PlatformModule],
   controllers: [AccountsController],
   providers: [
     PostgresAccountsAdapter,

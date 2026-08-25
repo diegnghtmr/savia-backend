@@ -2,8 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { IdempotencyStore } from '../../src/identity/idempotency.port.js';
 import { computeRequestFingerprint } from '../../src/identity/idempotency.service.js';
-import type { TransactionClient } from '../../src/identity/pg-transaction.js';
-import { PROBLEM_TYPES } from '../../src/identity/problem-details.js';
+import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
   WORKSPACE_INVITATION_CREATE_OUTCOMES,
   WORKSPACE_INVITATION_LIST_OUTCOMES,
@@ -21,6 +20,7 @@ import {
   WORKSPACE_MEMBER_STATUS,
   WORKSPACE_ROLE,
 } from '../../src/identity/workspace.port.js';
+import { IDENTITY_PROBLEM_TYPES } from '../../src/identity/identity-problem-types.js';
 
 describe('WorkspaceInvitationService', () => {
   const dummySubject = '3f084ac5-18a6-4e09-920d-2e3da29df7c8';
@@ -415,7 +415,7 @@ describe('WorkspaceInvitationService', () => {
         422,
         null,
         expect.objectContaining({
-          type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
+          type: IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
         }),
         dummyWorkspaceId,
       );
@@ -746,7 +746,7 @@ describe('WorkspaceInvitationService', () => {
         422,
         null,
         expect.objectContaining({
-          type: PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
+          type: IDENTITY_PROBLEM_TYPES.PERSONAL_WORKSPACE_INVITATION,
         }),
         dummyWorkspaceId,
       );
@@ -1233,7 +1233,7 @@ describe('WorkspaceInvitationService', () => {
           409,
           null,
           expect.objectContaining({
-            type: PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
+            type: IDENTITY_PROBLEM_TYPES.WORKSPACE_INVITATION_NOT_PENDING,
           }),
           dummyWorkspaceId,
         );

@@ -10,7 +10,7 @@ import {
 import {
   CommitOutcomeUnknownError,
   type TransactionClient,
-} from './pg-transaction.js';
+} from '../platform/pg-transaction.js';
 import {
   BOOTSTRAP_CLASSIFICATIONS,
   classifyBootstrap,

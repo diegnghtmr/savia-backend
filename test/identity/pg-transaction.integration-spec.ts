@@ -5,13 +5,13 @@ import {
   PgTransaction,
   TransactionTimeoutError,
   type TransactionClient,
-} from '../../src/identity/pg-transaction.js';
-import { PostgresConfig } from '../../src/identity/postgres-config.js';
+} from '../../src/platform/pg-transaction.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import {
   PostgresPool,
   type PgClient,
   type PgPool,
-} from '../../src/identity/postgres-pool.js';
+} from '../../src/platform/postgres-pool.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');

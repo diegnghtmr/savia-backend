@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { AuthConfig } from '../../src/identity/auth-config.js';
+import { AuthConfig } from '../../src/platform/auth-config.js';
 
 const validEnvironment = {
   JWT_ISSUER: 'https://issuer.example.test',

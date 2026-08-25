@@ -1,10 +1,10 @@
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { PgTransaction } from '../../src/identity/pg-transaction.js';
-import { PostgresConfig } from '../../src/identity/postgres-config.js';
+import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresIdempotencyAdapter } from '../../src/identity/postgres-idempotency.adapter.js';
-import { PostgresPool } from '../../src/identity/postgres-pool.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { PostgresWorkspaceInvitationAdapter } from '../../src/identity/postgres-workspace-invitation.adapter.js';
 import { decodeCursor } from '../../src/identity/workspace.port.js';
 import {

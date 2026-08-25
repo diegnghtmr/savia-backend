@@ -10,7 +10,7 @@ import {
   PROFILE_UPDATE_OUTCOMES,
   type UserProfile,
 } from '../../src/identity/profile.port.js';
-import type { TransactionClient } from '../../src/identity/pg-transaction.js';
+import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import type { ProfileUpdateCommand } from '../../src/identity/profile-update-command.js';
 
 describe('ProfileService', () => {

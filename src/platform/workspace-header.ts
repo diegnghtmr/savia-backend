@@ -1,10 +1,9 @@
+import { UUID_PATTERN } from './uuid.js';
+
 export type WorkspaceHeaderParse =
   | { readonly kind: 'ok'; readonly workspaceId: string }
   | { readonly kind: 'missing' }
   | { readonly kind: 'malformed' };
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Épica 2 moved the workspace from a path parameter to a required header. This
 // parser mirrors if-match.ts's discipline: unknown shapes are malformed, an

@@ -2,16 +2,12 @@ import type {
   WorkspaceCreateCommand,
   WorkspaceUpdateCommand,
 } from './workspace-command.js';
+import { UUID_PATTERN } from '../platform/uuid.js';
 
 export const WORKSPACE_PORT = Symbol('WorkspacePort');
 
-export const WORKSPACE_KIND = {
-  PERSONAL: 'personal',
-  FAMILY: 'family',
-  SHARED: 'shared',
-} as const;
-export type WorkspaceKind =
-  (typeof WORKSPACE_KIND)[keyof typeof WORKSPACE_KIND];
+import { WORKSPACE_KIND, type WorkspaceKind } from './workspace-kind.js';
+export { WORKSPACE_KIND, type WorkspaceKind };
 
 export const WORKSPACE_ROLE = {
   OWNER: 'owner',
@@ -147,8 +143,6 @@ export interface WorkspaceListQuery {
   readonly limit: number;
 }
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const ISO_TIMESTAMP_PATTERN =
   /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;

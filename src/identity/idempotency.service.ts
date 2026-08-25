@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { TransactionClient } from './pg-transaction.js';
+import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
   IDEMPOTENCY_OUTCOME_KINDS,
   type IdempotencyOutcome,

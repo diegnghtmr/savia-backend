@@ -4,9 +4,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ACCOUNT_READ_OUTCOMES } from '../../src/accounts/accounts.port.js';
 import { AccountsService } from '../../src/accounts/accounts.service.js';
 import { PostgresAccountsAdapter } from '../../src/accounts/postgres-accounts.adapter.js';
-import { PgTransaction } from '../../src/identity/pg-transaction.js';
-import { PostgresConfig } from '../../src/identity/postgres-config.js';
-import { PostgresPool } from '../../src/identity/postgres-pool.js';
+import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');

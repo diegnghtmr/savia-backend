@@ -23,8 +23,11 @@ beforeEach(() => {
     authEnvironmentKeys.map((key) => [key, process.env[key]]),
   );
   // Removing DATABASE_URL proves the module graph builds and serves health
-  // without a reachable database. Dropping these two lines would silently
-  // remove that regression coverage.
+  // without DATABASE_URL configured at all -- this is the ONLY test that pins
+  // the lazy timeout thunk in platform.module.ts. Pointing DATABASE_URL at an
+  // unreachable host would not: PostgresConfig.fromEnvironment parses the URL
+  // and never connects, so an eager read passes that way too. Dropping these
+  // two lines would silently remove the coverage.
   originalDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
   Object.assign(process.env, authEnvironment);
