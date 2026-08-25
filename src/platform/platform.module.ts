@@ -27,8 +27,15 @@ import { PostgresPool } from './postgres-pool.js';
     },
     {
       // The inner thunk is load bearing: reading pool.checkoutTimeoutMs eagerly
-      // would resolve the pool configuration during module construction and
-      // reintroduce the requirement for a reachable database.
+      // would resolve the pool configuration during module construction, which
+      // requires DATABASE_URL to be present and parseable at boot.
+      //
+      // Say "present and parseable", not "reachable": PostgresConfig.fromEnvironment
+      // only validates and parses the URL string -- it never opens a connection.
+      // An eager read with a well-formed but unreachable host succeeds, so a test
+      // that merely points DATABASE_URL at an unroutable address proves nothing
+      // here. Only DELETING DATABASE_URL distinguishes the two designs, which is
+      // what test/health.e2e-spec.ts does.
       provide: PgTransaction,
       inject: [PostgresPool],
       // prettier-ignore
