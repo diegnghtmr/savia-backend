@@ -1,6 +1,6 @@
 import type { TransactionClient } from '../identity/pg-transaction.js';
 import type { Account, AccountCursor, AccountStatus } from './accounts.port.js';
-import type { AccountsStore } from './accounts.service.js';
+import type { AccountItem, AccountsStore } from './accounts.service.js';
 
 interface AccountRow extends Record<string, unknown> {
   readonly id: string;
@@ -14,9 +14,10 @@ interface AccountRow extends Record<string, unknown> {
   readonly colorToken: string | null;
   readonly icon: string | null;
   readonly includeInNetWorth: boolean;
-  readonly createdAt: Date | string;
-  readonly updatedAt: Date | string;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
   readonly version: number;
+  readonly cursorAt: string;
 }
 
 export function toIso(value: unknown): string {
@@ -50,23 +51,18 @@ export class PostgresAccountsAdapter implements AccountsStore {
     cursor: AccountCursor | undefined,
     limit: number,
     status: AccountStatus | undefined,
-  ): Promise<readonly Account[]> {
-    // The cursor carries millisecond-precision timestamps while timestamptz
-    // stores microseconds. date_trunc('milliseconds', ...) appears on BOTH
-    // sides of the keyset predicate AND in the order by; without it a row at
-    // created_at .000100 sorts after a cursor stamped .000000 and repeats on
-    // the next page (this exact defect shipped once in C5 slice 6).
-    //
-    // workspace_id equality drives the (workspace_id, created_at, id) index
-    // prefix; ordering by the truncated expression trades the ordered scan for
-    // boundary correctness, which is the cheaper side of that trade.
+  ): Promise<readonly AccountItem[]> {
+    // Keyset pagination matches the accounts_workspace_keyset_idx index
+    // on (workspace_id, created_at, id) directly.
+    // The cursor timestamp is serialized at full microsecond precision via
+    // to_char(... at time zone 'utc', ...), avoiding server timezone dependence
+    // while allowing lossless round-tripping through timestamptz.
     const conditions = ['a.workspace_id = $1'];
     const values: unknown[] = [workspaceId];
     if (cursor !== undefined) {
       values.push(cursor.createdAt, cursor.id);
       conditions.push(
-        `(date_trunc('milliseconds', a.created_at), a.id)` +
-          ` > (date_trunc('milliseconds', $${values.length - 1}::timestamptz), $${values.length})`,
+        `(a.created_at, a.id) > ($${values.length - 1}::timestamptz, $${values.length}::uuid)`,
       );
     }
     if (status !== undefined) {
@@ -88,27 +84,31 @@ select a.id::text,
        a.include_in_net_worth as "includeInNetWorth",
        a.created_at as "createdAt",
        a.updated_at as "updatedAt",
-       a.version
+       a.version,
+       to_char(a.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
   from public.accounts a
  where ${conditions.join('\n   and ')}
- order by date_trunc('milliseconds', a.created_at), a.id
+ order by a.created_at, a.id
  limit $${values.length}`;
     const result = await client.query<AccountRow>(sql, values);
     return result.rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      type: row.type,
-      currency: row.currency,
-      status: row.status,
-      institution: row.institution,
-      maskedNumber: row.maskedNumber,
-      description: row.description,
-      colorToken: row.colorToken,
-      icon: row.icon,
-      includeInNetWorth: row.includeInNetWorth,
-      createdAt: toIso(row.createdAt),
-      updatedAt: toIso(row.updatedAt),
-      version: row.version,
+      account: {
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        currency: row.currency,
+        status: row.status,
+        institution: row.institution,
+        maskedNumber: row.maskedNumber,
+        description: row.description,
+        colorToken: row.colorToken,
+        icon: row.icon,
+        includeInNetWorth: row.includeInNetWorth,
+        createdAt: toIso(row.createdAt),
+        updatedAt: toIso(row.updatedAt),
+        version: row.version,
+      },
+      cursorAt: row.cursorAt,
     }));
   }
 }

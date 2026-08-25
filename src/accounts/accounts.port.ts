@@ -74,9 +74,9 @@ export interface AccountListForbidden {
 export type AccountListOutcome = AccountListOk | AccountListForbidden;
 
 export interface AccountCursor {
-  // Millisecond precision by construction: new Date(...).toISOString() cannot
-  // represent microseconds, while timestamptz stores them. The SQL side must
-  // compare date_trunc('milliseconds', created_at) or boundary rows repeat.
+  // Microsecond precision: to_char(... 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') preserves
+  // full timestamptz resolution so keyset comparison and ordering match the
+  // raw (workspace_id, created_at, id) index prefix.
   readonly createdAt: string;
   readonly id: string;
 }
@@ -92,7 +92,7 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const ISO_TIMESTAMP_PATTERN =
-  /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+  /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 
 export function encodeAccountCursor(cursor: AccountCursor): string {
   return Buffer.from(JSON.stringify([cursor.createdAt, cursor.id])).toString(
@@ -119,9 +119,13 @@ export function decodeAccountCursor(raw: string): AccountCursor | undefined {
     // Date.parse alone is insufficient because it accepts instants outside PostgreSQL's
     // timestamptz text-input range (e.g. extended years, year 0000), which would surface
     // as an unhandled 500 from a client-supplied query parameter.
+    if (!ISO_TIMESTAMP_PATTERN.test(createdAt)) {
+      return undefined;
+    }
+    const parsedDate = new Date(createdAt);
     if (
-      !ISO_TIMESTAMP_PATTERN.test(createdAt) ||
-      new Date(createdAt).toISOString() !== createdAt
+      Number.isNaN(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 23) !== createdAt.slice(0, 23)
     ) {
       return undefined;
     }

@@ -38,7 +38,7 @@ export interface AccountsStore {
     cursor: AccountCursor | undefined,
     limit: number,
     status: AccountStatus | undefined,
-  ): Promise<readonly Account[]>;
+  ): Promise<readonly AccountItem[]>;
 }
 
 export class AccountsService implements AccountsPort {
@@ -68,13 +68,14 @@ export class AccountsService implements AccountsPort {
         query.status,
       );
       const hasNextPage = rows.length > query.limit;
-      const items = hasNextPage ? rows.slice(0, query.limit) : rows;
-      const lastItem = items[items.length - 1];
+      const visible = hasNextPage ? rows.slice(0, query.limit) : rows;
+      const items = visible.map((entry) => entry.account);
+      const lastItem = visible[visible.length - 1];
       const nextCursor =
         hasNextPage && lastItem !== undefined
           ? encodeAccountCursor({
-              createdAt: lastItem.createdAt,
-              id: lastItem.id,
+              createdAt: lastItem.cursorAt,
+              id: lastItem.account.id,
             })
           : null;
       return {
