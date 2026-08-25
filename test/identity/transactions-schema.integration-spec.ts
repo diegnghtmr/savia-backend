@@ -616,7 +616,10 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
 
     it('14. Deleting an account referenced by a transaction is REFUSED with 23503 (on delete restrict); after the transaction goes, the same delete succeeds', async () => {
       const txId = subject(889);
-      await seedTransaction(txId, ws1Id, account2Id, ownerA);
+      // Same-workspace pairing (account2Id lives in ws2): since
+      // transactions_account_workspace_fkey exists, a transaction can only
+      // reference an account of its own workspace.
+      await seedTransaction(txId, ws2Id, account2Id, ownerB);
 
       await expect(
         admin.query('delete from public.accounts where id = $1', [account2Id]),
