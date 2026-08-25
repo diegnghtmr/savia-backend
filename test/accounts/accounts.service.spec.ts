@@ -65,10 +65,18 @@ function toItem(
   return { account: acc, cursorAt };
 }
 
+import type {
+  IdempotencyRecord,
+  IdempotencyStore,
+} from '../../src/platform/idempotency.port.js';
+
 function fakeIdempotencyStore(
-  record: any = undefined,
+  record: IdempotencyRecord | undefined = undefined,
   writeSuccess = true,
-) {
+): IdempotencyStore & {
+  read: ReturnType<typeof vi.fn>;
+  write: ReturnType<typeof vi.fn>;
+} {
   return {
     read: vi.fn().mockResolvedValue(record),
     write: vi.fn().mockResolvedValue(writeSuccess),
@@ -104,7 +112,7 @@ async function list(
   const service = new AccountsService(
     new FakeTransaction(),
     store,
-    fakeIdempotencyStore() as any,
+    fakeIdempotencyStore(),
   );
   return service.list(SUBJECT, query);
 }
@@ -117,7 +125,7 @@ async function read(
   const service = new AccountsService(
     new FakeTransaction(),
     store,
-    fakeIdempotencyStore() as any,
+    fakeIdempotencyStore(),
   );
   return service.read(SUBJECT, workspaceId, accountId);
 }
@@ -299,16 +307,6 @@ describe('AccountsService.create', () => {
     includeInNetWorth: true,
   };
 
-  function fakeIdempotencyStore(
-    record: any = undefined,
-    writeSuccess = true,
-  ) {
-    return {
-      read: vi.fn().mockResolvedValue(record),
-      write: vi.fn().mockResolvedValue(writeSuccess),
-    };
-  }
-
   it('answers forbidden when the actor holds no active role in the workspace and never queries idempotency or creates account', async () => {
     const store = fakeStore(undefined);
     const storeWithCreate = {
@@ -319,10 +317,10 @@ describe('AccountsService.create', () => {
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
-      idempStore as any,
+      idempStore,
     );
 
-    const outcome = await (service as any).create(
+    const outcome = await service.create(
       SUBJECT,
       WORKSPACE_ID,
       VALID_COMMAND,
@@ -345,10 +343,10 @@ describe('AccountsService.create', () => {
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
-      idempStore as any,
+      idempStore,
     );
 
-    const outcome = await (service as any).create(
+    const outcome = await service.create(
       SUBJECT,
       WORKSPACE_ID,
       VALID_COMMAND,
@@ -380,10 +378,10 @@ describe('AccountsService.create', () => {
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
-      idempStore as any,
+      idempStore,
     );
 
-    const outcome = await (service as any).create(
+    const outcome = await service.create(
       SUBJECT,
       WORKSPACE_ID,
       VALID_COMMAND,
@@ -415,10 +413,10 @@ describe('AccountsService.create', () => {
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
-      idempStore as any,
+      idempStore,
     );
 
-    const outcome = await (service as any).create(
+    const outcome = await service.create(
       SUBJECT,
       WORKSPACE_ID,
       VALID_COMMAND,
@@ -440,10 +438,10 @@ describe('AccountsService.create', () => {
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
-      idempStore as any,
+      idempStore,
     );
 
-    const outcome = await (service as any).create(
+    const outcome = await service.create(
       SUBJECT,
       WORKSPACE_ID,
       VALID_COMMAND,
@@ -485,25 +483,22 @@ describe('AccountsService.create', () => {
       ...store,
       createAccount: vi.fn().mockResolvedValue(createdAccount),
     };
-    const idempStore = {
-      read: vi
-        .fn()
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValueOnce({
-          requestFingerprint: fingerprint,
-          responseStatus: 201,
-          responseEtag: '"1"',
-          responseBody: createdAccount,
-        }),
+    const idempStore: IdempotencyStore & { read: ReturnType<typeof vi.fn> } = {
+      read: vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+        requestFingerprint: fingerprint,
+        responseStatus: 201,
+        responseEtag: '"1"',
+        responseBody: createdAccount,
+      }),
       write: vi.fn().mockResolvedValue(false),
     };
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
-      idempStore as any,
+      idempStore,
     );
 
-    const outcome = await (service as any).create(
+    const outcome = await service.create(
       SUBJECT,
       WORKSPACE_ID,
       VALID_COMMAND,
@@ -531,10 +526,10 @@ describe('AccountsService.create', () => {
       const service = new AccountsService(
         new FakeTransaction(),
         storeWithCreate,
-        idempStore as any,
+        idempStore,
       );
 
-      const outcome = await (service as any).create(
+      const outcome = await service.create(
         SUBJECT,
         WORKSPACE_ID,
         VALID_COMMAND,
@@ -545,4 +540,3 @@ describe('AccountsService.create', () => {
     }
   });
 });
-

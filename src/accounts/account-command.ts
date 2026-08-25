@@ -1,5 +1,11 @@
 import type { FieldViolation } from '../platform/problem-details.js';
-import { ACCOUNT_TYPE, type AccountType } from './accounts.port.js';
+import {
+  ACCOUNT_TYPE,
+  type AccountType,
+  type CreateAccountCommand,
+} from './accounts.port.js';
+
+export type { CreateAccountCommand };
 
 const ALLOWED_FIELDS = [
   'name',
@@ -15,16 +21,6 @@ const ALLOWED_FIELDS = [
 
 const ACCOUNT_TYPES: readonly string[] = Object.values(ACCOUNT_TYPE);
 const ACTIVE_CURRENCIES = new Set(Intl.supportedValuesOf('currency'));
-
-export interface CreateAccountCommand {
-  readonly name: string;
-  readonly type: AccountType;
-  readonly currency: string;
-  readonly institution?: string | null;
-  readonly maskedNumber?: string | null;
-  readonly description?: string | null;
-  readonly includeInNetWorth: boolean;
-}
 
 export class AccountCommandValidationError extends Error {
   public constructor(public readonly violations: readonly FieldViolation[]) {

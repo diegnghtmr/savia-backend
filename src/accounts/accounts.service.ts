@@ -1,8 +1,6 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { encodeCursor } from '../platform/cursor.js';
-import {
-  computeRequestFingerprint,
-} from '../platform/idempotency.service.js';
+import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import {
   ACCOUNT_CREATE_OUTCOMES,
@@ -233,4 +231,3 @@ export class AccountsService implements AccountsPort {
     });
   }
 }
-

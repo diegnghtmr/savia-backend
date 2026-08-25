@@ -6,7 +6,6 @@ import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  ACCOUNT_CREATE_OUTCOMES,
   ACCOUNTS_PORT,
   type Account,
   type AccountCreateOutcome,
@@ -559,7 +558,11 @@ describe('POST /v1/accounts', () => {
       kind: 'created',
       account: ACCOUNT,
     } satisfies AccountCreateOutcome);
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
 
     const response = await postAccount(application, VALID_BODY, {
       token: TOKEN,
@@ -594,7 +597,11 @@ describe('POST /v1/accounts', () => {
       etag: `"${ACCOUNT.version}"`,
       body: ACCOUNT,
     } satisfies AccountCreateOutcome);
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
 
     const response = await postAccount(application, VALID_BODY, {
       token: TOKEN,
@@ -609,7 +616,11 @@ describe('POST /v1/accounts', () => {
 
   it('answers 400 when X-Workspace-Id header is missing', async () => {
     const create = vi.fn<AccountsPort['create']>();
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(application, VALID_BODY, {
       token: TOKEN,
       idempotencyKey: IDEMPOTENCY_KEY,
@@ -626,7 +637,11 @@ describe('POST /v1/accounts', () => {
 
   it('answers 400 when X-Workspace-Id header is not a valid UUID', async () => {
     const create = vi.fn<AccountsPort['create']>();
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(application, VALID_BODY, {
       token: TOKEN,
       workspaceHeader: 'not-a-valid-uuid',
@@ -644,7 +659,11 @@ describe('POST /v1/accounts', () => {
 
   it('answers 400 when Idempotency-Key header is missing', async () => {
     const create = vi.fn<AccountsPort['create']>();
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(application, VALID_BODY, {
       token: TOKEN,
       workspaceHeader: WORKSPACE_ID,
@@ -661,7 +680,11 @@ describe('POST /v1/accounts', () => {
 
   it('answers 400 when Idempotency-Key header is not a valid UUID', async () => {
     const create = vi.fn<AccountsPort['create']>();
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(application, VALID_BODY, {
       token: TOKEN,
       workspaceHeader: WORKSPACE_ID,
@@ -679,7 +702,11 @@ describe('POST /v1/accounts', () => {
 
   it('answers 400 when body is not valid JSON', async () => {
     const create = vi.fn<AccountsPort['create']>();
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(application, '{ invalid json', {
       token: TOKEN,
       workspaceHeader: WORKSPACE_ID,
@@ -695,7 +722,11 @@ describe('POST /v1/accounts', () => {
 
   it('answers 401 when Authorization header is missing', async () => {
     const create = vi.fn<AccountsPort['create']>();
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(application, VALID_BODY, {
       workspaceHeader: WORKSPACE_ID,
       idempotencyKey: IDEMPOTENCY_KEY,
@@ -710,7 +741,11 @@ describe('POST /v1/accounts', () => {
 
   it('answers 401 when bearer token is rejected', async () => {
     const create = vi.fn<AccountsPort['create']>();
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(application, VALID_BODY, {
       token: 'invalid-token',
       workspaceHeader: WORKSPACE_ID,
@@ -728,7 +763,11 @@ describe('POST /v1/accounts', () => {
     const create = vi.fn<AccountsPort['create']>().mockResolvedValue({
       kind: 'forbidden',
     } satisfies AccountCreateOutcome);
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(application, VALID_BODY, {
       token: TOKEN,
       workspaceHeader: WORKSPACE_ID,
@@ -748,7 +787,11 @@ describe('POST /v1/accounts', () => {
     const create = vi.fn<AccountsPort['create']>().mockResolvedValue({
       kind: 'idempotency_conflict',
     } satisfies AccountCreateOutcome);
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(application, VALID_BODY, {
       token: TOKEN,
       workspaceHeader: WORKSPACE_ID,
@@ -766,7 +809,11 @@ describe('POST /v1/accounts', () => {
 
   it('answers 422 problem+json when request body fails validation', async () => {
     const create = vi.fn<AccountsPort['create']>();
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(
       application,
       { name: '', type: 'bad_type', currency: 'INVALID' },
@@ -790,7 +837,11 @@ describe('POST /v1/accounts', () => {
 
   it('answers 422 problem+json when openingBalance is supplied (refused in slice 6a)', async () => {
     const create = vi.fn<AccountsPort['create']>();
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(
       application,
       {
@@ -821,7 +872,11 @@ describe('POST /v1/accounts', () => {
 
   it('answers 422 problem+json when openingBalanceDate is supplied (refused in slice 6a)', async () => {
     const create = vi.fn<AccountsPort['create']>();
-    const { application } = await createApplication(undefined, undefined, create);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
     const response = await postAccount(
       application,
       {

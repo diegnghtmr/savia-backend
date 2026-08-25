@@ -1,5 +1,4 @@
 import type { Cursor, PageInfo } from '../platform/cursor.js';
-import type { CreateAccountCommand } from './account-command.js';
 
 export const ACCOUNTS_PORT = Symbol('AccountsPort');
 
@@ -30,6 +29,16 @@ export function isAccountStatus(value: string): value is AccountStatus {
   return ACCOUNT_STATUS_VALUES.includes(value);
 }
 
+export interface CreateAccountCommand {
+  readonly name: string;
+  readonly type: AccountType;
+  readonly currency: string;
+  readonly institution?: string | null;
+  readonly maskedNumber?: string | null;
+  readonly description?: string | null;
+  readonly includeInNetWorth: boolean;
+}
+
 export interface Account {
   readonly id: string;
   readonly name: string;
@@ -47,7 +56,7 @@ export interface Account {
   readonly version: number;
 }
 
-export type { PageInfo, CreateAccountCommand };
+export type { PageInfo };
 
 export interface AccountPage {
   readonly items: readonly Account[];
