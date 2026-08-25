@@ -187,10 +187,14 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     // Seed 6 workspaces for subjectMicroseconds whose created_at differ only in microseconds,
     // with 4 sharing the .123 millisecond bucket and 2 sharing the .456 millisecond bucket.
     for (const [id, name, role, createdAt] of [
-      [wsMicro1Id, 'Micro 1', 'owner', '2026-07-20 12:00:00.123450+00'],
+      // Deliberately NOT collinear with the ids: ...871 is the LAST row of the
+      // .123 bucket and ...874 is the first. While id order matched created_at
+      // order, `order by id` alone produced a byte-identical walk, so dropping
+      // created_at from the ORDER BY passed this suite. Now it cannot.
+      [wsMicro1Id, 'Micro 1', 'owner', '2026-07-20 12:00:00.123999+00'],
       [wsMicro2Id, 'Micro 2', 'editor', '2026-07-20 12:00:00.123456+00'],
       [wsMicro3Id, 'Micro 3', 'viewer', '2026-07-20 12:00:00.123789+00'],
-      [wsMicro4Id, 'Micro 4', 'administrator', '2026-07-20 12:00:00.123999+00'],
+      [wsMicro4Id, 'Micro 4', 'administrator', '2026-07-20 12:00:00.123450+00'],
       [wsMicro5Id, 'Micro 5', 'editor', '2026-07-20 12:00:00.456100+00'],
       [wsMicro6Id, 'Micro 6', 'owner', '2026-07-20 12:00:00.456200+00'],
     ]) {
@@ -440,11 +444,13 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   });
 
   it('pages through workspaces whose created_at differs only in microseconds without repeating or dropping items', async () => {
+    // created_at order, which is NOT id order: .123450 (...874), .123456 (...872),
+    // .123789 (...873), .123999 (...871), then the .456 bucket.
     const expectedIds = [
-      wsMicro1Id,
+      wsMicro4Id,
       wsMicro2Id,
       wsMicro3Id,
-      wsMicro4Id,
+      wsMicro1Id,
       wsMicro5Id,
       wsMicro6Id,
     ];
@@ -473,6 +479,68 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
 
     expect(walkedIds).toEqual(expectedIds);
     expect(new Set(walkedIds).size).toBe(walkedIds.length);
+  });
+
+  it('walks the same sequence under a non-UTC session TimeZone: the cursor must not depend on server configuration', async () => {
+    // `to_char` formats a timestamptz in the SESSION TimeZone, so the adapters pin
+    // `at time zone 'utc'`. Every other test runs against a UTC server, where output
+    // with and without that clause is byte-identical -- removing it passed the whole
+    // suite. This connection asks PostgreSQL for a different session zone, which is
+    // the only way the clause becomes observable.
+    const offsetUrl = new URL(url);
+    offsetUrl.searchParams.set('options', '-c TimeZone=America/Bogota');
+    const offsetPool = new PostgresPool(
+      PostgresConfig.fromUrl(offsetUrl.toString()),
+    );
+    const offsetService = new WorkspaceService(
+      new PgTransaction(offsetPool, { callbackTimeoutMs: 3_000 }),
+      adapter,
+      idempotencyAdapter,
+    );
+
+    try {
+      const expectedIds = [
+        wsMicro4Id,
+        wsMicro2Id,
+        wsMicro3Id,
+        wsMicro1Id,
+        wsMicro5Id,
+        wsMicro6Id,
+      ];
+      const walkedIds: string[] = [];
+      let cursor: ReturnType<typeof decodeCursor> = undefined;
+
+      for (let i = 0; i < expectedIds.length; i++) {
+        const page = await offsetService.list(subjectMicroseconds, {
+          cursor,
+          limit: 1,
+        });
+        expect(page.items).toHaveLength(1);
+        walkedIds.push(page.items[0]!.id);
+
+        if (i < expectedIds.length - 1) {
+          const raw = page.pageInfo.nextCursor;
+          expect(raw).toBeTypeOf('string');
+          cursor = decodeCursor(raw!);
+          expect(cursor).toBeDefined();
+          // The stamp is UTC regardless of the session zone. Under
+          // America/Bogota an unpinned to_char would emit 07:00, and the value
+          // assertion below is what makes that visible rather than merely
+          // shifting every row consistently.
+          expect(cursor!.createdAt.startsWith('2026-07-20T12:00:00.')).toBe(
+            true,
+          );
+        } else {
+          expect(page.pageInfo.hasNextPage).toBe(false);
+          expect(page.pageInfo.nextCursor).toBeNull();
+        }
+      }
+
+      expect(walkedIds).toEqual(expectedIds);
+      expect(new Set(walkedIds).size).toBe(walkedIds.length);
+    } finally {
+      await offsetPool.end();
+    }
   });
 
   it("a suspended member's workspace does not appear in their list", async () => {
