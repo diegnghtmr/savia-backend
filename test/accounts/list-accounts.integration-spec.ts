@@ -20,10 +20,9 @@ const subject = (number: number) =>
 const accountId = (number: number) =>
   `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
 
-// The millisecond trap this suite exists to pin: every July row differs ONLY in
-// microseconds of created_at, so they all collapse into the same
-// date_trunc('milliseconds') bucket and the keyset predicate must compare
-// truncated timestamps or the boundary row repeats across pages.
+// Microsecond precision seeds: rows differ in microseconds within the same
+// millisecond bucket, and rows 1002/1003 share the exact same microsecond
+// timestamp (.000200), exercising both microsecond ordering and UUID tie-breaking.
 const MICROSECOND_SEEDS: ReadonlyArray<{
   readonly id: string;
   readonly name: string;
@@ -89,7 +88,7 @@ describe('AccountsService listAccounts database boundary', () => {
   const workspaceWithAccountsId = accountId(951);
   const emptyWorkspaceId = accountId(952);
 
-  // Expected global order under (date_trunc('milliseconds', created_at), id).
+  // Expected global order under (created_at, id).
   const expectedOrder = [
     accountId(1006),
     accountId(1001),
@@ -325,6 +324,38 @@ describe('AccountsService listAccounts database boundary', () => {
       accountId(1002),
       accountId(1003),
     ]);
+  });
+
+  it('walks a status-filtered set with limit 1 across pages without repeating or dropping any', async () => {
+    let cursor: Parameters<AccountsService['list']>[1]['cursor'] = undefined;
+    const walked: string[] = [];
+    for (let page = 0; page < 20; page += 1) {
+      const outcome = await service.list(subjectOwner, {
+        workspaceId: workspaceWithAccountsId,
+        limit: 1,
+        status: 'active',
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (outcome.kind !== ACCOUNT_LIST_OUTCOMES.OK) {
+        throw new Error(`expected ok, got ${outcome.kind}`);
+      }
+      walked.push(...outcome.page.items.map((item) => item.id));
+      if (!outcome.page.pageInfo.hasNextPage) break;
+      const nextCursor = outcome.page.pageInfo.nextCursor;
+      if (nextCursor === null) {
+        throw new Error('hasNextPage true but nextCursor null');
+      }
+      expect(decodeAccountCursor(nextCursor)).toBeDefined();
+      cursor = decodeAccountCursor(nextCursor);
+    }
+    const expectedActiveOrder = [
+      accountId(1006),
+      accountId(1001),
+      accountId(1002),
+      accountId(1003),
+    ];
+    expect(walked).toEqual(expectedActiveOrder);
+    expect(new Set(walked).size).toBe(walked.length);
   });
 
   it('maps snake_case columns onto the contract shape', async () => {
