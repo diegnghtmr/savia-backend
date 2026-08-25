@@ -34,11 +34,13 @@ export function createAccountListQuery(
   let status: AccountStatus | undefined;
   if (input.statusParam !== undefined) {
     if (!isAccountStatus(input.statusParam)) {
-      violations.push({
-        field: 'status',
-        code: 'invalid',
-        message: 'status must be one of active, archived, closed.',
-      });
+      violations.push(
+        Object.freeze({
+          field: 'status',
+          code: 'invalid',
+          message: 'status must be one of active, archived, closed.',
+        }),
+      );
     } else {
       status = input.statusParam;
     }
