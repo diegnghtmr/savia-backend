@@ -1,11 +1,10 @@
 import type { CreateWorkspaceInvitationCommand } from './workspace-invitation-command.js';
-import type {
-  PageInfo,
-  WorkspaceCursor,
-  WorkspaceRole,
-} from './workspace.port.js';
+import type { Cursor, PageInfo } from '../platform/cursor.js';
+import type { WorkspaceRole } from './workspace.port.js';
 
 export const WORKSPACE_INVITATION_PORT = Symbol('WorkspaceInvitationPort');
+
+export type { PageInfo };
 
 export interface WorkspaceInvitation {
   readonly id: string;
@@ -17,7 +16,7 @@ export interface WorkspaceInvitation {
 }
 
 export interface WorkspaceInvitationListQuery {
-  readonly cursor?: WorkspaceCursor;
+  readonly cursor?: Cursor;
   readonly limit: number;
 }
 

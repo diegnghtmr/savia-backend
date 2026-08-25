@@ -9,8 +9,8 @@ import { IdentityModule } from '../src/identity/identity.module.js';
 import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 import { PROBLEM_TYPES } from '../src/platform/problem-details.js';
+import { encodeCursor } from '../src/platform/cursor.js';
 import {
-  encodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   WORKSPACE_MEMBER_PORT,
   WORKSPACE_MEMBER_REMOVE_OUTCOMES,
@@ -318,10 +318,10 @@ describe('listWorkspaceMembers HTTP boundary', () => {
   it('returns 400 for a cursor minted for another workspace (foreign workspace) and never 500', async () => {
     const appInstance = await createApplication();
     const foreignWorkspaceId = '00000000-0000-0000-0000-000000000099';
-    const cursor = encodeMemberCursor({
+    const cursor = encodeCursor({
       workspaceId: foreignWorkspaceId,
-      joinedAt: '2026-07-15T00:00:00.000Z',
-      membershipId: '00000000-0000-0000-0000-000000000001',
+      createdAt: '2026-07-15T00:00:00.000000Z',
+      id: '00000000-0000-0000-0000-000000000001',
     });
     const response = await listWorkspaceMembersRequest(
       appInstance,
@@ -336,10 +336,10 @@ describe('listWorkspaceMembers HTTP boundary', () => {
 
   it('returns 400 for an over-long cursor exceeding max length and never 500', async () => {
     const appInstance = await createApplication();
-    const validCursor = encodeMemberCursor({
+    const validCursor = encodeCursor({
       workspaceId: WORKSPACE_ID,
-      joinedAt: '2026-07-15T00:00:00.000Z',
-      membershipId: '00000000-0000-0000-0000-000000000001',
+      createdAt: '2026-07-15T00:00:00.000000Z',
+      id: '00000000-0000-0000-0000-000000000001',
     });
     const overlongCursor = validCursor + 'A'.repeat(300);
     const response = await listWorkspaceMembersRequest(
@@ -432,10 +432,10 @@ describe('listWorkspaceMembers HTTP boundary', () => {
       },
     });
     const appInstance = await createApplication(listSpy);
-    const rawCursor = encodeMemberCursor({
+    const rawCursor = encodeCursor({
       workspaceId: WORKSPACE_ID,
-      joinedAt: '2026-07-15T00:00:00.000Z',
-      membershipId: '00000000-0000-0000-0000-000000000001',
+      createdAt: '2026-07-15T00:00:00.000000Z',
+      id: '00000000-0000-0000-0000-000000000001',
     });
 
     await listWorkspaceMembersRequest(
@@ -447,8 +447,8 @@ describe('listWorkspaceMembers HTTP boundary', () => {
     expect(listSpy).toHaveBeenCalledWith(SUBJECT, WORKSPACE_ID, {
       cursor: {
         workspaceId: WORKSPACE_ID,
-        joinedAt: '2026-07-15T00:00:00.000Z',
-        membershipId: '00000000-0000-0000-0000-000000000001',
+        createdAt: '2026-07-15T00:00:00.000000Z',
+        id: '00000000-0000-0000-0000-000000000001',
       },
       limit: 25,
     });

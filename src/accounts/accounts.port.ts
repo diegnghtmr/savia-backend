@@ -1,4 +1,4 @@
-import { UUID_PATTERN } from '../platform/uuid.js';
+import type { Cursor, PageInfo } from '../platform/cursor.js';
 
 export const ACCOUNTS_PORT = Symbol('AccountsPort');
 
@@ -46,10 +46,7 @@ export interface Account {
   readonly version: number;
 }
 
-export interface PageInfo {
-  readonly hasNextPage: boolean;
-  readonly nextCursor: string | null;
-}
+export type { PageInfo };
 
 export interface AccountPage {
   readonly items: readonly Account[];
@@ -75,65 +72,13 @@ export interface AccountListForbidden {
 // workspace collapses into forbidden to avoid leaking existence.
 export type AccountListOutcome = AccountListOk | AccountListForbidden;
 
-export interface AccountCursor {
-  // Microsecond precision: to_char(... 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') preserves
-  // full timestamptz resolution so keyset comparison and ordering match the
-  // raw (workspace_id, created_at, id) index prefix.
-  readonly createdAt: string;
-  readonly id: string;
-}
+export type AccountCursor = Cursor;
 
 export interface AccountListQuery {
   readonly workspaceId: string;
   readonly cursor?: AccountCursor;
   readonly limit: number;
   readonly status?: AccountStatus;
-}
-
-const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
-const ISO_TIMESTAMP_PATTERN =
-  /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
-
-export function encodeAccountCursor(cursor: AccountCursor): string {
-  return Buffer.from(JSON.stringify([cursor.createdAt, cursor.id])).toString(
-    'base64url',
-  );
-}
-
-export function decodeAccountCursor(raw: string): AccountCursor | undefined {
-  if (
-    typeof raw !== 'string' ||
-    raw.length === 0 ||
-    !BASE64URL_PATTERN.test(raw)
-  ) {
-    return undefined;
-  }
-  try {
-    const json = Buffer.from(raw, 'base64url').toString('utf8');
-    const parsed: unknown = JSON.parse(json);
-    if (!Array.isArray(parsed) || parsed.length !== 2) return undefined;
-    const [createdAt, id] = parsed;
-    if (typeof createdAt !== 'string' || typeof id !== 'string') {
-      return undefined;
-    }
-    // Date.parse alone is insufficient because it accepts instants outside PostgreSQL's
-    // timestamptz text-input range (e.g. extended years, year 0000), which would surface
-    // as an unhandled 500 from a client-supplied query parameter.
-    if (!ISO_TIMESTAMP_PATTERN.test(createdAt)) {
-      return undefined;
-    }
-    const parsedDate = new Date(createdAt);
-    if (
-      Number.isNaN(parsedDate.getTime()) ||
-      parsedDate.toISOString().slice(0, 23) !== createdAt.slice(0, 23)
-    ) {
-      return undefined;
-    }
-    if (!UUID_PATTERN.test(id)) return undefined;
-    return { createdAt, id };
-  } catch {
-    return undefined;
-  }
 }
 
 export interface AccountsPort {

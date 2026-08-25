@@ -6,10 +6,8 @@ import { PgTransaction } from '../../src/platform/pg-transaction.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { PostgresWorkspaceMemberAdapter } from '../../src/identity/postgres-workspace-member.adapter.js';
-import {
-  decodeMemberCursor,
-  type WorkspaceMember,
-} from '../../src/identity/workspace-member.port.js';
+import { decodeCursor } from '../../src/platform/cursor.js';
+import type { WorkspaceMember } from '../../src/identity/workspace-member.port.js';
 import { WorkspaceMemberService } from '../../src/identity/workspace-member.service.js';
 
 const url = process.env.DATABASE_URL;
@@ -455,7 +453,7 @@ describe('Workspace member roster (202607150013_workspace_member_roster.sql)', (
       const fullItems = fullOutcome.page.items;
 
       const pagedItems: WorkspaceMember[] = [];
-      let cursor: ReturnType<typeof decodeMemberCursor> = undefined;
+      let cursor: ReturnType<typeof decodeCursor> = undefined;
       let hasNextPage = true;
 
       while (hasNextPage) {
@@ -469,7 +467,7 @@ describe('Workspace member roster (202607150013_workspace_member_roster.sql)', (
         pagedItems.push(...pageOutcome.page.items);
         hasNextPage = pageOutcome.page.pageInfo.hasNextPage;
         if (pageOutcome.page.pageInfo.nextCursor) {
-          cursor = decodeMemberCursor(
+          cursor = decodeCursor(
             pageOutcome.page.pageInfo.nextCursor,
             workspaceW,
           );
@@ -522,7 +520,7 @@ describe('Workspace member roster (202607150013_workspace_member_roster.sql)', (
       expect(firstPage.page.pageInfo.hasNextPage).toBe(true);
       const nextCursorRaw = firstPage.page.pageInfo.nextCursor;
       expect(nextCursorRaw).not.toBeNull();
-      const nextCursor = decodeMemberCursor(nextCursorRaw!, wsDeletedAnchor);
+      const nextCursor = decodeCursor(nextCursorRaw!, wsDeletedAnchor);
 
       // Delete the anchor row mid-iteration
       await admin.query(

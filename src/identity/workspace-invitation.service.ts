@@ -3,6 +3,8 @@ import { computeRequestFingerprint } from './idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { PROBLEM_TYPES } from '../platform/problem-details.js';
 import type { CreateWorkspaceInvitationCommand } from './workspace-invitation-command.js';
+import type { Cursor } from '../platform/cursor.js';
+import { encodeCursor } from '../platform/cursor.js';
 import {
   WORKSPACE_INVITATION_CREATE_OUTCOMES,
   WORKSPACE_INVITATION_LIST_OUTCOMES,
@@ -15,11 +17,9 @@ import {
   type WorkspaceInvitationRevokeOutcome,
 } from './workspace-invitation.port.js';
 import {
-  encodeCursor,
   WORKSPACE_KIND,
   WORKSPACE_MEMBER_STATUS,
   WORKSPACE_ROLE,
-  type WorkspaceCursor,
   type WorkspaceKind,
   type WorkspaceRole,
 } from './workspace.port.js';
@@ -39,6 +39,11 @@ export interface WorkspaceInvitationTransaction {
 
 export type WorkspaceInvitationReadTransaction = WorkspaceInvitationTransaction;
 
+export interface WorkspaceInvitationItem {
+  readonly invitation: WorkspaceInvitation;
+  readonly cursorAt: string;
+}
+
 export interface WorkspaceInvitationStore {
   readMembership(
     client: TransactionClient,
@@ -48,9 +53,9 @@ export interface WorkspaceInvitationStore {
   listInvitations(
     client: TransactionClient,
     workspaceId: string,
-    cursor: WorkspaceCursor | undefined,
+    cursor: Cursor | undefined,
     limit: number,
-  ): Promise<readonly WorkspaceInvitation[]>;
+  ): Promise<readonly WorkspaceInvitationItem[]>;
   readWorkspaceKind(
     client: TransactionClient,
     workspaceId: string,
@@ -131,13 +136,14 @@ export class WorkspaceInvitationService implements WorkspaceInvitationPort {
         query.limit + 1,
       );
       const hasNextPage = rows.length > query.limit;
-      const items = hasNextPage ? rows.slice(0, query.limit) : rows;
-      const lastItem = items[items.length - 1];
+      const visible = hasNextPage ? rows.slice(0, query.limit) : rows;
+      const items = visible.map((entry) => entry.invitation);
+      const lastItem = visible[visible.length - 1];
       const nextCursor =
         hasNextPage && lastItem !== undefined
           ? encodeCursor({
-              createdAt: lastItem.createdAt,
-              id: lastItem.id,
+              createdAt: lastItem.cursorAt,
+              id: lastItem.invitation.id,
             })
           : null;
 

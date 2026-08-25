@@ -5,8 +5,8 @@ import type {
   WorkspaceCreateCommand,
   WorkspaceUpdateCommand,
 } from './workspace-command.js';
+import { encodeCursor } from '../platform/cursor.js';
 import {
-  encodeCursor,
   WORKSPACE_ACCESS_KINDS,
   WORKSPACE_CREATE_OUTCOME_KINDS,
   WORKSPACE_DELETE_OUTCOME_KINDS,
@@ -57,6 +57,11 @@ export interface WorkspaceRecord {
   readonly version: number;
 }
 
+export interface WorkspaceItem {
+  readonly workspace: Workspace;
+  readonly cursorAt: string;
+}
+
 export interface WorkspaceStore {
   readMembership(
     client: TransactionClient,
@@ -72,7 +77,7 @@ export interface WorkspaceStore {
     subject: string,
     cursor: WorkspaceCursor | undefined,
     limit: number,
-  ): Promise<readonly Workspace[]>;
+  ): Promise<readonly WorkspaceItem[]>;
   createWorkspace(
     client: TransactionClient,
     subject: string,
@@ -155,11 +160,15 @@ export class WorkspaceService implements WorkspacePort {
         query.limit + 1,
       );
       const hasNextPage = rows.length > query.limit;
-      const items = hasNextPage ? rows.slice(0, query.limit) : rows;
-      const lastItem = items[items.length - 1];
+      const visible = hasNextPage ? rows.slice(0, query.limit) : rows;
+      const items = visible.map((entry) => entry.workspace);
+      const lastItem = visible[visible.length - 1];
       const nextCursor =
         hasNextPage && lastItem !== undefined
-          ? encodeCursor({ createdAt: lastItem.createdAt, id: lastItem.id })
+          ? encodeCursor({
+              createdAt: lastItem.cursorAt,
+              id: lastItem.workspace.id,
+            })
           : null;
       return {
         items,

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { decodeCursor } from '../../src/platform/cursor.js';
 import {
-  decodeAccountCursor,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
   type Account,
@@ -157,9 +157,10 @@ describe('AccountsService.list', () => {
     }
     expect(outcome.page.items).toEqual([first, second]);
     expect(outcome.page.pageInfo.hasNextPage).toBe(true);
-    expect(decodeAccountCursor(outcome.page.pageInfo.nextCursor ?? '')).toEqual(
-      { createdAt: '2026-07-02T00:00:00.000200Z', id: second.id },
-    );
+    expect(decodeCursor(outcome.page.pageInfo.nextCursor ?? '')).toEqual({
+      createdAt: '2026-07-02T00:00:00.000200Z',
+      id: second.id,
+    });
     // The store is asked for limit + 1 so hasNextPage is decidable without a
     // second query.
     expect(store.listAccounts).toHaveBeenCalledWith(

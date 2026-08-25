@@ -48,8 +48,8 @@ import {
   WORKSPACE_INVITATION_PORT,
   type WorkspaceInvitationPort,
 } from './workspace-invitation.port.js';
+import { decodeCursor } from '../platform/cursor.js';
 import {
-  decodeMemberCursor,
   WORKSPACE_MEMBER_LIST_OUTCOMES,
   WORKSPACE_MEMBER_PORT,
   WORKSPACE_MEMBER_REMOVE_OUTCOMES,
@@ -58,7 +58,6 @@ import {
   type WorkspaceMemberPort,
 } from './workspace-member.port.js';
 import {
-  decodeCursor,
   WORKSPACE_ACCESS_KINDS,
   WORKSPACE_CREATE_OUTCOME_KINDS,
   WORKSPACE_DELETE_OUTCOME_KINDS,
@@ -284,7 +283,7 @@ export class WorkspaceController {
 
     let cursor: WorkspaceMemberCursor | undefined;
     if (cursorParam !== undefined) {
-      cursor = decodeMemberCursor(cursorParam, workspaceId);
+      cursor = decodeCursor(cursorParam, workspaceId);
       if (cursor === undefined) {
         sendProblem(reply, {
           type: PROBLEM_TYPES.BAD_REQUEST,

@@ -4,6 +4,7 @@ import type {
   WorkspaceMemberCursor,
 } from './workspace-member.port.js';
 import type {
+  WorkspaceMemberItem,
   WorkspaceMembershipDetailRecord,
   WorkspaceMemberStore,
 } from './workspace-member.service.js';
@@ -39,7 +40,7 @@ export class PostgresWorkspaceMemberAdapter implements WorkspaceMemberStore {
     workspaceId: string,
     cursor: WorkspaceMemberCursor | undefined,
     limit: number,
-  ): Promise<readonly WorkspaceMember[]> {
+  ): Promise<readonly WorkspaceMemberItem[]> {
     const result = await client.query<WorkspaceMemberRow>(
       `select roster.membership_id::text as "id",
               roster.profile_id::text as "userId",
@@ -47,33 +48,32 @@ export class PostgresWorkspaceMemberAdapter implements WorkspaceMemberStore {
               roster.email,
               roster.role,
               roster.status,
-              roster.joined_at as "joinedAt"
+              roster.joined_at as "joinedAt",
+              to_char(roster.joined_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
          from public.workspace_member_roster($1) roster
         where $2::timestamptz is null
            or (roster.joined_at, roster.membership_id) > ($2::timestamptz, $3::uuid)
         order by roster.joined_at, roster.membership_id
         limit $4`,
-      [
-        workspaceId,
-        cursor?.joinedAt ?? null,
-        cursor?.membershipId ?? null,
-        limit,
-      ],
+      [workspaceId, cursor?.createdAt ?? null, cursor?.id ?? null, limit],
     );
     return result.rows.map((row) => ({
-      id: row.id,
-      userId: row.userId,
-      displayName: row.displayName,
-      // The authority declares WorkspaceMember.email as `type: string, format: email` and
-      // does NOT declare it nullable, with additionalProperties: false. A JSON `null` would
-      // therefore be schema-invalid. Withholding email means OMITTING the property.
-      ...(row.email === null ? {} : { email: row.email }),
-      role: row.role,
-      status: row.status,
-      joinedAt:
-        row.joinedAt instanceof Date
-          ? row.joinedAt.toISOString()
-          : String(row.joinedAt),
+      member: {
+        id: row.id,
+        userId: row.userId,
+        displayName: row.displayName,
+        // The authority declares WorkspaceMember.email as `type: string, format: email` and
+        // does NOT declare it nullable, with additionalProperties: false. A JSON `null` would
+        // therefore be schema-invalid. Withholding email means OMITTING the property.
+        ...(row.email === null ? {} : { email: row.email }),
+        role: row.role,
+        status: row.status,
+        joinedAt:
+          row.joinedAt instanceof Date
+            ? row.joinedAt.toISOString()
+            : String(row.joinedAt),
+      },
+      cursorAt: row.cursorAt,
     }));
   }
 
@@ -263,4 +263,5 @@ interface WorkspaceMemberRow extends Record<string, unknown> {
   readonly role: WorkspaceRole;
   readonly status: WorkspaceMemberStatus;
   readonly joinedAt: Date | string;
+  readonly cursorAt: string;
 }

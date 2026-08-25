@@ -1,8 +1,8 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import { encodeCursor } from '../platform/cursor.js';
 import {
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
-  encodeAccountCursor,
   type Account,
   type AccountCursor,
   type AccountListOutcome,
@@ -80,7 +80,7 @@ export class AccountsService implements AccountsPort {
       const lastItem = visible[visible.length - 1];
       const nextCursor =
         hasNextPage && lastItem !== undefined
-          ? encodeAccountCursor({
+          ? encodeCursor({
               createdAt: lastItem.cursorAt,
               id: lastItem.account.id,
             })

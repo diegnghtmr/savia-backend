@@ -806,7 +806,7 @@ describe('GET /v1/workspaces', () => {
     });
     const application = await createApplication(undefined, list);
     const rawCursor = Buffer.from(
-      JSON.stringify(['2026-07-15T00:00:00.000Z', WORKSPACE_ID]),
+      JSON.stringify(['2026-07-15T00:00:00.000000Z', WORKSPACE_ID]),
     ).toString('base64url');
 
     const response = await listWorkspaces(
@@ -818,7 +818,7 @@ describe('GET /v1/workspaces', () => {
     expect(response.statusCode).toBe(200);
     expect(list).toHaveBeenCalledWith(SUBJECT, {
       cursor: {
-        createdAt: '2026-07-15T00:00:00.000Z',
+        createdAt: '2026-07-15T00:00:00.000000Z',
         id: WORKSPACE_ID,
       },
       limit: 10,
@@ -914,7 +914,7 @@ describe('GET /v1/workspaces', () => {
     });
     const application = await createApplication(undefined, list);
     const validCursor = Buffer.from(
-      JSON.stringify(['2026-07-15T00:00:00.000Z', WORKSPACE_ID]),
+      JSON.stringify(['2026-07-15T00:00:00.000000Z', WORKSPACE_ID]),
     ).toString('base64url');
 
     const response = await listWorkspaces(
@@ -926,7 +926,7 @@ describe('GET /v1/workspaces', () => {
     expect(response.statusCode).toBe(200);
     expect(list).toHaveBeenCalledWith(SUBJECT, {
       cursor: {
-        createdAt: '2026-07-15T00:00:00.000Z',
+        createdAt: '2026-07-15T00:00:00.000000Z',
         id: WORKSPACE_ID,
       },
       limit: 50,

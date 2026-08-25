@@ -9,10 +9,8 @@ import { IdempotencyService } from '../../src/identity/idempotency.service.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import type { WorkspaceCreateCommand } from '../../src/identity/workspace-command.js';
-import {
-  decodeCursor,
-  WORKSPACE_CREATE_OUTCOME_KINDS,
-} from '../../src/identity/workspace.port.js';
+import { decodeCursor } from '../../src/platform/cursor.js';
+import { WORKSPACE_CREATE_OUTCOME_KINDS } from '../../src/identity/workspace.port.js';
 import {
   WorkspaceService,
   type WorkspaceStore,
@@ -42,6 +40,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   const subjectExactFull = subject(711);
   const subjectCreator = subject(720);
   const subjectCreator2 = subject(721);
+  const subjectMicroseconds = subject(730);
 
   const sharedWorkspaceId = '00000000-0000-0000-0000-000000000750';
   const ws1Id = '00000000-0000-0000-0000-000000000801';
@@ -55,6 +54,13 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
   const exactFull2Id = '00000000-0000-0000-0000-000000000852';
   const exactFull3Id = '00000000-0000-0000-0000-000000000853';
   const exactFull4Id = '00000000-0000-0000-0000-000000000854';
+
+  const wsMicro1Id = '00000000-0000-0000-0000-000000000871';
+  const wsMicro2Id = '00000000-0000-0000-0000-000000000872';
+  const wsMicro3Id = '00000000-0000-0000-0000-000000000873';
+  const wsMicro4Id = '00000000-0000-0000-0000-000000000874';
+  const wsMicro5Id = '00000000-0000-0000-0000-000000000875';
+  const wsMicro6Id = '00000000-0000-0000-0000-000000000876';
 
   const wsPersonalId = '00000000-0000-0000-0000-000000000860';
   const wsDeletePositiveId = '00000000-0000-0000-0000-000000000861';
@@ -73,7 +79,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     service = new WorkspaceService(transaction, adapter, idempotencyAdapter);
 
     await admin.query(
-      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12), ($13, $14), ($15, $16), ($17, $18)`,
+      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12), ($13, $14), ($15, $16), ($17, $18), ($19, $20)`,
       [
         subjectOwner,
         'owner@example.test',
@@ -93,6 +99,8 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         'creator@example.test',
         subjectCreator2,
         'creator2@example.test',
+        subjectMicroseconds,
+        'microseconds@example.test',
       ],
     );
 
@@ -106,6 +114,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
       [subjectExactFull, 'exactfull@example.test', 'Exact Full User'],
       [subjectCreator, 'creator@example.test', 'Creator User'],
       [subjectCreator2, 'creator2@example.test', 'Creator User 2'],
+      [subjectMicroseconds, 'microseconds@example.test', 'Microseconds User'],
     ]) {
       await admin.query(
         `insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency, privacy_mode_enabled)
@@ -172,6 +181,32 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
          values ($1, $2, $3, 'active')`,
         [id, subjectExactFull, role],
+      );
+    }
+
+    // Seed 6 workspaces for subjectMicroseconds whose created_at differ only in microseconds,
+    // with 4 sharing the .123 millisecond bucket and 2 sharing the .456 millisecond bucket.
+    for (const [id, name, role, createdAt] of [
+      // Deliberately NOT collinear with the ids: ...871 is the LAST row of the
+      // .123 bucket and ...874 is the first. While id order matched created_at
+      // order, `order by id` alone produced a byte-identical walk, so dropping
+      // created_at from the ORDER BY passed this suite. Now it cannot.
+      [wsMicro1Id, 'Micro 1', 'owner', '2026-07-20 12:00:00.123999+00'],
+      [wsMicro2Id, 'Micro 2', 'editor', '2026-07-20 12:00:00.123456+00'],
+      [wsMicro3Id, 'Micro 3', 'viewer', '2026-07-20 12:00:00.123789+00'],
+      [wsMicro4Id, 'Micro 4', 'administrator', '2026-07-20 12:00:00.123450+00'],
+      [wsMicro5Id, 'Micro 5', 'editor', '2026-07-20 12:00:00.456100+00'],
+      [wsMicro6Id, 'Micro 6', 'owner', '2026-07-20 12:00:00.456200+00'],
+    ]) {
+      await admin.query(
+        `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_at)
+         values ($1, $2, 'shared', 'USD', null, $3::timestamptz)`,
+        [id, name, createdAt],
+      );
+      await admin.query(
+        `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'active')`,
+        [id, subjectMicroseconds, role],
       );
     }
 
@@ -406,6 +441,106 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
     // Exactly full page (items.length === 2 === limit) must report hasNextPage: false
     expect(page2.pageInfo.hasNextPage).toBe(false);
     expect(page2.pageInfo.nextCursor).toBeNull();
+  });
+
+  it('pages through workspaces whose created_at differs only in microseconds without repeating or dropping items', async () => {
+    // created_at order, which is NOT id order: .123450 (...874), .123456 (...872),
+    // .123789 (...873), .123999 (...871), then the .456 bucket.
+    const expectedIds = [
+      wsMicro4Id,
+      wsMicro2Id,
+      wsMicro3Id,
+      wsMicro1Id,
+      wsMicro5Id,
+      wsMicro6Id,
+    ];
+    const walkedIds: string[] = [];
+    let cursor: ReturnType<typeof decodeCursor> = undefined;
+
+    for (let i = 0; i < expectedIds.length; i++) {
+      const page = await service.list(subjectMicroseconds, {
+        cursor,
+        limit: 1,
+      });
+      expect(page.items).toHaveLength(1);
+      const item = page.items[0]!;
+      walkedIds.push(item.id);
+
+      if (i < expectedIds.length - 1) {
+        expect(page.pageInfo.hasNextPage).toBe(true);
+        expect(page.pageInfo.nextCursor).toBeTypeOf('string');
+        cursor = decodeCursor(page.pageInfo.nextCursor!);
+        expect(cursor).toBeDefined();
+      } else {
+        expect(page.pageInfo.hasNextPage).toBe(false);
+        expect(page.pageInfo.nextCursor).toBeNull();
+      }
+    }
+
+    expect(walkedIds).toEqual(expectedIds);
+    expect(new Set(walkedIds).size).toBe(walkedIds.length);
+  });
+
+  it('walks the same sequence under a non-UTC session TimeZone: the cursor must not depend on server configuration', async () => {
+    // `to_char` formats a timestamptz in the SESSION TimeZone, so the adapters pin
+    // `at time zone 'utc'`. Every other test runs against a UTC server, where output
+    // with and without that clause is byte-identical -- removing it passed the whole
+    // suite. This connection asks PostgreSQL for a different session zone, which is
+    // the only way the clause becomes observable.
+    const offsetUrl = new URL(url);
+    offsetUrl.searchParams.set('options', '-c TimeZone=America/Bogota');
+    const offsetPool = new PostgresPool(
+      PostgresConfig.fromUrl(offsetUrl.toString()),
+    );
+    const offsetService = new WorkspaceService(
+      new PgTransaction(offsetPool, { callbackTimeoutMs: 3_000 }),
+      adapter,
+      idempotencyAdapter,
+    );
+
+    try {
+      const expectedIds = [
+        wsMicro4Id,
+        wsMicro2Id,
+        wsMicro3Id,
+        wsMicro1Id,
+        wsMicro5Id,
+        wsMicro6Id,
+      ];
+      const walkedIds: string[] = [];
+      let cursor: ReturnType<typeof decodeCursor> = undefined;
+
+      for (let i = 0; i < expectedIds.length; i++) {
+        const page = await offsetService.list(subjectMicroseconds, {
+          cursor,
+          limit: 1,
+        });
+        expect(page.items).toHaveLength(1);
+        walkedIds.push(page.items[0]!.id);
+
+        if (i < expectedIds.length - 1) {
+          const raw = page.pageInfo.nextCursor;
+          expect(raw).toBeTypeOf('string');
+          cursor = decodeCursor(raw!);
+          expect(cursor).toBeDefined();
+          // The stamp is UTC regardless of the session zone. Under
+          // America/Bogota an unpinned to_char would emit 07:00, and the value
+          // assertion below is what makes that visible rather than merely
+          // shifting every row consistently.
+          expect(cursor!.createdAt.startsWith('2026-07-20T12:00:00.')).toBe(
+            true,
+          );
+        } else {
+          expect(page.pageInfo.hasNextPage).toBe(false);
+          expect(page.pageInfo.nextCursor).toBeNull();
+        }
+      }
+
+      expect(walkedIds).toEqual(expectedIds);
+      expect(new Set(walkedIds).size).toBe(walkedIds.length);
+    } finally {
+      await offsetPool.end();
+    }
   });
 
   it("a suspended member's workspace does not appear in their list", async () => {

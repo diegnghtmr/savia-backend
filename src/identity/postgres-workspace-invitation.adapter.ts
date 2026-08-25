@@ -1,11 +1,11 @@
+import type { Cursor } from '../platform/cursor.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type { WorkspaceInvitation } from './workspace-invitation.port.js';
-import type { WorkspaceInvitationStore } from './workspace-invitation.service.js';
 import type {
-  WorkspaceCursor,
-  WorkspaceKind,
-  WorkspaceRole,
-} from './workspace.port.js';
+  WorkspaceInvitationItem,
+  WorkspaceInvitationStore,
+} from './workspace-invitation.service.js';
+import type { WorkspaceKind, WorkspaceRole } from './workspace.port.js';
 import type { WorkspaceMembershipRecord } from './workspace.service.js';
 
 export class PostgresWorkspaceInvitationAdapter
@@ -26,9 +26,9 @@ export class PostgresWorkspaceInvitationAdapter
   public async listInvitations(
     client: TransactionClient,
     workspaceId: string,
-    cursor: WorkspaceCursor | undefined,
+    cursor: Cursor | undefined,
     limit: number,
-  ): Promise<readonly WorkspaceInvitation[]> {
+  ): Promise<readonly WorkspaceInvitationItem[]> {
     const result = await client.query<WorkspaceInvitationRow>(
       `select invitation.id::text,
               invitation.email,
@@ -36,30 +36,34 @@ export class PostgresWorkspaceInvitationAdapter
               case when invitation.status = 'pending' and invitation.expires_at <= now()
                    then 'expired' else invitation.status end as status,
               invitation.expires_at as "expiresAt",
-              invitation.created_at as "createdAt"
+              invitation.created_at as "createdAt",
+              to_char(invitation.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
          from public.workspace_invitations invitation
         where invitation.workspace_id = $1
           and (
             $2::timestamptz is null
-            or (date_trunc('milliseconds', invitation.created_at), invitation.id) > ($2::timestamptz, $3::uuid)
+            or (invitation.created_at, invitation.id) > ($2::timestamptz, $3::uuid)
           )
-        order by date_trunc('milliseconds', invitation.created_at), invitation.id
+        order by invitation.created_at, invitation.id
         limit $4`,
       [workspaceId, cursor?.createdAt ?? null, cursor?.id ?? null, limit],
     );
     return result.rows.map((row) => ({
-      id: row.id,
-      email: row.email,
-      role: row.role,
-      status: row.status,
-      expiresAt:
-        row.expiresAt instanceof Date
-          ? row.expiresAt.toISOString()
-          : String(row.expiresAt),
-      createdAt:
-        row.createdAt instanceof Date
-          ? row.createdAt.toISOString()
-          : String(row.createdAt),
+      invitation: {
+        id: row.id,
+        email: row.email,
+        role: row.role,
+        status: row.status,
+        expiresAt:
+          row.expiresAt instanceof Date
+            ? row.expiresAt.toISOString()
+            : String(row.expiresAt),
+        createdAt:
+          row.createdAt instanceof Date
+            ? row.createdAt.toISOString()
+            : String(row.createdAt),
+      },
+      cursorAt: row.cursorAt,
     }));
   }
 
@@ -235,4 +239,5 @@ interface WorkspaceInvitationRow extends Record<string, unknown> {
   readonly status: 'pending' | 'accepted' | 'revoked' | 'expired';
   readonly expiresAt: Date | string;
   readonly createdAt: Date | string;
+  readonly cursorAt: string;
 }

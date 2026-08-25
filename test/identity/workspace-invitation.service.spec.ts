@@ -147,9 +147,16 @@ describe('WorkspaceInvitationService', () => {
             role,
             status: WORKSPACE_MEMBER_STATUS.ACTIVE,
           }),
-          listInvitations: vi
-            .fn()
-            .mockResolvedValue([fakeInvitation1, fakeInvitation2]),
+          listInvitations: vi.fn().mockResolvedValue([
+            {
+              invitation: fakeInvitation1,
+              cursorAt: '2026-07-15T01:00:00.000000Z',
+            },
+            {
+              invitation: fakeInvitation2,
+              cursorAt: '2026-07-15T02:00:00.000000Z',
+            },
+          ]),
         } as unknown as WorkspaceInvitationStore;
         const fakeTransaction: WorkspaceInvitationReadTransaction = {
           run: vi.fn(),
@@ -184,13 +191,20 @@ describe('WorkspaceInvitationService', () => {
           role: 'owner',
           status: WORKSPACE_MEMBER_STATUS.ACTIVE,
         }),
-        listInvitations: vi
-          .fn()
-          .mockResolvedValue([
-            fakeInvitation1,
-            fakeInvitation2,
-            fakeInvitation3,
-          ]),
+        listInvitations: vi.fn().mockResolvedValue([
+          {
+            invitation: fakeInvitation1,
+            cursorAt: '2026-07-15T01:00:00.000000Z',
+          },
+          {
+            invitation: fakeInvitation2,
+            cursorAt: '2026-07-15T02:00:00.000000Z',
+          },
+          {
+            invitation: fakeInvitation3,
+            cursorAt: '2026-07-15T03:00:00.000000Z',
+          },
+        ]),
       } as unknown as WorkspaceInvitationStore;
       const fakeTransaction: WorkspaceInvitationReadTransaction = {
         run: vi.fn(),
