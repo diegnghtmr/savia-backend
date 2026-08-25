@@ -10,6 +10,11 @@ import {
   type AccountsPort,
 } from './accounts.port.js';
 
+export interface AccountItem {
+  readonly account: Account;
+  readonly cursorAt: string;
+}
+
 export interface AccountsReadTransaction {
   runRead<T>(
     subject: string,

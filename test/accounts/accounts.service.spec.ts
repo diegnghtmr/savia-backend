@@ -8,6 +8,7 @@ import {
 } from '../../src/accounts/accounts.port.js';
 import {
   AccountsService,
+  type AccountItem,
   type AccountsStore,
 } from '../../src/accounts/accounts.service.js';
 import type { TransactionClient } from '../../src/identity/pg-transaction.js';
@@ -47,16 +48,26 @@ function account(overrides: Partial<Account> = {}): Account {
   };
 }
 
+function toItem(
+  acc: Account,
+  cursorAt = '2026-07-01T00:00:00.000000Z',
+): AccountItem {
+  return { account: acc, cursorAt };
+}
+
 function fakeStore(
   role: string | undefined,
-  rows: readonly Account[] = [],
+  rows: readonly (Account | AccountItem)[] = [],
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
   listAccounts: ReturnType<typeof vi.fn>;
 } {
+  const normalized: AccountItem[] = rows.map((r) =>
+    'account' in r ? r : toItem(r),
+  );
   return {
     readActiveRole: vi.fn().mockResolvedValue(role),
-    listAccounts: vi.fn().mockResolvedValue(rows),
+    listAccounts: vi.fn().mockResolvedValue(normalized),
   };
 }
 
@@ -111,7 +122,7 @@ describe('AccountsService.list', () => {
     expect(outcome.page.items).toEqual(rows);
   });
 
-  it('fetches one row beyond the limit, reports hasNextPage, and encodes the cursor over the last returned item', async () => {
+  it('fetches one row beyond the limit, reports hasNextPage, and encodes the cursor over the last returned item with microsecond precision', async () => {
     const first = account({ id: '00000000-0000-0000-0000-000000000a01' });
     const second = account({
       id: '00000000-0000-0000-0000-000000000a02',
@@ -121,7 +132,11 @@ describe('AccountsService.list', () => {
       id: '00000000-0000-0000-0000-000000000a03',
       createdAt: '2026-07-03T00:00:00.000Z',
     });
-    const store = fakeStore('owner', [first, second, third]);
+    const store = fakeStore('owner', [
+      { account: first, cursorAt: '2026-07-01T00:00:00.000100Z' },
+      { account: second, cursorAt: '2026-07-02T00:00:00.000200Z' },
+      { account: third, cursorAt: '2026-07-03T00:00:00.000300Z' },
+    ]);
     const outcome = await list(store, { workspaceId: WORKSPACE_ID, limit: 2 });
     if (outcome.kind !== ACCOUNT_LIST_OUTCOMES.OK) {
       throw new Error(`expected ok, got ${outcome.kind}`);
@@ -129,7 +144,7 @@ describe('AccountsService.list', () => {
     expect(outcome.page.items).toEqual([first, second]);
     expect(outcome.page.pageInfo.hasNextPage).toBe(true);
     expect(decodeAccountCursor(outcome.page.pageInfo.nextCursor ?? '')).toEqual(
-      { createdAt: second.createdAt, id: second.id },
+      { createdAt: '2026-07-02T00:00:00.000200Z', id: second.id },
     );
     // The store is asked for limit + 1 so hasNextPage is decidable without a
     // second query.
@@ -161,7 +176,10 @@ describe('AccountsService.list', () => {
 
   it('forwards a supplied cursor to the store untouched', async () => {
     const store = fakeStore('owner', []);
-    const cursor = { createdAt: '2026-07-01T00:00:00.000Z', id: account().id };
+    const cursor = {
+      createdAt: '2026-07-01T00:00:00.000500Z',
+      id: account().id,
+    };
     await list(store, { workspaceId: WORKSPACE_ID, limit: 10, cursor });
     expect(store.listAccounts).toHaveBeenCalledWith(
       CLIENT,
