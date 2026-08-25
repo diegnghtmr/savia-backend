@@ -20,7 +20,15 @@ const WORKSPACE_ID = '00000000-0000-0000-0000-000000000951';
 
 const CLIENT: TransactionClient = { query: vi.fn() };
 
-class FakeReadTransaction {
+class FakeTransaction {
+  public async run<T>(
+    subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    if (subject !== SUBJECT) throw new Error('unexpected subject');
+    return callback(CLIENT);
+  }
+
   public async runRead<T>(
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
@@ -57,14 +65,26 @@ function toItem(
   return { account: acc, cursorAt };
 }
 
+function fakeIdempotencyStore(
+  record: any = undefined,
+  writeSuccess = true,
+) {
+  return {
+    read: vi.fn().mockResolvedValue(record),
+    write: vi.fn().mockResolvedValue(writeSuccess),
+  };
+}
+
 function fakeStore(
   role: string | undefined,
   rows: readonly (Account | AccountItem)[] = [],
   singleAccount: Account | undefined = undefined,
+  createdAcc: Account = account(),
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
   listAccounts: ReturnType<typeof vi.fn>;
   readAccount: ReturnType<typeof vi.fn>;
+  createAccount: ReturnType<typeof vi.fn>;
 } {
   const normalized: AccountItem[] = rows.map((r) =>
     'account' in r ? r : toItem(r),
@@ -73,6 +93,7 @@ function fakeStore(
     readActiveRole: vi.fn().mockResolvedValue(role),
     listAccounts: vi.fn().mockResolvedValue(normalized),
     readAccount: vi.fn().mockResolvedValue(singleAccount),
+    createAccount: vi.fn().mockResolvedValue(createdAcc),
   };
 }
 
@@ -80,7 +101,11 @@ async function list(
   store: AccountsStore,
   query: Parameters<AccountsService['list']>[1],
 ): Promise<AccountListOutcome> {
-  const service = new AccountsService(new FakeReadTransaction(), store);
+  const service = new AccountsService(
+    new FakeTransaction(),
+    store,
+    fakeIdempotencyStore() as any,
+  );
   return service.list(SUBJECT, query);
 }
 
@@ -89,7 +114,11 @@ async function read(
   workspaceId: string,
   accountId: string,
 ): Promise<AccountReadOutcome> {
-  const service = new AccountsService(new FakeReadTransaction(), store);
+  const service = new AccountsService(
+    new FakeTransaction(),
+    store,
+    fakeIdempotencyStore() as any,
+  );
   return service.read(SUBJECT, workspaceId, accountId);
 }
 
@@ -288,7 +317,7 @@ describe('AccountsService.create', () => {
     };
     const idempStore = fakeIdempotencyStore();
     const service = new AccountsService(
-      new FakeReadTransaction() as any,
+      new FakeTransaction(),
       storeWithCreate,
       idempStore as any,
     );
@@ -314,7 +343,7 @@ describe('AccountsService.create', () => {
     };
     const idempStore = fakeIdempotencyStore();
     const service = new AccountsService(
-      new FakeReadTransaction() as any,
+      new FakeTransaction(),
       storeWithCreate,
       idempStore as any,
     );
@@ -349,7 +378,7 @@ describe('AccountsService.create', () => {
       responseBody: createdAccount,
     });
     const service = new AccountsService(
-      new FakeReadTransaction() as any,
+      new FakeTransaction(),
       storeWithCreate,
       idempStore as any,
     );
@@ -384,7 +413,7 @@ describe('AccountsService.create', () => {
       responseBody: {},
     });
     const service = new AccountsService(
-      new FakeReadTransaction() as any,
+      new FakeTransaction(),
       storeWithCreate,
       idempStore as any,
     );
@@ -409,7 +438,7 @@ describe('AccountsService.create', () => {
     };
     const idempStore = fakeIdempotencyStore(undefined, true);
     const service = new AccountsService(
-      new FakeReadTransaction() as any,
+      new FakeTransaction(),
       storeWithCreate,
       idempStore as any,
     );
@@ -469,7 +498,7 @@ describe('AccountsService.create', () => {
       write: vi.fn().mockResolvedValue(false),
     };
     const service = new AccountsService(
-      new FakeReadTransaction() as any,
+      new FakeTransaction(),
       storeWithCreate,
       idempStore as any,
     );
@@ -500,7 +529,7 @@ describe('AccountsService.create', () => {
       };
       const idempStore = fakeIdempotencyStore(undefined, true);
       const service = new AccountsService(
-        new FakeReadTransaction() as any,
+        new FakeTransaction(),
         storeWithCreate,
         idempStore as any,
       );

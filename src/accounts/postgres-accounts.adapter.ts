@@ -1,5 +1,10 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
-import type { Account, AccountCursor, AccountStatus } from './accounts.port.js';
+import type {
+  Account,
+  AccountCursor,
+  AccountStatus,
+  CreateAccountCommand,
+} from './accounts.port.js';
 import type { AccountItem, AccountsStore } from './accounts.service.js';
 
 interface AccountRow extends Record<string, unknown> {
@@ -145,6 +150,74 @@ select a.id::text,
     const row = result.rows[0];
     if (!row) {
       return undefined;
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      currency: row.currency,
+      status: row.status,
+      institution: row.institution,
+      maskedNumber: row.maskedNumber,
+      description: row.description,
+      colorToken: row.colorToken,
+      icon: row.icon,
+      includeInNetWorth: row.includeInNetWorth,
+      createdAt: toIso(row.createdAt),
+      updatedAt: toIso(row.updatedAt),
+      version: row.version,
+    };
+  }
+
+  public async createAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    command: CreateAccountCommand,
+  ): Promise<Account> {
+    const sql = `
+insert into public.accounts (
+  workspace_id,
+  name,
+  type,
+  currency,
+  institution,
+  masked_number,
+  description,
+  include_in_net_worth,
+  created_by
+)
+values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::uuid)
+returning
+  id::text,
+  name,
+  type,
+  currency,
+  status,
+  institution,
+  masked_number as "maskedNumber",
+  description,
+  color_token as "colorToken",
+  icon,
+  include_in_net_worth as "includeInNetWorth",
+  created_at as "createdAt",
+  updated_at as "updatedAt",
+  version`;
+    const values = [
+      workspaceId,
+      command.name,
+      command.type,
+      command.currency,
+      command.institution ?? null,
+      command.maskedNumber ?? null,
+      command.description ?? null,
+      command.includeInNetWorth,
+      subject,
+    ];
+    const result = await client.query<AccountRow>(sql, values);
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error('Created account row could not be read.');
     }
     return {
       id: row.id,

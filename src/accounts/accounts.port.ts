@@ -1,4 +1,5 @@
 import type { Cursor, PageInfo } from '../platform/cursor.js';
+import type { CreateAccountCommand } from './account-command.js';
 
 export const ACCOUNTS_PORT = Symbol('AccountsPort');
 
@@ -46,7 +47,7 @@ export interface Account {
   readonly version: number;
 }
 
-export type { PageInfo };
+export type { PageInfo, CreateAccountCommand };
 
 export interface AccountPage {
   readonly items: readonly Account[];
@@ -81,15 +82,6 @@ export interface AccountListQuery {
   readonly status?: AccountStatus;
 }
 
-export interface AccountsPort {
-  list(subject: string, query: AccountListQuery): Promise<AccountListOutcome>;
-  read(
-    subject: string,
-    workspaceId: string,
-    accountId: string,
-  ): Promise<AccountReadOutcome>;
-}
-
 export const ACCOUNT_READ_OUTCOMES = {
   OK: 'ok',
   FORBIDDEN: 'forbidden',
@@ -115,3 +107,49 @@ export type AccountReadOutcome =
   | AccountReadOk
   | AccountReadForbidden
   | AccountReadNotFound;
+
+export const ACCOUNT_CREATE_OUTCOMES = {
+  CREATED: 'created',
+  REPLAYED: 'replayed',
+  IDEMPOTENCY_CONFLICT: 'idempotency_conflict',
+  FORBIDDEN: 'forbidden',
+} as const;
+export type AccountCreateOutcomeKind =
+  (typeof ACCOUNT_CREATE_OUTCOMES)[keyof typeof ACCOUNT_CREATE_OUTCOMES];
+
+export interface AccountCreateCreated {
+  readonly kind: typeof ACCOUNT_CREATE_OUTCOMES.CREATED;
+  readonly account: Account;
+}
+export interface AccountCreateReplayed {
+  readonly kind: typeof ACCOUNT_CREATE_OUTCOMES.REPLAYED;
+  readonly status: number;
+  readonly etag: string | null;
+  readonly body: unknown;
+}
+export interface AccountCreateIdempotencyConflict {
+  readonly kind: typeof ACCOUNT_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT;
+}
+export interface AccountCreateForbidden {
+  readonly kind: typeof ACCOUNT_CREATE_OUTCOMES.FORBIDDEN;
+}
+export type AccountCreateOutcome =
+  | AccountCreateCreated
+  | AccountCreateReplayed
+  | AccountCreateIdempotencyConflict
+  | AccountCreateForbidden;
+
+export interface AccountsPort {
+  list(subject: string, query: AccountListQuery): Promise<AccountListOutcome>;
+  read(
+    subject: string,
+    workspaceId: string,
+    accountId: string,
+  ): Promise<AccountReadOutcome>;
+  create(
+    subject: string,
+    workspaceId: string,
+    command: CreateAccountCommand,
+    idempotencyKey: string,
+  ): Promise<AccountCreateOutcome>;
+}

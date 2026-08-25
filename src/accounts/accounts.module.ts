@@ -4,6 +4,7 @@ import { AccountsController } from './accounts.controller.js';
 import { ACCOUNTS_PORT } from './accounts.port.js';
 import { AccountsService } from './accounts.service.js';
 import { PostgresAccountsAdapter } from './postgres-accounts.adapter.js';
+import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PlatformModule } from '../platform/platform.module.js';
 
@@ -14,11 +15,16 @@ import { PlatformModule } from '../platform/platform.module.js';
     PostgresAccountsAdapter,
     {
       provide: AccountsService,
-      inject: [PgTransaction, PostgresAccountsAdapter],
+      inject: [
+        PgTransaction,
+        PostgresAccountsAdapter,
+        PostgresIdempotencyAdapter,
+      ],
       useFactory: (
         transaction: PgTransaction,
         adapter: PostgresAccountsAdapter,
-      ) => new AccountsService(transaction, adapter),
+        idempotency: PostgresIdempotencyAdapter,
+      ) => new AccountsService(transaction, adapter, idempotency),
     },
     { provide: ACCOUNTS_PORT, useExisting: AccountsService },
   ],
