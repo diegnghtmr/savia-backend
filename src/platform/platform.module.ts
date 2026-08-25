@@ -7,6 +7,8 @@ import { PgTransaction } from './pg-transaction.js';
 import { PostgresConfig } from './postgres-config.js';
 import { PostgresPool } from './postgres-pool.js';
 
+import { PostgresIdempotencyAdapter } from './postgres-idempotency.adapter.js';
+
 @Module({
   providers: [
     {
@@ -41,6 +43,7 @@ import { PostgresPool } from './postgres-pool.js';
       // prettier-ignore
       useFactory: (pool: PostgresPool): PgTransaction => new PgTransaction(pool, () => ({ checkoutTimeoutMs: pool.checkoutTimeoutMs })),
     },
+    PostgresIdempotencyAdapter,
   ],
   exports: [
     AuthConfig,
@@ -48,6 +51,7 @@ import { PostgresPool } from './postgres-pool.js';
     JwtAuthGuard,
     PostgresPool,
     PgTransaction,
+    PostgresIdempotencyAdapter,
   ],
 })
 export class PlatformModule {
