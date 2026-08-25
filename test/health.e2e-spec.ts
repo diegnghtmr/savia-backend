@@ -92,6 +92,7 @@ describe('health endpoint', () => {
       'GET /v1/workspaces/:workspaceId/invitations',
       'POST /v1/workspaces/:workspaceId/invitations',
       'POST /v1/workspaces/:workspaceId/invitations/:invitationId/revoke',
+      'GET /v1/accounts',
     ]);
 
     await app.close();

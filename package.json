@@ -33,6 +33,7 @@
     "test:integration:revoke-workspace-invitation": "bash scripts/run-disposable-database-suite.sh test/identity/revoke-workspace-invitation.integration-spec.ts",
     "test:integration:command-idempotency": "bash scripts/run-disposable-database-suite.sh test/identity/command-idempotency.integration-spec.ts",
     "test:integration:accounts-schema": "bash scripts/run-disposable-database-suite.sh test/identity/accounts-schema.integration-spec.ts",
+    "test:integration:list-accounts": "bash scripts/run-disposable-database-suite.sh test/accounts/list-accounts.integration-spec.ts",
     "test:integration:transactions-schema": "bash scripts/run-disposable-database-suite.sh test/identity/transactions-schema.integration-spec.ts",
     "test:integration:ledger-postings-schema": "bash scripts/run-disposable-database-suite.sh test/identity/ledger-postings-schema.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",

@@ -76,6 +76,11 @@
       "operationId": "revokeWorkspaceInvitation",
       "method": "POST",
       "path": "/v1/workspaces/{workspaceId}/invitations/{invitationId}/revoke"
+    },
+    {
+      "operationId": "listAccounts",
+      "method": "GET",
+      "path": "/v1/accounts"
     }
   ]
 }
