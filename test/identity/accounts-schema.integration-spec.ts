@@ -212,7 +212,7 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
       expect(rlsRes.rows[0].relforcerowsecurity).toBe(true);
     });
 
-    it('3. savia_application holds SELECT on every column, INSERT on exactly (created_by, currency, description, include_in_net_worth, institution, masked_number, name, type, workspace_id), UPDATE on exactly (closed_at, color_token, description, icon, include_in_net_worth, institution, masked_number, name, status, updated_at, version)', async () => {
+    it('3. savia_application holds SELECT on every column, INSERT on exactly (created_by, currency, description, include_in_net_worth, institution, masked_number, name, type, workspace_id), UPDATE on exactly (closed_at, description, include_in_net_worth, institution, masked_number, name, status, updated_at, version)', async () => {
       const result = await admin.query<{
         column_name: string;
         readable: boolean;
@@ -268,15 +268,15 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
 
       // workspace_id is deliberately ABSENT here: a table-wide update grant
       // would let a write path re-point an account into another workspace and
-      // seize it (202607150011:10-14, 202607150014:58-59).
+      // seize it (202607150011:10-14, 202607150014:58-59). color_token and icon
+      // are absent too: no contract request can carry them yet, so no write
+      // path may exercise them.
       const updatable = result.rows
         .filter((r) => r.updatable)
         .map((r) => r.column_name);
       expect(updatable).toEqual([
         'closed_at',
-        'color_token',
         'description',
-        'icon',
         'include_in_net_worth',
         'institution',
         'masked_number',

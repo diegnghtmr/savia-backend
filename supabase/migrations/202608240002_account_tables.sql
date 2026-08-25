@@ -57,13 +57,16 @@ alter table public.accounts force row level security;
 -- Grants: COLUMN-SCOPED where a write path must not re-point a row. workspace_id
 -- is excluded from UPDATE on purpose: a table-wide grant would let a write path
 -- re-point an account into another workspace and seize it (202607150011:10-14,
--- 202607150014:58-59). color_token and icon are response-only fields; created_by,
--- id and workspace_id are immutable after creation.
+-- 202607150014:58-59). color_token and icon stay out of the UPDATE grant too:
+-- they are response-only fields and no contract request can carry them yet, so
+-- no write path may exercise them (least privilege; widen the grant only when a
+-- request schema grows the field). created_by, id and workspace_id are immutable
+-- after creation.
 grant select on public.accounts to savia_application;
 grant insert (workspace_id, name, type, currency, institution, masked_number,
               description, include_in_net_worth, created_by)
   on public.accounts to savia_application;
-grant update (name, institution, masked_number, description, color_token, icon,
+grant update (name, institution, masked_number, description,
               include_in_net_worth, status, closed_at, updated_at, version)
   on public.accounts to savia_application;
 -- No delete grant: accounts are closed, never deleted (PRD:519).
