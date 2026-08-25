@@ -78,29 +78,43 @@ const authEnvironmentKeys = Object.keys(authEnvironment);
 let originalEnvironment: Record<string, string | undefined>;
 let originalDatabaseUrl: string | undefined;
 
-function loadBundledContract(): OpenApiDocument {
-  const root = process.cwd();
-  const contractPath = 'openapi/savia.openapi.yaml';
-  const directory = mkdtempSync(join(tmpdir(), 'savia-openapi-response-'));
-  const output = join(directory, 'contract.json');
+// Bundling shells out to redocly, and every one of this suite's tests used to pay
+// for its own child process. That cost scales with the contract, so each published
+// operation made the whole file slower until a test crossed the 5s budget --
+// operation 17 is what tipped it over on CI.
+//
+// The BYTES are cached, not the parsed object: Ajv.addSchema may annotate the
+// schemas it is handed, so every caller still gets a pristine document. The
+// contract file cannot change mid-run, so one bundle is equivalent to twelve.
+let bundledContractJson: string | undefined;
 
-  try {
-    execFileSync(
-      resolve(root, 'node_modules/.bin/redocly'),
-      [
-        'bundle',
-        resolve(root, contractPath),
-        '--ext',
-        'json',
-        '--output',
-        output,
-      ],
-      { cwd: root, stdio: 'pipe' },
-    );
-    return JSON.parse(readFileSync(output, 'utf8')) as OpenApiDocument;
-  } finally {
-    rmSync(directory, { force: true, recursive: true });
+function loadBundledContract(): OpenApiDocument {
+  if (bundledContractJson === undefined) {
+    const root = process.cwd();
+    const contractPath = 'openapi/savia.openapi.yaml';
+    const directory = mkdtempSync(join(tmpdir(), 'savia-openapi-response-'));
+    const output = join(directory, 'contract.json');
+
+    try {
+      execFileSync(
+        resolve(root, 'node_modules/.bin/redocly'),
+        [
+          'bundle',
+          resolve(root, contractPath),
+          '--ext',
+          'json',
+          '--output',
+          output,
+        ],
+        { cwd: root, stdio: 'pipe' },
+      );
+      bundledContractJson = readFileSync(output, 'utf8');
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   }
+
+  return JSON.parse(bundledContractJson) as OpenApiDocument;
 }
 
 function compileResponseValidator(
