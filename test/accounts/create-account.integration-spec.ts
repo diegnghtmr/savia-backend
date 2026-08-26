@@ -101,7 +101,13 @@ describe('AccountsService createAccount database boundary', () => {
               ($1, $3, 'administrator', 'active'),
               ($1, $4, 'editor', 'active'),
               ($1, $5, 'viewer', 'active'),
-              ($6, $7, 'owner', 'active')`,
+              ($6, $7, 'owner', 'active'),
+              -- subjectOwner owns BOTH workspaces. Without this row the
+              -- cross-workspace idempotency test below could use two different
+              -- subjects, and subject_id isolation alone would carry it -- the
+              -- workspace scoping it claims to prove could be deleted and the
+              -- test would still pass.
+              ($6, $2, 'owner', 'active')`,
       [
         workspace1Id,
         subjectOwner,
@@ -346,7 +352,7 @@ describe('AccountsService createAccount database boundary', () => {
     expect(second.kind).toBe(ACCOUNT_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT);
   });
 
-  it('proves workspace-scoping of idempotency key (same key, two workspaces, two accounts)', async () => {
+  it('proves workspace-scoping of the idempotency key: one subject, one key, two workspaces, two accounts (same key, two workspaces, two accounts)', async () => {
     const sharedKey = id(109);
     const command: CreateAccountCommand = {
       name: 'Scoped Account',
@@ -367,9 +373,11 @@ describe('AccountsService createAccount database boundary', () => {
     );
     expect(res1.kind).toBe(ACCOUNT_CREATE_OUTCOMES.CREATED);
 
-    // Create in workspace 2 with identical key and command
+    // Same SUBJECT, same key, same command -- only the workspace differs. That is
+    // what makes this a workspace-scoping test: the idempotency predicate also
+    // keys on subject_id, so using a second subject here would prove nothing.
     const res2 = await service.create(
-      subjectWorkspace2Owner,
+      subjectOwner,
       workspace2Id,
       command,
       sharedKey,

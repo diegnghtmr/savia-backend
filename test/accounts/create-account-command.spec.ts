@@ -42,6 +42,36 @@ describe('createAccountCommand', () => {
     expect(Object.isFrozen(command)).toBe(true);
   });
 
+  it.each(['institution', 'maskedNumber', 'description'])(
+    'refuses an explicit null for %s: CreateAccountRequest declares it string, not nullable',
+    (field) => {
+      // UpdateAccountRequest declares these same three as `type: [string, 'null']`
+      // while CreateAccountRequest declares plain `type: string`. The asymmetry is
+      // deliberate, so an explicit null on create is a body the authority forbids
+      // and must not be silently treated as "absent".
+      let thrown: unknown;
+      try {
+        createAccountCommand({
+          name: 'Checking Account',
+          type: 'checking',
+          currency: 'USD',
+          [field]: null,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(AccountCommandValidationError);
+      const violations = (thrown as AccountCommandValidationError)
+        .violations as readonly FieldViolation[];
+      expect(violations).toContainEqual({
+        field,
+        code: 'invalid-type',
+        message: expect.any(String) as unknown as string,
+      });
+    },
+  );
+
   it('accepts valid input with all optional fields provided', () => {
     const command = createAccountCommand({
       name: 'Primary Savings',

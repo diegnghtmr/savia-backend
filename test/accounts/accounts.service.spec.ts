@@ -514,6 +514,46 @@ describe('AccountsService.create', () => {
     expect(idempStore.read).toHaveBeenCalledTimes(2);
   });
 
+  it('answers idempotency_conflict when the write loses the race AND the winning record was minted from a different payload', async () => {
+    // The losing-write branch had one arm covered (re-read agrees, replay it) and
+    // one arm not: a concurrent request that won the unique-key race with a
+    // DIFFERENT body. Replaying that stored response would hand this caller
+    // someone else's account, so the mismatch must surface as 409.
+    const createdAccount = account({ name: 'New Checking' });
+    const store = fakeStore('editor');
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockResolvedValue(createdAccount),
+    };
+    const idempStore: IdempotencyStore & { read: ReturnType<typeof vi.fn> } = {
+      read: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce({
+          requestFingerprint: 'a-fingerprint-from-some-other-payload',
+          responseStatus: 201,
+          responseEtag: '"1"',
+          responseBody: account({ name: 'Someone Else Account' }),
+        }),
+      write: vi.fn().mockResolvedValue(false),
+    };
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe('idempotency_conflict');
+    expect(idempStore.read).toHaveBeenCalledTimes(2);
+  });
+
   it('admits administrator role as well as owner and editor', async () => {
     for (const role of ['owner', 'administrator', 'editor']) {
       const createdAccount = account({ name: 'New Checking' });

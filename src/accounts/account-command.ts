@@ -198,8 +198,14 @@ export function createAccountCommand(input: unknown): CreateAccountCommand {
     }
   }
 
+  // CreateAccountRequest declares institution/maskedNumber/description as
+  // `type: string` -- NOT nullable. UpdateAccountRequest declares the same three
+  // as `type: [string, 'null']`, so the omission on create is deliberate, not an
+  // oversight. Treating an explicit null as "absent" would answer 201 for a body
+  // the authority forbids, so null falls through to the typeof check below and
+  // becomes an invalid-type violation like any other non-string.
   let institution: string | null = null;
-  if (body.institution !== undefined && body.institution !== null) {
+  if (body.institution !== undefined) {
     if (typeof body.institution !== 'string') {
       violations.push(
         Object.freeze({
@@ -230,7 +236,7 @@ export function createAccountCommand(input: unknown): CreateAccountCommand {
   }
 
   let maskedNumber: string | null = null;
-  if (body.maskedNumber !== undefined && body.maskedNumber !== null) {
+  if (body.maskedNumber !== undefined) {
     if (typeof body.maskedNumber !== 'string') {
       violations.push(
         Object.freeze({
@@ -261,7 +267,7 @@ export function createAccountCommand(input: unknown): CreateAccountCommand {
   }
 
   let description: string | null = null;
-  if (body.description !== undefined && body.description !== null) {
+  if (body.description !== undefined) {
     if (typeof body.description !== 'string') {
       violations.push(
         Object.freeze({
