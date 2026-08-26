@@ -1,6 +1,26 @@
 import { describe, expect, it } from 'vitest';
 
-import { toIso } from '../../src/accounts/postgres-accounts.adapter.js';
+import {
+  negateAmountMinor,
+  toIso,
+} from '../../src/accounts/postgres-accounts.adapter.js';
+
+describe('negateAmountMinor', () => {
+  it('negates positive amountMinor without number conversion', () => {
+    expect(negateAmountMinor('10000')).toBe('-10000');
+    expect(negateAmountMinor('9007199254740993')).toBe('-9007199254740993');
+  });
+
+  it('negates negative amountMinor without number conversion', () => {
+    expect(negateAmountMinor('-10000')).toBe('10000');
+    expect(negateAmountMinor('-9007199254740993')).toBe('9007199254740993');
+  });
+
+  it('handles zero without producing negative zero', () => {
+    expect(negateAmountMinor('0')).toBe('0');
+    expect(negateAmountMinor('-0')).toBe('0');
+  });
+});
 
 describe('toIso', () => {
   it('formats a Date to an ISO string', () => {
