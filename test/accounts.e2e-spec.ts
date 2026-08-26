@@ -835,7 +835,54 @@ describe('POST /v1/accounts', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('answers 422 problem+json when openingBalance is supplied (refused in slice 6a)', async () => {
+  it('answers 201 with created account when valid openingBalance and openingBalanceDate are supplied', async () => {
+    const create = vi.fn<AccountsPort['create']>().mockResolvedValue({
+      kind: 'created',
+      account: ACCOUNT,
+    } satisfies AccountCreateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
+
+    const response = await postAccount(
+      application,
+      {
+        ...VALID_BODY,
+        openingBalance: { amountMinor: '10000', currency: 'USD' },
+        openingBalanceDate: '2026-08-25',
+      },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(201);
+    expect(response.headers['content-type']).toContain('application/json');
+    expect(response.headers.etag).toBe(`"${ACCOUNT.version}"`);
+    expect(JSON.parse(response.payload)).toEqual(ACCOUNT);
+    expect(create).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      {
+        name: 'Cash wallet',
+        type: 'cash',
+        currency: 'USD',
+        openingBalance: { amountMinor: '10000', currency: 'USD' },
+        openingBalanceDate: '2026-08-25',
+        institution: null,
+        maskedNumber: null,
+        description: null,
+        includeInNetWorth: true,
+      },
+      IDEMPOTENCY_KEY,
+    );
+  });
+
+  it('answers 422 problem+json when openingBalance has currency mismatch with account currency', async () => {
     const create = vi.fn<AccountsPort['create']>();
     const { application } = await createApplication(
       undefined,
@@ -846,7 +893,7 @@ describe('POST /v1/accounts', () => {
       application,
       {
         ...VALID_BODY,
-        openingBalance: { amountMinor: '10000', currency: 'USD' },
+        openingBalance: { amountMinor: '10000', currency: 'EUR' },
       },
       {
         token: TOKEN,
@@ -863,14 +910,50 @@ describe('POST /v1/accounts', () => {
     expect(body.status).toBe(422);
     expect(body.errors).toContainEqual(
       expect.objectContaining({
-        field: 'openingBalance',
-        code: 'unsupported',
+        field: 'openingBalance.currency',
+        code: 'currency-mismatch',
       }),
     );
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('answers 422 problem+json when openingBalanceDate is supplied (refused in slice 6a)', async () => {
+  it('answers 422 problem+json when openingBalanceDate is an invalid calendar date like 2026-02-30', async () => {
+    const create = vi.fn<AccountsPort['create']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
+    const response = await postAccount(
+      application,
+      {
+        ...VALID_BODY,
+        openingBalance: { amountMinor: '10000', currency: 'USD' },
+        openingBalanceDate: '2026-02-30',
+      },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.status).toBe(422);
+    expect(body.errors).toContainEqual(
+      expect.objectContaining({
+        field: 'openingBalanceDate',
+        code: 'invalid-date',
+      }),
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('answers 422 problem+json when openingBalanceDate is supplied without openingBalance', async () => {
     const create = vi.fn<AccountsPort['create']>();
     const { application } = await createApplication(
       undefined,
@@ -899,7 +982,7 @@ describe('POST /v1/accounts', () => {
     expect(body.errors).toContainEqual(
       expect.objectContaining({
         field: 'openingBalanceDate',
-        code: 'unsupported',
+        code: 'not-allowed',
       }),
     );
     expect(create).not.toHaveBeenCalled();

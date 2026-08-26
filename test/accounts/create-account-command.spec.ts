@@ -158,33 +158,59 @@ describe('createAccountCommand', () => {
     );
   });
 
-  it('refuses openingBalance with 422 field violation (not supported in slice 6a)', () => {
-    expectViolations(
-      () =>
-        createAccountCommand({
-          name: 'Account with balance',
-          type: 'checking',
-          currency: 'USD',
-          openingBalance: {
-            amountMinor: '10000',
-            currency: 'USD',
-          },
-        }),
-      (violations) => {
-        expect(violations).toContainEqual({
-          field: 'openingBalance',
-          code: 'unsupported',
-          message: 'opening balance is not supported in this slice',
-        });
+  it('accepts valid input with openingBalance and optional openingBalanceDate', () => {
+    const command = createAccountCommand({
+      name: 'Checking Account',
+      type: 'checking',
+      currency: 'USD',
+      openingBalance: {
+        amountMinor: '10000',
+        currency: 'USD',
       },
-    );
+      openingBalanceDate: '2026-08-25',
+    });
+
+    expect(command).toEqual({
+      name: 'Checking Account',
+      type: 'checking',
+      currency: 'USD',
+      openingBalance: {
+        amountMinor: '10000',
+        currency: 'USD',
+      },
+      openingBalanceDate: '2026-08-25',
+      institution: null,
+      maskedNumber: null,
+      description: null,
+      includeInNetWorth: true,
+    } satisfies CreateAccountCommand);
+    expect(Object.isFrozen(command)).toBe(true);
+    expect(Object.isFrozen(command.openingBalance)).toBe(true);
   });
 
-  it('refuses openingBalanceDate with 422 field violation (not supported in slice 6a)', () => {
+  it('accepts openingBalance without openingBalanceDate', () => {
+    const command = createAccountCommand({
+      name: 'Checking Account',
+      type: 'checking',
+      currency: 'USD',
+      openingBalance: {
+        amountMinor: '5000',
+        currency: 'USD',
+      },
+    });
+
+    expect(command.openingBalance).toEqual({
+      amountMinor: '5000',
+      currency: 'USD',
+    });
+    expect(command.openingBalanceDate).toBeNull();
+  });
+
+  it('rejects openingBalanceDate when openingBalance is absent', () => {
     expectViolations(
       () =>
         createAccountCommand({
-          name: 'Account with balance date',
+          name: 'Checking Account',
           type: 'checking',
           currency: 'USD',
           openingBalanceDate: '2026-08-25',
@@ -192,12 +218,281 @@ describe('createAccountCommand', () => {
       (violations) => {
         expect(violations).toContainEqual({
           field: 'openingBalanceDate',
-          code: 'unsupported',
-          message: 'opening balance date is not supported in this slice',
+          code: 'not-allowed',
+          message: 'cannot be provided without openingBalance',
         });
       },
     );
   });
+
+  it.each([null, '1000', 1000, true, []])(
+    'rejects non-object openingBalance %s with invalid-type',
+    (badBalance) => {
+      expectViolations(
+        () =>
+          createAccountCommand({
+            name: 'Checking Account',
+            type: 'checking',
+            currency: 'USD',
+            openingBalance: badBalance,
+          }),
+        (violations) => {
+          expect(violations).toContainEqual({
+            field: 'openingBalance',
+            code: 'invalid-type',
+            message: 'must be an object',
+          });
+        },
+      );
+    },
+  );
+
+  it('rejects unexpected properties on openingBalance (additionalProperties: false)', () => {
+    expectViolations(
+      () =>
+        createAccountCommand({
+          name: 'Checking Account',
+          type: 'checking',
+          currency: 'USD',
+          openingBalance: {
+            amountMinor: '10000',
+            currency: 'USD',
+            extra: 'unexpected',
+          },
+        }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'openingBalance.extra',
+          code: 'not-allowed',
+          message: 'is not allowed',
+        });
+      },
+    );
+  });
+
+  it.each([undefined, null, 123, true, {}, []])(
+    'rejects missing or non-string amountMinor %s',
+    (badAmount) => {
+      expectViolations(
+        () =>
+          createAccountCommand({
+            name: 'Checking Account',
+            type: 'checking',
+            currency: 'USD',
+            openingBalance: {
+              amountMinor: badAmount,
+              currency: 'USD',
+            },
+          }),
+        (violations) => {
+          expect(violations).toContainEqual(
+            expect.objectContaining({
+              field: 'openingBalance.amountMinor',
+            }),
+          );
+        },
+      );
+    },
+  );
+
+  it.each(['', '   ', '12.34', '1,000', 'abc', '++100', '--100', '100a'])(
+    'rejects malformed amountMinor string %j',
+    (badFormat) => {
+      expectViolations(
+        () =>
+          createAccountCommand({
+            name: 'Checking Account',
+            type: 'checking',
+            currency: 'USD',
+            openingBalance: {
+              amountMinor: badFormat,
+              currency: 'USD',
+            },
+          }),
+        (violations) => {
+          expect(violations).toContainEqual(
+            expect.objectContaining({
+              field: 'openingBalance.amountMinor',
+            }),
+          );
+        },
+      );
+    },
+  );
+
+  it('rejects out-of-range amountMinor with a 30-digit value and 64-bit boundaries', () => {
+    const thirtyDigits = '999999999999999999999999999999';
+    const negativeThirtyDigits = '-999999999999999999999999999999';
+    const overMaxInt64 = '9223372036854775808';
+    const underMinInt64 = '-9223372036854775809';
+
+    for (const outOfRange of [
+      thirtyDigits,
+      negativeThirtyDigits,
+      overMaxInt64,
+      underMinInt64,
+    ]) {
+      expectViolations(
+        () =>
+          createAccountCommand({
+            name: 'Checking Account',
+            type: 'checking',
+            currency: 'USD',
+            openingBalance: {
+              amountMinor: outOfRange,
+              currency: 'USD',
+            },
+          }),
+        (violations) => {
+          expect(violations).toContainEqual({
+            field: 'openingBalance.amountMinor',
+            code: 'invalid-range',
+            message: 'must be within 64-bit signed integer range',
+          });
+        },
+      );
+    }
+  });
+
+  it('accepts exact 64-bit boundaries and values exceeding Number.MAX_SAFE_INTEGER (2^53 - 1)', () => {
+    const aboveSafeInt = '9007199254740993'; // 2^53 + 1
+    const maxInt64 = '9223372036854775807';
+    const minInt64 = '-9223372036854775807';
+
+    for (const validBig of [aboveSafeInt, maxInt64, minInt64, '-5000', '0']) {
+      const cmd = createAccountCommand({
+        name: 'Checking Account',
+        type: 'checking',
+        currency: 'USD',
+        openingBalance: {
+          amountMinor: validBig,
+          currency: 'USD',
+        },
+      });
+      expect(cmd.openingBalance?.amountMinor).toBe(validBig);
+    }
+  });
+
+  it('rejects openingBalance currency that does not match account currency', () => {
+    expectViolations(
+      () =>
+        createAccountCommand({
+          name: 'Checking Account',
+          type: 'checking',
+          currency: 'USD',
+          openingBalance: {
+            amountMinor: '10000',
+            currency: 'EUR',
+          },
+        }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'openingBalance.currency',
+          code: 'currency-mismatch',
+          message: 'opening balance currency must match account currency',
+        });
+      },
+    );
+  });
+
+  it('rejects missing or invalid ISO 4217 currency in openingBalance', () => {
+    expectViolations(
+      () =>
+        createAccountCommand({
+          name: 'Checking Account',
+          type: 'checking',
+          currency: 'USD',
+          openingBalance: {
+            amountMinor: '10000',
+            currency: 'XYZ',
+          },
+        }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'openingBalance.currency',
+          code: 'invalid-currency',
+          message: 'must be an active ISO 4217 currency',
+        });
+      },
+    );
+  });
+
+  it.each([null, 123, true, {}, []])(
+    'rejects non-string openingBalanceDate %s',
+    (badDate) => {
+      expectViolations(
+        () =>
+          createAccountCommand({
+            name: 'Checking Account',
+            type: 'checking',
+            currency: 'USD',
+            openingBalance: {
+              amountMinor: '10000',
+              currency: 'USD',
+            },
+            openingBalanceDate: badDate,
+          }),
+        (violations) => {
+          expect(violations).toContainEqual({
+            field: 'openingBalanceDate',
+            code: 'invalid-type',
+            message: 'must be a string',
+          });
+        },
+      );
+    },
+  );
+
+  it.each([
+    '2026-02-30', // Feb 30 does not exist
+    '2025-02-29', // 2025 is not a leap year
+    '2026-04-31', // April has 30 days
+    '2026-13-01', // Month 13 does not exist
+    '2026-00-10', // Month 0 does not exist
+    '2026-01-32', // Day 32 does not exist
+    '2026/08/25', // Slash format
+    '25-08-2026', // DD-MM-YYYY format
+    '2026-8-25', // Non-padded month
+    'invalid-date',
+  ])('rejects invalid calendar date %j for openingBalanceDate', (badDate) => {
+    expectViolations(
+      () =>
+        createAccountCommand({
+          name: 'Checking Account',
+          type: 'checking',
+          currency: 'USD',
+          openingBalance: {
+            amountMinor: '10000',
+            currency: 'USD',
+          },
+          openingBalanceDate: badDate,
+        }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'openingBalanceDate',
+          code: 'invalid-date',
+          message: 'must be a valid calendar date in YYYY-MM-DD format',
+        });
+      },
+    );
+  });
+
+  it.each(['2024-02-29', '2026-01-31', '2026-12-31', '2026-08-25'])(
+    'accepts valid calendar date %j for openingBalanceDate',
+    (validDate) => {
+      const cmd = createAccountCommand({
+        name: 'Checking Account',
+        type: 'checking',
+        currency: 'USD',
+        openingBalance: {
+          amountMinor: '10000',
+          currency: 'USD',
+        },
+        openingBalanceDate: validDate,
+      });
+      expect(cmd.openingBalanceDate).toBe(validDate);
+    },
+  );
 
   it('rejects missing, empty, invalid-character or overly long names', () => {
     expectViolations(
