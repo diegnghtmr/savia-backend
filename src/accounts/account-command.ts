@@ -132,7 +132,11 @@ export function createAccountCommand(input: unknown): CreateAccountCommand {
         } else {
           try {
             const val = BigInt(trimmed);
-            const BIGINT_MIN = -9223372036854775807n;
+            // int8 is asymmetric: two's complement gives it one more negative
+            // value than positive. -9223372036854775808 is a legal bigint, so
+            // mirroring the maximum here would refuse a value the column
+            // accepts.
+            const BIGINT_MIN = -9223372036854775808n;
             const BIGINT_MAX = 9223372036854775807n;
             if (val < BIGINT_MIN || val > BIGINT_MAX) {
               add(

@@ -706,4 +706,38 @@ describe('createAccountCommand', () => {
       },
     );
   });
+
+  it.each([
+    ['-9223372036854775808', 'the true int8 minimum'],
+    ['9223372036854775807', 'the int8 maximum'],
+  ])('accepts %s (%s) at the boundary', (amountMinor) => {
+    // int8 is asymmetric -- two's complement gives one more negative value than
+    // positive -- so mirroring the maximum as the minimum would refuse a value
+    // the bigint column stores happily.
+    const command = createAccountCommand({
+      name: 'Checking Account',
+      type: 'checking',
+      currency: 'USD',
+      openingBalance: { amountMinor, currency: 'USD' },
+    });
+    expect(command.openingBalance?.amountMinor).toBe(amountMinor);
+  });
+
+  it('still refuses one step beyond the int8 minimum', () => {
+    let thrown: unknown;
+    try {
+      createAccountCommand({
+        name: 'Checking Account',
+        type: 'checking',
+        currency: 'USD',
+        openingBalance: {
+          amountMinor: '-9223372036854775809',
+          currency: 'USD',
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AccountCommandValidationError);
+  });
 });
