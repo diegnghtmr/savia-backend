@@ -1,4 +1,9 @@
-import { add, stringValue, type FieldViolation } from './bootstrap-command.js';
+import {
+  add,
+  sortViolations,
+  stringValue,
+  type FieldViolation,
+} from '../platform/field-validation.js';
 import type { WorkspaceRole } from './workspace.port.js';
 
 const ALLOWED_ROLES = ['owner', 'administrator', 'editor', 'viewer'] as const;
@@ -53,13 +58,7 @@ export function createWorkspaceMemberUpdateCommand(
   }
 
   if (violations.length > 0) {
-    throw new WorkspaceMemberCommandValidationError(
-      violations.sort(
-        (left, right) =>
-          left.field.localeCompare(right.field) ||
-          left.message.localeCompare(right.message),
-      ),
-    );
+    throw new WorkspaceMemberCommandValidationError(sortViolations(violations));
   }
 
   return Object.freeze({

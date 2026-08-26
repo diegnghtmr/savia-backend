@@ -1,4 +1,9 @@
-import { add, stringValue, type FieldViolation } from './bootstrap-command.js';
+import {
+  add,
+  sortViolations,
+  stringValue,
+  type FieldViolation,
+} from '../platform/field-validation.js';
 import type { WorkspaceRole } from './workspace.port.js';
 
 // prettier-ignore
@@ -85,11 +90,7 @@ export function createWorkspaceInvitationCommand(
 
   if (violations.length > 0) {
     throw new WorkspaceInvitationCommandValidationError(
-      violations.sort(
-        (left, right) =>
-          left.field.localeCompare(right.field) ||
-          left.message.localeCompare(right.message),
-      ),
+      sortViolations(violations),
     );
   }
 

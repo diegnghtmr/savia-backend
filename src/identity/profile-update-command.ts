@@ -1,11 +1,11 @@
+import { localeValue, timezoneValue } from './bootstrap-command.js';
 import {
   add,
   currencyValue,
-  localeValue,
   nameValue,
-  timezoneValue,
+  sortViolations,
   type FieldViolation,
-} from './bootstrap-command.js';
+} from '../platform/field-validation.js';
 
 // prettier-ignore
 const PROFILE_UPDATE_FIELDS = ['displayName', 'locale', 'timezone', 'defaultCurrency', 'privacyModeEnabled'] as const;
@@ -93,13 +93,7 @@ export function createProfileUpdateCommand(
   }
 
   if (violations.length > 0) {
-    throw new ProfileUpdateValidationError(
-      violations.sort(
-        (left, right) =>
-          left.field.localeCompare(right.field) ||
-          left.message.localeCompare(right.message),
-      ),
-    );
+    throw new ProfileUpdateValidationError(sortViolations(violations));
   }
 
   return Object.freeze(command);
