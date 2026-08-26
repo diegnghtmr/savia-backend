@@ -708,12 +708,13 @@ describe('createAccountCommand', () => {
   });
 
   it.each([
-    ['-9223372036854775808', 'the true int8 minimum'],
+    ['-9223372036854775807', 'the negatable minimum'],
     ['9223372036854775807', 'the int8 maximum'],
   ])('accepts %s (%s) at the boundary', (amountMinor) => {
-    // int8 is asymmetric -- two's complement gives one more negative value than
-    // positive -- so mirroring the maximum as the minimum would refuse a value
-    // the bigint column stores happily.
+    // The admissible range is the one closed under negation, not the column's
+    // range. int8 reaches -9223372036854775808, but that value's counter-leg
+    // would be 9223372036854775808 -- one past int8 max -- so a balanced pair
+    // cannot represent it.
     const command = createAccountCommand({
       name: 'Checking Account',
       type: 'checking',
@@ -721,6 +722,27 @@ describe('createAccountCommand', () => {
       openingBalance: { amountMinor, currency: 'USD' },
     });
     expect(command.openingBalance?.amountMinor).toBe(amountMinor);
+  });
+
+  it('refuses int64-min, whose counter-leg is unrepresentable', () => {
+    // Accepting it would let validation promise what the postings INSERT cannot
+    // honour: negateAmountMinor produces 9223372036854775808 and PostgreSQL
+    // answers 22003, turning a 201-shaped promise into a 500.
+    let rejected: unknown;
+    try {
+      createAccountCommand({
+        name: 'Checking Account',
+        type: 'checking',
+        currency: 'USD',
+        openingBalance: {
+          amountMinor: '-9223372036854775808',
+          currency: 'USD',
+        },
+      });
+    } catch (error) {
+      rejected = error;
+    }
+    expect(rejected).toBeInstanceOf(AccountCommandValidationError);
   });
 
   it('still refuses one step beyond the int8 minimum', () => {

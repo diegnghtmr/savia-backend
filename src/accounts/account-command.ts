@@ -132,11 +132,16 @@ export function createAccountCommand(input: unknown): CreateAccountCommand {
         } else {
           try {
             const val = BigInt(trimmed);
-            // int8 is asymmetric: two's complement gives it one more negative
-            // value than positive. -9223372036854775808 is a legal bigint, so
-            // mirroring the maximum here would refuse a value the column
-            // accepts.
-            const BIGINT_MIN = -9223372036854775808n;
+            // The bound is NOT the column's range. int8 is asymmetric --
+            // -9223372036854775808 is a legal bigint -- but an opening balance
+            // is written as a BALANCED PAIR, and the external counter-leg
+            // carries the negation. Negating int64-min yields
+            // 9223372036854775808, one past int8 max, which PostgreSQL refuses
+            // with 22003 at insert time. Accepting it would mean validation
+            // promising what storage can never honour: a 500 after a 201-shaped
+            // promise. The admissible range is therefore the one closed under
+            // negation, which is symmetric.
+            const BIGINT_MIN = -9223372036854775807n;
             const BIGINT_MAX = 9223372036854775807n;
             if (val < BIGINT_MIN || val > BIGINT_MAX) {
               add(

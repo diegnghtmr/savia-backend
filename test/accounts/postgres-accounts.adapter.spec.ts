@@ -36,4 +36,15 @@ describe('toIso', () => {
     expect(() => toIso(null as unknown as Date)).toThrow(TypeError);
     expect(() => toIso(undefined as unknown as Date)).toThrow(TypeError);
   });
+
+  it('refuses to negate int64-min rather than minting an out-of-range counter-leg', () => {
+    // The validator rejects this upstream, but the guard belongs here too: this
+    // function is what mints the external leg, and PostgreSQL would answer 22003
+    // mid-write, turning a validated request into a 500.
+    expect(() => negateAmountMinor('-9223372036854775808')).toThrow(RangeError);
+    // One step inside the negatable range still works.
+    expect(negateAmountMinor('-9223372036854775807')).toBe(
+      '9223372036854775807',
+    );
+  });
 });

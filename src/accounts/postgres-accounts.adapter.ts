@@ -25,9 +25,21 @@ interface AccountRow extends Record<string, unknown> {
   readonly cursorAt: string;
 }
 
+// Defence in depth for the counter-leg. The command validator already refuses
+// amounts whose negation would leave int8, but this function is what actually
+// mints the external leg, and a caller that skipped validation would otherwise
+// hand PostgreSQL 9223372036854775808 and get SQLSTATE 22003 mid-write. Failing
+// here names the cause; failing there names a row.
+const INT8_MAX = 9223372036854775807n;
+
 export function negateAmountMinor(amountMinor: string): string {
   if (amountMinor === '0' || amountMinor === '-0') {
     return '0';
+  }
+  if (BigInt(amountMinor) < -INT8_MAX) {
+    throw new RangeError(
+      `amountMinor ${amountMinor} cannot be negated within int8; its counter-leg would overflow`,
+    );
   }
   if (amountMinor.startsWith('-')) {
     return amountMinor.slice(1);
@@ -253,7 +265,7 @@ values (
   'confirmed',
   $3,
   $4,
-  coalesce($5::timestamptz, now()),
+  coalesce(($5::date)::timestamp at time zone 'utc', now()),
   'Opening balance',
   $6::uuid
 )
