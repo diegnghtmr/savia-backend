@@ -342,4 +342,3 @@ export class AccountsController {
       .send(outcome.account);
   }
 }
-

@@ -381,12 +381,7 @@ export function createUpdateAccountCommand(
 
   if ('includeInNetWorth' in body) {
     if (typeof body.includeInNetWorth !== 'boolean') {
-      add(
-        violations,
-        'includeInNetWorth',
-        'invalid-type',
-        'must be a boolean',
-      );
+      add(violations, 'includeInNetWorth', 'invalid-type', 'must be a boolean');
     } else {
       command.includeInNetWorth = body.includeInNetWorth;
     }
@@ -410,4 +405,3 @@ export function createUpdateAccountCommand(
 
   return Object.freeze(command);
 }
-

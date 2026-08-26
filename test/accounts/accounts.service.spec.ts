@@ -91,7 +91,10 @@ function fakeStore(
   rows: readonly (Account | AccountItem)[] = [],
   singleAccount: Account | undefined = undefined,
   createdAcc: Account = account(),
-  updatedAcc: Account | undefined = account({ name: 'Updated Name', version: 2 }),
+  updatedAcc: Account | undefined = account({
+    name: 'Updated Name',
+    version: 2,
+  }),
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
   listAccounts: ReturnType<typeof vi.fn>;
@@ -661,7 +664,11 @@ describe('AccountsService.update', () => {
   });
 
   it('answers forbidden when the account exists but is closed (closed accounts cannot be modified)', async () => {
-    const closedAccount = account({ id: ACCOUNT_ID, status: 'closed', version: 3 });
+    const closedAccount = account({
+      id: ACCOUNT_ID,
+      status: 'closed',
+      version: 3,
+    });
     const store = fakeStore('owner', [], closedAccount);
     const outcome = await update(
       store,
@@ -711,7 +718,11 @@ describe('AccountsService.update', () => {
 
   it('successfully updates account when expectedVersions matches current version', async () => {
     const existing = account({ id: ACCOUNT_ID, version: 1 });
-    const updated = account({ id: ACCOUNT_ID, name: 'Updated Checking', version: 2 });
+    const updated = account({
+      id: ACCOUNT_ID,
+      name: 'Updated Checking',
+      version: 2,
+    });
     const store = fakeStore('owner', [], existing, undefined, updated);
 
     const outcome = await update(
@@ -737,7 +748,11 @@ describe('AccountsService.update', () => {
 
   it('successfully updates account when expectedVersions is undefined (absent If-Match)', async () => {
     const existing = account({ id: ACCOUNT_ID, version: 1 });
-    const updated = account({ id: ACCOUNT_ID, name: 'Updated Checking', version: 2 });
+    const updated = account({
+      id: ACCOUNT_ID,
+      name: 'Updated Checking',
+      version: 2,
+    });
     const store = fakeStore('owner', [], existing, undefined, updated);
 
     const outcome = await update(
@@ -765,7 +780,11 @@ describe('AccountsService.update', () => {
     'admits %s role for update',
     async (role) => {
       const existing = account({ id: ACCOUNT_ID, version: 1 });
-      const updated = account({ id: ACCOUNT_ID, name: 'Updated Checking', version: 2 });
+      const updated = account({
+        id: ACCOUNT_ID,
+        name: 'Updated Checking',
+        version: 2,
+      });
       const store = fakeStore(role, [], existing, undefined, updated);
 
       const outcome = await update(
@@ -803,8 +822,16 @@ describe('AccountsService.update', () => {
   });
 
   it('handles concurrent closure when store.updateAccount returns undefined and account became closed', async () => {
-    const initialAccount = account({ id: ACCOUNT_ID, version: 1, status: 'active' });
-    const closedAccount = account({ id: ACCOUNT_ID, version: 1, status: 'closed' });
+    const initialAccount = account({
+      id: ACCOUNT_ID,
+      version: 1,
+      status: 'active',
+    });
+    const closedAccount = account({
+      id: ACCOUNT_ID,
+      version: 1,
+      status: 'closed',
+    });
 
     const store = fakeStore('owner');
     store.readAccount = vi
@@ -845,4 +872,3 @@ describe('AccountsService.update', () => {
     expect(store.readAccount).toHaveBeenCalledTimes(2);
   });
 });
-

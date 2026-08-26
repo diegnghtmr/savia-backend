@@ -138,8 +138,7 @@ function patchAccount(
     headers.authorization = `Bearer ${options.token}`;
   if (options.workspaceHeader !== undefined)
     headers['x-workspace-id'] = options.workspaceHeader;
-  if (options.ifMatch !== undefined)
-    headers['if-match'] = options.ifMatch;
+  if (options.ifMatch !== undefined) headers['if-match'] = options.ifMatch;
   return application.inject({
     method: 'PATCH',
     url: `/v1/accounts/${accountId}`,
@@ -1392,4 +1391,3 @@ describe('PATCH /v1/accounts/:accountId', () => {
     expect(update).not.toHaveBeenCalled();
   });
 });
-

@@ -157,4 +157,3 @@ describe('PostgresAccountsAdapter.updateAccount', () => {
     expect(result).toBeUndefined();
   });
 });
-

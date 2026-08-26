@@ -213,4 +213,3 @@ export interface AccountsPort {
     expectedVersions?: number | readonly number[],
   ): Promise<AccountUpdateOutcome>;
 }
-

@@ -269,7 +269,9 @@ describe('platform field-validation primitives', () => {
   describe('nullableStringValue', () => {
     it('returns null when value is null without adding violations (clears field)', () => {
       const violations: FieldViolation[] = [];
-      expect(nullableStringValue(null, 'institution', violations, 120)).toBeNull();
+      expect(
+        nullableStringValue(null, 'institution', violations, 120),
+      ).toBeNull();
       expect(violations).toHaveLength(0);
     });
 
