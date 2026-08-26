@@ -46,6 +46,15 @@ export interface CreateAccountCommand {
   readonly includeInNetWorth: boolean;
 }
 
+export interface UpdateAccountCommand {
+  readonly name?: string;
+  readonly institution?: string | null;
+  readonly maskedNumber?: string | null;
+  readonly description?: string | null;
+  readonly includeInNetWorth?: boolean;
+  readonly status?: 'active' | 'archived';
+}
+
 export interface Account {
   readonly id: string;
   readonly name: string;
