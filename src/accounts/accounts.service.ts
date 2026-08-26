@@ -1,15 +1,20 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { encodeCursor } from '../platform/cursor.js';
+import { computeRequestFingerprint } from '../platform/idempotency.service.js';
+import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import {
+  ACCOUNT_CREATE_OUTCOMES,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
   type Account,
+  type AccountCreateOutcome,
   type AccountCursor,
   type AccountListOutcome,
   type AccountListQuery,
   type AccountReadOutcome,
   type AccountStatus,
   type AccountsPort,
+  type CreateAccountCommand,
 } from './accounts.port.js';
 
 export interface AccountItem {
@@ -17,7 +22,11 @@ export interface AccountItem {
   readonly cursorAt: string;
 }
 
-export interface AccountsReadTransaction {
+export interface AccountsTransaction {
+  run<T>(
+    subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T>;
   runRead<T>(
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
@@ -46,12 +55,19 @@ export interface AccountsStore {
     workspaceId: string,
     accountId: string,
   ): Promise<Account | undefined>;
+  createAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    command: CreateAccountCommand,
+  ): Promise<Account>;
 }
 
 export class AccountsService implements AccountsPort {
   public constructor(
-    private readonly transaction: AccountsReadTransaction,
+    private readonly transaction: AccountsTransaction,
     private readonly store: AccountsStore,
+    private readonly idempotencyStore: IdempotencyStore,
   ) {}
 
   public list(
@@ -121,6 +137,95 @@ export class AccountsService implements AccountsPort {
       }
       return {
         kind: ACCOUNT_READ_OUTCOMES.OK,
+        account,
+      };
+    });
+  }
+
+  public async create(
+    subject: string,
+    workspaceId: string,
+    command: CreateAccountCommand,
+    idempotencyKey: string,
+  ): Promise<AccountCreateOutcome> {
+    const route = 'POST /v1/accounts';
+    const fingerprint = computeRequestFingerprint(command);
+
+    return this.transaction.run(subject, async (client) => {
+      // Check authorization before any write
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (
+        role === undefined ||
+        !['owner', 'administrator', 'editor'].includes(role)
+      ) {
+        return { kind: ACCOUNT_CREATE_OUTCOMES.FORBIDDEN };
+      }
+
+      // Idempotency preamble
+      const existing = await this.idempotencyStore.read(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        workspaceId,
+      );
+      if (existing !== undefined) {
+        if (existing.requestFingerprint !== fingerprint) {
+          return { kind: ACCOUNT_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT };
+        }
+        return {
+          kind: ACCOUNT_CREATE_OUTCOMES.REPLAYED,
+          status: existing.responseStatus,
+          etag: existing.responseEtag,
+          body: existing.responseBody,
+        };
+      }
+
+      // Create account
+      const account = await this.store.createAccount(
+        client,
+        workspaceId,
+        subject,
+        command,
+      );
+
+      // Write idempotency record with workspaceId threaded
+      const written = await this.idempotencyStore.write(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        fingerprint,
+        201,
+        `"${account.version}"`,
+        account,
+        workspaceId,
+      );
+
+      if (!written) {
+        // A losing write means a live record won and the response must come from that record.
+        const reread = await this.idempotencyStore.read(
+          client,
+          subject,
+          route,
+          idempotencyKey,
+          workspaceId,
+        );
+        if (reread !== undefined) {
+          if (reread.requestFingerprint !== fingerprint) {
+            return { kind: ACCOUNT_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT };
+          }
+          return {
+            kind: ACCOUNT_CREATE_OUTCOMES.REPLAYED,
+            status: reread.responseStatus,
+            etag: reread.responseEtag,
+            body: reread.responseBody,
+          };
+        }
+      }
+
+      return {
+        kind: ACCOUNT_CREATE_OUTCOMES.CREATED,
         account,
       };
     });

@@ -83,6 +83,11 @@
       "path": "/v1/accounts"
     },
     {
+      "operationId": "createAccount",
+      "method": "POST",
+      "path": "/v1/accounts"
+    },
+    {
       "operationId": "getAccount",
       "method": "GET",
       "path": "/v1/accounts/{accountId}"

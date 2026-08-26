@@ -3,6 +3,7 @@ import {
   Get,
   Inject,
   Param,
+  Post,
   Query,
   Req,
   Res,
@@ -11,6 +12,7 @@ import {
 import type { FastifyReply } from 'fastify';
 
 import {
+  ACCOUNT_CREATE_OUTCOMES,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
   ACCOUNTS_PORT,
@@ -18,7 +20,13 @@ import {
 } from './accounts.port.js';
 import { createAccountListQuery } from './account-query.js';
 import { AccountQueryValidationError } from './account-query.js';
+import {
+  createAccountCommand,
+  AccountCommandValidationError,
+  type CreateAccountCommand,
+} from './account-command.js';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
+import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
@@ -88,6 +96,90 @@ export class AccountsController {
     }
 
     void reply.status(200).send(outcome.page);
+  }
+
+  @Post()
+  public async createAccount(
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+
+    const keyResult = validateIdempotencyKey(
+      request.headers['idempotency-key'],
+    );
+    if (keyResult.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid Idempotency-Key header',
+        detail: keyResult.reason,
+        status: 400,
+      });
+      return;
+    }
+
+    let command: CreateAccountCommand;
+    try {
+      command = createAccountCommand(request.body);
+    } catch (error) {
+      if (error instanceof AccountCommandValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Account create validation failed',
+          status: 422,
+          errors: error.violations,
+        });
+        return;
+      }
+      throw error;
+    }
+
+    const outcome = await this.accounts.create(
+      request.identity.subject,
+      header.workspaceId,
+      command,
+      keyResult.key,
+    );
+
+    if (outcome.kind === ACCOUNT_CREATE_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency key reused with different payload',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_CREATE_OUTCOMES.REPLAYED) {
+      let r = reply.status(outcome.status);
+      if (outcome.etag) {
+        r = r.header('etag', outcome.etag);
+      }
+      void r.send(outcome.body);
+      return;
+    }
+
+    void reply
+      .header('etag', `"${outcome.account.version}"`)
+      .status(201)
+      .send(outcome.account);
   }
 
   @Get(':accountId')

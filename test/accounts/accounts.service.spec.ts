@@ -20,7 +20,15 @@ const WORKSPACE_ID = '00000000-0000-0000-0000-000000000951';
 
 const CLIENT: TransactionClient = { query: vi.fn() };
 
-class FakeReadTransaction {
+class FakeTransaction {
+  public async run<T>(
+    subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    if (subject !== SUBJECT) throw new Error('unexpected subject');
+    return callback(CLIENT);
+  }
+
   public async runRead<T>(
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
@@ -57,14 +65,34 @@ function toItem(
   return { account: acc, cursorAt };
 }
 
+import type {
+  IdempotencyRecord,
+  IdempotencyStore,
+} from '../../src/platform/idempotency.port.js';
+
+function fakeIdempotencyStore(
+  record: IdempotencyRecord | undefined = undefined,
+  writeSuccess = true,
+): IdempotencyStore & {
+  read: ReturnType<typeof vi.fn>;
+  write: ReturnType<typeof vi.fn>;
+} {
+  return {
+    read: vi.fn().mockResolvedValue(record),
+    write: vi.fn().mockResolvedValue(writeSuccess),
+  };
+}
+
 function fakeStore(
   role: string | undefined,
   rows: readonly (Account | AccountItem)[] = [],
   singleAccount: Account | undefined = undefined,
+  createdAcc: Account = account(),
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
   listAccounts: ReturnType<typeof vi.fn>;
   readAccount: ReturnType<typeof vi.fn>;
+  createAccount: ReturnType<typeof vi.fn>;
 } {
   const normalized: AccountItem[] = rows.map((r) =>
     'account' in r ? r : toItem(r),
@@ -73,6 +101,7 @@ function fakeStore(
     readActiveRole: vi.fn().mockResolvedValue(role),
     listAccounts: vi.fn().mockResolvedValue(normalized),
     readAccount: vi.fn().mockResolvedValue(singleAccount),
+    createAccount: vi.fn().mockResolvedValue(createdAcc),
   };
 }
 
@@ -80,7 +109,11 @@ async function list(
   store: AccountsStore,
   query: Parameters<AccountsService['list']>[1],
 ): Promise<AccountListOutcome> {
-  const service = new AccountsService(new FakeReadTransaction(), store);
+  const service = new AccountsService(
+    new FakeTransaction(),
+    store,
+    fakeIdempotencyStore(),
+  );
   return service.list(SUBJECT, query);
 }
 
@@ -89,7 +122,11 @@ async function read(
   workspaceId: string,
   accountId: string,
 ): Promise<AccountReadOutcome> {
-  const service = new AccountsService(new FakeReadTransaction(), store);
+  const service = new AccountsService(
+    new FakeTransaction(),
+    store,
+    fakeIdempotencyStore(),
+  );
   return service.read(SUBJECT, workspaceId, accountId);
 }
 
@@ -255,5 +292,291 @@ describe('AccountsService.read', () => {
       kind: ACCOUNT_READ_OUTCOMES.OK,
       account: acc,
     });
+  });
+});
+
+describe('AccountsService.create', () => {
+  const IDEMPOTENCY_KEY = '00000000-0000-0000-0000-000000000001';
+  const VALID_COMMAND = {
+    name: 'New Checking',
+    type: 'checking' as const,
+    currency: 'USD',
+    institution: 'Bank',
+    maskedNumber: '***1234',
+    description: 'Main account',
+    includeInNetWorth: true,
+  };
+
+  it('answers forbidden when the actor holds no active role in the workspace and never queries idempotency or creates account', async () => {
+    const store = fakeStore(undefined);
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn(),
+    };
+    const idempStore = fakeIdempotencyStore();
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe('forbidden');
+    expect(store.readActiveRole).toHaveBeenCalledWith(CLIENT, WORKSPACE_ID);
+    expect(idempStore.read).not.toHaveBeenCalled();
+    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers forbidden when the actor is a viewer and never creates account', async () => {
+    const store = fakeStore('viewer');
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn(),
+    };
+    const idempStore = fakeIdempotencyStore();
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe('forbidden');
+    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
+  });
+
+  it('replays response when a matching idempotency record already exists without creating an account', async () => {
+    const createdAccount = account({ name: 'New Checking' });
+    const { computeRequestFingerprint } = await import(
+      '../../src/platform/idempotency.service.js'
+    );
+    const fingerprint = computeRequestFingerprint(VALID_COMMAND);
+
+    const store = fakeStore('owner');
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn(),
+    };
+    const idempStore = fakeIdempotencyStore({
+      requestFingerprint: fingerprint,
+      responseStatus: 201,
+      responseEtag: '"1"',
+      responseBody: createdAccount,
+    });
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'replayed',
+      status: 201,
+      etag: '"1"',
+      body: createdAccount,
+    });
+    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
+    expect(idempStore.write).not.toHaveBeenCalled();
+  });
+
+  it('answers conflict when an idempotency record exists with different fingerprint', async () => {
+    const store = fakeStore('owner');
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn(),
+    };
+    const idempStore = fakeIdempotencyStore({
+      requestFingerprint: 'different-fingerprint',
+      responseStatus: 201,
+      responseEtag: '"1"',
+      responseBody: {},
+    });
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe('idempotency_conflict');
+    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
+  });
+
+  it('creates account and writes idempotency record with workspace_id when authorized', async () => {
+    const createdAccount = account({ name: 'New Checking' });
+    const store = fakeStore('owner');
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockResolvedValue(createdAccount),
+    };
+    const idempStore = fakeIdempotencyStore(undefined, true);
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'created',
+      account: createdAccount,
+    });
+    expect(storeWithCreate.createAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      SUBJECT,
+      VALID_COMMAND,
+    );
+    expect(idempStore.write).toHaveBeenCalledWith(
+      CLIENT,
+      SUBJECT,
+      'POST /v1/accounts',
+      IDEMPOTENCY_KEY,
+      expect.any(String),
+      201,
+      '"1"',
+      createdAccount,
+      WORKSPACE_ID,
+    );
+  });
+
+  it('re-reads from idempotency store and returns replay when write loses race', async () => {
+    const createdAccount = account({ name: 'New Checking' });
+    const { computeRequestFingerprint } = await import(
+      '../../src/platform/idempotency.service.js'
+    );
+    const fingerprint = computeRequestFingerprint(VALID_COMMAND);
+
+    const store = fakeStore('editor');
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockResolvedValue(createdAccount),
+    };
+    const idempStore: IdempotencyStore & { read: ReturnType<typeof vi.fn> } = {
+      read: vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+        requestFingerprint: fingerprint,
+        responseStatus: 201,
+        responseEtag: '"1"',
+        responseBody: createdAccount,
+      }),
+      write: vi.fn().mockResolvedValue(false),
+    };
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'replayed',
+      status: 201,
+      etag: '"1"',
+      body: createdAccount,
+    });
+    expect(idempStore.read).toHaveBeenCalledTimes(2);
+  });
+
+  it('answers idempotency_conflict when the write loses the race AND the winning record was minted from a different payload', async () => {
+    // The losing-write branch had one arm covered (re-read agrees, replay it) and
+    // one arm not: a concurrent request that won the unique-key race with a
+    // DIFFERENT body. Replaying that stored response would hand this caller
+    // someone else's account, so the mismatch must surface as 409.
+    const createdAccount = account({ name: 'New Checking' });
+    const store = fakeStore('editor');
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockResolvedValue(createdAccount),
+    };
+    const idempStore: IdempotencyStore & { read: ReturnType<typeof vi.fn> } = {
+      read: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce({
+          requestFingerprint: 'a-fingerprint-from-some-other-payload',
+          responseStatus: 201,
+          responseEtag: '"1"',
+          responseBody: account({ name: 'Someone Else Account' }),
+        }),
+      write: vi.fn().mockResolvedValue(false),
+    };
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe('idempotency_conflict');
+    expect(idempStore.read).toHaveBeenCalledTimes(2);
+  });
+
+  it('admits administrator role as well as owner and editor', async () => {
+    for (const role of ['owner', 'administrator', 'editor']) {
+      const createdAccount = account({ name: 'New Checking' });
+      const store = fakeStore(role);
+      const storeWithCreate = {
+        ...store,
+        createAccount: vi.fn().mockResolvedValue(createdAccount),
+      };
+      const idempStore = fakeIdempotencyStore(undefined, true);
+      const service = new AccountsService(
+        new FakeTransaction(),
+        storeWithCreate,
+        idempStore,
+      );
+
+      const outcome = await service.create(
+        SUBJECT,
+        WORKSPACE_ID,
+        VALID_COMMAND,
+        IDEMPOTENCY_KEY,
+      );
+
+      expect(outcome.kind).toBe('created');
+    }
   });
 });

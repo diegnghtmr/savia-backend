@@ -8,6 +8,7 @@ import {
 import { decodeCursor } from '../../src/platform/cursor.js';
 import { AccountsService } from '../../src/accounts/accounts.service.js';
 import { PostgresAccountsAdapter } from '../../src/accounts/postgres-accounts.adapter.js';
+import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
@@ -128,7 +129,11 @@ describe('AccountsService listAccounts database boundary', () => {
     admin = new Pool({ connectionString: url });
     pool = new PostgresPool(PostgresConfig.fromUrl(url));
     transaction = new PgTransaction(pool, { callbackTimeoutMs: 3_000 });
-    service = new AccountsService(transaction, new PostgresAccountsAdapter());
+    service = new AccountsService(
+      transaction,
+      new PostgresAccountsAdapter(),
+      new PostgresIdempotencyAdapter(),
+    );
 
     await admin.query(
       `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8)`,

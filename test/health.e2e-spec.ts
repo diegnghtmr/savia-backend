@@ -96,6 +96,7 @@ describe('health endpoint', () => {
       'POST /v1/workspaces/:workspaceId/invitations',
       'POST /v1/workspaces/:workspaceId/invitations/:invitationId/revoke',
       'GET /v1/accounts',
+      'POST /v1/accounts',
       'GET /v1/accounts/:accountId',
     ]);
 

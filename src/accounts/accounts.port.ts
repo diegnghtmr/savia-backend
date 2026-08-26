@@ -29,6 +29,16 @@ export function isAccountStatus(value: string): value is AccountStatus {
   return ACCOUNT_STATUS_VALUES.includes(value);
 }
 
+export interface CreateAccountCommand {
+  readonly name: string;
+  readonly type: AccountType;
+  readonly currency: string;
+  readonly institution?: string | null;
+  readonly maskedNumber?: string | null;
+  readonly description?: string | null;
+  readonly includeInNetWorth: boolean;
+}
+
 export interface Account {
   readonly id: string;
   readonly name: string;
@@ -81,15 +91,6 @@ export interface AccountListQuery {
   readonly status?: AccountStatus;
 }
 
-export interface AccountsPort {
-  list(subject: string, query: AccountListQuery): Promise<AccountListOutcome>;
-  read(
-    subject: string,
-    workspaceId: string,
-    accountId: string,
-  ): Promise<AccountReadOutcome>;
-}
-
 export const ACCOUNT_READ_OUTCOMES = {
   OK: 'ok',
   FORBIDDEN: 'forbidden',
@@ -115,3 +116,49 @@ export type AccountReadOutcome =
   | AccountReadOk
   | AccountReadForbidden
   | AccountReadNotFound;
+
+export const ACCOUNT_CREATE_OUTCOMES = {
+  CREATED: 'created',
+  REPLAYED: 'replayed',
+  IDEMPOTENCY_CONFLICT: 'idempotency_conflict',
+  FORBIDDEN: 'forbidden',
+} as const;
+export type AccountCreateOutcomeKind =
+  (typeof ACCOUNT_CREATE_OUTCOMES)[keyof typeof ACCOUNT_CREATE_OUTCOMES];
+
+export interface AccountCreateCreated {
+  readonly kind: typeof ACCOUNT_CREATE_OUTCOMES.CREATED;
+  readonly account: Account;
+}
+export interface AccountCreateReplayed {
+  readonly kind: typeof ACCOUNT_CREATE_OUTCOMES.REPLAYED;
+  readonly status: number;
+  readonly etag: string | null;
+  readonly body: unknown;
+}
+export interface AccountCreateIdempotencyConflict {
+  readonly kind: typeof ACCOUNT_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT;
+}
+export interface AccountCreateForbidden {
+  readonly kind: typeof ACCOUNT_CREATE_OUTCOMES.FORBIDDEN;
+}
+export type AccountCreateOutcome =
+  | AccountCreateCreated
+  | AccountCreateReplayed
+  | AccountCreateIdempotencyConflict
+  | AccountCreateForbidden;
+
+export interface AccountsPort {
+  list(subject: string, query: AccountListQuery): Promise<AccountListOutcome>;
+  read(
+    subject: string,
+    workspaceId: string,
+    accountId: string,
+  ): Promise<AccountReadOutcome>;
+  create(
+    subject: string,
+    workspaceId: string,
+    command: CreateAccountCommand,
+    idempotencyKey: string,
+  ): Promise<AccountCreateOutcome>;
+}
