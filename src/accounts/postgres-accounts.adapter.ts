@@ -4,6 +4,7 @@ import type {
   AccountCursor,
   AccountStatus,
   CreateAccountCommand,
+  UpdateAccountCommand,
 } from './accounts.port.js';
 import type { AccountItem, AccountsStore } from './accounts.service.js';
 
@@ -336,4 +337,95 @@ values
       version: row.version,
     };
   }
+
+  public async updateAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    command: UpdateAccountCommand,
+    expectedVersions?: number | readonly number[],
+  ): Promise<Account | undefined> {
+    const setClauses: string[] = [
+      'updated_at = now()',
+      'version = version + 1',
+    ];
+    const values: unknown[] = [workspaceId, accountId];
+
+    if (command.name !== undefined) {
+      values.push(command.name);
+      setClauses.push(`name = $${values.length}`);
+    }
+    if ('institution' in command && command.institution !== undefined) {
+      values.push(command.institution);
+      setClauses.push(`institution = $${values.length}`);
+    }
+    if ('maskedNumber' in command && command.maskedNumber !== undefined) {
+      values.push(command.maskedNumber);
+      setClauses.push(`masked_number = $${values.length}`);
+    }
+    if ('description' in command && command.description !== undefined) {
+      values.push(command.description);
+      setClauses.push(`description = $${values.length}`);
+    }
+    if (command.includeInNetWorth !== undefined) {
+      values.push(command.includeInNetWorth);
+      setClauses.push(`include_in_net_worth = $${values.length}`);
+    }
+    if (command.status !== undefined) {
+      values.push(command.status);
+      setClauses.push(`status = $${values.length}`);
+    }
+
+    const versions =
+      typeof expectedVersions === 'number'
+        ? [expectedVersions]
+        : (expectedVersions ?? null);
+    values.push(versions);
+    const versionParamIndex = values.length;
+
+    const sql = `
+update public.accounts
+   set ${setClauses.join(',\n       ')}
+ where workspace_id = $1::uuid
+   and id = $2::uuid
+   and ($${versionParamIndex}::integer[] is null or version = any($${versionParamIndex}::integer[]))
+returning
+  id::text,
+  name,
+  type,
+  currency,
+  status,
+  institution,
+  masked_number as "maskedNumber",
+  description,
+  color_token as "colorToken",
+  icon,
+  include_in_net_worth as "includeInNetWorth",
+  created_at as "createdAt",
+  updated_at as "updatedAt",
+  version`;
+
+    const result = await client.query<AccountRow>(sql, values);
+    const row = result.rows[0];
+    if (!row) {
+      return undefined;
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      currency: row.currency,
+      status: row.status,
+      institution: row.institution,
+      maskedNumber: row.maskedNumber,
+      description: row.description,
+      colorToken: row.colorToken,
+      icon: row.icon,
+      includeInNetWorth: row.includeInNetWorth,
+      createdAt: toIso(row.createdAt),
+      updatedAt: toIso(row.updatedAt),
+      version: row.version,
+    };
+  }
 }
+
