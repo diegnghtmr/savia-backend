@@ -4,9 +4,12 @@ import { decodeCursor } from '../../src/platform/cursor.js';
 import {
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
+  ACCOUNT_UPDATE_OUTCOMES,
   type Account,
   type AccountListOutcome,
   type AccountReadOutcome,
+  type AccountUpdateOutcome,
+  type UpdateAccountCommand,
 } from '../../src/accounts/accounts.port.js';
 import {
   AccountsService,
@@ -88,11 +91,13 @@ function fakeStore(
   rows: readonly (Account | AccountItem)[] = [],
   singleAccount: Account | undefined = undefined,
   createdAcc: Account = account(),
+  updatedAcc: Account | undefined = account({ name: 'Updated Name', version: 2 }),
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
   listAccounts: ReturnType<typeof vi.fn>;
   readAccount: ReturnType<typeof vi.fn>;
   createAccount: ReturnType<typeof vi.fn>;
+  updateAccount: ReturnType<typeof vi.fn>;
 } {
   const normalized: AccountItem[] = rows.map((r) =>
     'account' in r ? r : toItem(r),
@@ -102,6 +107,7 @@ function fakeStore(
     listAccounts: vi.fn().mockResolvedValue(normalized),
     readAccount: vi.fn().mockResolvedValue(singleAccount),
     createAccount: vi.fn().mockResolvedValue(createdAcc),
+    updateAccount: vi.fn().mockResolvedValue(updatedAcc),
   };
 }
 
@@ -128,6 +134,27 @@ async function read(
     fakeIdempotencyStore(),
   );
   return service.read(SUBJECT, workspaceId, accountId);
+}
+
+async function update(
+  store: AccountsStore,
+  workspaceId: string,
+  accountId: string,
+  command: UpdateAccountCommand,
+  expectedVersions?: number | readonly number[],
+): Promise<AccountUpdateOutcome> {
+  const service = new AccountsService(
+    new FakeTransaction(),
+    store,
+    fakeIdempotencyStore(),
+  );
+  return service.update(
+    SUBJECT,
+    workspaceId,
+    accountId,
+    command,
+    expectedVersions,
+  );
 }
 
 describe('AccountsService.list', () => {
@@ -580,3 +607,242 @@ describe('AccountsService.create', () => {
     }
   });
 });
+
+describe('AccountsService.update', () => {
+  const ACCOUNT_ID = '00000000-0000-0000-0000-000000000a01';
+  const UPDATE_COMMAND: UpdateAccountCommand = { name: 'Updated Checking' };
+
+  it('answers forbidden when the actor holds no active role in the workspace and never touches account store', async () => {
+    const store = fakeStore(undefined);
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN);
+    expect(store.readActiveRole).toHaveBeenCalledWith(CLIENT, WORKSPACE_ID);
+    expect(store.readAccount).not.toHaveBeenCalled();
+    expect(store.updateAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers forbidden when the actor holds viewer role (only owner, administrator, editor admitted)', async () => {
+    const store = fakeStore('viewer');
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN);
+    expect(store.readActiveRole).toHaveBeenCalledWith(CLIENT, WORKSPACE_ID);
+    expect(store.readAccount).not.toHaveBeenCalled();
+    expect(store.updateAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers not_found when the account does not exist in the workspace', async () => {
+    const store = fakeStore('owner', [], undefined);
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.NOT_FOUND);
+    expect(store.readAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+    );
+    expect(store.updateAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers forbidden when the account exists but is closed (closed accounts cannot be modified)', async () => {
+    const closedAccount = account({ id: ACCOUNT_ID, status: 'closed', version: 3 });
+    const store = fakeStore('owner', [], closedAccount);
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN);
+    expect(store.readAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+    );
+    expect(store.updateAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers version_conflict (412) when expectedVersions is a single number and does not match account.version', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 2 });
+    const store = fakeStore('owner', [], existing);
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+      1, // expected version 1 vs current 2
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT);
+    expect(store.updateAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers version_conflict (412) when expectedVersions is an array and does not include account.version', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 5 });
+    const store = fakeStore('owner', [], existing);
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+      [1, 2, 3], // expected versions 1,2,3 vs current 5
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT);
+    expect(store.updateAccount).not.toHaveBeenCalled();
+  });
+
+  it('successfully updates account when expectedVersions matches current version', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 1 });
+    const updated = account({ id: ACCOUNT_ID, name: 'Updated Checking', version: 2 });
+    const store = fakeStore('owner', [], existing, undefined, updated);
+
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+      1,
+    );
+
+    expect(outcome).toEqual({
+      kind: ACCOUNT_UPDATE_OUTCOMES.OK,
+      account: updated,
+    });
+    expect(store.updateAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+      1,
+    );
+  });
+
+  it('successfully updates account when expectedVersions is undefined (absent If-Match)', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 1 });
+    const updated = account({ id: ACCOUNT_ID, name: 'Updated Checking', version: 2 });
+    const store = fakeStore('owner', [], existing, undefined, updated);
+
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+      undefined,
+    );
+
+    expect(outcome).toEqual({
+      kind: ACCOUNT_UPDATE_OUTCOMES.OK,
+      account: updated,
+    });
+    expect(store.updateAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+      undefined,
+    );
+  });
+
+  it.each(['owner', 'administrator', 'editor'] as const)(
+    'admits %s role for update',
+    async (role) => {
+      const existing = account({ id: ACCOUNT_ID, version: 1 });
+      const updated = account({ id: ACCOUNT_ID, name: 'Updated Checking', version: 2 });
+      const store = fakeStore(role, [], existing, undefined, updated);
+
+      const outcome = await update(
+        store,
+        WORKSPACE_ID,
+        ACCOUNT_ID,
+        UPDATE_COMMAND,
+      );
+
+      expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.OK);
+    },
+  );
+
+  it('handles concurrent version conflict when store.updateAccount returns undefined and account version changed', async () => {
+    const initialAccount = account({ id: ACCOUNT_ID, version: 1 });
+    const concurrentAccount = account({ id: ACCOUNT_ID, version: 2 });
+
+    const store = fakeStore('owner');
+    store.readAccount = vi
+      .fn()
+      .mockResolvedValueOnce(initialAccount)
+      .mockResolvedValueOnce(concurrentAccount);
+    store.updateAccount = vi.fn().mockResolvedValue(undefined);
+
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+      1,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT);
+    expect(store.readAccount).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles concurrent closure when store.updateAccount returns undefined and account became closed', async () => {
+    const initialAccount = account({ id: ACCOUNT_ID, version: 1, status: 'active' });
+    const closedAccount = account({ id: ACCOUNT_ID, version: 1, status: 'closed' });
+
+    const store = fakeStore('owner');
+    store.readAccount = vi
+      .fn()
+      .mockResolvedValueOnce(initialAccount)
+      .mockResolvedValueOnce(closedAccount);
+    store.updateAccount = vi.fn().mockResolvedValue(undefined);
+
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN);
+    expect(store.readAccount).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles concurrent deletion when store.updateAccount returns undefined and account was deleted', async () => {
+    const initialAccount = account({ id: ACCOUNT_ID, version: 1 });
+
+    const store = fakeStore('owner');
+    store.readAccount = vi
+      .fn()
+      .mockResolvedValueOnce(initialAccount)
+      .mockResolvedValueOnce(undefined);
+    store.updateAccount = vi.fn().mockResolvedValue(undefined);
+
+    const outcome = await update(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      UPDATE_COMMAND,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.NOT_FOUND);
+    expect(store.readAccount).toHaveBeenCalledTimes(2);
+  });
+});
+

@@ -164,6 +164,34 @@ export type AccountCreateOutcome =
   | AccountCreateIdempotencyConflict
   | AccountCreateForbidden;
 
+export const ACCOUNT_UPDATE_OUTCOMES = {
+  OK: 'ok',
+  FORBIDDEN: 'forbidden',
+  NOT_FOUND: 'not_found',
+  VERSION_CONFLICT: 'version_conflict',
+} as const;
+export type AccountUpdateOutcomeKind =
+  (typeof ACCOUNT_UPDATE_OUTCOMES)[keyof typeof ACCOUNT_UPDATE_OUTCOMES];
+
+export interface AccountUpdateOk {
+  readonly kind: typeof ACCOUNT_UPDATE_OUTCOMES.OK;
+  readonly account: Account;
+}
+export interface AccountUpdateForbidden {
+  readonly kind: typeof ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN;
+}
+export interface AccountUpdateNotFound {
+  readonly kind: typeof ACCOUNT_UPDATE_OUTCOMES.NOT_FOUND;
+}
+export interface AccountUpdateVersionConflict {
+  readonly kind: typeof ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT;
+}
+export type AccountUpdateOutcome =
+  | AccountUpdateOk
+  | AccountUpdateForbidden
+  | AccountUpdateNotFound
+  | AccountUpdateVersionConflict;
+
 export interface AccountsPort {
   list(subject: string, query: AccountListQuery): Promise<AccountListOutcome>;
   read(
@@ -177,4 +205,12 @@ export interface AccountsPort {
     command: CreateAccountCommand,
     idempotencyKey: string,
   ): Promise<AccountCreateOutcome>;
+  update(
+    subject: string,
+    workspaceId: string,
+    accountId: string,
+    command: UpdateAccountCommand,
+    expectedVersions?: number | readonly number[],
+  ): Promise<AccountUpdateOutcome>;
 }
+
