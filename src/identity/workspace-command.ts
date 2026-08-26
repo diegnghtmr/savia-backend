@@ -2,9 +2,10 @@ import {
   add,
   currencyValue,
   nameValue,
+  sortViolations,
   stringValue,
   type FieldViolation,
-} from './bootstrap-command.js';
+} from '../platform/field-validation.js';
 import type { WorkspaceKind } from './workspace-kind.js';
 
 // prettier-ignore
@@ -55,12 +56,7 @@ export function createWorkspaceCreateCommand(
   }
 
   if (violations.length > 0) {
-    violations.sort(
-      (left, right) =>
-        left.field.localeCompare(right.field) ||
-        left.message.localeCompare(right.message),
-    );
-    throw new WorkspaceCommandValidationError(violations);
+    throw new WorkspaceCommandValidationError(sortViolations(violations));
   }
 
   return Object.freeze({
@@ -135,13 +131,7 @@ export function createWorkspaceUpdateCommand(
   }
 
   if (violations.length > 0) {
-    throw new WorkspaceCommandValidationError(
-      violations.sort(
-        (left, right) =>
-          left.field.localeCompare(right.field) ||
-          left.message.localeCompare(right.message),
-      ),
-    );
+    throw new WorkspaceCommandValidationError(sortViolations(violations));
   }
 
   return Object.freeze(command);

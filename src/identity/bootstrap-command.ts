@@ -1,3 +1,15 @@
+import {
+  add,
+  currencyValue,
+  enumValue,
+  nameValue,
+  sortViolations,
+  stringValue,
+} from '../platform/field-validation.js';
+import type { FieldViolation } from '../platform/problem-details.js';
+
+export type { FieldViolation };
+
 const DATE_FORMATS = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'] as const;
 const NUMBER_FORMATS = ['1,234.56', '1.234,56'] as const;
 // prettier-ignore
@@ -5,7 +17,6 @@ const ALL_FIELDS = ['email', 'displayName', 'locale', 'countryCode', 'timezone',
 const REPLAY_FIELDS = ['subject', ...ALL_FIELDS] as const;
 // prettier-ignore
 const EMAIL_PATTERN = /^[A-Z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?$/i;
-const ACTIVE_CURRENCIES = new Set(Intl.supportedValuesOf('currency'));
 // prettier-ignore
 const ISO_COUNTRIES = new Set('AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'.split(' '));
 
@@ -26,9 +37,7 @@ export interface BootstrapCommand {
   readonly workspaceName: string;
   readonly baseCurrency: string;
 }
-import type { FieldViolation } from '../platform/problem-details.js';
 
-export type { FieldViolation };
 export class BootstrapCommandValidationError extends Error {
   public constructor(public readonly violations: readonly FieldViolation[]) {
     super('Onboarding command validation failed.');
@@ -69,8 +78,9 @@ export function createBootstrapCommand(
     workspaceName: nameValue(body.workspaceName, 'workspaceName', violations),
     baseCurrency: currencyValue(body.baseCurrency, 'baseCurrency', violations),
   };
-  // prettier-ignore
-  if (violations.length) throw new BootstrapCommandValidationError(violations.sort((left, right) => left.field.localeCompare(right.field) || left.message.localeCompare(right.message)));
+  if (violations.length) {
+    throw new BootstrapCommandValidationError(sortViolations(violations));
+  }
   return Object.freeze(command);
 }
 export function isExactBootstrapReplay(
@@ -94,47 +104,14 @@ function readBody(
       add(violations, key, 'not-allowed', 'is not allowed');
   return body;
 }
-export function stringValue(
-  value: unknown,
-  field: string,
-  violations: FieldViolation[],
-): string {
-  if (typeof value !== 'string') {
-    add(violations, field, 'required', 'must be a non-empty string');
-    return '';
-  }
-  // PostgreSQL text columns cannot represent U+0000 and raise SQLSTATE 22021
-  // (invalid byte sequence for encoding "UTF8": 0x00), which a length check does not catch.
-  if (value.includes('\0')) {
-    add(
-      violations,
-      field,
-      'invalid-characters',
-      'must not contain null characters',
-    );
-    return '';
-  }
-  const trimmed = value.trim();
-  if (trimmed) return trimmed;
-  add(violations, field, 'required', 'must be a non-empty string');
-  return '';
-}
+
 function emailValue(value: unknown, violations: FieldViolation[]): string {
   const email = stringValue(value, 'email', violations).toLowerCase();
   // prettier-ignore
   if (email.length > 254 || email.indexOf('@') > 64 || !EMAIL_PATTERN.test(email)) add(violations, 'email', 'invalid-email', 'must be a valid email address');
   return email;
 }
-export function nameValue(
-  value: unknown,
-  field: string,
-  violations: FieldViolation[],
-): string {
-  const name = stringValue(value, field, violations);
-  if ([...name].length > 120)
-    add(violations, field, 'max-length', 'must be at most 120 characters');
-  return name;
-}
+
 export function localeValue(
   value: unknown,
   violations: FieldViolation[],
@@ -150,6 +127,7 @@ export function localeValue(
     return '';
   }
 }
+
 function countryValue(value: unknown, violations: FieldViolation[]): string {
   const country = stringValue(value, 'countryCode', violations).toUpperCase();
   if (!ISO_COUNTRIES.has(country))
@@ -161,6 +139,7 @@ function countryValue(value: unknown, violations: FieldViolation[]): string {
     );
   return country;
 }
+
 export function timezoneValue(
   value: unknown,
   violations: FieldViolation[],
@@ -175,32 +154,7 @@ export function timezoneValue(
     return '';
   }
 }
-export function currencyValue(
-  value: unknown,
-  field: string,
-  violations: FieldViolation[],
-): string {
-  const currency = stringValue(value, field, violations).toUpperCase();
-  if (!ACTIVE_CURRENCIES.has(currency))
-    add(
-      violations,
-      field,
-      'invalid-currency',
-      'must be an active ISO 4217 currency',
-    );
-  return currency;
-}
-function enumValue<T extends readonly string[]>(
-  value: unknown,
-  field: string,
-  values: T,
-  violations: FieldViolation[],
-): T[number] {
-  const candidate = stringValue(value, field, violations);
-  if (!values.includes(candidate as T[number]))
-    add(violations, field, 'unsupported', 'is unsupported');
-  return candidate as T[number];
-}
+
 function weekStart(value: unknown, violations: FieldViolation[]): number {
   if (
     !Number.isInteger(value) ||
@@ -215,16 +169,9 @@ function weekStart(value: unknown, violations: FieldViolation[]): number {
     );
   return value as number;
 }
+
 function booleanValue(value: unknown, violations: FieldViolation[]): boolean {
   if (value === undefined || typeof value === 'boolean') return value ?? false;
   add(violations, 'privacyModeEnabled', 'invalid-type', 'must be a boolean');
   return false;
-}
-export function add(
-  violations: FieldViolation[],
-  field: string,
-  code: string,
-  message: string,
-): void {
-  violations.push(Object.freeze({ field, code, message }));
 }
