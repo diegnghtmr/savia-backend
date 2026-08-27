@@ -1,4 +1,5 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
 import type { CreateTransactionCommand, Transaction } from './ledger.port.js';
 import {
   LEDGER_STORE_CREATE_RESULTS,
@@ -194,6 +195,9 @@ values
     ];
 
     await client.query(postingsSql, postingsValues);
+
+    // 5. Enforce deferred constraints (e.g. balanced-postings check) before commit
+    await enforceDeferredConstraints(client);
 
     return {
       kind: LEDGER_STORE_CREATE_RESULTS.CREATED,

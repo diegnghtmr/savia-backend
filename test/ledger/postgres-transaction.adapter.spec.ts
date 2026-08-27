@@ -136,12 +136,14 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
             },
           ],
         }) // Insert txn
-        .mockResolvedValueOnce({ rows: [] }), // Insert postings
+        .mockResolvedValueOnce({ rows: [] }) // Insert postings
+        .mockResolvedValueOnce({ rows: [] }) // 5. do $$ begin set constraints all immediate...
+        .mockResolvedValueOnce({ rows: [{ code: null }] }), // 6. select nullif(...)
     };
 
     await adapter.createTransaction(client, workspaceId, subject, command);
 
-    expect(client.query).toHaveBeenCalledTimes(4);
+    expect(client.query).toHaveBeenCalledTimes(6);
     const [lockSql, lockValues] = (client.query as ReturnType<typeof vi.fn>)
       .mock.calls[0] as [string, unknown[]];
     expect(lockSql).toContain(
@@ -225,7 +227,9 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
             },
           ],
         }) // 3. Insert txn
-        .mockResolvedValueOnce({ rows: [] }), // 4. Insert postings
+        .mockResolvedValueOnce({ rows: [] }) // 4. Insert postings
+        .mockResolvedValueOnce({ rows: [] }) // 5. Enforce deferred constraints DO $$
+        .mockResolvedValueOnce({ rows: [{ code: null }] }), // 6. select nullif(...)
     };
 
     const result = await adapter.createTransaction(
@@ -235,7 +239,15 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
       command,
     );
 
-    expect(client.query).toHaveBeenCalledTimes(4);
+    expect(client.query).toHaveBeenCalledTimes(6);
+
+    // 5. Pin deferred constraint enforcement SQL
+    const [constraintDoSql] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[4] as [string];
+    expect(constraintDoSql).toContain('set constraints all immediate');
+    const [constraintCheckSql] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[5] as [string];
+    expect(constraintCheckSql).toContain('current_setting');
 
     // 3. Pin transactions INSERT SQL and values
     const [txnSql, txnValues] = (client.query as ReturnType<typeof vi.fn>).mock
