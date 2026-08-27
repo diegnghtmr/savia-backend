@@ -162,6 +162,102 @@ describe('TransactionService.create', () => {
     expect(store.createTransaction).not.toHaveBeenCalled();
   });
 
+  it('pins authorization ahead of idempotency read: refuses 403 without replaying when matching idempotency record exists for viewer', async () => {
+    const callOrder: string[] = [];
+
+    const store: LedgerStore = {
+      readActiveRole: vi.fn().mockImplementation(async () => {
+        callOrder.push('readActiveRole');
+        return 'viewer';
+      }),
+      lockAndReadAccount: vi.fn(),
+      createTransaction: vi.fn(),
+    };
+
+    const command = sampleCommand();
+    const txn = sampleTransaction({ description: 'Secret financial data' });
+    const idempotency: IdempotencyStore = {
+      read: vi.fn().mockImplementation(async () => {
+        callOrder.push('idempotencyStore.read');
+        return {
+          requestFingerprint: computeRequestFingerprint(command),
+          responseStatus: 201,
+          responseEtag: '"1"',
+          responseBody: txn,
+        };
+      }),
+      write: vi.fn().mockResolvedValue(true),
+    };
+
+    const service = new TransactionService(
+      new FakeTransaction(),
+      store,
+      idempotency,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      command,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({ kind: TRANSACTION_CREATE_OUTCOMES.FORBIDDEN });
+    expect(outcome).not.toHaveProperty('body');
+    expect(outcome).not.toHaveProperty('transaction');
+    expect(store.readActiveRole).toHaveBeenCalledTimes(1);
+    expect(idempotency.read).not.toHaveBeenCalled();
+    expect(callOrder).toEqual(['readActiveRole']);
+  });
+
+  it('pins authorization ahead of idempotency read: refuses 403 without replaying when matching idempotency record exists for non-member', async () => {
+    const callOrder: string[] = [];
+
+    const store: LedgerStore = {
+      readActiveRole: vi.fn().mockImplementation(async () => {
+        callOrder.push('readActiveRole');
+        return undefined;
+      }),
+      lockAndReadAccount: vi.fn(),
+      createTransaction: vi.fn(),
+    };
+
+    const command = sampleCommand();
+    const txn = sampleTransaction({ description: 'Secret financial data' });
+    const idempotency: IdempotencyStore = {
+      read: vi.fn().mockImplementation(async () => {
+        callOrder.push('idempotencyStore.read');
+        return {
+          requestFingerprint: computeRequestFingerprint(command),
+          responseStatus: 201,
+          responseEtag: '"1"',
+          responseBody: txn,
+        };
+      }),
+      write: vi.fn().mockResolvedValue(true),
+    };
+
+    const service = new TransactionService(
+      new FakeTransaction(),
+      store,
+      idempotency,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      command,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({ kind: TRANSACTION_CREATE_OUTCOMES.FORBIDDEN });
+    expect(outcome).not.toHaveProperty('body');
+    expect(outcome).not.toHaveProperty('transaction');
+    expect(store.readActiveRole).toHaveBeenCalledTimes(1);
+    expect(idempotency.read).not.toHaveBeenCalled();
+    expect(callOrder).toEqual(['readActiveRole']);
+  });
+
   it('replays stored response when idempotency key is matched with identical fingerprint', async () => {
     const txn = sampleTransaction();
     const store = fakeStore({ role: 'editor' });
