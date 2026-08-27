@@ -90,6 +90,7 @@ export interface WorkspaceStore {
     role: WorkspaceRole,
     status: WorkspaceMemberStatus,
   ): Promise<void>;
+  hasAccounts(client: TransactionClient, workspaceId: string): Promise<boolean>;
   update(
     client: TransactionClient,
     workspaceId: string,
@@ -307,6 +308,18 @@ export class WorkspaceService implements WorkspacePort {
           : expectedVersion;
       if (versions !== undefined && !versions.includes(workspace.version)) {
         return { kind: WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT };
+      }
+
+      if (
+        command.baseCurrency !== undefined &&
+        command.baseCurrency !== workspace.baseCurrency
+      ) {
+        const hasAccounts = await this.store.hasAccounts(client, workspaceId);
+        if (hasAccounts) {
+          return {
+            kind: WORKSPACE_UPDATE_OUTCOMES.BASE_CURRENCY_CHANGE_UNSUPPORTED,
+          };
+        }
       }
 
       const updated = await this.store.update(

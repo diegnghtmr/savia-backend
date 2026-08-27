@@ -77,6 +77,10 @@ export class PostgresAccountsAdapter implements AccountsStore {
     client: TransactionClient,
     workspaceId: string,
   ): Promise<string | undefined> {
+    await client.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [workspaceId.toLowerCase()],
+    );
     const result = await client.query<{ base_currency: string }>(
       'select base_currency from public.workspaces where id = $1::uuid',
       [workspaceId],

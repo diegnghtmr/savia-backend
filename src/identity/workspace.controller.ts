@@ -672,6 +672,18 @@ export class WorkspaceController {
       });
       return;
     }
+
+    if (
+      outcome.kind ===
+      WORKSPACE_UPDATE_OUTCOMES.BASE_CURRENCY_CHANGE_UNSUPPORTED
+    ) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BASE_CURRENCY_CHANGE_UNSUPPORTED,
+        title: 'Base currency change unsupported',
+        status: 422,
+      });
+      return;
+    }
   }
 
   @Delete(':workspaceId')

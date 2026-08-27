@@ -130,6 +130,21 @@ values ($1, $2, $3, $4)`,
     }));
   }
 
+  public async hasAccounts(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<boolean> {
+    await client.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [workspaceId.toLowerCase()],
+    );
+    const result = await client.query<{ exists: boolean }>(
+      'select exists(select 1 from public.accounts where workspace_id = $1::uuid) as exists',
+      [workspaceId],
+    );
+    return Boolean(result.rows[0]?.exists);
+  }
+
   public async update(
     client: TransactionClient,
     workspaceId: string,

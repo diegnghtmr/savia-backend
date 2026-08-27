@@ -20,6 +20,7 @@ export const PROBLEM_TYPES = {
   PRECONDITION_FAILED: `${BASE_URI}/precondition-failed`,
   FORBIDDEN: `${BASE_URI}/forbidden`,
   ACCOUNT_CURRENCY_UNSUPPORTED: `${BASE_URI}/account-currency-unsupported`,
+  BASE_CURRENCY_CHANGE_UNSUPPORTED: `${BASE_URI}/base-currency-change-unsupported`,
 } as const;
 export interface Problem {
   readonly type: string;
