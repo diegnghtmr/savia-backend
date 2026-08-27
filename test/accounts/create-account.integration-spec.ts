@@ -35,6 +35,7 @@ describe('AccountsService createAccount database boundary', () => {
 
   const workspace1Id = id(851);
   const workspace2Id = id(852);
+  const workspace3Id = id(853);
   const absentWorkspaceId = id(899);
 
   beforeAll(async () => {
@@ -96,6 +97,12 @@ describe('AccountsService createAccount database boundary', () => {
     }
 
     await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id)
+       values ($1, 'Accounts Workspace EUR', 'shared', 'EUR', null)`,
+      [workspace3Id],
+    );
+
+    await admin.query(
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
        values ($1, $2, 'owner', 'active'),
               ($1, $3, 'administrator', 'active'),
@@ -107,7 +114,8 @@ describe('AccountsService createAccount database boundary', () => {
               -- subjects, and subject_id isolation alone would carry it -- the
               -- workspace scoping it claims to prove could be deleted and the
               -- test would still pass.
-              ($6, $2, 'owner', 'active')`,
+              ($6, $2, 'owner', 'active'),
+              ($8, $2, 'owner', 'active')`,
       [
         workspace1Id,
         subjectOwner,
@@ -116,6 +124,7 @@ describe('AccountsService createAccount database boundary', () => {
         subjectViewer,
         workspace2Id,
         subjectWorkspace2Owner,
+        workspace3Id,
       ],
     );
   });
@@ -328,7 +337,7 @@ describe('AccountsService createAccount database boundary', () => {
     const commandB: CreateAccountCommand = {
       name: 'Conflict Account B',
       type: 'savings',
-      currency: 'EUR',
+      currency: 'USD',
       institution: null,
       maskedNumber: null,
       description: null,
@@ -638,5 +647,63 @@ describe('AccountsService createAccount database boundary', () => {
       [workspace1Id, accountId],
     );
     expect(postingRows.rows[0].count).toBe(2);
+  });
+
+  it('refuses account creation when currency differs from workspace base_currency and creates no account row', async () => {
+    const idempotencyKey = id(114);
+    const command: CreateAccountCommand = {
+      name: 'Mismatch Currency Account',
+      type: 'checking',
+      currency: 'EUR',
+      institution: null,
+      maskedNumber: null,
+      description: null,
+      includeInNetWorth: true,
+    };
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      idempotencyKey,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CREATE_OUTCOMES.CURRENCY_UNSUPPORTED);
+
+    const rows = await admin.query(
+      'select count(*)::int as count from public.accounts where workspace_id = $1::uuid and name = $2',
+      [workspace1Id, 'Mismatch Currency Account'],
+    );
+    expect(rows.rows[0].count).toBe(0);
+  });
+
+  it('allows account creation in a non-USD workspace when currency matches its base_currency', async () => {
+    const idempotencyKey = id(115);
+    const command: CreateAccountCommand = {
+      name: 'EUR Checking Account',
+      type: 'checking',
+      currency: 'EUR',
+      institution: null,
+      maskedNumber: null,
+      description: null,
+      includeInNetWorth: true,
+    };
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace3Id,
+      command,
+      idempotencyKey,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CREATE_OUTCOMES.CREATED);
+    if (outcome.kind !== ACCOUNT_CREATE_OUTCOMES.CREATED) return;
+    expect(outcome.account.currency).toBe('EUR');
+
+    const rows = await admin.query(
+      'select count(*)::int as count from public.accounts where workspace_id = $1::uuid and id = $2::uuid',
+      [workspace3Id, outcome.account.id],
+    );
+    expect(rows.rows[0].count).toBe(1);
   });
 });

@@ -38,6 +38,7 @@ export const WORKSPACE_UPDATE_OUTCOMES = {
   NOT_FOUND: 'not-found',
   FORBIDDEN: 'forbidden',
   VERSION_CONFLICT: 'version-conflict',
+  BASE_CURRENCY_CHANGE_UNSUPPORTED: 'base-currency-change-unsupported',
 } as const;
 export type WorkspaceUpdateOutcomeKind =
   (typeof WORKSPACE_UPDATE_OUTCOMES)[keyof typeof WORKSPACE_UPDATE_OUTCOMES];
@@ -117,11 +118,16 @@ export interface WorkspaceUpdateVersionConflict {
   readonly kind: typeof WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT;
 }
 
+export interface WorkspaceUpdateBaseCurrencyChangeUnsupported {
+  readonly kind: typeof WORKSPACE_UPDATE_OUTCOMES.BASE_CURRENCY_CHANGE_UNSUPPORTED;
+}
+
 export type WorkspaceUpdateOutcome =
   | WorkspaceUpdateOk
   | WorkspaceUpdateNotFound
   | WorkspaceUpdateForbidden
-  | WorkspaceUpdateVersionConflict;
+  | WorkspaceUpdateVersionConflict
+  | WorkspaceUpdateBaseCurrencyChangeUnsupported;
 
 export type { PageInfo };
 export type WorkspaceCursor = Cursor;

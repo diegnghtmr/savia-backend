@@ -564,6 +564,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
         createWorkspace: (...args) => adapter.createWorkspace(...args),
         createMembership: (...args) => adapter.createMembership(...args),
+        hasAccounts: (...args) => adapter.hasAccounts(...args),
         update: (...args) => adapter.update(...args),
         deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
       };
@@ -649,6 +650,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
         createWorkspace: (...args) => adapter.createWorkspace(...args),
         createMembership: (...args) => adapter.createMembership(...args),
+        hasAccounts: (...args) => adapter.hasAccounts(...args),
         update: (...args) => adapter.update(...args),
         deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
       };
@@ -722,6 +724,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
         createWorkspace: (...args) => adapter.createWorkspace(...args),
         createMembership: (...args) => adapter.createMembership(...args),
+        hasAccounts: (...args) => adapter.hasAccounts(...args),
         update: async () => undefined, // simulates rowCount === 0 from concurrent bump
         deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
       };
@@ -757,6 +760,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
         createWorkspace: (...args) => adapter.createWorkspace(...args),
         createMembership: (...args) => adapter.createMembership(...args),
+        hasAccounts: (...args) => adapter.hasAccounts(...args),
         update: (...args) => adapter.update(...args),
         deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
       };
@@ -792,6 +796,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         listWorkspaces: (...args) => adapter.listWorkspaces(...args),
         createWorkspace: (...args) => adapter.createWorkspace(...args),
         createMembership: (...args) => adapter.createMembership(...args),
+        hasAccounts: (...args) => adapter.hasAccounts(...args),
         deleteWorkspace: (...args) => adapter.deleteWorkspace(...args),
         update: async (client, id, cmd, expected) => {
           await admin.query(
@@ -903,6 +908,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         readMembership: adapter.readMembership.bind(adapter),
         readWorkspace: adapter.readWorkspace.bind(adapter),
         listWorkspaces: adapter.listWorkspaces.bind(adapter),
+        hasAccounts: adapter.hasAccounts.bind(adapter),
         update: adapter.update.bind(adapter),
         deleteWorkspace: adapter.deleteWorkspace.bind(adapter),
         createWorkspace: async (client, sub, cmd) => {
@@ -1102,6 +1108,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         listWorkspaces: adapter.listWorkspaces.bind(adapter),
         createWorkspace: adapter.createWorkspace.bind(adapter),
         createMembership: adapter.createMembership.bind(adapter),
+        hasAccounts: adapter.hasAccounts.bind(adapter),
         update: adapter.update.bind(adapter),
         deleteWorkspace: async (client, id) => {
           deleteCalled = true;
@@ -1157,6 +1164,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         listWorkspaces: adapter.listWorkspaces.bind(adapter),
         createWorkspace: adapter.createWorkspace.bind(adapter),
         createMembership: adapter.createMembership.bind(adapter),
+        hasAccounts: adapter.hasAccounts.bind(adapter),
         update: adapter.update.bind(adapter),
         deleteWorkspace: adapter.deleteWorkspace.bind(adapter),
       };
@@ -1187,6 +1195,7 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         listWorkspaces: adapter.listWorkspaces.bind(adapter),
         createWorkspace: adapter.createWorkspace.bind(adapter),
         createMembership: adapter.createMembership.bind(adapter),
+        hasAccounts: adapter.hasAccounts.bind(adapter),
         update: adapter.update.bind(adapter),
         deleteWorkspace: async (client, id) => {
           await admin.query('delete from public.workspaces where id = $1', [
@@ -1218,12 +1227,14 @@ describe('WorkspaceService and PostgresWorkspaceAdapter database boundary', () =
         listWorkspaces: adapter.listWorkspaces.bind(adapter),
         createWorkspace: adapter.createWorkspace.bind(adapter),
         createMembership: adapter.createMembership.bind(adapter),
+        hasAccounts: adapter.hasAccounts.bind(adapter),
         update: adapter.update.bind(adapter),
         deleteWorkspace: async (client, id) => {
           deleteCount += 1;
           return adapter.deleteWorkspace(client, id);
         },
       };
+
       const countingService = new WorkspaceService(
         transaction,
         countingStore,

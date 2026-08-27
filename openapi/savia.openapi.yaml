@@ -844,7 +844,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
-          description: Unprocessable entity
+          description: The request body failed validation or changing the workspace base currency is unsupported while accounts exist.
           content:
             application/problem+json:
               schema:
@@ -1722,7 +1722,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
-          description: Unprocessable entity.
+          description: The request body failed validation or the account currency is unsupported or differs from the workspace base currency.
           content:
             application/problem+json:
               schema:

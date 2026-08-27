@@ -1459,6 +1459,33 @@ describe('PATCH /v1/workspaces/:workspaceId', () => {
       instance: `/v1/workspaces/${WORKSPACE_ID}`,
     });
   });
+
+  it('answers 422 problem+json when port returns base-currency-change-unsupported', async () => {
+    const update = vi.fn<WorkspacePort['update']>().mockResolvedValue({
+      kind: 'base-currency-change-unsupported',
+    });
+    const application = await createApplication(undefined, undefined, update);
+
+    const response = await patchWorkspace(
+      application,
+      WORKSPACE_ID,
+      { baseCurrency: 'EUR' },
+      { token: TOKEN },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(JSON.parse(response.payload)).toEqual({
+      type: 'https://savia.app/problems/base-currency-change-unsupported',
+      title: 'Base currency change unsupported',
+      status: 422,
+      code: 'base-currency-change-unsupported',
+      traceId: expect.stringMatching(/.+/),
+      instance: `/v1/workspaces/${WORKSPACE_ID}`,
+    });
+  });
 });
 
 describe('DELETE /v1/workspaces/:workspaceId', () => {

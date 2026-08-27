@@ -157,3 +157,51 @@ describe('PostgresAccountsAdapter.updateAccount', () => {
     expect(result).toBeUndefined();
   });
 });
+
+describe('PostgresAccountsAdapter.readWorkspaceBaseCurrency', () => {
+  const adapter = new PostgresAccountsAdapter();
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+
+  it('takes advisory lock and queries public.workspaces scoped by workspace_id and returns base_currency', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({
+          rows: [{ base_currency: 'USD' }],
+        }),
+    };
+
+    const result = await adapter.readWorkspaceBaseCurrency(client, workspaceId);
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    const [lockSql, lockValues] = (client.query as ReturnType<typeof vi.fn>)
+      .mock.calls[0] as [string, unknown[]];
+    expect(lockSql).toContain(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+    );
+    expect(lockValues).toEqual([workspaceId.toLowerCase()]);
+
+    const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[1] as [string, unknown[]];
+    expect(sql).toContain(
+      'select base_currency from public.workspaces where id = $1::uuid',
+    );
+    expect(values).toEqual([workspaceId]);
+    expect(result).toBe('USD');
+  });
+
+  it('returns undefined when no workspace row exists', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] }),
+    };
+
+    const result = await adapter.readWorkspaceBaseCurrency(client, workspaceId);
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(result).toBeUndefined();
+  });
+});

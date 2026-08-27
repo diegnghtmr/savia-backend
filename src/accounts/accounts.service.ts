@@ -46,6 +46,10 @@ export interface AccountsStore {
     client: TransactionClient,
     workspaceId: string,
   ): Promise<string | undefined>;
+  readWorkspaceBaseCurrency(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<string | undefined>;
   listAccounts(
     client: TransactionClient,
     workspaceId: string,
@@ -189,6 +193,17 @@ export class AccountsService implements AccountsPort {
           etag: existing.responseEtag,
           body: existing.responseBody,
         };
+      }
+
+      const baseCurrency = await this.store.readWorkspaceBaseCurrency(
+        client,
+        workspaceId,
+      );
+      if (baseCurrency === undefined) {
+        return { kind: ACCOUNT_CREATE_OUTCOMES.FORBIDDEN };
+      }
+      if (command.currency !== baseCurrency) {
+        return { kind: ACCOUNT_CREATE_OUTCOMES.CURRENCY_UNSUPPORTED };
       }
 
       // Create account

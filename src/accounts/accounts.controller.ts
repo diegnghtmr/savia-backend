@@ -163,6 +163,15 @@ export class AccountsController {
       return;
     }
 
+    if (outcome.kind === ACCOUNT_CREATE_OUTCOMES.CURRENCY_UNSUPPORTED) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.ACCOUNT_CURRENCY_UNSUPPORTED,
+        title: 'Account currency unsupported',
+        status: 422,
+      });
+      return;
+    }
+
     if (outcome.kind === ACCOUNT_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT) {
       sendProblem(reply, {
         type: PROBLEM_TYPES.CONFLICT,

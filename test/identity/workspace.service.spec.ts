@@ -54,6 +54,13 @@ describe('WorkspaceService', () => {
     version: fakeCreatedRecord.version,
   };
 
+  function fakeIdempotencyStore(): IdempotencyStore {
+    return {
+      read: vi.fn(async () => undefined),
+      write: vi.fn(async () => true),
+    };
+  }
+
   describe('create - Finding B1: honour idempotency store write outcome', () => {
     it('when idempotency store write returns false, re-reads and returns REPLAYED outcome instead of CREATED', async () => {
       const liveRecord: IdempotencyRecord = {
@@ -81,6 +88,7 @@ describe('WorkspaceService', () => {
         listWorkspaces: vi.fn(),
         createWorkspace: vi.fn(async () => ({ id: fakeCreatedRecord.id })),
         createMembership: vi.fn(async () => undefined),
+        hasAccounts: vi.fn(async () => false),
         update: vi.fn(),
         deleteWorkspace: vi.fn(),
       };
@@ -109,21 +117,21 @@ describe('WorkspaceService', () => {
 
     it('when idempotency store write returns false and live record has different fingerprint, returns IDEMPOTENCY_CONFLICT', async () => {
       const conflictingRecord: IdempotencyRecord = {
-        requestFingerprint: 'different-fingerprint-from-other-payload',
+        requestFingerprint: 'different-fingerprint-999',
         responseStatus: 201,
         responseEtag: '"1"',
         responseBody: fakeWorkspace,
       };
 
-      let readCallCount = 0;
       const idempotencyStoreDouble: IdempotencyStore = {
-        read: vi.fn(async () => {
-          readCallCount += 1;
-          if (readCallCount === 1) return undefined;
-          return conflictingRecord;
-        }),
+        read: vi.fn(async () => undefined),
         write: vi.fn(async () => false),
       };
+      // On losing the race, the subsequent re-read returns the conflicting record
+      idempotencyStoreDouble.read = vi
+        .fn()
+        .mockResolvedValueOnce(undefined) // First read before operation
+        .mockResolvedValueOnce(conflictingRecord); // Re-read after losing write
 
       const storeDouble: WorkspaceStore = {
         readMembership: vi.fn(),
@@ -131,6 +139,7 @@ describe('WorkspaceService', () => {
         listWorkspaces: vi.fn(),
         createWorkspace: vi.fn(async () => ({ id: fakeCreatedRecord.id })),
         createMembership: vi.fn(async () => undefined),
+        hasAccounts: vi.fn(async () => false),
         update: vi.fn(),
         deleteWorkspace: vi.fn(),
       };
@@ -164,6 +173,7 @@ describe('WorkspaceService', () => {
         listWorkspaces: vi.fn(),
         createWorkspace: vi.fn(async () => ({ id: fakeCreatedRecord.id })),
         createMembership: vi.fn(async () => undefined),
+        hasAccounts: vi.fn(async () => false),
         update: vi.fn(),
         deleteWorkspace: vi.fn(),
       };
@@ -184,6 +194,107 @@ describe('WorkspaceService', () => {
       if (outcome.kind === WORKSPACE_CREATE_OUTCOME_KINDS.CREATED) {
         expect(outcome.workspace).toEqual(fakeWorkspace);
       }
+    });
+  });
+
+  describe('update - base currency change invariant', () => {
+    const workspaceId = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+    const existingWorkspace: WorkspaceRecord = {
+      id: workspaceId,
+      name: 'Acme Corp',
+      kind: 'shared',
+      baseCurrency: 'USD',
+      createdAt: '2026-07-15T00:00:00.000Z',
+      version: 1,
+    };
+
+    function setupStore(hasAccountsValue = false) {
+      return {
+        readMembership: vi.fn(async () => ({
+          role: 'owner' as const,
+          status: 'active' as const,
+        })),
+        readWorkspace: vi.fn(async () => existingWorkspace),
+        listWorkspaces: vi.fn(),
+        createWorkspace: vi.fn(),
+        createMembership: vi.fn(),
+        hasAccounts: vi.fn(async () => hasAccountsValue),
+        update: vi.fn(async (_client, _wsId, cmd) => ({
+          ...existingWorkspace,
+          name: cmd.name ?? existingWorkspace.name,
+          baseCurrency: cmd.baseCurrency ?? existingWorkspace.baseCurrency,
+          version: existingWorkspace.version + 1,
+        })),
+        deleteWorkspace: vi.fn(),
+      } satisfies WorkspaceStore;
+    }
+
+    it('refuses base-currency change when accounts exist in workspace', async () => {
+      const store = setupStore(true);
+      const service = new WorkspaceService(
+        fakeTransaction,
+        store,
+        fakeIdempotencyStore(),
+      );
+
+      const outcome = await service.update(dummySubject, workspaceId, {
+        baseCurrency: 'EUR',
+      });
+
+      expect(outcome.kind).toBe('base-currency-change-unsupported');
+      expect(store.hasAccounts).toHaveBeenCalledWith(dummyClient, workspaceId);
+      expect(store.update).not.toHaveBeenCalled();
+    });
+
+    it('accepts base-currency update when value is equal to current base currency even when accounts exist', async () => {
+      const store = setupStore(true);
+      const service = new WorkspaceService(
+        fakeTransaction,
+        store,
+        fakeIdempotencyStore(),
+      );
+
+      const outcome = await service.update(dummySubject, workspaceId, {
+        baseCurrency: 'USD',
+      });
+
+      expect(outcome.kind).toBe('ok');
+      expect(store.hasAccounts).not.toHaveBeenCalled();
+      expect(store.update).toHaveBeenCalled();
+    });
+
+    it('accepts update that only touches name even when accounts exist', async () => {
+      const store = setupStore(true);
+      const service = new WorkspaceService(
+        fakeTransaction,
+        store,
+        fakeIdempotencyStore(),
+      );
+
+      const outcome = await service.update(dummySubject, workspaceId, {
+        name: 'New Name',
+      });
+
+      expect(outcome.kind).toBe('ok');
+      expect(store.hasAccounts).not.toHaveBeenCalled();
+      expect(store.update).toHaveBeenCalled();
+    });
+
+    it('accepts base-currency change when workspace has NO accounts', async () => {
+      const store = setupStore(false);
+      const service = new WorkspaceService(
+        fakeTransaction,
+        store,
+        fakeIdempotencyStore(),
+      );
+
+      const outcome = await service.update(dummySubject, workspaceId, {
+        baseCurrency: 'EUR',
+      });
+
+      expect(outcome.kind).toBe('ok');
+      expect(store.hasAccounts).toHaveBeenCalledWith(dummyClient, workspaceId);
+      expect(store.update).toHaveBeenCalled();
     });
   });
 });

@@ -138,6 +138,7 @@ export const ACCOUNT_CREATE_OUTCOMES = {
   REPLAYED: 'replayed',
   IDEMPOTENCY_CONFLICT: 'idempotency_conflict',
   FORBIDDEN: 'forbidden',
+  CURRENCY_UNSUPPORTED: 'currency_unsupported',
 } as const;
 export type AccountCreateOutcomeKind =
   (typeof ACCOUNT_CREATE_OUTCOMES)[keyof typeof ACCOUNT_CREATE_OUTCOMES];
@@ -158,11 +159,15 @@ export interface AccountCreateIdempotencyConflict {
 export interface AccountCreateForbidden {
   readonly kind: typeof ACCOUNT_CREATE_OUTCOMES.FORBIDDEN;
 }
+export interface AccountCreateCurrencyUnsupported {
+  readonly kind: typeof ACCOUNT_CREATE_OUTCOMES.CURRENCY_UNSUPPORTED;
+}
 export type AccountCreateOutcome =
   | AccountCreateCreated
   | AccountCreateReplayed
   | AccountCreateIdempotencyConflict
-  | AccountCreateForbidden;
+  | AccountCreateForbidden
+  | AccountCreateCurrencyUnsupported;
 
 export const ACCOUNT_UPDATE_OUTCOMES = {
   OK: 'ok',
