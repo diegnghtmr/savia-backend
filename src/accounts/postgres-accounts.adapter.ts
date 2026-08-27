@@ -1,6 +1,7 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   Account,
+  AccountBalance,
   AccountCursor,
   AccountStatus,
   CreateAccountCommand,
@@ -441,6 +442,85 @@ returning
       createdAt: toIso(row.createdAt),
       updatedAt: toIso(row.updatedAt),
       version: row.version,
+    };
+  }
+
+  public async readAccountBalance(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    asOf?: string,
+  ): Promise<AccountBalance | undefined> {
+    // 1. Account existence and currency lookup scoped strictly by workspace_id
+    const accountSql = `
+select a.currency
+  from public.accounts a
+ where a.workspace_id = $1::uuid
+   and a.id = $2::uuid`;
+    const accountResult = await client.query<{ currency: string }>(accountSql, [
+      workspaceId,
+      accountId,
+    ]);
+    const accountRow = accountResult.rows[0];
+    if (!accountRow) {
+      return undefined;
+    }
+
+    // 2. Single-table bucket aggregation query on ledger_postings using covering index
+    const balanceSql = `
+select
+  coalesce(sum(amount_minor) filter (where status in ('confirmed', 'reconciled')), 0)::text as "nativeBalance",
+  coalesce(sum(amount_minor) filter (where status = 'pending'), 0)::text as "pendingBalance",
+  coalesce(sum(amount_minor) filter (where status = 'reconciled'), 0)::text as "reconciledBalance"
+  from public.ledger_postings
+ where workspace_id = $1::uuid
+   and account_id = $2::uuid
+   and occurred_at <= coalesce($3::timestamptz, now())`;
+
+    const balanceResult = await client.query<{
+      nativeBalance: string;
+      pendingBalance: string;
+      reconciledBalance: string;
+    }>(balanceSql, [workspaceId, accountId, asOf ?? null]);
+
+    const balanceRow = balanceResult.rows[0] ?? {
+      nativeBalance: '0',
+      pendingBalance: '0',
+      reconciledBalance: '0',
+    };
+
+    const currency = accountRow.currency;
+    const asOfIso = asOf ?? toIso(new Date());
+    const rateDate = asOfIso.slice(0, 10);
+
+    return {
+      accountId,
+      nativeBalance: {
+        amountMinor: balanceRow.nativeBalance,
+        currency,
+      },
+      pendingBalance: {
+        amountMinor: balanceRow.pendingBalance,
+        currency,
+      },
+      reconciledBalance: {
+        amountMinor: balanceRow.reconciledBalance,
+        currency,
+      },
+      baseCurrencyEquivalent: {
+        original: {
+          amountMinor: balanceRow.nativeBalance,
+          currency,
+        },
+        converted: {
+          amountMinor: balanceRow.nativeBalance,
+          currency,
+        },
+        rate: '1',
+        rateDate,
+        rateSource: 'identity',
+      },
+      asOf: asOfIso,
     };
   }
 }

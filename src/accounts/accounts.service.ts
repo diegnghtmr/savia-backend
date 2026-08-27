@@ -3,11 +3,14 @@ import { encodeCursor } from '../platform/cursor.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import {
+  ACCOUNT_BALANCE_OUTCOMES,
   ACCOUNT_CREATE_OUTCOMES,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
   ACCOUNT_UPDATE_OUTCOMES,
   type Account,
+  type AccountBalance,
+  type AccountBalanceOutcome,
   type AccountCreateOutcome,
   type AccountCursor,
   type AccountListOutcome,
@@ -62,6 +65,12 @@ export interface AccountsStore {
     workspaceId: string,
     accountId: string,
   ): Promise<Account | undefined>;
+  readAccountBalance(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    asOf?: string,
+  ): Promise<AccountBalance | undefined>;
   createAccount(
     client: TransactionClient,
     workspaceId: string,
@@ -152,6 +161,34 @@ export class AccountsService implements AccountsPort {
       return {
         kind: ACCOUNT_READ_OUTCOMES.OK,
         account,
+      };
+    });
+  }
+
+  public readBalance(
+    subject: string,
+    workspaceId: string,
+    accountId: string,
+    asOf?: string,
+  ): Promise<AccountBalanceOutcome> {
+    return this.transaction.runRead(subject, async (client) => {
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (role === undefined) {
+        // Workspace-level refusal happens before any account balance lookup.
+        return { kind: ACCOUNT_BALANCE_OUTCOMES.FORBIDDEN };
+      }
+      const balance = await this.store.readAccountBalance(
+        client,
+        workspaceId,
+        accountId,
+        asOf,
+      );
+      if (balance === undefined) {
+        return { kind: ACCOUNT_BALANCE_OUTCOMES.NOT_FOUND };
+      }
+      return {
+        kind: ACCOUNT_BALANCE_OUTCOMES.OK,
+        balance,
       };
     });
   }

@@ -13,6 +13,7 @@ import {
 import type { FastifyReply } from 'fastify';
 
 import {
+  ACCOUNT_BALANCE_OUTCOMES,
   ACCOUNT_CREATE_OUTCOMES,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
@@ -20,8 +21,11 @@ import {
   ACCOUNTS_PORT,
   type AccountsPort,
 } from './accounts.port.js';
-import { createAccountListQuery } from './account-query.js';
-import { AccountQueryValidationError } from './account-query.js';
+import {
+  createAccountBalanceQuery,
+  createAccountListQuery,
+  AccountQueryValidationError,
+} from './account-query.js';
 import {
   createAccountCommand,
   createUpdateAccountCommand,
@@ -194,6 +198,80 @@ export class AccountsController {
       .header('etag', `"${outcome.account.version}"`)
       .status(201)
       .send(outcome.account);
+  }
+
+  @Get(':accountId/balance')
+  public async getAccountBalance(
+    @Param('accountId') accountId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Query('asOf') asOfParam?: string,
+  ): Promise<void> {
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(accountId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid account identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    let query;
+    try {
+      query = createAccountBalanceQuery({
+        workspaceId: header.workspaceId,
+        accountId,
+        ...(asOfParam === undefined ? {} : { asOfParam }),
+      });
+    } catch (error) {
+      if (error instanceof AccountQueryValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid get account balance query',
+          status: 400,
+          errors: error.violations,
+        });
+        return;
+      }
+      throw error;
+    }
+
+    const outcome = await this.accounts.readBalance(
+      request.identity.subject,
+      header.workspaceId,
+      accountId,
+      query.asOf,
+    );
+
+    if (outcome.kind === ACCOUNT_BALANCE_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_BALANCE_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Account not found',
+        status: 404,
+      });
+      return;
+    }
+
+    void reply.status(200).send(outcome.balance);
   }
 
   @Get(':accountId')

@@ -57,15 +57,21 @@ const parseOpenApi = () => {
 
 const findCopiedPlanningSource = (directory) => {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (['.git', 'dist', 'node_modules'].includes(entry.name)) continue;
+    if (['.git', 'dist', 'node_modules', '.codegraph'].includes(entry.name))
+      continue;
     const path = join(directory, entry.name);
     if (entry.isDirectory() && findCopiedPlanningSource(path)) return path;
-    if (
-      entry.isFile() &&
-      createHash('sha256').update(readFileSync(path)).digest('hex') ===
-        planningSourceSha256
-    ) {
-      return path;
+    if (entry.isFile()) {
+      try {
+        if (
+          createHash('sha256').update(readFileSync(path)).digest('hex') ===
+          planningSourceSha256
+        ) {
+          return path;
+        }
+      } catch {
+        continue;
+      }
     }
   }
   return undefined;
