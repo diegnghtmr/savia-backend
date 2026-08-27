@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
@@ -876,6 +878,24 @@ describe('POST /v1/accounts', () => {
     expect(PROBLEM_TYPES.UNPROCESSABLE).toBe(
       'https://savia.app/problems/unprocessable',
     );
+  });
+
+  it('ensures createAccount 422 description in OpenAPI mirror covers both validation failures and currency mismatch', () => {
+    const contract = readFileSync(
+      resolve(process.cwd(), 'openapi/savia.openapi.yaml'),
+      'utf8',
+    );
+    const createAccountSection = contract.slice(
+      contract.indexOf('operationId: createAccount'),
+      contract.indexOf('operationId: getAccount'),
+    );
+    const match422 = createAccountSection.match(
+      /'422':\s*\n\s*description:\s*([^\n]+)/,
+    );
+    expect(match422).not.toBeNull();
+    const description = match422?.[1]?.toLowerCase() ?? '';
+    expect(description).toMatch(/validation/i);
+    expect(description).toMatch(/currency/i);
   });
 
   it('answers 422 problem+json when request body fails validation', async () => {

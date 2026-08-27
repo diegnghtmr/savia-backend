@@ -1722,7 +1722,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
-          description: The account currency is unsupported or differs from the workspace base currency.
+          description: The request body failed validation or the account currency is unsupported or differs from the workspace base currency.
           content:
             application/problem+json:
               schema:
