@@ -2377,3 +2377,4 @@ paths:
         requiresApproval: true
         requiredScopes:
           - transactions:write
+      x-idempotency-required: true
