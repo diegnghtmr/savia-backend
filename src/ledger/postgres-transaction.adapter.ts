@@ -230,6 +230,55 @@ values
     workspaceId: string,
     transactionId: string,
   ): Promise<Transaction | undefined> {
-    throw new Error('Not implemented');
+    const sql = `
+select t.id::text,
+       t.account_id::text as "accountId",
+       t.type,
+       t.status,
+       t.amount_minor as "amountMinor",
+       t.currency,
+       t.occurred_at as "occurredAt",
+       t.description,
+       t.notes,
+       t.category_id::text as "categoryId",
+       t.payee_id::text as "payeeId",
+       t.receipt_id::text as "receiptId",
+       t.reconciliation_id::text as "reconciliationId",
+       t.tag_ids as "tagIds",
+       t.created_at as "createdAt",
+       t.updated_at as "updatedAt",
+       t.version
+  from public.transactions t
+ where t.workspace_id = $1::uuid
+   and t.id = $2::uuid`;
+    const result = await client.query<TransactionRow>(sql, [
+      workspaceId,
+      transactionId,
+    ]);
+    const row = result.rows[0];
+    if (!row) {
+      return undefined;
+    }
+    return {
+      id: row.id,
+      accountId: row.accountId,
+      type: row.type,
+      status: row.status,
+      amount: {
+        amountMinor: String(row.amountMinor),
+        currency: row.currency,
+      },
+      occurredAt: toIso(row.occurredAt),
+      categoryId: row.categoryId,
+      payeeId: row.payeeId,
+      description: row.description,
+      notes: row.notes,
+      tagIds: Array.isArray(row.tagIds) ? row.tagIds : [],
+      receiptId: row.receiptId,
+      reconciliationId: row.reconciliationId,
+      createdAt: toIso(row.createdAt),
+      updatedAt: toIso(row.updatedAt),
+      version: row.version,
+    };
   }
 }

@@ -162,6 +162,23 @@ export class TransactionService implements LedgerPort {
     workspaceId: string,
     transactionId: string,
   ): Promise<TransactionReadOutcome> {
-    throw new Error('Not implemented');
+    return this.transaction.runRead(subject, async (client) => {
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (role === undefined) {
+        return { kind: TRANSACTION_READ_OUTCOMES.FORBIDDEN };
+      }
+      const transaction = await this.store.readTransaction(
+        client,
+        workspaceId,
+        transactionId,
+      );
+      if (transaction === undefined) {
+        return { kind: TRANSACTION_READ_OUTCOMES.NOT_FOUND };
+      }
+      return {
+        kind: TRANSACTION_READ_OUTCOMES.OK,
+        transaction,
+      };
+    });
   }
 }

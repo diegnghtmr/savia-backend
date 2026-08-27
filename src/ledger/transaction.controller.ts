@@ -155,6 +155,52 @@ export class TransactionController {
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,
   ): Promise<void> {
-    throw new Error('Not implemented');
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(transactionId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid transaction identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    const outcome = await this.ledger.read(
+      request.identity.subject,
+      header.workspaceId,
+      transactionId,
+    );
+
+    if (outcome.kind === TRANSACTION_READ_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_READ_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Transaction not found',
+        status: 404,
+      });
+      return;
+    }
+
+    void reply
+      .header('etag', `"${outcome.transaction.version}"`)
+      .status(200)
+      .send(outcome.transaction);
   }
 }

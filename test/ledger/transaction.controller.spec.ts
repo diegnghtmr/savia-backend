@@ -290,7 +290,7 @@ describe('TransactionController.createTransaction', () => {
 describe('TransactionController.getTransaction', () => {
   const workspaceId = '00000000-0000-0000-0000-000000000951';
   const subject = '00000000-0000-0000-0000-000000000901';
-  const transactionId = '00000000-0000-0000-0000-000000000t01';
+  const transactionId = '00000000-0000-0000-0000-000000007001';
 
   const mockTransaction: Transaction = {
     id: transactionId,

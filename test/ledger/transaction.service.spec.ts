@@ -175,6 +175,7 @@ describe('TransactionService.create', () => {
       }),
       lockAndReadAccount: vi.fn(),
       createTransaction: vi.fn(),
+      readTransaction: vi.fn(),
     };
 
     const command = sampleCommand();
@@ -223,6 +224,7 @@ describe('TransactionService.create', () => {
       }),
       lockAndReadAccount: vi.fn(),
       createTransaction: vi.fn(),
+      readTransaction: vi.fn(),
     };
 
     const command = sampleCommand();
