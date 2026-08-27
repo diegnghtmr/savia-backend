@@ -5,10 +5,6 @@ import {
   toIso,
   PostgresTransactionAdapter,
 } from '../../src/ledger/postgres-transaction.adapter.js';
-import {
-  LEDGER_STORE_CREATE_RESULTS,
-  type LedgerStoreCreateCreated,
-} from '../../src/ledger/transaction.service.js';
 import type { CreateTransactionCommand } from '../../src/ledger/ledger.port.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 
@@ -84,11 +80,66 @@ describe('PostgresTransactionAdapter.readActiveRole', () => {
   });
 });
 
+describe('PostgresTransactionAdapter.lockAndReadAccount', () => {
+  const adapter = new PostgresTransactionAdapter();
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const accountId = '00000000-0000-0000-0000-000000000A01'; // Mixed case to test lowercasing
+
+  it('takes per-account advisory lock on lowercased account id and returns account status', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [] }) // 1. Lock
+        .mockResolvedValueOnce({ rows: [{ status: 'active' }] }), // 2. Account check
+    };
+
+    const result = await adapter.lockAndReadAccount(
+      client,
+      workspaceId,
+      accountId,
+    );
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    const [lockSql, lockValues] = (client.query as ReturnType<typeof vi.fn>)
+      .mock.calls[0] as [string, unknown[]];
+    expect(lockSql).toContain(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+    );
+    expect(lockValues).toEqual([accountId.toLowerCase()]);
+
+    const [accountSql, accountValues] = (
+      client.query as ReturnType<typeof vi.fn>
+    ).mock.calls[1] as [string, unknown[]];
+    expect(accountSql).toContain('select a.status from public.accounts a');
+    expect(accountValues).toEqual([workspaceId, accountId]);
+
+    expect(result).toEqual({ status: 'active' });
+  });
+
+  it('returns undefined when account row does not exist in workspace', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [] }) // Lock
+        .mockResolvedValueOnce({ rows: [] }), // Account check -> empty
+    };
+
+    const result = await adapter.lockAndReadAccount(
+      client,
+      workspaceId,
+      accountId,
+    );
+
+    expect(result).toBeUndefined();
+    expect(client.query).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('PostgresTransactionAdapter.createTransaction', () => {
   const adapter = new PostgresTransactionAdapter();
   const workspaceId = '00000000-0000-0000-0000-000000000951';
   const subject = '00000000-0000-0000-0000-000000000901';
-  const accountId = '00000000-0000-0000-0000-000000000A01'; // Mixed case to test lowercasing
+  const accountId = '00000000-0000-0000-0000-000000000A01';
 
   const command: CreateTransactionCommand = {
     type: 'expense',
@@ -107,94 +158,7 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
     tagIds: ['00000000-0000-0000-0000-000000000t01'],
   };
 
-  it('takes per-account advisory lock as first query on lowercased account id', async () => {
-    const client: TransactionClient = {
-      query: vi
-        .fn()
-        .mockResolvedValueOnce({ rows: [] }) // Lock
-        .mockResolvedValueOnce({ rows: [{ status: 'active' }] }) // Account check
-        .mockResolvedValueOnce({
-          rows: [
-            {
-              id: '00000000-0000-0000-0000-000000000999',
-              accountId,
-              type: 'expense',
-              status: 'confirmed',
-              amountMinor: '12500',
-              currency: 'USD',
-              occurredAt: new Date('2026-08-20T10:00:00.000Z'),
-              description: 'Hardware purchase',
-              notes: 'Laptop accessories',
-              categoryId: '00000000-0000-0000-0000-000000000c01',
-              payeeId: '00000000-0000-0000-0000-000000000p01',
-              receiptId: '00000000-0000-0000-0000-000000000r01',
-              reconciliationId: null,
-              tagIds: ['00000000-0000-0000-0000-000000000t01'],
-              createdAt: new Date('2026-08-20T10:00:00.000Z'),
-              updatedAt: new Date('2026-08-20T10:00:00.000Z'),
-              version: 1,
-            },
-          ],
-        }) // Insert txn
-        .mockResolvedValueOnce({ rows: [] }) // Insert postings
-        .mockResolvedValueOnce({ rows: [] }) // 5. do $$ begin set constraints all immediate...
-        .mockResolvedValueOnce({ rows: [{ code: null }] }), // 6. select nullif(...)
-    };
-
-    await adapter.createTransaction(client, workspaceId, subject, command);
-
-    expect(client.query).toHaveBeenCalledTimes(6);
-    const [lockSql, lockValues] = (client.query as ReturnType<typeof vi.fn>)
-      .mock.calls[0] as [string, unknown[]];
-    expect(lockSql).toContain(
-      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
-    );
-    expect(lockValues).toEqual([accountId.toLowerCase()]);
-  });
-
-  it('returns ACCOUNT_UNRESOLVED when account row does not exist in workspace', async () => {
-    const client: TransactionClient = {
-      query: vi
-        .fn()
-        .mockResolvedValueOnce({ rows: [] }) // Lock
-        .mockResolvedValueOnce({ rows: [] }), // Account check -> empty
-    };
-
-    const result = await adapter.createTransaction(
-      client,
-      workspaceId,
-      subject,
-      command,
-    );
-
-    expect(result).toEqual({
-      kind: LEDGER_STORE_CREATE_RESULTS.ACCOUNT_UNRESOLVED,
-    });
-    expect(client.query).toHaveBeenCalledTimes(2);
-  });
-
-  it('returns ACCOUNT_CLOSED when account status is closed', async () => {
-    const client: TransactionClient = {
-      query: vi
-        .fn()
-        .mockResolvedValueOnce({ rows: [] }) // Lock
-        .mockResolvedValueOnce({ rows: [{ status: 'closed' }] }), // Account check -> closed
-    };
-
-    const result = await adapter.createTransaction(
-      client,
-      workspaceId,
-      subject,
-      command,
-    );
-
-    expect(result).toEqual({
-      kind: LEDGER_STORE_CREATE_RESULTS.ACCOUNT_CLOSED,
-    });
-    expect(client.query).toHaveBeenCalledTimes(2);
-  });
-
-  it('inserts transaction with exact columns and balanced postings with account leg and external leg', async () => {
+  it('inserts transaction with exact columns, balanced postings, and enforces deferred constraints before returning', async () => {
     const occurredAtDate = new Date('2026-08-20T10:00:00.000Z');
     const createdAtDate = new Date('2026-08-20T10:00:00.000Z');
     const updatedAtDate = new Date('2026-08-20T10:00:00.000Z');
@@ -202,8 +166,6 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
     const client: TransactionClient = {
       query: vi
         .fn()
-        .mockResolvedValueOnce({ rows: [] }) // 1. Lock
-        .mockResolvedValueOnce({ rows: [{ status: 'active' }] }) // 2. Account check
         .mockResolvedValueOnce({
           rows: [
             {
@@ -226,10 +188,10 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
               version: 1,
             },
           ],
-        }) // 3. Insert txn
-        .mockResolvedValueOnce({ rows: [] }) // 4. Insert postings
-        .mockResolvedValueOnce({ rows: [] }) // 5. Enforce deferred constraints DO $$
-        .mockResolvedValueOnce({ rows: [{ code: null }] }), // 6. select nullif(...)
+        }) // 1. Insert txn
+        .mockResolvedValueOnce({ rows: [] }) // 2. Insert postings
+        .mockResolvedValueOnce({ rows: [] }) // 3. Enforce deferred constraints DO $$
+        .mockResolvedValueOnce({ rows: [{ code: null }] }), // 4. select nullif(...)
     };
 
     const result = await adapter.createTransaction(
@@ -239,19 +201,11 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
       command,
     );
 
-    expect(client.query).toHaveBeenCalledTimes(6);
+    expect(client.query).toHaveBeenCalledTimes(4);
 
-    // 5. Pin deferred constraint enforcement SQL
-    const [constraintDoSql] = (client.query as ReturnType<typeof vi.fn>).mock
-      .calls[4] as [string];
-    expect(constraintDoSql).toContain('set constraints all immediate');
-    const [constraintCheckSql] = (client.query as ReturnType<typeof vi.fn>).mock
-      .calls[5] as [string];
-    expect(constraintCheckSql).toContain('current_setting');
-
-    // 3. Pin transactions INSERT SQL and values
+    // 1. Pin transactions INSERT SQL and values
     const [txnSql, txnValues] = (client.query as ReturnType<typeof vi.fn>).mock
-      .calls[2] as [string, unknown[]];
+      .calls[0] as [string, unknown[]];
     expect(txnSql).toContain('insert into public.transactions');
     expect(txnSql).toContain('workspace_id');
     expect(txnSql).toContain('account_id');
@@ -284,10 +238,10 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
       subject,
     ]);
 
-    // 4. Pin ledger_postings INSERT SQL and values
+    // 2. Pin ledger_postings INSERT SQL and values
     const [postingsSql, postingsValues] = (
       client.query as ReturnType<typeof vi.fn>
-    ).mock.calls[3] as [string, unknown[]];
+    ).mock.calls[1] as [string, unknown[]];
     expect(postingsSql).toContain('insert into public.ledger_postings');
     expect(postingsSql).toContain("'account'");
     expect(postingsSql).toContain("'external'");
@@ -303,9 +257,15 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
       '-12500', // Negated amount for external leg
     ]);
 
-    expect(result.kind).toBe(LEDGER_STORE_CREATE_RESULTS.CREATED);
-    const created = (result as LedgerStoreCreateCreated).transaction;
-    expect(created).toEqual({
+    // 3. Pin deferred constraint enforcement SQL after postings insert
+    const [constraintDoSql] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[2] as [string];
+    expect(constraintDoSql).toContain('set constraints all immediate');
+    const [constraintCheckSql] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[3] as [string];
+    expect(constraintCheckSql).toContain('current_setting');
+
+    expect(result).toEqual({
       id: '00000000-0000-0000-0000-000000000999',
       accountId,
       type: 'expense',

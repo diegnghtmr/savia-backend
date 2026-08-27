@@ -20,44 +20,26 @@ export interface LedgerTransaction {
   ): Promise<T>;
 }
 
-export const LEDGER_STORE_CREATE_RESULTS = {
-  CREATED: 'created',
-  ACCOUNT_UNRESOLVED: 'account_unresolved',
-  ACCOUNT_CLOSED: 'account_closed',
-} as const;
-
-export type LedgerStoreCreateResultKind =
-  (typeof LEDGER_STORE_CREATE_RESULTS)[keyof typeof LEDGER_STORE_CREATE_RESULTS];
-
-export interface LedgerStoreCreateCreated {
-  readonly kind: typeof LEDGER_STORE_CREATE_RESULTS.CREATED;
-  readonly transaction: Transaction;
+export interface LedgerAccountRecord {
+  readonly status: string;
 }
-
-export interface LedgerStoreCreateAccountUnresolved {
-  readonly kind: typeof LEDGER_STORE_CREATE_RESULTS.ACCOUNT_UNRESOLVED;
-}
-
-export interface LedgerStoreCreateAccountClosed {
-  readonly kind: typeof LEDGER_STORE_CREATE_RESULTS.ACCOUNT_CLOSED;
-}
-
-export type LedgerStoreCreateResult =
-  | LedgerStoreCreateCreated
-  | LedgerStoreCreateAccountUnresolved
-  | LedgerStoreCreateAccountClosed;
 
 export interface LedgerStore {
   readActiveRole(
     client: TransactionClient,
     workspaceId: string,
   ): Promise<string | undefined>;
+  lockAndReadAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+  ): Promise<LedgerAccountRecord | undefined>;
   createTransaction(
     client: TransactionClient,
     workspaceId: string,
     subject: string,
     command: CreateTransactionCommand,
-  ): Promise<LedgerStoreCreateResult>;
+  ): Promise<Transaction>;
 }
 
 export class TransactionService implements LedgerPort {
@@ -106,25 +88,28 @@ export class TransactionService implements LedgerPort {
         };
       }
 
-      // 3. Create transaction via store
-      const result = await this.store.createTransaction(
+      // 3. Lock and read account in workspace
+      const account = await this.store.lockAndReadAccount(
+        client,
+        workspaceId,
+        command.accountId,
+      );
+      if (account === undefined) {
+        return { kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED };
+      }
+      if (account.status === 'closed') {
+        return { kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED };
+      }
+
+      // 4. Create transaction via store
+      const transaction = await this.store.createTransaction(
         client,
         workspaceId,
         subject,
         command,
       );
 
-      if (result.kind === LEDGER_STORE_CREATE_RESULTS.ACCOUNT_UNRESOLVED) {
-        return { kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED };
-      }
-
-      if (result.kind === LEDGER_STORE_CREATE_RESULTS.ACCOUNT_CLOSED) {
-        return { kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED };
-      }
-
-      const transaction = result.transaction;
-
-      // 4. Write idempotency record
+      // 5. Write idempotency record
       const written = await this.idempotencyStore.write(
         client,
         subject,

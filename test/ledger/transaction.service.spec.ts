@@ -6,10 +6,9 @@ import {
   type Transaction,
 } from '../../src/ledger/ledger.port.js';
 import {
-  LEDGER_STORE_CREATE_RESULTS,
   TransactionService,
+  type LedgerAccountRecord,
   type LedgerStore,
-  type LedgerStoreCreateResult,
   type LedgerTransaction,
 } from '../../src/ledger/transaction.service.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
@@ -100,20 +99,21 @@ function fakeIdempotencyStore(
 function fakeStore(
   options: {
     role?: string | undefined;
-    createResult?: LedgerStoreCreateResult;
+    account?: LedgerAccountRecord | undefined;
+    transaction?: Transaction;
   } = {},
 ): LedgerStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
+  lockAndReadAccount: ReturnType<typeof vi.fn>;
   createTransaction: ReturnType<typeof vi.fn>;
 } {
   const role = 'role' in options ? options.role : 'owner';
-  const createResult = options.createResult ?? {
-    kind: LEDGER_STORE_CREATE_RESULTS.CREATED,
-    transaction: sampleTransaction(),
-  };
+  const account = 'account' in options ? options.account : { status: 'active' };
+  const transaction = options.transaction ?? sampleTransaction();
   return {
     readActiveRole: vi.fn().mockResolvedValue(role),
-    createTransaction: vi.fn().mockResolvedValue(createResult),
+    lockAndReadAccount: vi.fn().mockResolvedValue(account),
+    createTransaction: vi.fn().mockResolvedValue(transaction),
   };
 }
 
@@ -137,6 +137,7 @@ describe('TransactionService.create', () => {
     );
 
     expect(outcome).toEqual({ kind: TRANSACTION_CREATE_OUTCOMES.FORBIDDEN });
+    expect(store.lockAndReadAccount).not.toHaveBeenCalled();
     expect(store.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -157,6 +158,7 @@ describe('TransactionService.create', () => {
     );
 
     expect(outcome).toEqual({ kind: TRANSACTION_CREATE_OUTCOMES.FORBIDDEN });
+    expect(store.lockAndReadAccount).not.toHaveBeenCalled();
     expect(store.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -183,6 +185,7 @@ describe('TransactionService.create', () => {
       idempotencyKey,
     );
     expect(outcome.kind).toBe(TRANSACTION_CREATE_OUTCOMES.REPLAYED);
+    expect(store.lockAndReadAccount).not.toHaveBeenCalled();
     expect(store.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -210,15 +213,14 @@ describe('TransactionService.create', () => {
     expect(outcome).toEqual({
       kind: TRANSACTION_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT,
     });
+    expect(store.lockAndReadAccount).not.toHaveBeenCalled();
     expect(store.createTransaction).not.toHaveBeenCalled();
   });
 
   it('refuses ACCOUNT_UNRESOLVED when store reports account not found in workspace', async () => {
     const store = fakeStore({
       role: 'owner',
-      createResult: {
-        kind: LEDGER_STORE_CREATE_RESULTS.ACCOUNT_UNRESOLVED,
-      },
+      account: undefined,
     });
     const idempotency = fakeIdempotencyStore();
     const service = new TransactionService(
@@ -237,15 +239,19 @@ describe('TransactionService.create', () => {
     expect(outcome).toEqual({
       kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED,
     });
+    expect(store.lockAndReadAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      '00000000-0000-0000-0000-000000000a01',
+    );
+    expect(store.createTransaction).not.toHaveBeenCalled();
     expect(idempotency.write).not.toHaveBeenCalled();
   });
 
-  it('refuses ACCOUNT_CLOSED when store reports account is closed', async () => {
+  it('refuses ACCOUNT_CLOSED when store reports account status is closed', async () => {
     const store = fakeStore({
       role: 'owner',
-      createResult: {
-        kind: LEDGER_STORE_CREATE_RESULTS.ACCOUNT_CLOSED,
-      },
+      account: { status: 'closed' },
     });
     const idempotency = fakeIdempotencyStore();
     const service = new TransactionService(
@@ -264,6 +270,12 @@ describe('TransactionService.create', () => {
     expect(outcome).toEqual({
       kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED,
     });
+    expect(store.lockAndReadAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      '00000000-0000-0000-0000-000000000a01',
+    );
+    expect(store.createTransaction).not.toHaveBeenCalled();
     expect(idempotency.write).not.toHaveBeenCalled();
   });
 
@@ -271,10 +283,8 @@ describe('TransactionService.create', () => {
     const txn = sampleTransaction();
     const store = fakeStore({
       role: 'owner',
-      createResult: {
-        kind: LEDGER_STORE_CREATE_RESULTS.CREATED,
-        transaction: txn,
-      },
+      account: { status: 'active' },
+      transaction: txn,
     });
     const idempotency = fakeIdempotencyStore(undefined, true);
     const service = new TransactionService(
@@ -295,6 +305,11 @@ describe('TransactionService.create', () => {
       kind: TRANSACTION_CREATE_OUTCOMES.CREATED,
       transaction: txn,
     });
+    expect(store.lockAndReadAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      command.accountId,
+    );
     expect(store.createTransaction).toHaveBeenCalledWith(
       CLIENT,
       WORKSPACE_ID,
