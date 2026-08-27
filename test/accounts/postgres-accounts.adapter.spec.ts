@@ -246,6 +246,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
               nativeBalance: '15000',
               pendingBalance: '5000',
               reconciledBalance: '3000',
+              effectiveAsOf: '2026-07-15T12:00:00.000Z',
             },
           ],
         }),
@@ -305,6 +306,9 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     );
     expect(balanceSql).toContain("filter (where status = 'pending')");
     expect(balanceSql).toContain("filter (where status = 'reconciled')");
+    expect(balanceSql).toContain(
+      'to_char(coalesce($3::timestamptz, now()) at time zone \'utc\', \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\') as "effectiveAsOf"',
+    );
     expect(balanceSql).toContain('where workspace_id = $1::uuid');
     expect(balanceSql).toContain('and account_id = $2::uuid');
     expect(balanceSql).toContain(
@@ -326,6 +330,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
               nativeBalance: '0',
               pendingBalance: '0',
               reconciledBalance: '0',
+              effectiveAsOf: '2026-07-15T12:00:00.000Z',
             },
           ],
         }),
@@ -358,6 +363,8 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
       amountMinor: '0',
       currency: 'COP',
     });
+    expect(result.asOf).toBe('2026-07-15T12:00:00.000Z');
+    expect(result.baseCurrencyEquivalent.rateDate).toBe('2026-07-15');
   });
 
   it('preserves 64-bit precision past 2^53 without JS number truncation', async () => {
@@ -374,6 +381,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
               nativeBalance: hugeAmount,
               pendingBalance: '0',
               reconciledBalance: '0',
+              effectiveAsOf: '2026-07-15T12:00:00.000Z',
             },
           ],
         }),
@@ -393,11 +401,98 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     expect(result.baseCurrencyEquivalent.converted.amountMinor).toBe(
       hugeAmount,
     );
+    expect(result.asOf).toBe('2026-07-15T12:00:00.000Z');
 
     const [balanceSql] = (client.query as ReturnType<typeof vi.fn>).mock
       .calls[1] as [string, unknown[]];
     expect(balanceSql).toContain('::text as "nativeBalance"');
     expect(balanceSql).toContain('::text as "pendingBalance"');
     expect(balanceSql).toContain('::text as "reconciledBalance"');
+    expect(balanceSql).toContain(
+      'to_char(coalesce($3::timestamptz, now()) at time zone \'utc\', \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\') as "effectiveAsOf"',
+    );
+  });
+
+  it('derives asOf and rateDate from SQL effectiveAsOf when client asOf is omitted', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ currency: 'USD' }],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              nativeBalance: '1000',
+              pendingBalance: '0',
+              reconciledBalance: '1000',
+              effectiveAsOf: '2026-01-01T00:00:00.000000Z',
+            },
+          ],
+        }),
+    };
+
+    const result = await adapter.readAccountBalance(
+      client,
+      workspaceId,
+      accountId,
+      undefined,
+    );
+
+    expect(result).toBeDefined();
+    if (!result) throw new Error('Expected result to be defined');
+
+    expect(result.asOf).toBe('2026-01-01T00:00:00.000000Z');
+    expect(result.baseCurrencyEquivalent.rateDate).toBe('2026-01-01');
+  });
+
+  it('derives rateDate from canonical UTC cutoff when client asOf carries a non-UTC offset', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ currency: 'USD' }],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              nativeBalance: '1000',
+              pendingBalance: '0',
+              reconciledBalance: '1000',
+              effectiveAsOf: '2026-07-16T01:30:00.000000Z',
+            },
+          ],
+        }),
+    };
+
+    const result = await adapter.readAccountBalance(
+      client,
+      workspaceId,
+      accountId,
+      '2026-07-15T23:30:00-02:00',
+    );
+
+    expect(result).toBeDefined();
+    if (!result) throw new Error('Expected result to be defined');
+
+    expect(result.asOf).toBe('2026-07-16T01:30:00.000000Z');
+    expect(result.baseCurrencyEquivalent.rateDate).toBe('2026-07-16');
+  });
+
+  it('throws an invariant error when balance aggregate query returns zero rows', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ currency: 'USD' }],
+        })
+        .mockResolvedValueOnce({
+          rows: [],
+        }),
+    };
+
+    await expect(
+      adapter.readAccountBalance(client, workspaceId, accountId, undefined),
+    ).rejects.toThrow(/Account balance aggregate query returned no row/);
   });
 });

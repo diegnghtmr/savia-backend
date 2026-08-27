@@ -471,7 +471,8 @@ select a.currency
 select
   coalesce(sum(amount_minor) filter (where status in ('confirmed', 'reconciled')), 0)::text as "nativeBalance",
   coalesce(sum(amount_minor) filter (where status = 'pending'), 0)::text as "pendingBalance",
-  coalesce(sum(amount_minor) filter (where status = 'reconciled'), 0)::text as "reconciledBalance"
+  coalesce(sum(amount_minor) filter (where status = 'reconciled'), 0)::text as "reconciledBalance",
+  to_char(coalesce($3::timestamptz, now()) at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "effectiveAsOf"
   from public.ledger_postings
  where workspace_id = $1::uuid
    and account_id = $2::uuid
@@ -481,16 +482,16 @@ select
       nativeBalance: string;
       pendingBalance: string;
       reconciledBalance: string;
+      effectiveAsOf: string;
     }>(balanceSql, [workspaceId, accountId, asOf ?? null]);
 
-    const balanceRow = balanceResult.rows[0] ?? {
-      nativeBalance: '0',
-      pendingBalance: '0',
-      reconciledBalance: '0',
-    };
+    const balanceRow = balanceResult.rows[0];
+    if (!balanceRow) {
+      throw new Error('Account balance aggregate query returned no row.');
+    }
 
     const currency = accountRow.currency;
-    const asOfIso = asOf ?? toIso(new Date());
+    const asOfIso = balanceRow.effectiveAsOf;
     const rateDate = asOfIso.slice(0, 10);
 
     return {
