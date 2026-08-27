@@ -530,6 +530,15 @@ select
     workspaceId: string,
     accountId: string,
   ): Promise<boolean> {
+    // Lock-ordering convention: locks are acquired in the order SUBJECT (taken by
+    // PgTransaction.run) -> WORKSPACE (taken by readWorkspaceBaseCurrency and
+    // hasAccounts) -> ACCOUNT (taken here). Any future writer of public.transactions
+    // for an account — in particular the createTransaction operation of a later slice —
+    // MUST take this same per-account lock, or this precondition is not serialized.
+    await client.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [accountId.toLowerCase()],
+    );
     const sql = `
 select 1
   from public.transactions
