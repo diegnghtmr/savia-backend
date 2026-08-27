@@ -1713,6 +1713,7 @@ paths:
       tags:
         - Accounts
       summary: Create account
+      x-financial: true
       parameters:
         - name: X-Workspace-Id
           in: header
