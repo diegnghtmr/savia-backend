@@ -7,10 +7,16 @@ import {
   type TransactionCreateCreated,
   type TransactionCreateReplayed,
 } from '../../src/ledger/ledger.port.js';
-import { TransactionService } from '../../src/ledger/transaction.service.js';
+import {
+  TransactionService,
+  type LedgerStore,
+} from '../../src/ledger/transaction.service.js';
 import { PostgresTransactionAdapter } from '../../src/ledger/postgres-transaction.adapter.js';
 import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
-import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import {
+  PgTransaction,
+  type TransactionClient,
+} from '../../src/platform/pg-transaction.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 
@@ -219,40 +225,88 @@ describe('TransactionService createTransaction database boundary', () => {
   });
 
   it('atomicity: rollback on failure leaves neither transaction nor postings', async () => {
-    const beforeTxnCount = await admin.query<{ count: string }>(
-      `select count(*)::text as count from public.transactions where workspace_id = $1`,
-      [workspace1Id],
-    );
-    const beforePostingsCount = await admin.query<{ count: string }>(
-      `select count(*)::text as count from public.ledger_postings where workspace_id = $1`,
-      [workspace1Id],
+    let generatedTxnId: string | undefined;
+    const realAdapter = new PostgresTransactionAdapter();
+
+    const wrappingAdapter: LedgerStore = {
+      readActiveRole: (client: TransactionClient, ws: string) =>
+        realAdapter.readActiveRole(client, ws),
+      lockAndReadAccount: (
+        client: TransactionClient,
+        ws: string,
+        acc: string,
+      ) => realAdapter.lockAndReadAccount(client, ws, acc),
+      createTransaction: async (
+        client: TransactionClient,
+        ws: string,
+        sub: string,
+        cmd: CreateTransactionCommand,
+      ) => {
+        const interceptedClient: TransactionClient = {
+          query: async <Row extends Record<string, unknown>>(
+            text: string,
+            values?: readonly unknown[],
+          ) => {
+            const res = await client.query<Row>(text, values);
+            const firstRow = res.rows[0] as Record<string, unknown> | undefined;
+            if (
+              typeof text === 'string' &&
+              text.includes('insert into public.transactions') &&
+              typeof firstRow?.id === 'string'
+            ) {
+              generatedTxnId = firstRow.id;
+            }
+            if (
+              typeof text === 'string' &&
+              text.includes('insert into public.ledger_postings')
+            ) {
+              throw new Error('Injected postings insert failure');
+            }
+            return res;
+          },
+        };
+        return realAdapter.createTransaction(interceptedClient, ws, sub, cmd);
+      },
+    };
+
+    const faultyService = new TransactionService(
+      transaction,
+      wrappingAdapter,
+      new PostgresIdempotencyAdapter(),
     );
 
-    // Run custom transaction that fails after inserting transaction row
+    const command: CreateTransactionCommand = {
+      type: 'expense',
+      accountId: accountActiveId,
+      amount: { amountMinor: '3333', currency: 'USD' },
+      occurredAt: '2026-08-20T10:00:00.000Z',
+      status: 'confirmed',
+      description: 'Atomic Failure Test',
+    };
+
     await expect(
-      transaction.run(subjectOwner, async (client) => {
-        await client.query(
-          `insert into public.transactions (workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
-           values ($1, $2, 'expense', 'confirmed', 1000, 'USD', now(), $3)`,
-          [workspace1Id, accountActiveId, subjectOwner],
-        );
-        throw new Error('Injected atomic failure');
-      }),
-    ).rejects.toThrow('Injected atomic failure');
+      faultyService.create(
+        subjectOwner,
+        workspace1Id,
+        command,
+        '00000000-0000-4000-8000-000000000099',
+      ),
+    ).rejects.toThrow('Injected postings insert failure');
 
-    const afterTxnCount = await admin.query<{ count: string }>(
-      `select count(*)::text as count from public.transactions where workspace_id = $1`,
-      [workspace1Id],
-    );
-    const afterPostingsCount = await admin.query<{ count: string }>(
-      `select count(*)::text as count from public.ledger_postings where workspace_id = $1`,
-      [workspace1Id],
-    );
+    expect(generatedTxnId).toBeDefined();
 
-    expect(afterTxnCount.rows[0].count).toBe(beforeTxnCount.rows[0].count);
-    expect(afterPostingsCount.rows[0].count).toBe(
-      beforePostingsCount.rows[0].count,
+    // Assert by the generated transaction identity that NEITHER public.transactions NOR public.ledger_postings retained any row
+    const txnCheck = await admin.query(
+      'select * from public.transactions where id = $1::uuid',
+      [generatedTxnId],
     );
+    expect(txnCheck.rows).toHaveLength(0);
+
+    const postingsCheck = await admin.query(
+      'select * from public.ledger_postings where transaction_id = $1::uuid',
+      [generatedTxnId],
+    );
+    expect(postingsCheck.rows).toHaveLength(0);
   });
 
   it('serializes against closeAccount via per-account advisory lock', async () => {
