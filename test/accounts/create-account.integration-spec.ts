@@ -530,19 +530,24 @@ describe('AccountsService createAccount database boundary', () => {
 
     const accountId = outcome.account.id;
 
-    const txnRows = await admin.query<{ amount_minor: string }>(
-      'select amount_minor::text from public.transactions where account_id = $1::uuid',
-      [accountId],
+    const txnRows = await admin.query<{ id: string; amount_minor: string }>(
+      'select id::text, amount_minor::text from public.transactions where workspace_id = $1::uuid and account_id = $2::uuid',
+      [workspace1Id, accountId],
     );
+    expect(txnRows.rows).toHaveLength(1);
     expect(txnRows.rows[0].amount_minor).toBe(largeAmount);
 
+    // Scope the postings to this transaction. The external leg carries
+    // account_id IS NULL, so an account-shaped predicate also matches every
+    // other external leg this file writes into the same workspace.
     const postingRows = await admin.query<{
       leg_kind: string;
       amount_minor: string;
     }>(
-      'select leg_kind, amount_minor::text from public.ledger_postings where workspace_id = $1::uuid and (account_id = $2::uuid or account_id is null)',
-      [workspace1Id, accountId],
+      'select leg_kind, amount_minor::text from public.ledger_postings where transaction_id = $1::uuid',
+      [txnRows.rows[0].id],
     );
+    expect(postingRows.rows).toHaveLength(2);
     const accountLeg = postingRows.rows.find((p) => p.leg_kind === 'account');
     const externalLeg = postingRows.rows.find((p) => p.leg_kind === 'external');
     expect(accountLeg?.amount_minor).toBe(largeAmount);
