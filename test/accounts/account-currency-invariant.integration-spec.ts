@@ -440,5 +440,80 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
         await deleteAccount(okIds[0]);
       }
     });
+
+    it('g. CONCURRENCY / WRITE SKEW SERIALIZATION: two concurrent transactions serialize via advisory lock; loser re-observes committed state and raises 23514', async () => {
+      // Starting condition: emptyWsId with base_currency = 'USD' and no accounts.
+      // Forced ordering:
+      // 1. Client 1 begins transaction and inserts a USD account. Trigger acquires workspace advisory lock.
+      // 2. Client 2 begins transaction and attempts to update workspace base_currency to 'EUR'.
+      //    Client 2's trigger blocks on the workspace advisory lock held by Client 1.
+      // 3. We prove Client 2 is blocked while Client 1 holds the lock.
+      // 4. Client 1 commits, persisting the USD account and releasing the advisory lock.
+      // 5. Client 2 unblocks, acquires advisory lock, scans accounts under READ COMMITTED,
+      //    sees Client 1's newly committed USD account, and raises 23514 (check_violation).
+      const client1 = await admin.connect();
+      const client2 = await admin.connect();
+      let createdAccountId: string | undefined;
+
+      try {
+        await client1.query('begin');
+        const insertRes = await client1.query<{ id: string }>(
+          `insert into public.accounts (workspace_id, name, type, currency, created_by)
+           values ($1, 'Concurrent Account', 'checking', 'USD', $2)
+           returning id`,
+          [emptyWsId, ownerA],
+        );
+        createdAccountId = insertRes.rows[0]?.id;
+
+        await client2.query('begin');
+
+        let client2Resolved = false;
+        let client2Error: CapturedPgError | undefined;
+
+        const client2Promise = client2
+          .query(
+            `update public.workspaces set base_currency = 'EUR' where id = $1`,
+            [emptyWsId],
+          )
+          .then(() => {
+            client2Resolved = true;
+          })
+          .catch((err: unknown) => {
+            client2Error = err as CapturedPgError;
+          });
+
+        // Give Client 2 time to execute and block on Client 1's advisory lock
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(client2Resolved).toBe(false);
+        expect(client2Error).toBeUndefined();
+
+        // Client 1 commits: releases lock and makes inserted USD account visible under READ COMMITTED
+        await client1.query('commit');
+
+        // Client 2 should now unblock, acquire lock, scan accounts, see the USD account, and reject
+        await client2Promise;
+        expect(client2Resolved).toBe(false);
+        expect(client2Error).toBeDefined();
+        expect(client2Error?.code).toBe('23514');
+        expect(client2Error?.message ?? '').toContain(
+          'workspace base currency cannot change while accounts with differing currencies exist',
+        );
+
+        await client2.query('rollback').catch(() => {});
+
+        // Confirm workspace base_currency remains USD
+        const wsRes = await admin.query<{ base_currency: string }>(
+          'select base_currency from public.workspaces where id = $1',
+          [emptyWsId],
+        );
+        expect(wsRes.rows[0].base_currency).toBe('USD');
+      } finally {
+        if (createdAccountId) {
+          await deleteAccount(createdAccountId);
+        }
+        client1.release();
+        client2.release();
+      }
+    });
   });
 });

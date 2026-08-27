@@ -61,6 +61,16 @@ as $$
 declare
   v_base_currency text;
 begin
+  -- Serialize on the workspace advisory lock to prevent write skew between
+  -- concurrent account inserts and workspace base_currency updates.
+  -- Schedule: Tx A inserts USD account, reads base_currency 'USD', passes;
+  -- Tx B concurrently updates base_currency to 'EUR', scans accounts, sees nothing, passes;
+  -- both commit -> USD account in EUR workspace.
+  -- Key derivation hashtextextended(new.workspace_id::text, 0) deliberately matches
+  -- the application-level locks (readWorkspaceBaseCurrency and hasAccounts) so all four
+  -- paths serialize on one key.
+  perform pg_advisory_xact_lock(hashtextextended(new.workspace_id::text, 0));
+
   select workspace.base_currency into v_base_currency
     from public.workspaces workspace
    where workspace.id = new.workspace_id;
@@ -90,6 +100,16 @@ security definer
 set search_path = pg_catalog, public
 as $$
 begin
+  -- Serialize on the workspace advisory lock to prevent write skew between
+  -- concurrent account inserts and workspace base_currency updates.
+  -- Schedule: Tx A inserts USD account, reads base_currency 'USD', passes;
+  -- Tx B concurrently updates base_currency to 'EUR', scans accounts, sees nothing, passes;
+  -- both commit -> USD account in EUR workspace.
+  -- Key derivation hashtextextended(new.id::text, 0) deliberately matches
+  -- the application-level locks (readWorkspaceBaseCurrency and hasAccounts) so all four
+  -- paths serialize on one key.
+  perform pg_advisory_xact_lock(hashtextextended(new.id::text, 0));
+
   if exists (
     select 1
     from public.accounts account
