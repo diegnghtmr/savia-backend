@@ -149,6 +149,9 @@ jobs:
       - name: accounts close integration
         shell: bash
         run: pnpm test:integration:accounts-close
+      - name: account currency invariant integration
+        shell: bash
+        run: pnpm test:integration:account-currency-invariant
       - name: transactions schema integration
         shell: bash
         run: pnpm test:integration:transactions-schema

@@ -246,6 +246,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
               nativeBalance: '15000',
               pendingBalance: '5000',
               reconciledBalance: '3000',
+              foreignCurrencyLegs: '0',
               effectiveAsOf: '2026-07-15T12:00:00.000Z',
             },
           ],
@@ -300,21 +301,66 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     const [balanceSql, balanceValues] = (
       client.query as ReturnType<typeof vi.fn>
     ).mock.calls[1] as [string, unknown[]];
-    expect(balanceSql).toContain('from public.ledger_postings');
+    expect(balanceSql).toContain('from public.ledger_postings posting');
     expect(balanceSql).toContain(
-      "filter (where status in ('confirmed', 'reconciled'))",
+      "filter (where posting.currency = acct.currency and posting.status in ('confirmed', 'reconciled'))",
     );
-    expect(balanceSql).toContain("filter (where status = 'pending')");
-    expect(balanceSql).toContain("filter (where status = 'reconciled')");
+    expect(balanceSql).toContain(
+      "filter (where posting.currency = acct.currency and posting.status = 'pending')",
+    );
+    expect(balanceSql).toContain(
+      "filter (where posting.currency = acct.currency and posting.status = 'reconciled')",
+    );
+    expect(balanceSql).toContain(
+      'count(*) filter (where posting.currency <> acct.currency)::text as "foreignCurrencyLegs"',
+    );
     expect(balanceSql).toContain(
       'to_char(coalesce($3::timestamptz, now()) at time zone \'utc\', \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\') as "effectiveAsOf"',
     );
-    expect(balanceSql).toContain('where workspace_id = $1::uuid');
-    expect(balanceSql).toContain('and account_id = $2::uuid');
+    expect(balanceSql).toContain('where posting.workspace_id = $1::uuid');
+    expect(balanceSql).toContain('and posting.account_id = $2::uuid');
     expect(balanceSql).toContain(
-      'and occurred_at <= coalesce($3::timestamptz, now())',
+      'and posting.occurred_at <= coalesce($3::timestamptz, now())',
     );
     expect(balanceValues).toEqual([workspaceId, accountId, asOf]);
+  });
+
+  it('scopes the balance aggregate query to matching account currency via accounts join', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ currency: 'USD' }],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              nativeBalance: '1000',
+              pendingBalance: '0',
+              reconciledBalance: '0',
+              foreignCurrencyLegs: '0',
+              effectiveAsOf: '2026-07-15T12:00:00.000Z',
+            },
+          ],
+        }),
+    };
+
+    await adapter.readAccountBalance(client, workspaceId, accountId, undefined);
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    const [balanceSql] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[1] as [string, unknown[]];
+    expect(balanceSql).toContain('join public.accounts acct');
+    expect(balanceSql).toContain('on acct.id = posting.account_id');
+    expect(balanceSql).toContain(
+      'and acct.workspace_id = posting.workspace_id',
+    );
+    expect(balanceSql).toContain(
+      "filter (where posting.currency = acct.currency and posting.status in ('confirmed', 'reconciled'))",
+    );
+    expect(balanceSql).toContain(
+      'count(*) filter (where posting.currency <> acct.currency)::text as "foreignCurrencyLegs"',
+    );
   });
 
   it('handles account with no postings by defaulting buckets to "0"', async () => {
@@ -330,6 +376,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
               nativeBalance: '0',
               pendingBalance: '0',
               reconciledBalance: '0',
+              foreignCurrencyLegs: '0',
               effectiveAsOf: '2026-07-15T12:00:00.000Z',
             },
           ],
@@ -381,6 +428,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
               nativeBalance: hugeAmount,
               pendingBalance: '0',
               reconciledBalance: '0',
+              foreignCurrencyLegs: '0',
               effectiveAsOf: '2026-07-15T12:00:00.000Z',
             },
           ],
@@ -426,6 +474,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
               nativeBalance: '1000',
               pendingBalance: '0',
               reconciledBalance: '1000',
+              foreignCurrencyLegs: '0',
               effectiveAsOf: '2026-01-01T00:00:00.000000Z',
             },
           ],
@@ -459,6 +508,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
               nativeBalance: '1000',
               pendingBalance: '0',
               reconciledBalance: '1000',
+              foreignCurrencyLegs: '0',
               effectiveAsOf: '2026-07-16T01:30:00.000000Z',
             },
           ],
@@ -494,6 +544,33 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     await expect(
       adapter.readAccountBalance(client, workspaceId, accountId, undefined),
     ).rejects.toThrow(/Account balance aggregate query returned no row/);
+  });
+
+  it('throws an error when foreign-currency postings exist for the account', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ currency: 'USD' }],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              nativeBalance: '1000',
+              pendingBalance: '0',
+              reconciledBalance: '0',
+              foreignCurrencyLegs: '1',
+              effectiveAsOf: '2026-07-15T12:00:00.000Z',
+            },
+          ],
+        }),
+    };
+
+    await expect(
+      adapter.readAccountBalance(client, workspaceId, accountId, undefined),
+    ).rejects.toThrow(
+      'Cannot report single-currency balance for an account holding postings in another currency.',
+    );
   });
 });
 
