@@ -466,12 +466,16 @@ select a.currency
       return undefined;
     }
 
-    // 2. Bucket aggregation query on ledger_postings scoped strictly to the account currency
+    // 2. Bucket aggregation query on ledger_postings.
+    // The balance is reported in the account's currency, so postings in another currency
+    // are neither summed into it nor silently dropped — their presence makes the balance
+    // unreportable and the read fails loudly.
     const balanceSql = `
 select
-  coalesce(sum(posting.amount_minor) filter (where posting.status in ('confirmed', 'reconciled')), 0)::text as "nativeBalance",
-  coalesce(sum(posting.amount_minor) filter (where posting.status = 'pending'), 0)::text as "pendingBalance",
-  coalesce(sum(posting.amount_minor) filter (where posting.status = 'reconciled'), 0)::text as "reconciledBalance",
+  coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status in ('confirmed', 'reconciled')), 0)::text as "nativeBalance",
+  coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status = 'pending'), 0)::text as "pendingBalance",
+  coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status = 'reconciled'), 0)::text as "reconciledBalance",
+  count(*) filter (where posting.currency <> acct.currency)::text as "foreignCurrencyLegs",
   to_char(coalesce($3::timestamptz, now()) at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "effectiveAsOf"
   from public.ledger_postings posting
   join public.accounts acct
@@ -479,21 +483,28 @@ select
    and acct.workspace_id = posting.workspace_id
  where posting.workspace_id = $1::uuid
    and posting.account_id = $2::uuid
-   -- The balance is reported with the account's currency, so summing postings in any
-   -- other currency would produce a number the response's own currency field misdescribes.
-   and posting.currency = acct.currency
    and posting.occurred_at <= coalesce($3::timestamptz, now())`;
 
     const balanceResult = await client.query<{
       nativeBalance: string;
       pendingBalance: string;
       reconciledBalance: string;
+      foreignCurrencyLegs?: string;
       effectiveAsOf: string;
     }>(balanceSql, [workspaceId, accountId, asOf ?? null]);
 
     const balanceRow = balanceResult.rows[0];
     if (!balanceRow) {
       throw new Error('Account balance aggregate query returned no row.');
+    }
+
+    if (
+      balanceRow.foreignCurrencyLegs !== undefined &&
+      balanceRow.foreignCurrencyLegs !== '0'
+    ) {
+      throw new Error(
+        'Cannot report single-currency balance for an account holding postings in another currency.',
+      );
     }
 
     const currency = accountRow.currency;

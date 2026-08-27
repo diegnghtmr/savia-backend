@@ -302,11 +302,16 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     ).mock.calls[1] as [string, unknown[]];
     expect(balanceSql).toContain('from public.ledger_postings posting');
     expect(balanceSql).toContain(
-      "filter (where posting.status in ('confirmed', 'reconciled'))",
+      "filter (where posting.currency = acct.currency and posting.status in ('confirmed', 'reconciled'))",
     );
-    expect(balanceSql).toContain("filter (where posting.status = 'pending')");
     expect(balanceSql).toContain(
-      "filter (where posting.status = 'reconciled')",
+      "filter (where posting.currency = acct.currency and posting.status = 'pending')",
+    );
+    expect(balanceSql).toContain(
+      "filter (where posting.currency = acct.currency and posting.status = 'reconciled')",
+    );
+    expect(balanceSql).toContain(
+      'count(*) filter (where posting.currency <> acct.currency)::text as "foreignCurrencyLegs"',
     );
     expect(balanceSql).toContain(
       'to_char(coalesce($3::timestamptz, now()) at time zone \'utc\', \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\') as "effectiveAsOf"',
@@ -348,7 +353,12 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     expect(balanceSql).toContain(
       'and acct.workspace_id = posting.workspace_id',
     );
-    expect(balanceSql).toContain('and posting.currency = acct.currency');
+    expect(balanceSql).toContain(
+      "filter (where posting.currency = acct.currency and posting.status in ('confirmed', 'reconciled'))",
+    );
+    expect(balanceSql).toContain(
+      'count(*) filter (where posting.currency <> acct.currency)::text as "foreignCurrencyLegs"',
+    );
   });
 
   it('handles account with no postings by defaulting buckets to "0"', async () => {
@@ -528,6 +538,33 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     await expect(
       adapter.readAccountBalance(client, workspaceId, accountId, undefined),
     ).rejects.toThrow(/Account balance aggregate query returned no row/);
+  });
+
+  it('throws an error when foreign-currency postings exist for the account', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ currency: 'USD' }],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              nativeBalance: '1000',
+              pendingBalance: '0',
+              reconciledBalance: '0',
+              foreignCurrencyLegs: '1',
+              effectiveAsOf: '2026-07-15T12:00:00.000Z',
+            },
+          ],
+        }),
+    };
+
+    await expect(
+      adapter.readAccountBalance(client, workspaceId, accountId, undefined),
+    ).rejects.toThrow(
+      'Cannot report single-currency balance for an account holding postings in another currency.',
+    );
   });
 });
 
