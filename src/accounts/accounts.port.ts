@@ -34,6 +34,23 @@ export interface Money {
   readonly currency: string;
 }
 
+export interface ConvertedMoney {
+  readonly original: Money;
+  readonly converted: Money;
+  readonly rate: string;
+  readonly rateDate: string;
+  readonly rateSource: string;
+}
+
+export interface AccountBalance {
+  readonly accountId: string;
+  readonly nativeBalance: Money;
+  readonly pendingBalance: Money;
+  readonly reconciledBalance: Money;
+  readonly baseCurrencyEquivalent: ConvertedMoney;
+  readonly asOf: string;
+}
+
 export interface CreateAccountCommand {
   readonly name: string;
   readonly type: AccountType;
@@ -133,6 +150,29 @@ export type AccountReadOutcome =
   | AccountReadForbidden
   | AccountReadNotFound;
 
+export const ACCOUNT_BALANCE_OUTCOMES = {
+  OK: 'ok',
+  FORBIDDEN: 'forbidden',
+  NOT_FOUND: 'not_found',
+} as const;
+export type AccountBalanceOutcomeKind =
+  (typeof ACCOUNT_BALANCE_OUTCOMES)[keyof typeof ACCOUNT_BALANCE_OUTCOMES];
+
+export interface AccountBalanceOk {
+  readonly kind: typeof ACCOUNT_BALANCE_OUTCOMES.OK;
+  readonly balance: AccountBalance;
+}
+export interface AccountBalanceForbidden {
+  readonly kind: typeof ACCOUNT_BALANCE_OUTCOMES.FORBIDDEN;
+}
+export interface AccountBalanceNotFound {
+  readonly kind: typeof ACCOUNT_BALANCE_OUTCOMES.NOT_FOUND;
+}
+export type AccountBalanceOutcome =
+  | AccountBalanceOk
+  | AccountBalanceForbidden
+  | AccountBalanceNotFound;
+
 export const ACCOUNT_CREATE_OUTCOMES = {
   CREATED: 'created',
   REPLAYED: 'replayed',
@@ -209,6 +249,12 @@ export interface AccountsPort {
     workspaceId: string,
     accountId: string,
   ): Promise<AccountReadOutcome>;
+  readBalance(
+    subject: string,
+    workspaceId: string,
+    accountId: string,
+    asOf?: string,
+  ): Promise<AccountBalanceOutcome>;
   create(
     subject: string,
     workspaceId: string,

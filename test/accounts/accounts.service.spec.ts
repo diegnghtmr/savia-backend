@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { decodeCursor } from '../../src/platform/cursor.js';
 import {
+  ACCOUNT_BALANCE_OUTCOMES,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
   ACCOUNT_UPDATE_OUTCOMES,
   type Account,
+  type AccountBalance,
+  type AccountBalanceOutcome,
   type AccountListOutcome,
   type AccountReadOutcome,
   type AccountUpdateOutcome,
@@ -61,6 +64,39 @@ function account(overrides: Partial<Account> = {}): Account {
   };
 }
 
+function balance(overrides: Partial<AccountBalance> = {}): AccountBalance {
+  return {
+    accountId: '00000000-0000-0000-0000-000000000a01',
+    nativeBalance: {
+      amountMinor: '10000',
+      currency: 'USD',
+    },
+    pendingBalance: {
+      amountMinor: '2000',
+      currency: 'USD',
+    },
+    reconciledBalance: {
+      amountMinor: '3000',
+      currency: 'USD',
+    },
+    baseCurrencyEquivalent: {
+      original: {
+        amountMinor: '10000',
+        currency: 'USD',
+      },
+      converted: {
+        amountMinor: '10000',
+        currency: 'USD',
+      },
+      rate: '1',
+      rateDate: '2026-07-01',
+      rateSource: 'identity',
+    },
+    asOf: '2026-07-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
 function toItem(
   acc: Account,
   cursorAt = '2026-07-01T00:00:00.000000Z',
@@ -95,24 +131,32 @@ function fakeStore(
     name: 'Updated Name',
     version: 2,
   }),
-  baseCurrency?: string,
+  overrides: {
+    readonly baseCurrency?: string | undefined;
+    readonly singleBalance?: AccountBalance | undefined;
+  } = {},
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
   readWorkspaceBaseCurrency: ReturnType<typeof vi.fn>;
   listAccounts: ReturnType<typeof vi.fn>;
   readAccount: ReturnType<typeof vi.fn>;
+  readAccountBalance: ReturnType<typeof vi.fn>;
   createAccount: ReturnType<typeof vi.fn>;
   updateAccount: ReturnType<typeof vi.fn>;
 } {
   const normalized: AccountItem[] = rows.map((r) =>
     'account' in r ? r : toItem(r),
   );
-  const resolvedBaseCurrency = arguments.length >= 6 ? baseCurrency : 'USD';
+  // Distinguish an explicit `undefined` base currency (the workspace row is
+  // invisible) from the parameter never being supplied at all.
+  const resolvedBaseCurrency =
+    'baseCurrency' in overrides ? overrides.baseCurrency : 'USD';
   return {
     readActiveRole: vi.fn().mockResolvedValue(role),
     readWorkspaceBaseCurrency: vi.fn().mockResolvedValue(resolvedBaseCurrency),
     listAccounts: vi.fn().mockResolvedValue(normalized),
     readAccount: vi.fn().mockResolvedValue(singleAccount),
+    readAccountBalance: vi.fn().mockResolvedValue(overrides.singleBalance),
     createAccount: vi.fn().mockResolvedValue(createdAcc),
     updateAccount: vi.fn().mockResolvedValue(updatedAcc),
   };
@@ -141,6 +185,20 @@ async function read(
     fakeIdempotencyStore(),
   );
   return service.read(SUBJECT, workspaceId, accountId);
+}
+
+async function readBalance(
+  store: AccountsStore,
+  workspaceId: string,
+  accountId: string,
+  asOf?: string,
+): Promise<AccountBalanceOutcome> {
+  const service = new AccountsService(
+    new FakeTransaction(),
+    store,
+    fakeIdempotencyStore(),
+  );
+  return service.readBalance(SUBJECT, workspaceId, accountId, asOf);
 }
 
 async function update(
@@ -326,6 +384,87 @@ describe('AccountsService.read', () => {
       kind: ACCOUNT_READ_OUTCOMES.OK,
       account: acc,
     });
+  });
+});
+
+describe('AccountsService.readBalance', () => {
+  it('answers forbidden when the actor holds no active role in the workspace and never queries the balance', async () => {
+    const store = fakeStore(undefined, [], undefined, undefined, undefined, {
+      singleBalance: balance(),
+    });
+    const outcome = await readBalance(store, WORKSPACE_ID, account().id);
+    expect(outcome.kind).toBe(ACCOUNT_BALANCE_OUTCOMES.FORBIDDEN);
+    expect(store.readActiveRole).toHaveBeenCalledWith(CLIENT, WORKSPACE_ID);
+    expect(store.readAccountBalance).not.toHaveBeenCalled();
+  });
+
+  it('answers forbidden for a workspace that does not exist', async () => {
+    const store = fakeStore(undefined, [], undefined, undefined, undefined, {
+      singleBalance: balance(),
+    });
+    const outcome = await readBalance(store, WORKSPACE_ID, account().id);
+    expect(outcome.kind).toBe(ACCOUNT_BALANCE_OUTCOMES.FORBIDDEN);
+  });
+
+  it('answers not_found when the account does not exist in the store', async () => {
+    const store = fakeStore('owner', [], undefined, undefined, undefined);
+    const outcome = await readBalance(store, WORKSPACE_ID, account().id);
+    expect(outcome.kind).toBe(ACCOUNT_BALANCE_OUTCOMES.NOT_FOUND);
+    expect(store.readAccountBalance).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      account().id,
+      undefined,
+    );
+  });
+
+  it('returns ok with the balance when the actor is authorized and the balance exists', async () => {
+    const bal = balance();
+    const store = fakeStore('owner', [], undefined, undefined, undefined, {
+      singleBalance: bal,
+    });
+    const outcome = await readBalance(store, WORKSPACE_ID, bal.accountId);
+    expect(outcome).toEqual({
+      kind: ACCOUNT_BALANCE_OUTCOMES.OK,
+      balance: bal,
+    });
+    expect(store.readAccountBalance).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      bal.accountId,
+      undefined,
+    );
+  });
+
+  it('admits a viewer because the select policy admits all four roles', async () => {
+    const bal = balance();
+    const store = fakeStore('viewer', [], undefined, undefined, undefined, {
+      singleBalance: bal,
+    });
+    const outcome = await readBalance(store, WORKSPACE_ID, bal.accountId);
+    expect(outcome).toEqual({
+      kind: ACCOUNT_BALANCE_OUTCOMES.OK,
+      balance: bal,
+    });
+  });
+
+  it('forwards asOf parameter to the store', async () => {
+    const bal = balance();
+    const store = fakeStore('owner', [], undefined, undefined, undefined, {
+      singleBalance: bal,
+    });
+    const asOf = '2026-06-15T12:00:00.000Z';
+    const outcome = await readBalance(store, WORKSPACE_ID, bal.accountId, asOf);
+    expect(outcome).toEqual({
+      kind: ACCOUNT_BALANCE_OUTCOMES.OK,
+      balance: bal,
+    });
+    expect(store.readAccountBalance).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      bal.accountId,
+      asOf,
+    );
   });
 });
 
@@ -615,14 +754,9 @@ describe('AccountsService.create', () => {
   });
 
   it('refuses creation with currency_unsupported when command currency differs from workspace base currency and never writes or creates account', async () => {
-    const store = fakeStore(
-      'owner',
-      [],
-      undefined,
-      account(),
-      undefined,
-      'USD',
-    );
+    const store = fakeStore('owner', [], undefined, account(), undefined, {
+      baseCurrency: 'USD',
+    });
     const storeWithCreate = {
       ...store,
       createAccount: vi.fn(),
@@ -659,14 +793,9 @@ describe('AccountsService.create', () => {
 
   it('allows creation when command currency matches workspace base currency', async () => {
     const createdAccount = account({ currency: 'USD' });
-    const store = fakeStore(
-      'owner',
-      [],
-      undefined,
-      createdAccount,
-      undefined,
-      'USD',
-    );
+    const store = fakeStore('owner', [], undefined, createdAccount, undefined, {
+      baseCurrency: 'USD',
+    });
     const storeWithCreate = {
       ...store,
       createAccount: vi.fn().mockResolvedValue(createdAccount),
@@ -698,14 +827,9 @@ describe('AccountsService.create', () => {
 
   it('allows creation in a non-USD workspace when currency matches that workspace base currency', async () => {
     const createdAccount = account({ currency: 'EUR' });
-    const store = fakeStore(
-      'owner',
-      [],
-      undefined,
-      createdAccount,
-      undefined,
-      'EUR',
-    );
+    const store = fakeStore('owner', [], undefined, createdAccount, undefined, {
+      baseCurrency: 'EUR',
+    });
     const storeWithCreate = {
       ...store,
       createAccount: vi.fn().mockResolvedValue(createdAccount),
@@ -736,14 +860,9 @@ describe('AccountsService.create', () => {
   });
 
   it('answers forbidden when workspace base currency read is undefined', async () => {
-    const store = fakeStore(
-      'owner',
-      [],
-      undefined,
-      account(),
-      undefined,
-      undefined,
-    );
+    const store = fakeStore('owner', [], undefined, account(), undefined, {
+      baseCurrency: undefined,
+    });
     const storeWithCreate = {
       ...store,
       createAccount: vi.fn(),
@@ -796,14 +915,9 @@ describe('AccountsService.create', () => {
       ),
     };
 
-    const store = fakeStore(
-      'owner',
-      [],
-      undefined,
-      createdAccount,
-      undefined,
-      'USD',
-    );
+    const store = fakeStore('owner', [], undefined, createdAccount, undefined, {
+      baseCurrency: 'USD',
+    });
     const storeWithCreate = {
       ...store,
       createAccount: vi.fn().mockResolvedValue(createdAccount),
@@ -826,8 +940,18 @@ describe('AccountsService.create', () => {
     });
     expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
 
-    // Workspace base currency mutates in store
+    // Workspace base currency mutates in store.
     storeWithCreate.readWorkspaceBaseCurrency.mockResolvedValue('EUR');
+
+    // Pin the precondition this scenario is named for. Without these two lines
+    // the test still passes when the mutation above is deleted, because the
+    // idempotency branch returns before any second currency read: the scenario
+    // would silently degrade into ordinary replay coverage.
+    await expect(
+      storeWithCreate.readWorkspaceBaseCurrency(CLIENT, WORKSPACE_ID),
+    ).resolves.toBe('EUR');
+    const readsBeforeReplay =
+      storeWithCreate.readWorkspaceBaseCurrency.mock.calls.length;
 
     // Replay same key and same payload
     const second = await service.create(
@@ -843,6 +967,11 @@ describe('AccountsService.create', () => {
       body: createdAccount,
     });
     expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
+    // The replay short-circuits before the currency check, so the mutated
+    // base currency is never consulted.
+    expect(storeWithCreate.readWorkspaceBaseCurrency.mock.calls.length).toBe(
+      readsBeforeReplay,
+    );
   });
 });
 
