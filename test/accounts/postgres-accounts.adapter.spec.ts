@@ -300,21 +300,55 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     const [balanceSql, balanceValues] = (
       client.query as ReturnType<typeof vi.fn>
     ).mock.calls[1] as [string, unknown[]];
-    expect(balanceSql).toContain('from public.ledger_postings');
+    expect(balanceSql).toContain('from public.ledger_postings posting');
     expect(balanceSql).toContain(
-      "filter (where status in ('confirmed', 'reconciled'))",
+      "filter (where posting.status in ('confirmed', 'reconciled'))",
     );
-    expect(balanceSql).toContain("filter (where status = 'pending')");
-    expect(balanceSql).toContain("filter (where status = 'reconciled')");
+    expect(balanceSql).toContain("filter (where posting.status = 'pending')");
+    expect(balanceSql).toContain(
+      "filter (where posting.status = 'reconciled')",
+    );
     expect(balanceSql).toContain(
       'to_char(coalesce($3::timestamptz, now()) at time zone \'utc\', \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\') as "effectiveAsOf"',
     );
-    expect(balanceSql).toContain('where workspace_id = $1::uuid');
-    expect(balanceSql).toContain('and account_id = $2::uuid');
+    expect(balanceSql).toContain('where posting.workspace_id = $1::uuid');
+    expect(balanceSql).toContain('and posting.account_id = $2::uuid');
     expect(balanceSql).toContain(
-      'and occurred_at <= coalesce($3::timestamptz, now())',
+      'and posting.occurred_at <= coalesce($3::timestamptz, now())',
     );
     expect(balanceValues).toEqual([workspaceId, accountId, asOf]);
+  });
+
+  it('scopes the balance aggregate query to matching account currency via accounts join', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ currency: 'USD' }],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              nativeBalance: '1000',
+              pendingBalance: '0',
+              reconciledBalance: '0',
+              effectiveAsOf: '2026-07-15T12:00:00.000Z',
+            },
+          ],
+        }),
+    };
+
+    await adapter.readAccountBalance(client, workspaceId, accountId, undefined);
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    const [balanceSql] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[1] as [string, unknown[]];
+    expect(balanceSql).toContain('join public.accounts acct');
+    expect(balanceSql).toContain('on acct.id = posting.account_id');
+    expect(balanceSql).toContain(
+      'and acct.workspace_id = posting.workspace_id',
+    );
+    expect(balanceSql).toContain('and posting.currency = acct.currency');
   });
 
   it('handles account with no postings by defaulting buckets to "0"', async () => {

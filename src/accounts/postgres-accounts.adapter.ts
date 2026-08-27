@@ -466,17 +466,23 @@ select a.currency
       return undefined;
     }
 
-    // 2. Single-table bucket aggregation query on ledger_postings using covering index
+    // 2. Bucket aggregation query on ledger_postings scoped strictly to the account currency
     const balanceSql = `
 select
-  coalesce(sum(amount_minor) filter (where status in ('confirmed', 'reconciled')), 0)::text as "nativeBalance",
-  coalesce(sum(amount_minor) filter (where status = 'pending'), 0)::text as "pendingBalance",
-  coalesce(sum(amount_minor) filter (where status = 'reconciled'), 0)::text as "reconciledBalance",
+  coalesce(sum(posting.amount_minor) filter (where posting.status in ('confirmed', 'reconciled')), 0)::text as "nativeBalance",
+  coalesce(sum(posting.amount_minor) filter (where posting.status = 'pending'), 0)::text as "pendingBalance",
+  coalesce(sum(posting.amount_minor) filter (where posting.status = 'reconciled'), 0)::text as "reconciledBalance",
   to_char(coalesce($3::timestamptz, now()) at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "effectiveAsOf"
-  from public.ledger_postings
- where workspace_id = $1::uuid
-   and account_id = $2::uuid
-   and occurred_at <= coalesce($3::timestamptz, now())`;
+  from public.ledger_postings posting
+  join public.accounts acct
+    on acct.id = posting.account_id
+   and acct.workspace_id = posting.workspace_id
+ where posting.workspace_id = $1::uuid
+   and posting.account_id = $2::uuid
+   -- The balance is reported with the account's currency, so summing postings in any
+   -- other currency would produce a number the response's own currency field misdescribes.
+   and posting.currency = acct.currency
+   and posting.occurred_at <= coalesce($3::timestamptz, now())`;
 
     const balanceResult = await client.query<{
       nativeBalance: string;
