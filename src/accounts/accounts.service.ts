@@ -6,6 +6,7 @@ import {
   ACCOUNT_CREATE_OUTCOMES,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
+  ACCOUNT_UPDATE_OUTCOMES,
   type Account,
   type AccountCreateOutcome,
   type AccountCursor,
@@ -13,8 +14,10 @@ import {
   type AccountListQuery,
   type AccountReadOutcome,
   type AccountStatus,
+  type AccountUpdateOutcome,
   type AccountsPort,
   type CreateAccountCommand,
+  type UpdateAccountCommand,
 } from './accounts.port.js';
 
 export interface AccountItem {
@@ -61,6 +64,13 @@ export interface AccountsStore {
     subject: string,
     command: CreateAccountCommand,
   ): Promise<Account>;
+  updateAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    command: UpdateAccountCommand,
+    expectedVersions?: number | readonly number[],
+  ): Promise<Account | undefined>;
 }
 
 export class AccountsService implements AccountsPort {
@@ -227,6 +237,87 @@ export class AccountsService implements AccountsPort {
       return {
         kind: ACCOUNT_CREATE_OUTCOMES.CREATED,
         account,
+      };
+    });
+  }
+
+  public async update(
+    subject: string,
+    workspaceId: string,
+    accountId: string,
+    command: UpdateAccountCommand,
+    expectedVersions?: number | readonly number[],
+  ): Promise<AccountUpdateOutcome> {
+    return this.transaction.run(subject, async (client) => {
+      // Check authorization before any write
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (
+        role === undefined ||
+        !['owner', 'administrator', 'editor'].includes(role)
+      ) {
+        return { kind: ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN };
+      }
+
+      const existing = await this.store.readAccount(
+        client,
+        workspaceId,
+        accountId,
+      );
+      if (existing === undefined) {
+        return { kind: ACCOUNT_UPDATE_OUTCOMES.NOT_FOUND };
+      }
+
+      // A closed account cannot be modified: closure is a terminal lifecycle state,
+      // and the SQL UPDATE RLS policy explicitly enforces accounts.status <> 'closed'.
+      // We return 403 Forbidden rather than a confusing 404 (since the account exists).
+      if (existing.status === 'closed') {
+        return { kind: ACCOUNT_UPDATE_OUTCOMES.CLOSED };
+      }
+
+      if (expectedVersions !== undefined) {
+        const matches =
+          typeof expectedVersions === 'number'
+            ? existing.version === expectedVersions
+            : expectedVersions.includes(existing.version);
+        if (!matches) {
+          return { kind: ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT };
+        }
+      }
+
+      const updated = await this.store.updateAccount(
+        client,
+        workspaceId,
+        accountId,
+        command,
+        expectedVersions,
+      );
+
+      if (updated === undefined) {
+        // A zero-row UPDATE has distinct causes:
+        // 1. The account was deleted mid-transaction -> not-found (404)
+        // 2. The account was closed mid-transaction -> closed (403)
+        // 3. A concurrent update bumped the version -> version-conflict (412)
+        // 4. Role revocation or RLS restriction -> forbidden (403)
+        const reread = await this.store.readAccount(
+          client,
+          workspaceId,
+          accountId,
+        );
+        if (reread === undefined) {
+          return { kind: ACCOUNT_UPDATE_OUTCOMES.NOT_FOUND };
+        }
+        if (reread.status === 'closed') {
+          return { kind: ACCOUNT_UPDATE_OUTCOMES.CLOSED };
+        }
+        if (reread.version !== existing.version) {
+          return { kind: ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT };
+        }
+        return { kind: ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN };
+      }
+
+      return {
+        kind: ACCOUNT_UPDATE_OUTCOMES.OK,
+        account: updated,
       };
     });
   }

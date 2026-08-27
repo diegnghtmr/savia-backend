@@ -3,6 +3,7 @@ import {
   currencyValue,
   enumValue,
   nameValue,
+  nullableStringValue,
   optionalBooleanValue,
   optionalStringValue,
   sortViolations,
@@ -12,9 +13,10 @@ import {
   ACCOUNT_TYPE,
   type AccountType,
   type CreateAccountCommand,
+  type UpdateAccountCommand,
 } from './accounts.port.js';
 
-export type { CreateAccountCommand };
+export type { CreateAccountCommand, UpdateAccountCommand };
 
 const ALLOWED_FIELDS = [
   'name',
@@ -292,4 +294,114 @@ export function createAccountCommand(input: unknown): CreateAccountCommand {
     description,
     includeInNetWorth,
   });
+}
+
+const UPDATE_ALLOWED_FIELDS = [
+  'name',
+  'institution',
+  'maskedNumber',
+  'description',
+  'includeInNetWorth',
+  'status',
+] as const;
+
+const UPDATE_ACCOUNT_STATUSES = ['active', 'archived'] as const;
+
+export function createUpdateAccountCommand(
+  input: unknown,
+): UpdateAccountCommand {
+  const violations: FieldViolation[] = [];
+
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    add(violations, 'body', 'invalid-type', 'must be an object');
+    throw new AccountCommandValidationError(Object.freeze(violations));
+  }
+
+  const body = input as Record<string, unknown>;
+  const keys = Object.keys(body);
+
+  if (keys.length === 0) {
+    add(
+      violations,
+      'body',
+      'empty-update',
+      'must contain at least one field to update',
+    );
+  }
+
+  for (const key of keys) {
+    if (
+      !UPDATE_ALLOWED_FIELDS.includes(
+        key as (typeof UPDATE_ALLOWED_FIELDS)[number],
+      )
+    ) {
+      add(violations, key, 'not-allowed', 'is not allowed');
+    }
+  }
+
+  const command: {
+    name?: string;
+    institution?: string | null;
+    maskedNumber?: string | null;
+    description?: string | null;
+    includeInNetWorth?: boolean;
+    status?: 'active' | 'archived';
+  } = {};
+
+  if ('name' in body) {
+    command.name = nameValue(body.name, 'name', violations);
+  }
+
+  if ('institution' in body) {
+    command.institution = nullableStringValue(
+      body.institution,
+      'institution',
+      violations,
+      120,
+    );
+  }
+
+  if ('maskedNumber' in body) {
+    command.maskedNumber = nullableStringValue(
+      body.maskedNumber,
+      'maskedNumber',
+      violations,
+      32,
+    );
+  }
+
+  if ('description' in body) {
+    command.description = nullableStringValue(
+      body.description,
+      'description',
+      violations,
+      500,
+    );
+  }
+
+  if ('includeInNetWorth' in body) {
+    if (typeof body.includeInNetWorth !== 'boolean') {
+      add(violations, 'includeInNetWorth', 'invalid-type', 'must be a boolean');
+    } else {
+      command.includeInNetWorth = body.includeInNetWorth;
+    }
+  }
+
+  if ('status' in body) {
+    command.status = enumValue(
+      body.status,
+      'status',
+      UPDATE_ACCOUNT_STATUSES,
+      violations,
+      'status must be one of active, archived',
+    );
+  }
+
+  if (violations.length > 0) {
+    throw new AccountCommandValidationError(
+      Object.freeze(sortViolations(violations)),
+    );
+  }
+
+  return Object.freeze(command);
 }

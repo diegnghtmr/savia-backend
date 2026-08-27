@@ -124,6 +124,40 @@ export function optionalStringValue(
   return value;
 }
 
+export function nullableStringValue(
+  value: unknown,
+  field: string,
+  violations: FieldViolation[],
+  maxLength?: number,
+): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    add(violations, field, 'invalid-type', 'must be a string or null');
+    return null;
+  }
+  if (value.includes('\0')) {
+    add(
+      violations,
+      field,
+      'invalid-characters',
+      'must not contain null characters',
+    );
+    return null;
+  }
+  if (maxLength !== undefined && [...value].length > maxLength) {
+    add(
+      violations,
+      field,
+      'max-length',
+      `must be at most ${maxLength} characters`,
+    );
+    return null;
+  }
+  return value;
+}
+
 export function optionalBooleanValue<T extends boolean>(
   value: unknown,
   field: string,

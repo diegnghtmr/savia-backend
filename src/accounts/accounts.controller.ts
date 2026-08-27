@@ -3,6 +3,7 @@ import {
   Get,
   Inject,
   Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -15,6 +16,7 @@ import {
   ACCOUNT_CREATE_OUTCOMES,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
+  ACCOUNT_UPDATE_OUTCOMES,
   ACCOUNTS_PORT,
   type AccountsPort,
 } from './accounts.port.js';
@@ -22,11 +24,14 @@ import { createAccountListQuery } from './account-query.js';
 import { AccountQueryValidationError } from './account-query.js';
 import {
   createAccountCommand,
+  createUpdateAccountCommand,
   AccountCommandValidationError,
   type CreateAccountCommand,
+  type UpdateAccountCommand,
 } from './account-command.js';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
+import { parseIfMatch } from '../platform/if-match.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
@@ -227,6 +232,115 @@ export class AccountsController {
         type: PROBLEM_TYPES.NOT_FOUND,
         title: 'Account not found',
         status: 404,
+      });
+      return;
+    }
+
+    void reply
+      .header('etag', `"${outcome.account.version}"`)
+      .status(200)
+      .send(outcome.account);
+  }
+
+  @Patch(':accountId')
+  public async updateAccount(
+    @Param('accountId') accountId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(accountId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid account identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    const ifMatch = parseIfMatch(request.headers['if-match']);
+    if (ifMatch.kind === 'malformed') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+      return;
+    }
+
+    let command: UpdateAccountCommand;
+    try {
+      command = createUpdateAccountCommand(request.body);
+    } catch (error) {
+      if (error instanceof AccountCommandValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Account update validation failed',
+          status: 422,
+          errors: error.violations,
+        });
+        return;
+      }
+      throw error;
+    }
+
+    let expectedVersions: number | readonly number[] | undefined;
+    if (ifMatch.kind === 'versions') {
+      expectedVersions =
+        ifMatch.versions.length === 1 ? ifMatch.versions[0] : ifMatch.versions;
+    } else {
+      expectedVersions = undefined;
+    }
+
+    const outcome = await this.accounts.update(
+      request.identity.subject,
+      header.workspaceId,
+      accountId,
+      command,
+      expectedVersions,
+    );
+
+    if (outcome.kind === ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_UPDATE_OUTCOMES.CLOSED) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Account is closed',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_UPDATE_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Account not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
       });
       return;
     }

@@ -12,6 +12,7 @@ import {
   type AccountListOutcome,
   type AccountListQuery,
   type AccountReadOutcome,
+  type AccountUpdateOutcome,
   type AccountsPort,
 } from '../src/accounts/accounts.port.js';
 import { AccountsModule } from '../src/accounts/accounts.module.js';
@@ -92,11 +93,16 @@ async function createApplication(
     kind: 'created',
     account: ACCOUNT,
   } satisfies AccountCreateOutcome),
+  update: AccountsPort['update'] = vi.fn().mockResolvedValue({
+    kind: 'ok',
+    account: { ...ACCOUNT, name: 'Updated Wallet', version: 2 },
+  } satisfies AccountUpdateOutcome),
 ): Promise<{
   application: NestFastifyApplication;
   list: AccountsPort['list'];
   read: AccountsPort['read'];
   create: AccountsPort['create'];
+  update: AccountsPort['update'];
 }> {
   const moduleRef = await Test.createTestingModule({
     imports: [AccountsModule],
@@ -104,7 +110,7 @@ async function createApplication(
     .overrideProvider(JoseJwtVerifier)
     .useValue(verifier)
     .overrideProvider(ACCOUNTS_PORT)
-    .useValue({ list, read, create })
+    .useValue({ list, read, create, update })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -112,7 +118,33 @@ async function createApplication(
   registerProblemFilter(app);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
-  return { application: app, list, read, create };
+  return { application: app, list, read, create, update };
+}
+
+function patchAccount(
+  application: NestFastifyApplication,
+  accountId: string,
+  body: unknown,
+  options: {
+    token?: string;
+    workspaceHeader?: string;
+    ifMatch?: string;
+  } = {},
+) {
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+  };
+  if (options.token !== undefined)
+    headers.authorization = `Bearer ${options.token}`;
+  if (options.workspaceHeader !== undefined)
+    headers['x-workspace-id'] = options.workspaceHeader;
+  if (options.ifMatch !== undefined) headers['if-match'] = options.ifMatch;
+  return application.inject({
+    method: 'PATCH',
+    url: `/v1/accounts/${accountId}`,
+    headers,
+    payload: typeof body === 'string' ? body : JSON.stringify(body),
+  });
 }
 
 function postAccount(
@@ -986,5 +1018,406 @@ describe('POST /v1/accounts', () => {
       }),
     );
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /v1/accounts/:accountId', () => {
+  const ACCOUNT_ID = 'b3a1c2d3-1111-4222-8333-a44455556666';
+  const VALID_PATCH_BODY = {
+    name: 'Updated Checking',
+    institution: 'New Bank',
+    includeInNetWorth: false,
+    status: 'archived',
+  };
+
+  it('answers 200 with updated account and NEW version in ETag header when If-Match matches', async () => {
+    const updatedAccount = {
+      ...ACCOUNT,
+      name: 'Updated Checking',
+      institution: 'New Bank',
+      includeInNetWorth: false,
+      status: 'archived' as const,
+      updatedAt: '2026-07-02T00:00:00.000Z',
+      version: 2,
+    };
+    const update = vi.fn<AccountsPort['update']>().mockResolvedValue({
+      kind: 'ok',
+      account: updatedAccount,
+    } satisfies AccountUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      VALID_PATCH_BODY,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        ifMatch: `"${ACCOUNT.version}"`,
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('application/json');
+    expect(response.headers.etag).toBe(`"${updatedAccount.version}"`);
+    expect(JSON.parse(response.payload)).toEqual(updatedAccount);
+    expect(update).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      {
+        name: 'Updated Checking',
+        institution: 'New Bank',
+        includeInNetWorth: false,
+        status: 'archived',
+      },
+      1,
+    );
+  });
+
+  it('answers 200 when If-Match header is absent', async () => {
+    const updatedAccount = {
+      ...ACCOUNT,
+      name: 'Updated Checking',
+      version: 2,
+    };
+    const update = vi.fn<AccountsPort['update']>().mockResolvedValue({
+      kind: 'ok',
+      account: updatedAccount,
+    } satisfies AccountUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      { name: 'Updated Checking' },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers.etag).toBe(`"${updatedAccount.version}"`);
+    expect(update).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      { name: 'Updated Checking' },
+      undefined,
+    );
+  });
+
+  it('answers 412 problem+json when If-Match header is malformed (weak validator W/"1")', async () => {
+    const update = vi.fn<AccountsPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      VALID_PATCH_BODY,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        ifMatch: 'W/"1"',
+      },
+    );
+
+    expect(response.statusCode).toBe(412);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.PRECONDITION_FAILED);
+    expect(body.title).toBe('Precondition failed');
+    expect(body.status).toBe(412);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 412 problem+json when If-Match version is stale (version conflict)', async () => {
+    const update = vi.fn<AccountsPort['update']>().mockResolvedValue({
+      kind: 'version_conflict',
+    } satisfies AccountUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      VALID_PATCH_BODY,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        ifMatch: '"1"',
+      },
+    );
+
+    expect(response.statusCode).toBe(412);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.PRECONDITION_FAILED);
+    expect(body.title).toBe('Precondition failed');
+    expect(body.status).toBe(412);
+  });
+
+  it('answers 401 problem+json when Bearer token is missing', async () => {
+    const update = vi.fn<AccountsPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      VALID_PATCH_BODY,
+      {
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 problem+json when X-Workspace-Id header is missing', async () => {
+    const update = vi.fn<AccountsPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      VALID_PATCH_BODY,
+      {
+        token: TOKEN,
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Invalid X-Workspace-Id header');
+    expect(body.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 problem+json when accountId in route parameter is not a valid UUID', async () => {
+    const update = vi.fn<AccountsPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      'not-a-valid-uuid',
+      VALID_PATCH_BODY,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Invalid account identifier');
+    expect(body.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 403 problem+json when workspace access is forbidden', async () => {
+    const update = vi.fn<AccountsPort['update']>().mockResolvedValue({
+      kind: 'forbidden',
+    } satisfies AccountUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      VALID_PATCH_BODY,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Workspace access forbidden');
+    expect(body.status).toBe(403);
+  });
+
+  it('answers 403 problem+json with Account is closed when account is closed', async () => {
+    const update = vi.fn<AccountsPort['update']>().mockResolvedValue({
+      kind: 'closed',
+    } satisfies AccountUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      VALID_PATCH_BODY,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Account is closed');
+    expect(body.status).toBe(403);
+  });
+
+  it('answers 404 problem+json when account is not found', async () => {
+    const update = vi.fn<AccountsPort['update']>().mockResolvedValue({
+      kind: 'not_found',
+    } satisfies AccountUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      VALID_PATCH_BODY,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(404);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Account not found');
+    expect(body.status).toBe(404);
+  });
+
+  it('answers 422 problem+json when request body fails validation (empty body)', async () => {
+    const update = vi.fn<AccountsPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      {},
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.status).toBe(422);
+    expect(body.errors).toContainEqual(
+      expect.objectContaining({
+        field: 'body',
+        code: 'empty-update',
+      }),
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 422 problem+json when request body contains status: closed', async () => {
+    const update = vi.fn<AccountsPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      { status: 'closed' },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.status).toBe(422);
+    expect(body.errors).toContainEqual(
+      expect.objectContaining({
+        field: 'status',
+        code: 'unsupported',
+      }),
+    );
+    expect(update).not.toHaveBeenCalled();
   });
 });

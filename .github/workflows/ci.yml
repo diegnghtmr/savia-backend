@@ -140,6 +140,9 @@ jobs:
       - name: create account integration
         shell: bash
         run: pnpm test:integration:create-account
+      - name: update account integration
+        shell: bash
+        run: pnpm test:integration:update-account
       - name: transactions schema integration
         shell: bash
         run: pnpm test:integration:transactions-schema

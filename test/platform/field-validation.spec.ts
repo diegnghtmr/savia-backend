@@ -6,6 +6,7 @@ import {
   currencyValue,
   enumValue,
   nameValue,
+  nullableStringValue,
   optionalBooleanValue,
   optionalStringValue,
   sortViolations,
@@ -254,6 +255,79 @@ describe('platform field-validation primitives', () => {
       expect([...overLong].length).toBe(11);
       expect(
         optionalStringValue(overLong, 'institution', violations, 10),
+      ).toBeNull();
+      expect(violations).toEqual([
+        {
+          field: 'institution',
+          code: 'max-length',
+          message: 'must be at most 10 characters',
+        },
+      ]);
+    });
+  });
+
+  describe('nullableStringValue', () => {
+    it('returns null when value is null without adding violations (clears field)', () => {
+      const violations: FieldViolation[] = [];
+      expect(
+        nullableStringValue(null, 'institution', violations, 120),
+      ).toBeNull();
+      expect(violations).toHaveLength(0);
+    });
+
+    it('returns null when value is undefined without adding violations', () => {
+      const violations: FieldViolation[] = [];
+      expect(
+        nullableStringValue(undefined, 'institution', violations, 120),
+      ).toBeNull();
+      expect(violations).toHaveLength(0);
+    });
+
+    it('returns string untrimmed when value is a valid string', () => {
+      const violations: FieldViolation[] = [];
+      expect(
+        nullableStringValue('  Bancolombia  ', 'institution', violations, 120),
+      ).toBe('  Bancolombia  ');
+      expect(violations).toHaveLength(0);
+    });
+
+    it.each([123, true, false, {}, []])(
+      'adds invalid-type violation when defined value %s is not a string or null',
+      (badValue) => {
+        const violations: FieldViolation[] = [];
+        expect(
+          nullableStringValue(badValue, 'institution', violations, 120),
+        ).toBeNull();
+        expect(violations).toEqual([
+          {
+            field: 'institution',
+            code: 'invalid-type',
+            message: 'must be a string or null',
+          },
+        ]);
+      },
+    );
+
+    it('adds invalid-characters violation when string contains null characters', () => {
+      const violations: FieldViolation[] = [];
+      expect(
+        nullableStringValue('Bank\0Corp', 'institution', violations, 120),
+      ).toBeNull();
+      expect(violations).toEqual([
+        {
+          field: 'institution',
+          code: 'invalid-characters',
+          message: 'must not contain null characters',
+        },
+      ]);
+    });
+
+    it('adds max-length violation when code-point length exceeds maxLength', () => {
+      const violations: FieldViolation[] = [];
+      const overLong = '\u{1F600}' + 'a'.repeat(10);
+      expect([...overLong].length).toBe(11);
+      expect(
+        nullableStringValue(overLong, 'institution', violations, 10),
       ).toBeNull();
       expect(violations).toEqual([
         {
