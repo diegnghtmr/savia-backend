@@ -266,6 +266,34 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       expect(elevatedPrivRes.rows[0].public_exec_acc_fn).toBe(false);
       expect(elevatedPrivRes.rows[0].public_exec_ws_fn).toBe(false);
     });
+
+    it('2. Both triggers pin their specific UPDATE OF column lists in pg_trigger.tgattr', async () => {
+      const accountsColsRes = await admin.query<{ col_name: string }>(
+        `select a.attname::text as col_name
+           from pg_trigger t
+           join pg_attribute a
+             on a.attrelid = t.tgrelid
+            and a.attnum = any(string_to_array(t.tgattr::text, ' ')::int2[])
+          where t.tgrelid = 'public.accounts'::regclass
+            and t.tgname = 'enforce_account_currency_matches_workspace_trigger'
+          order by a.attname`,
+      );
+      const accountsCols = accountsColsRes.rows.map((r) => r.col_name);
+      expect(accountsCols).toEqual(['currency', 'workspace_id']);
+
+      const workspacesColsRes = await admin.query<{ col_name: string }>(
+        `select a.attname::text as col_name
+           from pg_trigger t
+           join pg_attribute a
+             on a.attrelid = t.tgrelid
+            and a.attnum = any(string_to_array(t.tgattr::text, ' ')::int2[])
+          where t.tgrelid = 'public.workspaces'::regclass
+            and t.tgname = 'enforce_workspace_base_currency_account_invariant_trigger'
+          order by a.attname`,
+      );
+      const workspacesCols = workspacesColsRes.rows.map((r) => r.col_name);
+      expect(workspacesCols).toEqual(['base_currency']);
+    });
   });
 
   describe('Invariant Enforcement (behavioral live proofs)', () => {
@@ -514,6 +542,37 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
         }
         client1.release();
         client2.release();
+      }
+    });
+
+    it('h. A direct update of public.accounts moving workspace_id to a workspace with differing base_currency raises SQLSTATE 23514', async () => {
+      const inserted = await admin.query<{ id: string }>(
+        `insert into public.accounts (workspace_id, name, type, currency, created_by)
+         values ($1, 'Account To Move Across Workspaces', 'checking', 'USD', $2)
+         returning id`,
+        [ws1Id, ownerA],
+      );
+      const accId = inserted.rows[0]?.id;
+      expect(accId).toBeDefined();
+      try {
+        const err = await capturePgError(() =>
+          admin.query(
+            `update public.accounts set workspace_id = $1 where id = $2`,
+            [ws2Id, accId],
+          ),
+        );
+        expect(err.code).toBe('23514');
+        expect(err.message ?? '').toContain(
+          'account currency must match workspace base currency',
+        );
+
+        const unchanged = await admin.query<{ workspace_id: string }>(
+          'select workspace_id::text from public.accounts where id = $1',
+          [accId],
+        );
+        expect(unchanged.rows[0].workspace_id).toBe(ws1Id);
+      } finally {
+        if (accId) await deleteAccount(accId);
       }
     });
   });
