@@ -96,6 +96,11 @@
       "operationId": "updateAccount",
       "method": "PATCH",
       "path": "/v1/accounts/{accountId}"
+    },
+    {
+      "operationId": "getAccountBalance",
+      "method": "GET",
+      "path": "/v1/accounts/{accountId}/balance"
     }
   ]
 }

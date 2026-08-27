@@ -437,6 +437,11 @@ components:
       examples:
         - '125000'
         - '-5000'
+    DecimalString:
+      type: string
+      pattern: '^-?[0-9]+(?:\.[0-9]+)?$'
+      examples:
+        - '4123.450000000000000000'
     Money:
       type: object
       required:
@@ -447,6 +452,51 @@ components:
           $ref: '#/components/schemas/AmountMinor'
         currency:
           $ref: '#/components/schemas/CurrencyCode'
+      additionalProperties: false
+    ConvertedMoney:
+      type: object
+      required:
+        - original
+        - converted
+        - rate
+        - rateDate
+        - rateSource
+      properties:
+        original:
+          $ref: '#/components/schemas/Money'
+        converted:
+          $ref: '#/components/schemas/Money'
+        rate:
+          $ref: '#/components/schemas/DecimalString'
+        rateDate:
+          $ref: '#/components/schemas/Date'
+        rateSource:
+          type: string
+      additionalProperties: false
+    AccountBalance:
+      type: object
+      required:
+        - accountId
+        - nativeBalance
+        - baseCurrencyEquivalent
+        - asOf
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        nativeBalance:
+          $ref: '#/components/schemas/Money'
+        pendingBalance:
+          $ref: '#/components/schemas/Money'
+        availableBalance:
+          $ref: '#/components/schemas/Money'
+        reconciledBalance:
+          $ref: '#/components/schemas/Money'
+        baseCurrencyEquivalent:
+          $ref: '#/components/schemas/ConvertedMoney'
+        asOf:
+          type: string
+          format: date-time
       additionalProperties: false
     CreateAccountRequest:
       type: object
@@ -1887,3 +1937,76 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/accounts/{accountId}/balance:
+    get:
+      operationId: getAccountBalance
+      tags:
+        - Accounts
+      summary: Get account balance
+      description: >-
+        Retrieves the account balance. Note that the asOf parameter filters ledger postings with occurred_at <= asOf using their current status; historical status point-in-time reconstitution is not performed.
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: asOf
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Account balance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountBalance'
+        '400':
+          description: The account identifier, workspace identifier, or query parameter is invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Account not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: get_account_balance
+        riskClass: read
+        requiresApproval: false
+        requiredScopes:
+          - accounts:read
