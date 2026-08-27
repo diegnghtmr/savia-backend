@@ -144,7 +144,7 @@ describe('architecture fitness tripwires', () => {
       expect(violations).toEqual([]);
     });
 
-    it('verifies real OpenAPI contract has no financial idempotency violations (vacuous today)', () => {
+    it('verifies real OpenAPI contract has no financial idempotency violations', () => {
       const contractPath = 'openapi/savia.openapi.yaml';
       const directory = mkdtempSync(join(tmpdir(), 'savia-tripwire-'));
       const output = join(directory, 'contract.json');

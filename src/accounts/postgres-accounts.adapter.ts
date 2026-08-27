@@ -524,4 +524,92 @@ select
       asOf: asOfIso,
     };
   }
+
+  public async hasUnsettledTransactions(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+  ): Promise<boolean> {
+    // Lock-ordering convention: locks are acquired in the order SUBJECT (taken by
+    // PgTransaction.run) -> WORKSPACE (taken by readWorkspaceBaseCurrency and
+    // hasAccounts) -> ACCOUNT (taken here). Any future writer of public.transactions
+    // for an account — in particular the createTransaction operation of a later slice —
+    // MUST take this same per-account lock, or this precondition is not serialized.
+    await client.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [accountId.toLowerCase()],
+    );
+    const sql = `
+select 1
+  from public.transactions
+ where workspace_id = $1::uuid
+   and account_id = $2::uuid
+   and status in ('draft', 'pending')
+ limit 1`;
+    const result = await client.query(sql, [workspaceId, accountId]);
+    return result.rows.length > 0;
+  }
+
+  public async closeAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<Account | undefined> {
+    const versions =
+      typeof expectedVersions === 'number'
+        ? [expectedVersions]
+        : (expectedVersions ?? null);
+
+    const sql = `
+update public.accounts
+   set status = 'closed',
+       closed_at = now(),
+       updated_at = now(),
+       version = version + 1
+ where workspace_id = $1::uuid
+   and id = $2::uuid
+   and ($3::integer[] is null or version = any($3::integer[]))
+returning
+  id::text,
+  name,
+  type,
+  currency,
+  status,
+  institution,
+  masked_number as "maskedNumber",
+  description,
+  color_token as "colorToken",
+  icon,
+  include_in_net_worth as "includeInNetWorth",
+  created_at as "createdAt",
+  updated_at as "updatedAt",
+  version`;
+
+    const result = await client.query<AccountRow>(sql, [
+      workspaceId,
+      accountId,
+      versions,
+    ]);
+    const row = result.rows[0];
+    if (!row) {
+      return undefined;
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      currency: row.currency,
+      status: row.status,
+      institution: row.institution,
+      maskedNumber: row.maskedNumber,
+      description: row.description,
+      colorToken: row.colorToken,
+      icon: row.icon,
+      includeInNetWorth: row.includeInNetWorth,
+      createdAt: toIso(row.createdAt),
+      updatedAt: toIso(row.updatedAt),
+      version: row.version,
+    };
+  }
 }

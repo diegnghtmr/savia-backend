@@ -101,6 +101,11 @@
       "operationId": "getAccountBalance",
       "method": "GET",
       "path": "/v1/accounts/{accountId}/balance"
+    },
+    {
+      "operationId": "closeAccount",
+      "method": "POST",
+      "path": "/v1/accounts/{accountId}/close"
     }
   ]
 }

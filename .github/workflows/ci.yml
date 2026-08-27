@@ -146,6 +146,9 @@ jobs:
       - name: accounts balance integration
         shell: bash
         run: pnpm test:integration:accounts-balance
+      - name: accounts close integration
+        shell: bash
+        run: pnpm test:integration:accounts-close
       - name: transactions schema integration
         shell: bash
         run: pnpm test:integration:transactions-schema

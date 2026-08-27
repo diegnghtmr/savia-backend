@@ -38,6 +38,7 @@
     "test:integration:create-account": "bash scripts/run-disposable-database-suite.sh test/accounts/create-account.integration-spec.ts",
     "test:integration:update-account": "bash scripts/run-disposable-database-suite.sh test/accounts/update-account.integration-spec.ts",
     "test:integration:accounts-balance": "bash scripts/run-disposable-database-suite.sh test/accounts/accounts-balance.integration-spec.ts",
+    "test:integration:accounts-close": "bash scripts/run-disposable-database-suite.sh test/accounts/accounts-close.integration-spec.ts",
     "test:integration:transactions-schema": "bash scripts/run-disposable-database-suite.sh test/identity/transactions-schema.integration-spec.ts",
     "test:integration:ledger-postings-schema": "bash scripts/run-disposable-database-suite.sh test/identity/ledger-postings-schema.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",

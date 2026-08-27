@@ -242,6 +242,57 @@ export type AccountUpdateOutcome =
   | AccountUpdateVersionConflict
   | AccountUpdateClosed;
 
+export const ACCOUNT_CLOSE_OUTCOMES = {
+  OK: 'ok',
+  REPLAYED: 'replayed',
+  IDEMPOTENCY_CONFLICT: 'idempotency_conflict',
+  FORBIDDEN: 'forbidden',
+  NOT_FOUND: 'not_found',
+  VERSION_CONFLICT: 'version_conflict',
+  CLOSED: 'closed',
+  HAS_UNSETTLED_TRANSACTIONS: 'has_unsettled_transactions',
+} as const;
+export type AccountCloseOutcomeKind =
+  (typeof ACCOUNT_CLOSE_OUTCOMES)[keyof typeof ACCOUNT_CLOSE_OUTCOMES];
+
+export interface AccountCloseOk {
+  readonly kind: typeof ACCOUNT_CLOSE_OUTCOMES.OK;
+  readonly account: Account;
+}
+export interface AccountCloseReplayed {
+  readonly kind: typeof ACCOUNT_CLOSE_OUTCOMES.REPLAYED;
+  readonly status: number;
+  readonly etag: string | null;
+  readonly body: unknown;
+}
+export interface AccountCloseIdempotencyConflict {
+  readonly kind: typeof ACCOUNT_CLOSE_OUTCOMES.IDEMPOTENCY_CONFLICT;
+}
+export interface AccountCloseForbidden {
+  readonly kind: typeof ACCOUNT_CLOSE_OUTCOMES.FORBIDDEN;
+}
+export interface AccountCloseNotFound {
+  readonly kind: typeof ACCOUNT_CLOSE_OUTCOMES.NOT_FOUND;
+}
+export interface AccountCloseVersionConflict {
+  readonly kind: typeof ACCOUNT_CLOSE_OUTCOMES.VERSION_CONFLICT;
+}
+export interface AccountCloseClosed {
+  readonly kind: typeof ACCOUNT_CLOSE_OUTCOMES.CLOSED;
+}
+export interface AccountCloseHasUnsettledTransactions {
+  readonly kind: typeof ACCOUNT_CLOSE_OUTCOMES.HAS_UNSETTLED_TRANSACTIONS;
+}
+export type AccountCloseOutcome =
+  | AccountCloseOk
+  | AccountCloseReplayed
+  | AccountCloseIdempotencyConflict
+  | AccountCloseForbidden
+  | AccountCloseNotFound
+  | AccountCloseVersionConflict
+  | AccountCloseClosed
+  | AccountCloseHasUnsettledTransactions;
+
 export interface AccountsPort {
   list(subject: string, query: AccountListQuery): Promise<AccountListOutcome>;
   read(
@@ -268,4 +319,11 @@ export interface AccountsPort {
     command: UpdateAccountCommand,
     expectedVersions?: number | readonly number[],
   ): Promise<AccountUpdateOutcome>;
+  close(
+    subject: string,
+    workspaceId: string,
+    accountId: string,
+    idempotencyKey: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<AccountCloseOutcome>;
 }

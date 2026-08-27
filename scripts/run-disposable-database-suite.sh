@@ -21,6 +21,7 @@ case "$spec" in
   test/accounts/create-account.integration-spec.ts) ;;
   test/accounts/update-account.integration-spec.ts) ;;
   test/accounts/accounts-balance.integration-spec.ts) ;;
+  test/accounts/accounts-close.integration-spec.ts) ;;
   test/identity/transactions-schema.integration-spec.ts) ;;
   test/identity/ledger-postings-schema.integration-spec.ts) ;;
   test/identity/membership-write-rls.integration-spec.ts) ;;

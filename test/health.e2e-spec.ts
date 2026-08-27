@@ -100,6 +100,7 @@ describe('health endpoint', () => {
       'GET /v1/accounts/:accountId/balance',
       'GET /v1/accounts/:accountId',
       'PATCH /v1/accounts/:accountId',
+      'POST /v1/accounts/:accountId/close',
     ]);
 
     await app.close();
