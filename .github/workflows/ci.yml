@@ -158,6 +158,9 @@ jobs:
       - name: ledger postings schema integration
         shell: bash
         run: pnpm test:integration:ledger-postings-schema
+      - name: transactions create integration
+        shell: bash
+        run: pnpm test:integration:transactions-create
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
