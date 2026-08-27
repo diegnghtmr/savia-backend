@@ -164,6 +164,9 @@ jobs:
       - name: transactions get integration
         shell: bash
         run: pnpm test:integration:transactions-get
+      - name: transactions list integration
+        shell: bash
+        run: pnpm test:integration:transactions-list
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

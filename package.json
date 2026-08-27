@@ -44,6 +44,7 @@
     "test:integration:ledger-postings-schema": "bash scripts/run-disposable-database-suite.sh test/identity/ledger-postings-schema.integration-spec.ts",
     "test:integration:transactions-create": "bash scripts/run-disposable-database-suite.sh test/ledger/transactions-create.integration-spec.ts",
     "test:integration:transactions-get": "bash scripts/run-disposable-database-suite.sh test/ledger/transactions-get.integration-spec.ts",
+    "test:integration:transactions-list": "bash scripts/run-disposable-database-suite.sh test/ledger/transactions-list.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",
     "build": "tsc -p tsconfig.build.json",
