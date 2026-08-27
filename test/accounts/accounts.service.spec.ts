@@ -940,8 +940,18 @@ describe('AccountsService.create', () => {
     });
     expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
 
-    // Workspace base currency mutates in store
+    // Workspace base currency mutates in store.
     storeWithCreate.readWorkspaceBaseCurrency.mockResolvedValue('EUR');
+
+    // Pin the precondition this scenario is named for. Without these two lines
+    // the test still passes when the mutation above is deleted, because the
+    // idempotency branch returns before any second currency read: the scenario
+    // would silently degrade into ordinary replay coverage.
+    await expect(
+      storeWithCreate.readWorkspaceBaseCurrency(CLIENT, WORKSPACE_ID),
+    ).resolves.toBe('EUR');
+    const readsBeforeReplay =
+      storeWithCreate.readWorkspaceBaseCurrency.mock.calls.length;
 
     // Replay same key and same payload
     const second = await service.create(
@@ -957,6 +967,11 @@ describe('AccountsService.create', () => {
       body: createdAccount,
     });
     expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
+    // The replay short-circuits before the currency check, so the mutated
+    // base currency is never consulted.
+    expect(storeWithCreate.readWorkspaceBaseCurrency.mock.calls.length).toBe(
+      readsBeforeReplay,
+    );
   });
 });
 
