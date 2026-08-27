@@ -496,3 +496,190 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     ).rejects.toThrow(/Account balance aggregate query returned no row/);
   });
 });
+
+describe('PostgresAccountsAdapter.hasUnsettledTransactions', () => {
+  const adapter = new PostgresAccountsAdapter();
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const accountId = '00000000-0000-0000-0000-000000000a01';
+
+  it('takes per-account advisory lock as first query and queries unsettled transactions in public.transactions', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ '?column?': 1 }] }),
+    };
+
+    const result = await adapter.hasUnsettledTransactions(
+      client,
+      workspaceId,
+      accountId,
+    );
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+
+    const [lockSql, lockValues] = (client.query as ReturnType<typeof vi.fn>)
+      .mock.calls[0] as [string, unknown[]];
+    expect(lockSql).toContain(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+    );
+    expect(lockValues).toEqual([accountId.toLowerCase()]);
+
+    const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[1] as [string, unknown[]];
+    expect(sql).toContain('from public.transactions');
+    expect(sql).toContain("status in ('draft', 'pending')");
+    expect(sql).toContain('where workspace_id = $1::uuid');
+    expect(sql).toContain('and account_id = $2::uuid');
+    expect(values).toEqual([workspaceId, accountId]);
+
+    expect(result).toBe(true);
+  });
+
+  it('returns false when no unsettled transaction rows exist', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] }),
+    };
+
+    const result = await adapter.hasUnsettledTransactions(
+      client,
+      workspaceId,
+      accountId,
+    );
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(result).toBe(false);
+  });
+});
+
+describe('PostgresAccountsAdapter.closeAccount', () => {
+  const adapter = new PostgresAccountsAdapter();
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const accountId = '00000000-0000-0000-0000-000000000a01';
+
+  it('issues SQL with version predicate, closed_at assignment, status closed, version increment, and binds version array', async () => {
+    const createdAt = new Date('2026-07-01T00:00:00.000Z');
+    const updatedAt = new Date('2026-07-02T00:00:00.000Z');
+    const client: TransactionClient = {
+      query: vi.fn().mockResolvedValue({
+        rows: [
+          {
+            id: accountId,
+            name: 'Checking Account',
+            type: 'checking',
+            currency: 'USD',
+            status: 'closed',
+            institution: null,
+            maskedNumber: null,
+            description: null,
+            colorToken: null,
+            icon: null,
+            includeInNetWorth: true,
+            createdAt,
+            updatedAt,
+            version: 2,
+          },
+        ],
+      }),
+    };
+
+    const result = await adapter.closeAccount(
+      client,
+      workspaceId,
+      accountId,
+      1,
+    );
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, unknown[]];
+    expect(sql).toContain('update public.accounts');
+    expect(sql).toContain("status = 'closed'");
+    expect(sql).toContain('closed_at = now()');
+    expect(sql).toContain('updated_at = now()');
+    expect(sql).toContain('version = version + 1');
+    expect(sql).toContain('where workspace_id = $1::uuid');
+    expect(sql).toContain('and id = $2::uuid');
+    expect(sql).toContain(
+      'and ($3::integer[] is null or version = any($3::integer[]))',
+    );
+    expect(sql).toContain('version = any($3::integer[])');
+    expect(values).toEqual([workspaceId, accountId, [1]]);
+
+    expect(result).toEqual({
+      id: accountId,
+      name: 'Checking Account',
+      type: 'checking',
+      currency: 'USD',
+      status: 'closed',
+      institution: null,
+      maskedNumber: null,
+      description: null,
+      colorToken: null,
+      icon: null,
+      includeInNetWorth: true,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-02T00:00:00.000Z',
+      version: 2,
+    });
+  });
+
+  it('passes null as third parameter and retains null guard when expected version is omitted', async () => {
+    const createdAt = new Date('2026-07-01T00:00:00.000Z');
+    const updatedAt = new Date('2026-07-02T00:00:00.000Z');
+    const client: TransactionClient = {
+      query: vi.fn().mockResolvedValue({
+        rows: [
+          {
+            id: accountId,
+            name: 'Checking Account',
+            type: 'checking',
+            currency: 'USD',
+            status: 'closed',
+            institution: null,
+            maskedNumber: null,
+            description: null,
+            colorToken: null,
+            icon: null,
+            includeInNetWorth: true,
+            createdAt,
+            updatedAt,
+            version: 2,
+          },
+        ],
+      }),
+    };
+
+    const result = await adapter.closeAccount(
+      client,
+      workspaceId,
+      accountId,
+      undefined,
+    );
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, unknown[]];
+    expect(sql).toContain('$3::integer[] is null or');
+    expect(values).toEqual([workspaceId, accountId, null]);
+    expect(result).toBeDefined();
+  });
+
+  it('returns undefined when the UPDATE matches zero rows', async () => {
+    const client: TransactionClient = {
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+    };
+
+    const result = await adapter.closeAccount(
+      client,
+      workspaceId,
+      accountId,
+      1,
+    );
+
+    expect(result).toBeUndefined();
+  });
+});
