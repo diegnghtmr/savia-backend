@@ -121,10 +121,12 @@ describe('TransactionService createTransaction database boundary', () => {
 
     // 4. Accounts
     await admin.query(
-      `insert into public.accounts (id, workspace_id, name, type, currency, status, created_by)
-       values ($1, $2, 'Active Checking', 'checking', 'USD', 'active', $3),
-              ($4, $2, 'Closed Savings', 'savings', 'USD', 'closed', $3),
-              ($5, $6, 'Foreign Account', 'checking', 'USD', 'active', $3)`,
+      // accounts_check enforces (status = 'closed') = (closed_at is not null),
+      // so a seeded closed account must carry its closure timestamp.
+      `insert into public.accounts (id, workspace_id, name, type, currency, status, closed_at, created_by)
+       values ($1, $2, 'Active Checking', 'checking', 'USD', 'active', null, $3),
+              ($4, $2, 'Closed Savings', 'savings', 'USD', 'closed', now(), $3),
+              ($5, $6, 'Foreign Account', 'checking', 'USD', 'active', null, $3)`,
       [
         accountActiveId,
         workspace1Id,
