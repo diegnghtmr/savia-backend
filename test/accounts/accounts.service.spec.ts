@@ -95,8 +95,10 @@ function fakeStore(
     name: 'Updated Name',
     version: 2,
   }),
+  baseCurrency?: string,
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
+  readWorkspaceBaseCurrency: ReturnType<typeof vi.fn>;
   listAccounts: ReturnType<typeof vi.fn>;
   readAccount: ReturnType<typeof vi.fn>;
   createAccount: ReturnType<typeof vi.fn>;
@@ -105,8 +107,10 @@ function fakeStore(
   const normalized: AccountItem[] = rows.map((r) =>
     'account' in r ? r : toItem(r),
   );
+  const resolvedBaseCurrency = arguments.length >= 6 ? baseCurrency : 'USD';
   return {
     readActiveRole: vi.fn().mockResolvedValue(role),
+    readWorkspaceBaseCurrency: vi.fn().mockResolvedValue(resolvedBaseCurrency),
     listAccounts: vi.fn().mockResolvedValue(normalized),
     readAccount: vi.fn().mockResolvedValue(singleAccount),
     createAccount: vi.fn().mockResolvedValue(createdAcc),
@@ -608,6 +612,188 @@ describe('AccountsService.create', () => {
 
       expect(outcome.kind).toBe('created');
     }
+  });
+
+  it('refuses creation with currency_unsupported when command currency differs from workspace base currency and never writes or creates account', async () => {
+    const store = fakeStore(
+      'owner',
+      [],
+      undefined,
+      account(),
+      undefined,
+      'USD',
+    );
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn(),
+    };
+    const idempStore = fakeIdempotencyStore();
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      { ...VALID_COMMAND, currency: 'EUR' },
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe('currency_unsupported');
+    expect(store.readWorkspaceBaseCurrency).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+    );
+    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
+    expect(idempStore.read).not.toHaveBeenCalled();
+    expect(idempStore.write).not.toHaveBeenCalled();
+  });
+
+  it('allows creation when command currency matches workspace base currency', async () => {
+    const createdAccount = account({ currency: 'USD' });
+    const store = fakeStore(
+      'owner',
+      [],
+      undefined,
+      createdAccount,
+      undefined,
+      'USD',
+    );
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockResolvedValue(createdAccount),
+    };
+    const idempStore = fakeIdempotencyStore(undefined, true);
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      { ...VALID_COMMAND, currency: 'USD' },
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'created',
+      account: createdAccount,
+    });
+    expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows creation in a non-USD workspace when currency matches that workspace base currency', async () => {
+    const createdAccount = account({ currency: 'COP' });
+    const store = fakeStore(
+      'owner',
+      [],
+      undefined,
+      createdAccount,
+      undefined,
+      'COP',
+    );
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockResolvedValue(createdAccount),
+    };
+    const idempStore = fakeIdempotencyStore(undefined, true);
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      { ...VALID_COMMAND, currency: 'COP' },
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'created',
+      account: createdAccount,
+    });
+    expect(store.readWorkspaceBaseCurrency).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+    );
+    expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses creation with currency_unsupported when workspace base currency is undefined', async () => {
+    const store = fakeStore(
+      'owner',
+      [],
+      undefined,
+      account(),
+      undefined,
+      undefined,
+    );
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn(),
+    };
+    const idempStore = fakeIdempotencyStore();
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe('currency_unsupported');
+    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
+  });
+
+  it('idempotent replay of refused currency mismatch reproduces currency_unsupported and creates no account', async () => {
+    const store = fakeStore(
+      'owner',
+      [],
+      undefined,
+      account(),
+      undefined,
+      'USD',
+    );
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn(),
+    };
+    const idempStore = fakeIdempotencyStore();
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const command = { ...VALID_COMMAND, currency: 'EUR' };
+
+    const first = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      command,
+      IDEMPOTENCY_KEY,
+    );
+    expect(first.kind).toBe('currency_unsupported');
+
+    const second = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      command,
+      IDEMPOTENCY_KEY,
+    );
+    expect(second.kind).toBe('currency_unsupported');
+    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
   });
 });
 

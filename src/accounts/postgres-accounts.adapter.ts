@@ -73,6 +73,18 @@ export class PostgresAccountsAdapter implements AccountsStore {
     return typeof role === 'string' ? role : undefined;
   }
 
+  public async readWorkspaceBaseCurrency(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<string | undefined> {
+    const result = await client.query<{ base_currency: string }>(
+      'select base_currency from public.workspaces where id = $1::uuid',
+      [workspaceId],
+    );
+    const baseCurrency = result.rows[0]?.base_currency;
+    return typeof baseCurrency === 'string' ? baseCurrency : undefined;
+  }
+
   public async listAccounts(
     client: TransactionClient,
     workspaceId: string,

@@ -46,6 +46,10 @@ export interface AccountsStore {
     client: TransactionClient,
     workspaceId: string,
   ): Promise<string | undefined>;
+  readWorkspaceBaseCurrency(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<string | undefined>;
   listAccounts(
     client: TransactionClient,
     workspaceId: string,
@@ -169,6 +173,14 @@ export class AccountsService implements AccountsPort {
         !['owner', 'administrator', 'editor'].includes(role)
       ) {
         return { kind: ACCOUNT_CREATE_OUTCOMES.FORBIDDEN };
+      }
+
+      const baseCurrency = await this.store.readWorkspaceBaseCurrency(
+        client,
+        workspaceId,
+      );
+      if (baseCurrency === undefined || command.currency !== baseCurrency) {
+        return { kind: ACCOUNT_CREATE_OUTCOMES.CURRENCY_UNSUPPORTED };
       }
 
       // Idempotency preamble
