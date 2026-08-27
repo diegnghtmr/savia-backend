@@ -384,3 +384,169 @@ describe('PostgresTransactionAdapter.readTransaction', () => {
     expect(result).toBeUndefined();
   });
 });
+
+describe('PostgresTransactionAdapter.listTransactions', () => {
+  const adapter = new PostgresTransactionAdapter();
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const transactionId = '00000000-0000-0000-0000-000000000t01';
+  const accountId = '00000000-0000-0000-0000-000000000a01';
+  const categoryId = '00000000-0000-0000-0000-000000000c01';
+
+  it('issues keyset SQL with workspace_id predicate, order by occurred_at desc, id asc, and maps rows', async () => {
+    const occurredAtDate = new Date('2026-08-20T10:00:00.000Z');
+    const createdAtDate = new Date('2026-08-20T10:00:00.000Z');
+    const updatedAtDate = new Date('2026-08-20T10:00:00.000Z');
+
+    const client: TransactionClient = {
+      query: vi.fn().mockResolvedValue({
+        rows: [
+          {
+            id: transactionId,
+            accountId,
+            type: 'expense',
+            status: 'confirmed',
+            amountMinor: '5000',
+            currency: 'USD',
+            occurredAt: occurredAtDate,
+            description: 'Office Supplies',
+            notes: 'Notebooks',
+            categoryId,
+            payeeId: null,
+            receiptId: null,
+            reconciliationId: null,
+            tagIds: [],
+            createdAt: createdAtDate,
+            updatedAt: updatedAtDate,
+            version: 1,
+            cursorAt: '2026-08-20T10:00:00.000000Z',
+          },
+        ],
+      }),
+    };
+
+    const result = await adapter.listTransactions(
+      client,
+      workspaceId,
+      undefined,
+      50,
+      {},
+    );
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, unknown[]];
+
+    expect(sql).toContain('select');
+    expect(sql).toContain('from public.transactions t');
+    expect(sql).toContain('t.workspace_id = $1::uuid');
+    expect(sql).toContain('order by t.occurred_at desc, t.id asc');
+    expect(sql).toContain('limit $2');
+    expect(values).toEqual([workspaceId, 50]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({
+      transaction: {
+        id: transactionId,
+        accountId,
+        type: 'expense',
+        status: 'confirmed',
+        amount: {
+          amountMinor: '5000',
+          currency: 'USD',
+        },
+        occurredAt: '2026-08-20T10:00:00.000Z',
+        categoryId,
+        payeeId: null,
+        description: 'Office Supplies',
+        notes: 'Notebooks',
+        tagIds: [],
+        receiptId: null,
+        reconciliationId: null,
+        createdAt: '2026-08-20T10:00:00.000Z',
+        updatedAt: '2026-08-20T10:00:00.000Z',
+        version: 1,
+      },
+      cursorAt: '2026-08-20T10:00:00.000000Z',
+    });
+  });
+
+  it('appends keyset predicate when cursor is provided', async () => {
+    const client: TransactionClient = {
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+    };
+
+    await adapter.listTransactions(
+      client,
+      workspaceId,
+      {
+        createdAt: '2026-08-20T10:00:00.123456Z',
+        id: transactionId,
+      },
+      50,
+      {},
+    );
+
+    const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, unknown[]];
+
+    expect(sql).toContain(
+      '(t.occurred_at < $2::timestamptz or (t.occurred_at = $2::timestamptz and t.id > $3::uuid))',
+    );
+    expect(values).toEqual([
+      workspaceId,
+      '2026-08-20T10:00:00.123456Z',
+      transactionId,
+      50,
+    ]);
+  });
+
+  it('appends each filter as a bound parameter without interpolating values into SQL text', async () => {
+    const client: TransactionClient = {
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+    };
+
+    await adapter.listTransactions(client, workspaceId, undefined, 50, {
+      accountId,
+      status: 'confirmed',
+      categoryId,
+      from: '2026-08-01',
+      to: '2026-08-31',
+      query: 'Coffee',
+    });
+
+    const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, unknown[]];
+
+    expect(sql).toContain('t.workspace_id = $1::uuid');
+    expect(sql).toContain('t.account_id = $2::uuid');
+    expect(sql).toContain('t.status = $3');
+    expect(sql).toContain('t.category_id = $4::uuid');
+    expect(sql).toContain('t.occurred_at >= $5::timestamptz');
+    expect(sql).toContain(
+      "t.occurred_at < ($6::timestamptz + interval '1 day')",
+    );
+    expect(sql).toContain(
+      "(t.description ilike ('%' || $7 || '%') or t.notes ilike ('%' || $7 || '%'))",
+    );
+
+    // Verify bound parameter array
+    expect(values).toEqual([
+      workspaceId,
+      accountId,
+      'confirmed',
+      categoryId,
+      '2026-08-01',
+      '2026-08-31',
+      'Coffee',
+      50,
+    ]);
+
+    // Verify NO filter values are interpolated as literals into the SQL text
+    expect(sql).not.toContain("'confirmed'");
+    expect(sql).not.toContain("'Coffee'");
+    expect(sql).not.toContain("'2026-08-01'");
+    expect(sql).not.toContain("'2026-08-31'");
+    expect(sql).not.toContain(`'${accountId}'`);
+    expect(sql).not.toContain(`'${categoryId}'`);
+  });
+});

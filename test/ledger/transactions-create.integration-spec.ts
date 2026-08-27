@@ -240,6 +240,13 @@ describe('TransactionService createTransaction database boundary', () => {
       ) => realAdapter.lockAndReadAccount(client, ws, acc),
       readTransaction: (client: TransactionClient, ws: string, txnId: string) =>
         realAdapter.readTransaction(client, ws, txnId),
+      listTransactions: (
+        client: TransactionClient,
+        ws: string,
+        cursor: Parameters<PostgresTransactionAdapter['listTransactions']>[2],
+        limit: number,
+        filters: Parameters<PostgresTransactionAdapter['listTransactions']>[4],
+      ) => realAdapter.listTransactions(client, ws, cursor, limit, filters),
       createTransaction: async (
         client: TransactionClient,
         ws: string,

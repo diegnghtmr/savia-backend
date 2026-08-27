@@ -4,6 +4,7 @@ import {
   Inject,
   Param,
   Post,
+  Query,
   Req,
   Res,
   UseGuards,
@@ -13,14 +14,20 @@ import type { FastifyReply } from 'fastify';
 import {
   LEDGER_PORT,
   TRANSACTION_CREATE_OUTCOMES,
+  TRANSACTION_LIST_OUTCOMES,
   TRANSACTION_READ_OUTCOMES,
   type LedgerPort,
+  type TransactionListQuery,
 } from './ledger.port.js';
 import {
   createTransactionCommand,
   TransactionCommandValidationError,
   type CreateTransactionCommand,
 } from './transaction-command.js';
+import {
+  createTransactionListQuery,
+  TransactionQueryValidationError,
+} from './transaction-query.js';
 import { TransactionSplitsUnsupportedError } from './splits-guard.js';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
@@ -35,6 +42,69 @@ export class TransactionController {
   public constructor(
     @Inject(LEDGER_PORT) private readonly ledger: LedgerPort,
   ) {}
+
+  @Get()
+  public async listTransactions(
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Query('cursor') cursorParam?: string,
+    @Query('limit') limitParam?: string,
+    @Query('accountId') accountIdParam?: string,
+    @Query('from') fromParam?: string,
+    @Query('to') toParam?: string,
+    @Query('categoryId') categoryIdParam?: string,
+    @Query('status') statusParam?: string,
+    @Query('query') queryParam?: string,
+  ): Promise<void> {
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+
+    let query: TransactionListQuery;
+    try {
+      query = createTransactionListQuery({
+        workspaceId: header.workspaceId,
+        ...(cursorParam === undefined ? {} : { cursorParam }),
+        ...(limitParam === undefined ? {} : { limitParam }),
+        ...(accountIdParam === undefined ? {} : { accountIdParam }),
+        ...(fromParam === undefined ? {} : { fromParam }),
+        ...(toParam === undefined ? {} : { toParam }),
+        ...(categoryIdParam === undefined ? {} : { categoryIdParam }),
+        ...(statusParam === undefined ? {} : { statusParam }),
+        ...(queryParam === undefined ? {} : { queryParam }),
+      });
+    } catch (error) {
+      if (error instanceof TransactionQueryValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid list transactions query',
+          status: 400,
+          errors: error.violations,
+        });
+        return;
+      }
+      throw error;
+    }
+
+    const outcome = await this.ledger.list(request.identity.subject, query);
+
+    if (outcome.kind === TRANSACTION_LIST_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    void reply.status(200).send(outcome.page);
+  }
 
   @Post()
   public async createTransaction(

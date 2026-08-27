@@ -2,15 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   TRANSACTION_CREATE_OUTCOMES,
+  TRANSACTION_LIST_OUTCOMES,
   TRANSACTION_READ_OUTCOMES,
   type CreateTransactionCommand,
   type Transaction,
+  type TransactionListQuery,
 } from '../../src/ledger/ledger.port.js';
 import {
   TransactionService,
   type LedgerAccountRecord,
   type LedgerStore,
   type LedgerTransaction,
+  type TransactionItem,
 } from '../../src/ledger/transaction.service.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import type {
@@ -106,21 +109,27 @@ function fakeStore(
     role?: string | undefined;
     account?: LedgerAccountRecord | undefined;
     transaction?: Transaction;
+    items?: readonly TransactionItem[];
   } = {},
 ): LedgerStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
   lockAndReadAccount: ReturnType<typeof vi.fn>;
   createTransaction: ReturnType<typeof vi.fn>;
   readTransaction: ReturnType<typeof vi.fn>;
+  listTransactions: ReturnType<typeof vi.fn>;
 } {
   const role = 'role' in options ? options.role : 'owner';
   const account = 'account' in options ? options.account : { status: 'active' };
   const transaction = options.transaction ?? sampleTransaction();
+  const items = options.items ?? [
+    { transaction, cursorAt: '2026-08-20T10:00:00.000000Z' },
+  ];
   return {
     readActiveRole: vi.fn().mockResolvedValue(role),
     lockAndReadAccount: vi.fn().mockResolvedValue(account),
     createTransaction: vi.fn().mockResolvedValue(transaction),
     readTransaction: vi.fn().mockResolvedValue(transaction),
+    listTransactions: vi.fn().mockResolvedValue(items),
   };
 }
 
@@ -175,6 +184,7 @@ describe('TransactionService.create', () => {
       }),
       lockAndReadAccount: vi.fn(),
       createTransaction: vi.fn(),
+      listTransactions: vi.fn(),
       readTransaction: vi.fn(),
     };
 
@@ -222,6 +232,7 @@ describe('TransactionService.create', () => {
       }),
       lockAndReadAccount: vi.fn(),
       createTransaction: vi.fn(),
+      listTransactions: vi.fn(),
       readTransaction: vi.fn(),
     };
 
@@ -486,5 +497,123 @@ describe('TransactionService.read', () => {
       transaction: txn,
     });
     expect(fakeTransaction.calls).toEqual(['runRead']);
+  });
+});
+
+describe('TransactionService.list', () => {
+  const query: TransactionListQuery = {
+    workspaceId: WORKSPACE_ID,
+    limit: 2,
+    accountId: '00000000-0000-0000-0000-000000000a01',
+    from: '2026-08-01',
+    to: '2026-08-31',
+    categoryId: '00000000-0000-0000-0000-000000000c01',
+    status: 'confirmed',
+    query: 'Coffee',
+  };
+
+  it('refuses 403 when caller has no active membership role before any store read', async () => {
+    const fakeTransaction = new FakeTransaction();
+    const store = fakeStore({ role: undefined });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.list(SUBJECT, query);
+
+    expect(outcome).toEqual({ kind: TRANSACTION_LIST_OUTCOMES.FORBIDDEN });
+    expect(fakeTransaction.calls).toEqual(['runRead']);
+    expect(store.listTransactions).not.toHaveBeenCalled();
+  });
+
+  it('admits a viewer because read operations require only an active membership role', async () => {
+    const fakeTransaction = new FakeTransaction();
+    const store = fakeStore({ role: 'viewer' });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.list(SUBJECT, query);
+
+    expect(outcome.kind).toBe(TRANSACTION_LIST_OUTCOMES.OK);
+    expect(fakeTransaction.calls).toEqual(['runRead']);
+  });
+
+  it('threads query object and filters to the store unchanged with limit + 1', async () => {
+    const fakeTransaction = new FakeTransaction();
+    const store = fakeStore({ role: 'owner' });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    await service.list(SUBJECT, query);
+
+    expect(store.listTransactions).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      undefined,
+      3, // limit + 1
+      {
+        accountId: query.accountId,
+        from: query.from,
+        to: query.to,
+        categoryId: query.categoryId,
+        status: query.status,
+        query: query.query,
+      },
+    );
+  });
+
+  it('returns page with hasNextPage true and nextCursor when store returns more rows than limit', async () => {
+    const txn1 = sampleTransaction({
+      id: '00000000-0000-0000-0000-000000000001',
+    });
+    const txn2 = sampleTransaction({
+      id: '00000000-0000-0000-0000-000000000002',
+    });
+    const txn3 = sampleTransaction({
+      id: '00000000-0000-0000-0000-000000000003',
+    });
+
+    const items: TransactionItem[] = [
+      { transaction: txn1, cursorAt: '2026-08-25T12:00:00.000000Z' },
+      { transaction: txn2, cursorAt: '2026-08-24T10:00:00.000000Z' },
+      { transaction: txn3, cursorAt: '2026-08-23T08:00:00.000000Z' },
+    ];
+
+    const fakeTransaction = new FakeTransaction();
+    const store = fakeStore({ role: 'owner', items });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.list(SUBJECT, query);
+
+    expect(outcome.kind).toBe(TRANSACTION_LIST_OUTCOMES.OK);
+    if (outcome.kind !== TRANSACTION_LIST_OUTCOMES.OK) return;
+
+    expect(outcome.page.items).toEqual([txn1, txn2]);
+    expect(outcome.page.pageInfo.hasNextPage).toBe(true);
+    expect(outcome.page.pageInfo.nextCursor).not.toBeNull();
+  });
+
+  it('returns page with hasNextPage false and nextCursor null when store returns rows <= limit', async () => {
+    const txn1 = sampleTransaction({
+      id: '00000000-0000-0000-0000-000000000001',
+    });
+
+    const items: TransactionItem[] = [
+      { transaction: txn1, cursorAt: '2026-08-25T12:00:00.000000Z' },
+    ];
+
+    const fakeTransaction = new FakeTransaction();
+    const store = fakeStore({ role: 'owner', items });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.list(SUBJECT, query);
+
+    expect(outcome.kind).toBe(TRANSACTION_LIST_OUTCOMES.OK);
+    if (outcome.kind !== TRANSACTION_LIST_OUTCOMES.OK) return;
+
+    expect(outcome.page.items).toEqual([txn1]);
+    expect(outcome.page.pageInfo.hasNextPage).toBe(false);
+    expect(outcome.page.pageInfo.nextCursor).toBeNull();
   });
 });

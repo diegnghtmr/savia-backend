@@ -5,6 +5,7 @@ import type { AuthenticatedRequest } from '../../src/platform/authenticated-requ
 import { TransactionController } from '../../src/ledger/transaction.controller.js';
 import {
   TRANSACTION_CREATE_OUTCOMES,
+  TRANSACTION_LIST_OUTCOMES,
   TRANSACTION_READ_OUTCOMES,
   type LedgerPort,
   type Transaction,
@@ -51,6 +52,13 @@ describe('TransactionController.createTransaction', () => {
       read: vi.fn().mockResolvedValue({
         kind: TRANSACTION_READ_OUTCOMES.OK,
         transaction: mockTransaction,
+      }),
+      list: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_LIST_OUTCOMES.OK,
+        page: {
+          items: [mockTransaction],
+          pageInfo: { hasNextPage: false, nextCursor: null },
+        },
       }),
       ...ledgerPortOverrides,
     };
@@ -321,6 +329,13 @@ describe('TransactionController.getTransaction', () => {
         kind: TRANSACTION_READ_OUTCOMES.OK,
         transaction: mockTransaction,
       }),
+      list: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_LIST_OUTCOMES.OK,
+        page: {
+          items: [mockTransaction],
+          pageInfo: { hasNextPage: false, nextCursor: null },
+        },
+      }),
       ...ledgerPortOverrides,
     };
 
@@ -420,5 +435,136 @@ describe('TransactionController.getTransaction', () => {
     expect(reply.status).toHaveBeenCalledWith(200);
     expect(reply.header).toHaveBeenCalledWith('etag', '"1"');
     expect(reply.send).toHaveBeenCalledWith(mockTransaction);
+  });
+});
+
+describe('TransactionController.listTransactions', () => {
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const subject = '00000000-0000-0000-0000-000000000901';
+
+  function createMocks(ledgerPortOverrides: Partial<LedgerPort> = {}) {
+    const fakeLedgerPort: LedgerPort = {
+      create: vi.fn(),
+      read: vi.fn(),
+      list: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_LIST_OUTCOMES.OK,
+        page: {
+          items: [],
+          pageInfo: { hasNextPage: false, nextCursor: null },
+        },
+      }),
+      ...ledgerPortOverrides,
+    };
+
+    const controller = new TransactionController(fakeLedgerPort);
+
+    const reply = {
+      status: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      send: vi.fn().mockReturnThis(),
+      header: vi.fn().mockReturnThis(),
+      request: {
+        id: 'trace-123',
+        url: '/v1/transactions',
+      },
+    } as unknown as FastifyReply;
+
+    return { controller, fakeLedgerPort, reply };
+  }
+
+  it('answers 400 when X-Workspace-Id header is missing or invalid', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {},
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listTransactions(request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.BAD_REQUEST }),
+    );
+  });
+
+  it('answers 400 when query validation fails', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listTransactions(
+      request,
+      reply,
+      undefined,
+      'invalid-limit',
+    );
+
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.BAD_REQUEST }),
+    );
+  });
+
+  it('answers 403 when ledger port returns FORBIDDEN', async () => {
+    const { controller, reply } = createMocks({
+      list: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_LIST_OUTCOMES.FORBIDDEN }),
+    });
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listTransactions(request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(403);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.FORBIDDEN }),
+    );
+  });
+
+  it('answers 200 with page payload on success and passes parsed query to ledger.list', async () => {
+    const page = {
+      items: [],
+      pageInfo: { hasNextPage: false, nextCursor: null },
+    };
+    const { controller, fakeLedgerPort, reply } = createMocks({
+      list: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_LIST_OUTCOMES.OK, page }),
+    });
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listTransactions(
+      request,
+      reply,
+      undefined,
+      '20',
+      '00000000-0000-0000-0000-000000000a01',
+      '2026-08-01',
+      '2026-08-31',
+      '00000000-0000-0000-0000-000000000c01',
+      'confirmed',
+      'Groceries',
+    );
+
+    expect(reply.status).toHaveBeenCalledWith(200);
+    expect(reply.send).toHaveBeenCalledWith(page);
+    expect(fakeLedgerPort.list).toHaveBeenCalledWith(subject, {
+      workspaceId,
+      limit: 20,
+      accountId: '00000000-0000-0000-0000-000000000a01',
+      from: '2026-08-01',
+      to: '2026-08-31',
+      categoryId: '00000000-0000-0000-0000-000000000c01',
+      status: 'confirmed',
+      query: 'Groceries',
+    });
   });
 });
