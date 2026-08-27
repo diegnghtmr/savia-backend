@@ -3,12 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { decodeCursor } from '../../src/platform/cursor.js';
 import {
   ACCOUNT_BALANCE_OUTCOMES,
+  ACCOUNT_CLOSE_OUTCOMES,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
   ACCOUNT_UPDATE_OUTCOMES,
   type Account,
   type AccountBalance,
   type AccountBalanceOutcome,
+  type AccountCloseOutcome,
   type AccountListOutcome,
   type AccountReadOutcome,
   type AccountUpdateOutcome,
@@ -134,6 +136,8 @@ function fakeStore(
   overrides: {
     readonly baseCurrency?: string | undefined;
     readonly singleBalance?: AccountBalance | undefined;
+    readonly hasUnsettled?: boolean | undefined;
+    readonly closedAcc?: Account | undefined;
   } = {},
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
@@ -143,6 +147,8 @@ function fakeStore(
   readAccountBalance: ReturnType<typeof vi.fn>;
   createAccount: ReturnType<typeof vi.fn>;
   updateAccount: ReturnType<typeof vi.fn>;
+  hasUnsettledTransactions: ReturnType<typeof vi.fn>;
+  closeAccount: ReturnType<typeof vi.fn>;
 } {
   const normalized: AccountItem[] = rows.map((r) =>
     'account' in r ? r : toItem(r),
@@ -151,6 +157,10 @@ function fakeStore(
   // invisible) from the parameter never being supplied at all.
   const resolvedBaseCurrency =
     'baseCurrency' in overrides ? overrides.baseCurrency : 'USD';
+  const resolvedClosedAcc =
+    'closedAcc' in overrides
+      ? overrides.closedAcc
+      : account({ status: 'closed', version: 2 });
   return {
     readActiveRole: vi.fn().mockResolvedValue(role),
     readWorkspaceBaseCurrency: vi.fn().mockResolvedValue(resolvedBaseCurrency),
@@ -159,6 +169,10 @@ function fakeStore(
     readAccountBalance: vi.fn().mockResolvedValue(overrides.singleBalance),
     createAccount: vi.fn().mockResolvedValue(createdAcc),
     updateAccount: vi.fn().mockResolvedValue(updatedAcc),
+    hasUnsettledTransactions: vi
+      .fn()
+      .mockResolvedValue(overrides.hasUnsettled ?? false),
+    closeAccount: vi.fn().mockResolvedValue(resolvedClosedAcc),
   };
 }
 
@@ -218,6 +232,24 @@ async function update(
     workspaceId,
     accountId,
     command,
+    expectedVersions,
+  );
+}
+
+async function close(
+  store: AccountsStore,
+  workspaceId: string,
+  accountId: string,
+  idempotencyKey: string,
+  expectedVersions?: number | readonly number[],
+  idempStore: IdempotencyStore = fakeIdempotencyStore(),
+): Promise<AccountCloseOutcome> {
+  const service = new AccountsService(new FakeTransaction(), store, idempStore);
+  return service.close(
+    SUBJECT,
+    workspaceId,
+    accountId,
+    idempotencyKey,
     expectedVersions,
   );
 }
@@ -1233,6 +1265,448 @@ describe('AccountsService.update', () => {
     );
 
     expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.NOT_FOUND);
+    expect(store.readAccount).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('AccountsService.close', () => {
+  const ACCOUNT_ID = '00000000-0000-0000-0000-000000000a01';
+  const IDEMPOTENCY_KEY = '00000000-0000-0000-0000-000000000001';
+
+  it('answers forbidden when the actor holds no active role in the workspace and never touches idempotency, account or transaction store', async () => {
+    const store = fakeStore(undefined);
+    const idempStore = fakeIdempotencyStore();
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+      undefined,
+      idempStore,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.FORBIDDEN);
+    expect(store.readActiveRole).toHaveBeenCalledWith(CLIENT, WORKSPACE_ID);
+    expect(idempStore.read).not.toHaveBeenCalled();
+    expect(store.readAccount).not.toHaveBeenCalled();
+    expect(store.hasUnsettledTransactions).not.toHaveBeenCalled();
+    expect(store.closeAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers forbidden when the actor is a viewer and never touches account or transaction store', async () => {
+    const store = fakeStore('viewer');
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.FORBIDDEN);
+    expect(store.readAccount).not.toHaveBeenCalled();
+    expect(store.hasUnsettledTransactions).not.toHaveBeenCalled();
+    expect(store.closeAccount).not.toHaveBeenCalled();
+  });
+
+  it('replays response when a matching idempotency record already exists without touching account or transaction store', async () => {
+    const closed = account({ id: ACCOUNT_ID, status: 'closed', version: 2 });
+    const { computeRequestFingerprint } = await import(
+      '../../src/platform/idempotency.service.js'
+    );
+    const fingerprint = computeRequestFingerprint({ accountId: ACCOUNT_ID });
+
+    const store = fakeStore('owner');
+    const idempStore = fakeIdempotencyStore({
+      requestFingerprint: fingerprint,
+      responseStatus: 200,
+      responseEtag: null,
+      responseBody: closed,
+    });
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+      undefined,
+      idempStore,
+    );
+
+    expect(outcome).toEqual({
+      kind: ACCOUNT_CLOSE_OUTCOMES.REPLAYED,
+      status: 200,
+      etag: null,
+      body: closed,
+    });
+    expect(store.readAccount).not.toHaveBeenCalled();
+    expect(store.hasUnsettledTransactions).not.toHaveBeenCalled();
+    expect(store.closeAccount).not.toHaveBeenCalled();
+    expect(idempStore.write).not.toHaveBeenCalled();
+  });
+
+  it('answers idempotency_conflict when an idempotency record exists with different fingerprint', async () => {
+    const store = fakeStore('owner');
+    const idempStore = fakeIdempotencyStore({
+      requestFingerprint: 'different-fingerprint',
+      responseStatus: 200,
+      responseEtag: null,
+      responseBody: {},
+    });
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+      undefined,
+      idempStore,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.IDEMPOTENCY_CONFLICT);
+    expect(store.closeAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers not_found when the account does not exist in the workspace', async () => {
+    const store = fakeStore('owner', [], undefined);
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.NOT_FOUND);
+    expect(store.readAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+    );
+    expect(store.hasUnsettledTransactions).not.toHaveBeenCalled();
+    expect(store.closeAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers closed when the account exists but is already closed', async () => {
+    const alreadyClosed = account({
+      id: ACCOUNT_ID,
+      status: 'closed',
+      version: 3,
+    });
+    const store = fakeStore('owner', [], alreadyClosed);
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.CLOSED);
+    expect(store.hasUnsettledTransactions).not.toHaveBeenCalled();
+    expect(store.closeAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers version_conflict (412) when expectedVersions does not match account.version', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 2 });
+    const store = fakeStore('owner', [], existing);
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+      1,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.VERSION_CONFLICT);
+    expect(store.hasUnsettledTransactions).not.toHaveBeenCalled();
+    expect(store.closeAccount).not.toHaveBeenCalled();
+  });
+
+  it('answers has_unsettled_transactions (409) when hasUnsettledTransactions returns true', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 1 });
+    const store = fakeStore('owner', [], existing, undefined, undefined, {
+      hasUnsettled: true,
+    });
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(
+      ACCOUNT_CLOSE_OUTCOMES.HAS_UNSETTLED_TRANSACTIONS,
+    );
+    expect(store.hasUnsettledTransactions).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+    );
+    expect(store.closeAccount).not.toHaveBeenCalled();
+  });
+
+  it('RULING 30 negative test: closes account with non-zero balance and zero draft/pending transactions, asserting readAccountBalance is NEVER called', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 1, status: 'active' });
+    const closed = account({ id: ACCOUNT_ID, version: 2, status: 'closed' });
+    const store = fakeStore('owner', [], existing, undefined, undefined, {
+      singleBalance: balance({
+        nativeBalance: { amountMinor: '50000', currency: 'USD' },
+      }),
+      hasUnsettled: false,
+      closedAcc: closed,
+    });
+    const idempStore = fakeIdempotencyStore(undefined, true);
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+      undefined,
+      idempStore,
+    );
+
+    expect(outcome).toEqual({
+      kind: ACCOUNT_CLOSE_OUTCOMES.OK,
+      account: closed,
+    });
+    expect(store.hasUnsettledTransactions).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+    );
+    expect(store.closeAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      undefined,
+    );
+    // Explicit assertion: readAccountBalance is NEVER called
+    expect(store.readAccountBalance).not.toHaveBeenCalled();
+    expect(idempStore.write).toHaveBeenCalledWith(
+      CLIENT,
+      SUBJECT,
+      'POST /v1/accounts/{accountId}/close',
+      IDEMPOTENCY_KEY,
+      expect.any(String),
+      200,
+      null,
+      closed,
+      WORKSPACE_ID,
+    );
+  });
+
+  it('confirmed-only: closes account with confirmed/reconciled transactions (hasUnsettled=false)', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 1 });
+    const closed = account({ id: ACCOUNT_ID, version: 2, status: 'closed' });
+    const store = fakeStore('owner', [], existing, undefined, undefined, {
+      hasUnsettled: false,
+      closedAcc: closed,
+    });
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome).toEqual({
+      kind: ACCOUNT_CLOSE_OUTCOMES.OK,
+      account: closed,
+    });
+  });
+
+  it('successfully closes account when expectedVersions matches current version', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 1 });
+    const closed = account({ id: ACCOUNT_ID, version: 2, status: 'closed' });
+    const store = fakeStore('owner', [], existing, undefined, undefined, {
+      hasUnsettled: false,
+      closedAcc: closed,
+    });
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+      1,
+    );
+
+    expect(outcome).toEqual({
+      kind: ACCOUNT_CLOSE_OUTCOMES.OK,
+      account: closed,
+    });
+    expect(store.closeAccount).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      1,
+    );
+  });
+
+  it.each(['owner', 'administrator', 'editor'] as const)(
+    'admits %s role for close',
+    async (role) => {
+      const existing = account({ id: ACCOUNT_ID, version: 1 });
+      const closed = account({ id: ACCOUNT_ID, version: 2, status: 'closed' });
+      const store = fakeStore(role, [], existing, undefined, undefined, {
+        hasUnsettled: false,
+        closedAcc: closed,
+      });
+
+      const outcome = await close(
+        store,
+        WORKSPACE_ID,
+        ACCOUNT_ID,
+        IDEMPOTENCY_KEY,
+      );
+
+      expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.OK);
+    },
+  );
+
+  it('re-reads from idempotency store and returns replay when idempotency write loses race', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 1 });
+    const closed = account({ id: ACCOUNT_ID, version: 2, status: 'closed' });
+    const { computeRequestFingerprint } = await import(
+      '../../src/platform/idempotency.service.js'
+    );
+    const fingerprint = computeRequestFingerprint({ accountId: ACCOUNT_ID });
+
+    const store = fakeStore('owner', [], existing, undefined, undefined, {
+      hasUnsettled: false,
+      closedAcc: closed,
+    });
+    const idempStore: IdempotencyStore & { read: ReturnType<typeof vi.fn> } = {
+      read: vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+        requestFingerprint: fingerprint,
+        responseStatus: 200,
+        responseEtag: null,
+        responseBody: closed,
+      }),
+      write: vi.fn().mockResolvedValue(false),
+    };
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+      undefined,
+      idempStore,
+    );
+
+    expect(outcome).toEqual({
+      kind: ACCOUNT_CLOSE_OUTCOMES.REPLAYED,
+      status: 200,
+      etag: null,
+      body: closed,
+    });
+    expect(idempStore.read).toHaveBeenCalledTimes(2);
+  });
+
+  it('answers idempotency_conflict when write loses race and winning record has different fingerprint', async () => {
+    const existing = account({ id: ACCOUNT_ID, version: 1 });
+    const closed = account({ id: ACCOUNT_ID, version: 2, status: 'closed' });
+
+    const store = fakeStore('owner', [], existing, undefined, undefined, {
+      hasUnsettled: false,
+      closedAcc: closed,
+    });
+    const idempStore: IdempotencyStore & { read: ReturnType<typeof vi.fn> } = {
+      read: vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+        requestFingerprint: 'different-fingerprint',
+        responseStatus: 200,
+        responseEtag: null,
+        responseBody: {},
+      }),
+      write: vi.fn().mockResolvedValue(false),
+    };
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+      undefined,
+      idempStore,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.IDEMPOTENCY_CONFLICT);
+    expect(idempStore.read).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles concurrent version conflict when store.closeAccount returns undefined and account version changed', async () => {
+    const initialAccount = account({ id: ACCOUNT_ID, version: 1 });
+    const concurrentAccount = account({ id: ACCOUNT_ID, version: 2 });
+
+    const store = fakeStore('owner');
+    store.readAccount = vi
+      .fn()
+      .mockResolvedValueOnce(initialAccount)
+      .mockResolvedValueOnce(concurrentAccount);
+    store.closeAccount = vi.fn().mockResolvedValue(undefined);
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+      1,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.VERSION_CONFLICT);
+    expect(store.readAccount).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles concurrent closure when store.closeAccount returns undefined and account became closed', async () => {
+    const initialAccount = account({
+      id: ACCOUNT_ID,
+      version: 1,
+      status: 'active',
+    });
+    const closedAccount = account({
+      id: ACCOUNT_ID,
+      version: 1,
+      status: 'closed',
+    });
+
+    const store = fakeStore('owner');
+    store.readAccount = vi
+      .fn()
+      .mockResolvedValueOnce(initialAccount)
+      .mockResolvedValueOnce(closedAccount);
+    store.closeAccount = vi.fn().mockResolvedValue(undefined);
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.CLOSED);
+    expect(store.readAccount).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles concurrent deletion when store.closeAccount returns undefined and account was deleted', async () => {
+    const initialAccount = account({ id: ACCOUNT_ID, version: 1 });
+
+    const store = fakeStore('owner');
+    store.readAccount = vi
+      .fn()
+      .mockResolvedValueOnce(initialAccount)
+      .mockResolvedValueOnce(undefined);
+    store.closeAccount = vi.fn().mockResolvedValue(undefined);
+
+    const outcome = await close(
+      store,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.NOT_FOUND);
     expect(store.readAccount).toHaveBeenCalledTimes(2);
   });
 });
