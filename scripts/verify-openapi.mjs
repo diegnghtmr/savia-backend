@@ -61,17 +61,12 @@ const findCopiedPlanningSource = (directory) => {
       continue;
     const path = join(directory, entry.name);
     if (entry.isDirectory() && findCopiedPlanningSource(path)) return path;
-    if (entry.isFile()) {
-      try {
-        if (
-          createHash('sha256').update(readFileSync(path)).digest('hex') ===
-          planningSourceSha256
-        ) {
-          return path;
-        }
-      } catch {
-        continue;
-      }
+    if (
+      entry.isFile() &&
+      createHash('sha256').update(readFileSync(path)).digest('hex') ===
+        planningSourceSha256
+    ) {
+      return path;
     }
   }
   return undefined;
