@@ -391,16 +391,17 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       );
     });
 
-    it('f. RLS-BLINDNESS PROOF: as savia_application without membership in the target workspace (where RLS would filter out the workspace row under invoker rights), mismatched insert STILL raises 23514 via security definer', async () => {
+    it('f. SECURITY DEFINER DEFENSE IN DEPTH: an outsider attempting a mismatched insert fails with 23514 from the trigger rather than 42501 from RLS, detecting definer-to-invoker regression', async () => {
       // ownerA has NO membership in wsOtherId (wsOtherId base_currency is USD).
       // Under savia_application with app.subject_id = ownerA, RLS policy application_reads_member_workspace
       // returns zero rows for wsOtherId.
-      // If the accounts trigger were SECURITY INVOKER:
+      // With SECURITY INVOKER:
       //   - The trigger lookup `select base_currency from public.workspaces` would return NULL due to RLS filtering.
-      //   - The trigger would NOT raise 23514, and would fall through to the table RLS check (raising 42501).
-      // Under SECURITY DEFINER owned by savia_elevated (which has elevated_reads_workspaces policy):
-      //   - The trigger lookup successfully reads base_currency ('USD').
-      //   - The trigger sees 'EUR' <> 'USD' and raises 23514 BEFORE the RLS check.
+      //   - The trigger would not detect the currency mismatch and execution would continue until table RLS fails with 42501.
+      // With SECURITY DEFINER owned by savia_elevated:
+      //   - The trigger reads base_currency ('USD') via elevated_reads_workspaces.
+      //   - It detects the mismatch ('EUR' <> 'USD') and raises 23514 (check_violation) before RLS.
+      // This test verifies that security definer is active and prevents regression to security invoker.
       const blindErr = await capturePgError(() =>
         asSubject(ownerA, (client) =>
           client.query(

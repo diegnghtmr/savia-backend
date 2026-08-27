@@ -43,13 +43,18 @@ create policy elevated_reads_accounts
 
 -- 3. Trigger on public.accounts
 --
--- security definer here is LOAD-BEARING, not decoration:
--- public.workspaces carries FORCE row level security. As an invoker-rights
--- function, the lookup of public.workspaces would execute under the writing
--- subject whose visibility is RLS-filtered. If the subject cannot read the
--- workspace row, the lookup would return NULL, making the currency comparison
--- silently vacuous and allowing mismatched account currencies to be inserted
--- or updated without error.
+-- security definer here is defense in depth:
+-- Under the policies installed today (202607150006_workspace_active_membership.sql
+-- letting active members select workspaces, and 202608240002_account_tables.sql
+-- requiring active role owner/admin/editor to insert accounts), every actor
+-- authorized to insert or update an account is an active member and can read that
+-- workspace row. Under the policies as installed today, an invoker-rights function
+-- would NOT be blind for authorized writers.
+--
+-- Security definer decouples this foundational data-integrity check from visibility
+-- policies that might be narrowed later, ensuring correct invariant enforcement for
+-- any future role or maintenance path whose visibility does not already cover the
+-- compared workspace row.
 grant usage, create on schema public to savia_elevated;   -- revoked below (RULING 13)
 
 create function public.enforce_account_currency_matches_workspace()
@@ -88,11 +93,13 @@ alter function public.enforce_account_currency_matches_workspace() owner to savi
 
 -- 4. Trigger on public.workspaces
 --
--- security definer here is likewise LOAD-BEARING:
--- public.accounts carries FORCE row level security. An invoker-rights function
--- scanning public.accounts would be filtered by the updating subject's RLS
--- context, potentially seeing zero accounts and silently permitting a base_currency
--- mutation that violates existing accounts' currency invariant.
+-- security definer here is likewise defense in depth:
+-- Under the policies installed today, owners and administrators authorized to update
+-- base_currency are active members who can read that workspace's accounts. An
+-- invoker-rights function would NOT be blind for authorized writers today.
+--
+-- Running with security definer decouples the invariant check from account visibility
+-- policies, keeping enforcement robust against future policy changes or specialized roles.
 create function public.enforce_workspace_base_currency_account_invariant()
 returns trigger
 language plpgsql
