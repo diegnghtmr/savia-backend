@@ -2293,6 +2293,115 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
   /v1/transactions:
+    get:
+      operationId: listTransactions
+      tags:
+        - Transactions
+      summary: Search transactions
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: accountId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: to
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: categoryId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TransactionStatus'
+        - name: query
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 200
+      responses:
+        '200':
+          description: Paginated workspace transactions.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - items
+                  - pageInfo
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Transaction'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+        '400':
+          description: The workspace identifier or the query parameters failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden. An absent workspace is indistinguishable from a denied one; no 404 is declared.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: search_transactions
+        riskClass: read
+        requiresApproval: false
+        requiredScopes:
+          - transactions:read
     post:
       operationId: createTransaction
       tags:
