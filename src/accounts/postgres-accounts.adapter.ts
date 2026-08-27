@@ -489,7 +489,7 @@ select
       nativeBalance: string;
       pendingBalance: string;
       reconciledBalance: string;
-      foreignCurrencyLegs?: string;
+      foreignCurrencyLegs: string;
       effectiveAsOf: string;
     }>(balanceSql, [workspaceId, accountId, asOf ?? null]);
 
@@ -498,10 +498,9 @@ select
       throw new Error('Account balance aggregate query returned no row.');
     }
 
-    if (
-      balanceRow.foreignCurrencyLegs !== undefined &&
-      balanceRow.foreignCurrencyLegs !== '0'
-    ) {
+    // Treat an absent count as a violation, not as a pass: tolerating undefined
+    // would let deleting the column from the aggregate silently disable this guard.
+    if (balanceRow.foreignCurrencyLegs !== '0') {
       throw new Error(
         'Cannot report single-currency balance for an account holding postings in another currency.',
       );
