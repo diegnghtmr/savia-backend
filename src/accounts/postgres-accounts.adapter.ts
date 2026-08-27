@@ -25,6 +25,28 @@ interface AccountRow extends Record<string, unknown> {
   readonly cursorAt: string;
 }
 
+// Defence in depth for the counter-leg. The command validator already refuses
+// amounts whose negation would leave int8, but this function is what actually
+// mints the external leg, and a caller that skipped validation would otherwise
+// hand PostgreSQL 9223372036854775808 and get SQLSTATE 22003 mid-write. Failing
+// here names the cause; failing there names a row.
+const INT8_MAX = 9223372036854775807n;
+
+export function negateAmountMinor(amountMinor: string): string {
+  if (amountMinor === '0' || amountMinor === '-0') {
+    return '0';
+  }
+  if (BigInt(amountMinor) < -INT8_MAX) {
+    throw new RangeError(
+      `amountMinor ${amountMinor} cannot be negated within int8; its counter-leg would overflow`,
+    );
+  }
+  if (amountMinor.startsWith('-')) {
+    return amountMinor.slice(1);
+  }
+  return `-${amountMinor}`;
+}
+
 export function toIso(value: unknown): string {
   if (value instanceof Date) {
     return value.toISOString();
@@ -219,6 +241,84 @@ returning
     if (!row) {
       throw new Error('Created account row could not be read.');
     }
+
+    if (
+      command.openingBalance !== undefined &&
+      command.openingBalance !== null
+    ) {
+      const transactionSql = `
+insert into public.transactions (
+  workspace_id,
+  account_id,
+  type,
+  status,
+  amount_minor,
+  currency,
+  occurred_at,
+  description,
+  created_by
+)
+values (
+  $1::uuid,
+  $2::uuid,
+  'adjustment',
+  'confirmed',
+  $3,
+  $4,
+  coalesce(($5::date)::timestamp at time zone 'utc', now()),
+  'Opening balance',
+  $6::uuid
+)
+returning id::text, occurred_at`;
+
+      const transactionValues = [
+        workspaceId,
+        row.id,
+        command.openingBalance.amountMinor,
+        command.openingBalance.currency,
+        command.openingBalanceDate ?? null,
+        subject,
+      ];
+
+      const txnResult = await client.query<{ id: string; occurred_at: Date }>(
+        transactionSql,
+        transactionValues,
+      );
+      const txnRow = txnResult.rows[0];
+      if (!txnRow) {
+        throw new Error(
+          'Created opening balance transaction row could not be read.',
+        );
+      }
+
+      const postingsSql = `
+insert into public.ledger_postings (
+  workspace_id,
+  transaction_id,
+  account_id,
+  leg_kind,
+  amount_minor,
+  currency,
+  status,
+  occurred_at
+)
+values
+  ($1::uuid, $2::uuid, $3::uuid, 'account', $4, $5, 'confirmed', $6),
+  ($1::uuid, $2::uuid, null, 'external', $7, $5, 'confirmed', $6)`;
+
+      const postingsValues = [
+        workspaceId,
+        txnRow.id,
+        row.id,
+        command.openingBalance.amountMinor,
+        command.openingBalance.currency,
+        txnRow.occurred_at,
+        negateAmountMinor(command.openingBalance.amountMinor),
+      ];
+
+      await client.query(postingsSql, postingsValues);
+    }
+
     return {
       id: row.id,
       name: row.name,

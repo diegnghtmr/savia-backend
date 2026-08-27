@@ -398,4 +398,245 @@ describe('AccountsService createAccount database boundary', () => {
       expect(rows.rows).toHaveLength(2);
     }
   });
+
+  it('creates an account WITH opening balance and verifies transaction and postings exist, net to zero, and have correct shape', async () => {
+    const idempotencyKey = id(110);
+    const command: CreateAccountCommand = {
+      name: 'Account With Balance',
+      type: 'checking',
+      currency: 'USD',
+      openingBalance: {
+        amountMinor: '125000',
+        currency: 'USD',
+      },
+      openingBalanceDate: '2026-08-25',
+      institution: 'Test Bank',
+      maskedNumber: '***1111',
+      description: 'Account with initial balance',
+      includeInNetWorth: true,
+    };
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      idempotencyKey,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CREATE_OUTCOMES.CREATED);
+    if (outcome.kind !== ACCOUNT_CREATE_OUTCOMES.CREATED) return;
+
+    const accountId = outcome.account.id;
+
+    // Verify transaction exists
+    const txnRows = await admin.query<{
+      id: string;
+      workspace_id: string;
+      account_id: string;
+      type: string;
+      status: string;
+      amount_minor: string;
+      currency: string;
+      occurred_at: Date;
+      created_by: string;
+    }>(
+      `select id::text, workspace_id, account_id, type, status, amount_minor::text, currency, occurred_at, created_by
+         from public.transactions
+        where workspace_id = $1::uuid and account_id = $2::uuid`,
+      [workspace1Id, accountId],
+    );
+    expect(txnRows.rows).toHaveLength(1);
+    const txn = txnRows.rows[0];
+    expect(txn.type).toBe('adjustment');
+    expect(txn.status).toBe('confirmed');
+    expect(txn.amount_minor).toBe('125000');
+    expect(txn.currency).toBe('USD');
+    expect(txn.created_by).toBe(subjectOwner);
+    expect(txn.occurred_at.toISOString().slice(0, 10)).toBe('2026-08-25');
+
+    // Verify ledger postings exist
+    const postingRows = await admin.query<{
+      id: string;
+      workspace_id: string;
+      transaction_id: string;
+      account_id: string | null;
+      leg_kind: string;
+      amount_minor: string;
+      currency: string;
+      status: string;
+      occurred_at: Date;
+    }>(
+      `select id::text, workspace_id, transaction_id, account_id, leg_kind, amount_minor::text, currency, status, occurred_at
+         from public.ledger_postings
+        where transaction_id = $1::uuid
+        order by leg_kind`,
+      [txn.id],
+    );
+    expect(postingRows.rows).toHaveLength(2);
+
+    const accountLeg = postingRows.rows.find((p) => p.leg_kind === 'account');
+    const externalLeg = postingRows.rows.find((p) => p.leg_kind === 'external');
+
+    expect(accountLeg).toBeDefined();
+    expect(accountLeg?.account_id).toBe(accountId);
+    expect(accountLeg?.amount_minor).toBe('125000');
+    expect(accountLeg?.currency).toBe('USD');
+    expect(accountLeg?.status).toBe('confirmed');
+    expect(accountLeg?.occurred_at.toISOString()).toBe(
+      txn.occurred_at.toISOString(),
+    );
+
+    expect(externalLeg).toBeDefined();
+    expect(externalLeg?.account_id).toBeNull();
+    expect(externalLeg?.amount_minor).toBe('-125000');
+    expect(externalLeg?.currency).toBe('USD');
+    expect(externalLeg?.status).toBe('confirmed');
+    expect(externalLeg?.occurred_at.toISOString()).toBe(
+      txn.occurred_at.toISOString(),
+    );
+
+    // Net sum is zero
+    expect(
+      BigInt(accountLeg!.amount_minor) + BigInt(externalLeg!.amount_minor),
+    ).toBe(0n);
+  });
+
+  it('round-trips a large amount > 2^53 near the bigint ceiling exactly as a string', async () => {
+    const idempotencyKey = id(111);
+    const largeAmount = '9007199254740993'; // 2^53 + 1, cannot be represented precisely in IEEE 754 float
+    const command: CreateAccountCommand = {
+      name: 'Large Balance Account',
+      type: 'checking',
+      currency: 'USD',
+      openingBalance: {
+        amountMinor: largeAmount,
+        currency: 'USD',
+      },
+      institution: null,
+      maskedNumber: null,
+      description: null,
+      includeInNetWorth: true,
+    };
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      idempotencyKey,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CREATE_OUTCOMES.CREATED);
+    if (outcome.kind !== ACCOUNT_CREATE_OUTCOMES.CREATED) return;
+
+    const accountId = outcome.account.id;
+
+    const txnRows = await admin.query<{ id: string; amount_minor: string }>(
+      'select id::text, amount_minor::text from public.transactions where workspace_id = $1::uuid and account_id = $2::uuid',
+      [workspace1Id, accountId],
+    );
+    expect(txnRows.rows).toHaveLength(1);
+    expect(txnRows.rows[0].amount_minor).toBe(largeAmount);
+
+    // Scope the postings to this transaction. The external leg carries
+    // account_id IS NULL, so an account-shaped predicate also matches every
+    // other external leg this file writes into the same workspace.
+    const postingRows = await admin.query<{
+      leg_kind: string;
+      amount_minor: string;
+    }>(
+      'select leg_kind, amount_minor::text from public.ledger_postings where transaction_id = $1::uuid',
+      [txnRows.rows[0].id],
+    );
+    expect(postingRows.rows).toHaveLength(2);
+    const accountLeg = postingRows.rows.find((p) => p.leg_kind === 'account');
+    const externalLeg = postingRows.rows.find((p) => p.leg_kind === 'external');
+    expect(accountLeg?.amount_minor).toBe(largeAmount);
+    expect(externalLeg?.amount_minor).toBe(`-${largeAmount}`);
+  });
+
+  it('creates an account WITHOUT opening balance and writes NO transaction and NO postings', async () => {
+    const idempotencyKey = id(112);
+    const command: CreateAccountCommand = {
+      name: 'Zero Balance Account',
+      type: 'savings',
+      currency: 'USD',
+      institution: null,
+      maskedNumber: null,
+      description: null,
+      includeInNetWorth: true,
+    };
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      idempotencyKey,
+    );
+
+    expect(outcome.kind).toBe(ACCOUNT_CREATE_OUTCOMES.CREATED);
+    if (outcome.kind !== ACCOUNT_CREATE_OUTCOMES.CREATED) return;
+
+    const accountId = outcome.account.id;
+
+    const txnRows = await admin.query(
+      'select 1 from public.transactions where account_id = $1::uuid',
+      [accountId],
+    );
+    expect(txnRows.rows).toHaveLength(0);
+
+    const postingRows = await admin.query(
+      'select 1 from public.ledger_postings where account_id = $1::uuid',
+      [accountId],
+    );
+    expect(postingRows.rows).toHaveLength(0);
+  });
+
+  it('idempotent replay of account creation with opening balance creates no duplicate transaction or postings', async () => {
+    const idempotencyKey = id(113);
+    const command: CreateAccountCommand = {
+      name: 'Replay Balance Account',
+      type: 'checking',
+      currency: 'USD',
+      openingBalance: {
+        amountMinor: '25000',
+        currency: 'USD',
+      },
+      openingBalanceDate: '2026-08-25',
+      institution: null,
+      maskedNumber: null,
+      description: null,
+      includeInNetWorth: true,
+    };
+
+    const first = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      idempotencyKey,
+    );
+    expect(first.kind).toBe(ACCOUNT_CREATE_OUTCOMES.CREATED);
+    if (first.kind !== ACCOUNT_CREATE_OUTCOMES.CREATED) return;
+
+    const second = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      idempotencyKey,
+    );
+    expect(second.kind).toBe(ACCOUNT_CREATE_OUTCOMES.REPLAYED);
+
+    const accountId = first.account.id;
+
+    const txnRows = await admin.query(
+      'select count(*)::int as count from public.transactions where account_id = $1::uuid',
+      [accountId],
+    );
+    expect(txnRows.rows[0].count).toBe(1);
+
+    const postingRows = await admin.query(
+      "select count(*)::int as count from public.ledger_postings where workspace_id = $1::uuid and (account_id = $2::uuid or leg_kind = 'external') and transaction_id in (select id from public.transactions where account_id = $2::uuid)",
+      [workspace1Id, accountId],
+    );
+    expect(postingRows.rows[0].count).toBe(2);
+  });
 });

@@ -29,10 +29,17 @@ export function isAccountStatus(value: string): value is AccountStatus {
   return ACCOUNT_STATUS_VALUES.includes(value);
 }
 
+export interface Money {
+  readonly amountMinor: string;
+  readonly currency: string;
+}
+
 export interface CreateAccountCommand {
   readonly name: string;
   readonly type: AccountType;
   readonly currency: string;
+  readonly openingBalance?: Money | null;
+  readonly openingBalanceDate?: string | null;
   readonly institution?: string | null;
   readonly maskedNumber?: string | null;
   readonly description?: string | null;
