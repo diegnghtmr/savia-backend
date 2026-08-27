@@ -256,29 +256,71 @@ describe('TransactionService createTransaction database boundary', () => {
   });
 
   it('serializes against closeAccount via per-account advisory lock', async () => {
-    let lockObserved = false;
-    await transaction.run(subjectOwner, async () => {
-      const command: CreateTransactionCommand = {
-        type: 'income',
-        accountId: accountActiveId,
-        amount: { amountMinor: '2000', currency: 'USD' },
-        occurredAt: '2026-08-20T12:00:00.000Z',
-        status: 'confirmed',
-      };
-      await service.create(
+    // 1. Session A: a raw admin client takes advisory lock on accountActiveId and leaves transaction open
+    const sessionA = await admin.connect();
+    await sessionA.query('BEGIN');
+    await sessionA.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [accountActiveId.toLowerCase()],
+    );
+
+    // 2. Session B: call service.create for that same account
+    const command: CreateTransactionCommand = {
+      type: 'income',
+      accountId: accountActiveId,
+      amount: { amountMinor: '2000', currency: 'USD' },
+      occurredAt: '2026-08-20T12:00:00.000Z',
+      status: 'confirmed',
+    };
+
+    let sessionBCompleted = false;
+    const sessionBPromise = service
+      .create(
         subjectOwner,
         workspace1Id,
         command,
         '00000000-0000-4000-8000-000000000003',
-      );
+      )
+      .then((res) => {
+        sessionBCompleted = true;
+        return res;
+      });
 
-      const locks = await admin.query(
-        `select count(*) from pg_locks where locktype = 'advisory' and objid = hashtextextended($1, 0)::integer`,
-        [accountActiveId.toLowerCase()],
-      );
-      lockObserved = Number(locks.rows[0].count) > 0;
-    });
-    expect(lockObserved).toBe(true);
+    // Verify Session B MUST NOT complete while Session A holds the lock
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(sessionBCompleted).toBe(false);
+
+    // 3. Release Session A
+    await sessionA.query('ROLLBACK');
+    sessionA.release();
+
+    // 4. Assert Session B then completes successfully
+    const outcome = await sessionBPromise;
+    expect(outcome.kind).toBe(TRANSACTION_CREATE_OUTCOMES.CREATED);
+
+    // 5. Negative control: Repeat with Session A holding lock for a DIFFERENT account id
+    const differentAccountId = id(7777);
+    const sessionA2 = await admin.connect();
+    await sessionA2.query('BEGIN');
+    await sessionA2.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [differentAccountId.toLowerCase()],
+    );
+
+    // Session B for accountActiveId completes immediately while sessionA2 holds lock for differentAccountId
+    const outcomeControl = await service.create(
+      subjectOwner,
+      workspace1Id,
+      {
+        ...command,
+        amount: { amountMinor: '2500', currency: 'USD' },
+      },
+      '00000000-0000-4000-8000-000000000033',
+    );
+    expect(outcomeControl.kind).toBe(TRANSACTION_CREATE_OUTCOMES.CREATED);
+
+    await sessionA2.query('ROLLBACK');
+    sessionA2.release();
   });
 
   it('refuses unresolved account in workspace with ACCOUNT_UNRESOLVED', async () => {
