@@ -179,7 +179,10 @@ export class AccountsService implements AccountsPort {
         client,
         workspaceId,
       );
-      if (baseCurrency === undefined || command.currency !== baseCurrency) {
+      if (baseCurrency === undefined) {
+        return { kind: ACCOUNT_CREATE_OUTCOMES.FORBIDDEN };
+      }
+      if (command.currency !== baseCurrency) {
         return { kind: ACCOUNT_CREATE_OUTCOMES.CURRENCY_UNSUPPORTED };
       }
 
@@ -202,6 +205,7 @@ export class AccountsService implements AccountsPort {
           body: existing.responseBody,
         };
       }
+
 
       // Create account
       const account = await this.store.createAccount(

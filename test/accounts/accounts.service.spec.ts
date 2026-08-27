@@ -665,7 +665,7 @@ describe('AccountsService.create', () => {
       ...store,
       createAccount: vi.fn().mockResolvedValue(createdAccount),
     };
-    const idempStore = fakeIdempotencyStore(undefined, true);
+    const idempStore = fakeIdempotencyStore();
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
@@ -683,24 +683,28 @@ describe('AccountsService.create', () => {
       kind: 'created',
       account: createdAccount,
     });
+    expect(store.readWorkspaceBaseCurrency).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+    );
     expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
   });
 
   it('allows creation in a non-USD workspace when currency matches that workspace base currency', async () => {
-    const createdAccount = account({ currency: 'COP' });
+    const createdAccount = account({ currency: 'EUR' });
     const store = fakeStore(
       'owner',
       [],
       undefined,
       createdAccount,
       undefined,
-      'COP',
+      'EUR',
     );
     const storeWithCreate = {
       ...store,
       createAccount: vi.fn().mockResolvedValue(createdAccount),
     };
-    const idempStore = fakeIdempotencyStore(undefined, true);
+    const idempStore = fakeIdempotencyStore();
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
@@ -710,7 +714,7 @@ describe('AccountsService.create', () => {
     const outcome = await service.create(
       SUBJECT,
       WORKSPACE_ID,
-      { ...VALID_COMMAND, currency: 'COP' },
+      { ...VALID_COMMAND, currency: 'EUR' },
       IDEMPOTENCY_KEY,
     );
 
@@ -725,7 +729,7 @@ describe('AccountsService.create', () => {
     expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses creation with currency_unsupported when workspace base currency is undefined', async () => {
+  it('answers forbidden when workspace base currency read is undefined', async () => {
     const store = fakeStore(
       'owner',
       [],
@@ -752,7 +756,7 @@ describe('AccountsService.create', () => {
       IDEMPOTENCY_KEY,
     );
 
-    expect(outcome.kind).toBe('currency_unsupported');
+    expect(outcome.kind).toBe('forbidden');
     expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
   });
 
