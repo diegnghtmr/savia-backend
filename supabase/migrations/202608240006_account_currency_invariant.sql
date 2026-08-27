@@ -74,6 +74,15 @@ begin
   -- Key derivation hashtextextended(new.workspace_id::text, 0) deliberately matches
   -- the application-level locks (readWorkspaceBaseCurrency and hasAccounts) so all four
   -- paths serialize on one key.
+  --
+  -- LOCK ORDERING HAZARD for future slices: the project convention is
+  -- SUBJECT -> WORKSPACE -> ACCOUNT (see hasUnsettledTransactions in
+  -- postgres-accounts.adapter.ts). This trigger takes the WORKSPACE lock, so any
+  -- future path that already holds the per-account lock and then updates
+  -- accounts.currency or accounts.workspace_id would acquire them out of order and
+  -- risk a deadlock. It is unreachable today because closeAccount -- the only
+  -- account-locked writer -- updates status/closed_at/updated_at/version, none of
+  -- which appear in this trigger's UPDATE OF list.
   perform pg_advisory_xact_lock(hashtextextended(new.workspace_id::text, 0));
 
   select workspace.base_currency into v_base_currency
