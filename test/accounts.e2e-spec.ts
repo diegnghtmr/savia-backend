@@ -839,6 +839,45 @@ describe('POST /v1/accounts', () => {
     expect(body.status).toBe(409);
   });
 
+  it('answers 422 problem+json when the port reports currency_unsupported', async () => {
+    const create = vi.fn<AccountsPort['create']>().mockResolvedValue({
+      kind: 'currency_unsupported',
+    } satisfies AccountCreateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      create,
+    );
+    const response = await postAccount(application, VALID_BODY, {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.ACCOUNT_CURRENCY_UNSUPPORTED);
+    expect(body.type.endsWith('/account-currency-unsupported')).toBe(true);
+    expect(body.title).toBe('Account currency unsupported');
+    expect(body.code).toBe('account-currency-unsupported');
+    expect(body.status).toBe(422);
+  });
+
+  it('ensures currency unsupported 422 problem type is distinguishable from validation unprocessable 422', async () => {
+    expect(PROBLEM_TYPES.ACCOUNT_CURRENCY_UNSUPPORTED).not.toBe(
+      PROBLEM_TYPES.UNPROCESSABLE,
+    );
+    expect(PROBLEM_TYPES.ACCOUNT_CURRENCY_UNSUPPORTED).toBe(
+      'https://savia.app/problems/account-currency-unsupported',
+    );
+    expect(PROBLEM_TYPES.UNPROCESSABLE).toBe(
+      'https://savia.app/problems/unprocessable',
+    );
+  });
+
   it('answers 422 problem+json when request body fails validation', async () => {
     const create = vi.fn<AccountsPort['create']>();
     const { application } = await createApplication(
