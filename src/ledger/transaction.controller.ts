@@ -1,9 +1,19 @@
-import { Controller, Inject, Post, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Inject,
+  Param,
+  Post,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 
 import {
   LEDGER_PORT,
   TRANSACTION_CREATE_OUTCOMES,
+  TRANSACTION_READ_OUTCOMES,
   type LedgerPort,
 } from './ledger.port.js';
 import {
@@ -17,6 +27,7 @@ import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
+import { UUID_PATTERN } from '../platform/uuid.js';
 
 @Controller('v1/transactions')
 @UseGuards(JwtAuthGuard)
@@ -136,5 +147,14 @@ export class TransactionController {
       .header('etag', `"${outcome.transaction.version}"`)
       .status(201)
       .send(outcome.transaction);
+  }
+
+  @Get(':transactionId')
+  public async getTransaction(
+    @Param('transactionId') transactionId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    throw new Error('Not implemented');
   }
 }

@@ -224,4 +224,12 @@ values
       version: row.version,
     };
   }
+
+  public async readTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+  ): Promise<Transaction | undefined> {
+    throw new Error('Not implemented');
+  }
 }

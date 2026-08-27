@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   TRANSACTION_CREATE_OUTCOMES,
+  TRANSACTION_READ_OUTCOMES,
   type CreateTransactionCommand,
   type Transaction,
 } from '../../src/ledger/ledger.port.js';
@@ -106,6 +107,7 @@ function fakeStore(
   readActiveRole: ReturnType<typeof vi.fn>;
   lockAndReadAccount: ReturnType<typeof vi.fn>;
   createTransaction: ReturnType<typeof vi.fn>;
+  readTransaction: ReturnType<typeof vi.fn>;
 } {
   const role = 'role' in options ? options.role : 'owner';
   const account = 'account' in options ? options.account : { status: 'active' };
@@ -114,6 +116,7 @@ function fakeStore(
     readActiveRole: vi.fn().mockResolvedValue(role),
     lockAndReadAccount: vi.fn().mockResolvedValue(account),
     createTransaction: vi.fn().mockResolvedValue(transaction),
+    readTransaction: vi.fn().mockResolvedValue(transaction),
   };
 }
 
@@ -423,5 +426,85 @@ describe('TransactionService.create', () => {
       txn,
       WORKSPACE_ID,
     );
+  });
+});
+
+describe('TransactionService.read', () => {
+  const transactionId = '00000000-0000-0000-0000-000000000t01';
+
+  it('refuses 403 when caller has no active membership role before any store read', async () => {
+    const store = fakeStore({ role: undefined });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(
+      new FakeTransaction(),
+      store,
+      idempotency,
+    );
+
+    const outcome = await service.read(SUBJECT, WORKSPACE_ID, transactionId);
+
+    expect(outcome).toEqual({ kind: TRANSACTION_READ_OUTCOMES.FORBIDDEN });
+    expect(store.readTransaction).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when transaction is not found in workspace', async () => {
+    const store = fakeStore({ role: 'owner' });
+    store.readTransaction.mockResolvedValue(undefined);
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(
+      new FakeTransaction(),
+      store,
+      idempotency,
+    );
+
+    const outcome = await service.read(SUBJECT, WORKSPACE_ID, transactionId);
+
+    expect(outcome).toEqual({ kind: TRANSACTION_READ_OUTCOMES.NOT_FOUND });
+    expect(store.readTransaction).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      transactionId,
+    );
+  });
+
+  it('returns 200 with transaction when found', async () => {
+    const txn = sampleTransaction({ id: transactionId });
+    const store = fakeStore({ role: 'owner', transaction: txn });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(
+      new FakeTransaction(),
+      store,
+      idempotency,
+    );
+
+    const outcome = await service.read(SUBJECT, WORKSPACE_ID, transactionId);
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_READ_OUTCOMES.OK,
+      transaction: txn,
+    });
+    expect(store.readTransaction).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      transactionId,
+    );
+  });
+
+  it('admits a viewer because read operations require only an active membership role', async () => {
+    const txn = sampleTransaction({ id: transactionId });
+    const store = fakeStore({ role: 'viewer', transaction: txn });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(
+      new FakeTransaction(),
+      store,
+      idempotency,
+    );
+
+    const outcome = await service.read(SUBJECT, WORKSPACE_ID, transactionId);
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_READ_OUTCOMES.OK,
+      transaction: txn,
+    });
   });
 });

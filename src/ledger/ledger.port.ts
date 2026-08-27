@@ -136,6 +136,35 @@ export type TransactionCreateOutcome =
   | TransactionCreateAccountUnresolved
   | TransactionCreateAccountClosed;
 
+export const TRANSACTION_READ_OUTCOMES = {
+  OK: 'ok',
+  FORBIDDEN: 'forbidden',
+  NOT_FOUND: 'not_found',
+} as const;
+export type TransactionReadOutcomeKind =
+  (typeof TRANSACTION_READ_OUTCOMES)[keyof typeof TRANSACTION_READ_OUTCOMES];
+
+export interface TransactionReadOk {
+  readonly kind: typeof TRANSACTION_READ_OUTCOMES.OK;
+  readonly transaction: Transaction;
+}
+
+export interface TransactionReadForbidden {
+  readonly kind: typeof TRANSACTION_READ_OUTCOMES.FORBIDDEN;
+}
+
+export interface TransactionReadNotFound {
+  readonly kind: typeof TRANSACTION_READ_OUTCOMES.NOT_FOUND;
+}
+
+// getTransaction declares 200, 401, 403 and 404 in the authority:
+// - 403 when the caller has no active role in the workspace (or workspace is absent)
+// - 404 when the transaction does not exist or belongs to another workspace (scoped SQL predicate)
+export type TransactionReadOutcome =
+  | TransactionReadOk
+  | TransactionReadForbidden
+  | TransactionReadNotFound;
+
 export interface LedgerPort {
   create(
     subject: string,
@@ -143,4 +172,9 @@ export interface LedgerPort {
     command: CreateTransactionCommand,
     idempotencyKey: string,
   ): Promise<TransactionCreateOutcome>;
+  read(
+    subject: string,
+    workspaceId: string,
+    transactionId: string,
+  ): Promise<TransactionReadOutcome>;
 }

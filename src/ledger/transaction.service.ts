@@ -3,10 +3,12 @@ import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import {
   TRANSACTION_CREATE_OUTCOMES,
+  TRANSACTION_READ_OUTCOMES,
   type CreateTransactionCommand,
   type LedgerPort,
   type Transaction,
   type TransactionCreateOutcome,
+  type TransactionReadOutcome,
 } from './ledger.port.js';
 
 export interface LedgerTransaction {
@@ -40,6 +42,11 @@ export interface LedgerStore {
     subject: string,
     command: CreateTransactionCommand,
   ): Promise<Transaction>;
+  readTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+  ): Promise<Transaction | undefined>;
 }
 
 export class TransactionService implements LedgerPort {
@@ -148,5 +155,13 @@ export class TransactionService implements LedgerPort {
         transaction,
       };
     });
+  }
+
+  public read(
+    subject: string,
+    workspaceId: string,
+    transactionId: string,
+  ): Promise<TransactionReadOutcome> {
+    throw new Error('Not implemented');
   }
 }

@@ -5,6 +5,7 @@ import type { AuthenticatedRequest } from '../../src/platform/authenticated-requ
 import { TransactionController } from '../../src/ledger/transaction.controller.js';
 import {
   TRANSACTION_CREATE_OUTCOMES,
+  TRANSACTION_READ_OUTCOMES,
   type LedgerPort,
   type Transaction,
 } from '../../src/ledger/ledger.port.js';
@@ -45,6 +46,10 @@ describe('TransactionController.createTransaction', () => {
     const fakeLedgerPort: LedgerPort = {
       create: vi.fn().mockResolvedValue({
         kind: TRANSACTION_CREATE_OUTCOMES.CREATED,
+        transaction: mockTransaction,
+      }),
+      read: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_READ_OUTCOMES.OK,
         transaction: mockTransaction,
       }),
       ...ledgerPortOverrides,
@@ -277,6 +282,142 @@ describe('TransactionController.createTransaction', () => {
     await controller.createTransaction(request, reply);
 
     expect(reply.status).toHaveBeenCalledWith(201);
+    expect(reply.header).toHaveBeenCalledWith('etag', '"1"');
+    expect(reply.send).toHaveBeenCalledWith(mockTransaction);
+  });
+});
+
+describe('TransactionController.getTransaction', () => {
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const subject = '00000000-0000-0000-0000-000000000901';
+  const transactionId = '00000000-0000-0000-0000-000000000t01';
+
+  const mockTransaction: Transaction = {
+    id: transactionId,
+    type: 'expense',
+    status: 'confirmed',
+    accountId: '00000000-0000-0000-0000-000000000a01',
+    amount: { amountMinor: '5000', currency: 'USD' },
+    occurredAt: '2026-08-20T10:00:00.000Z',
+    categoryId: null,
+    payeeId: null,
+    description: 'Groceries',
+    notes: null,
+    tagIds: [],
+    receiptId: null,
+    reconciliationId: null,
+    createdAt: '2026-08-20T10:00:00.000Z',
+    updatedAt: '2026-08-20T10:00:00.000Z',
+    version: 1,
+  };
+
+  function createMocks(ledgerPortOverrides: Partial<LedgerPort> = {}) {
+    const fakeLedgerPort: LedgerPort = {
+      create: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_CREATE_OUTCOMES.CREATED,
+        transaction: mockTransaction,
+      }),
+      read: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_READ_OUTCOMES.OK,
+        transaction: mockTransaction,
+      }),
+      ...ledgerPortOverrides,
+    };
+
+    const controller = new TransactionController(fakeLedgerPort);
+
+    const reply = {
+      status: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      send: vi.fn().mockReturnThis(),
+      header: vi.fn().mockReturnThis(),
+      request: {
+        id: 'trace-123',
+        url: `/v1/transactions/${transactionId}`,
+      },
+    } as unknown as FastifyReply;
+
+    return { controller, fakeLedgerPort, reply };
+  }
+
+  it('answers 400 when X-Workspace-Id header is missing or invalid', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {},
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.getTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.BAD_REQUEST }),
+    );
+  });
+
+  it('answers 400 when transactionId is not a valid UUID', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.getTransaction('invalid-uuid', request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.BAD_REQUEST }),
+    );
+  });
+
+  it('answers 403 FORBIDDEN when ledger port returns FORBIDDEN', async () => {
+    const { controller, reply } = createMocks({
+      read: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_READ_OUTCOMES.FORBIDDEN }),
+    });
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.getTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(403);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.FORBIDDEN }),
+    );
+  });
+
+  it('answers 404 NOT_FOUND when ledger port returns NOT_FOUND', async () => {
+    const { controller, reply } = createMocks({
+      read: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_READ_OUTCOMES.NOT_FOUND }),
+    });
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.getTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(404);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.NOT_FOUND }),
+    );
+  });
+
+  it('returns 200 with ETag header and transaction body on success', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.getTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(200);
     expect(reply.header).toHaveBeenCalledWith('etag', '"1"');
     expect(reply.send).toHaveBeenCalledWith(mockTransaction);
   });

@@ -288,3 +288,99 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
     });
   });
 });
+
+describe('PostgresTransactionAdapter.readTransaction', () => {
+  const adapter = new PostgresTransactionAdapter();
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const transactionId = '00000000-0000-0000-0000-000000000t01';
+  const accountId = '00000000-0000-0000-0000-000000000a01';
+
+  it('issues SQL with row-visibility WHERE clause binding both workspace_id and id, takes no advisory lock, and maps row to domain Transaction', async () => {
+    const occurredAtDate = new Date('2026-08-20T10:00:00.000Z');
+    const createdAtDate = new Date('2026-08-20T10:00:00.000Z');
+    const updatedAtDate = new Date('2026-08-20T10:00:00.000Z');
+
+    const client: TransactionClient = {
+      query: vi.fn().mockResolvedValue({
+        rows: [
+          {
+            id: transactionId,
+            accountId,
+            type: 'expense',
+            status: 'confirmed',
+            amountMinor: '5000',
+            currency: 'USD',
+            occurredAt: occurredAtDate,
+            description: 'Office Supplies',
+            notes: 'Notebooks',
+            categoryId: '00000000-0000-0000-0000-000000000c01',
+            payeeId: '00000000-0000-0000-0000-000000000p01',
+            receiptId: '00000000-0000-0000-0000-000000000r01',
+            reconciliationId: null,
+            tagIds: ['00000000-0000-0000-0000-000000000t01'],
+            createdAt: createdAtDate,
+            updatedAt: updatedAtDate,
+            version: 1,
+          },
+        ],
+      }),
+    };
+
+    const result = await adapter.readTransaction(
+      client,
+      workspaceId,
+      transactionId,
+    );
+
+    // Assert client.query was called EXACTLY ONCE (proving no advisory lock was taken)
+    expect(client.query).toHaveBeenCalledTimes(1);
+
+    const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, unknown[]];
+
+    // Assert row-visibility predicate in WHERE clause
+    expect(sql).toContain('select');
+    expect(sql).toContain('from public.transactions');
+    expect(sql).toContain('workspace_id = $1::uuid');
+    expect(sql).toContain('id = $2::uuid');
+    expect(sql).not.toContain('pg_advisory_xact_lock');
+    expect(values).toEqual([workspaceId, transactionId]);
+
+    expect(result).toEqual({
+      id: transactionId,
+      accountId,
+      type: 'expense',
+      status: 'confirmed',
+      amount: {
+        amountMinor: '5000',
+        currency: 'USD',
+      },
+      occurredAt: '2026-08-20T10:00:00.000Z',
+      description: 'Office Supplies',
+      notes: 'Notebooks',
+      categoryId: '00000000-0000-0000-0000-000000000c01',
+      payeeId: '00000000-0000-0000-0000-000000000p01',
+      receiptId: '00000000-0000-0000-0000-000000000r01',
+      reconciliationId: null,
+      tagIds: ['00000000-0000-0000-0000-000000000t01'],
+      createdAt: '2026-08-20T10:00:00.000Z',
+      updatedAt: '2026-08-20T10:00:00.000Z',
+      version: 1,
+    });
+  });
+
+  it('returns undefined when client.query returns no rows (transaction not found or belongs to another workspace)', async () => {
+    const client: TransactionClient = {
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+    };
+
+    const result = await adapter.readTransaction(
+      client,
+      workspaceId,
+      transactionId,
+    );
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(result).toBeUndefined();
+  });
+});
