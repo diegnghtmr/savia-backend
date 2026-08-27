@@ -514,9 +514,9 @@ export class AccountsController {
 
     if (outcome.kind === ACCOUNT_CLOSE_OUTCOMES.CLOSED) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.FORBIDDEN,
-        title: 'Account is closed',
-        status: 403,
+        type: PROBLEM_TYPES.ACCOUNT_ALREADY_CLOSED,
+        title: 'Account is already closed',
+        status: 409,
       });
       return;
     }

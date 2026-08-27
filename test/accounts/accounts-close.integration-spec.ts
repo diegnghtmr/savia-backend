@@ -460,7 +460,7 @@ describe('AccountsService closeAccount database boundary', () => {
     expect(absentAccOutcome.kind).toBe(ACCOUNT_CLOSE_OUTCOMES.NOT_FOUND);
   });
 
-  it('h. already closed: closing an already-closed account returns closed (403)', async () => {
+  it('h. already closed: closing an already-closed account returns closed (409)', async () => {
     const outcome = await service.close(
       subjectOwner,
       workspace1Id,

@@ -281,7 +281,7 @@ describe('AccountsController.closeAccount', () => {
     expect(reply.status).toHaveBeenCalledWith(403);
   });
 
-  it('answers 403 when close returns closed (account is already closed)', async () => {
+  it('answers 409 with dedicated ACCOUNT_ALREADY_CLOSED problem type when close returns closed (account is already closed)', async () => {
     const { controller, reply } = createCloseMocks({
       close: vi.fn().mockResolvedValue({ kind: ACCOUNT_CLOSE_OUTCOMES.CLOSED }),
     });
@@ -295,7 +295,14 @@ describe('AccountsController.closeAccount', () => {
 
     await controller.closeAccount(accountId, request, reply);
 
-    expect(reply.status).toHaveBeenCalledWith(403);
+    expect(reply.status).toHaveBeenCalledWith(409);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.ACCOUNT_ALREADY_CLOSED,
+        title: 'Account is already closed',
+        status: 409,
+      }),
+    );
   });
 
   it('answers 404 when close returns not_found', async () => {
