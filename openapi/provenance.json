@@ -11,7 +11,7 @@
   },
   "executableContract": {
     "path": "openapi/savia.openapi.yaml",
-    "sha256": "1f79e50855409919ab05f991b822cb11f887f3c5beb4fd6b7eafbc202cd4c981",
+    "sha256": "8828cde27e55e796fa0e4fec667a1e415c2bc0948cc1141ff5522489f9ef2bc0",
     "operationCount": 19
   }
 }
