@@ -175,17 +175,6 @@ export class AccountsService implements AccountsPort {
         return { kind: ACCOUNT_CREATE_OUTCOMES.FORBIDDEN };
       }
 
-      const baseCurrency = await this.store.readWorkspaceBaseCurrency(
-        client,
-        workspaceId,
-      );
-      if (baseCurrency === undefined) {
-        return { kind: ACCOUNT_CREATE_OUTCOMES.FORBIDDEN };
-      }
-      if (command.currency !== baseCurrency) {
-        return { kind: ACCOUNT_CREATE_OUTCOMES.CURRENCY_UNSUPPORTED };
-      }
-
       // Idempotency preamble
       const existing = await this.idempotencyStore.read(
         client,
@@ -206,6 +195,16 @@ export class AccountsService implements AccountsPort {
         };
       }
 
+      const baseCurrency = await this.store.readWorkspaceBaseCurrency(
+        client,
+        workspaceId,
+      );
+      if (baseCurrency === undefined) {
+        return { kind: ACCOUNT_CREATE_OUTCOMES.FORBIDDEN };
+      }
+      if (command.currency !== baseCurrency) {
+        return { kind: ACCOUNT_CREATE_OUTCOMES.CURRENCY_UNSUPPORTED };
+      }
 
       // Create account
       const account = await this.store.createAccount(

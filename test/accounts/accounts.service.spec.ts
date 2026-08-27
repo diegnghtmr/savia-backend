@@ -642,12 +642,18 @@ describe('AccountsService.create', () => {
     );
 
     expect(outcome.kind).toBe('currency_unsupported');
+    expect(idempStore.read).toHaveBeenCalledWith(
+      CLIENT,
+      SUBJECT,
+      'POST /v1/accounts',
+      IDEMPOTENCY_KEY,
+      WORKSPACE_ID,
+    );
     expect(store.readWorkspaceBaseCurrency).toHaveBeenCalledWith(
       CLIENT,
       WORKSPACE_ID,
     );
     expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
-    expect(idempStore.read).not.toHaveBeenCalled();
     expect(idempStore.write).not.toHaveBeenCalled();
   });
 
@@ -760,44 +766,83 @@ describe('AccountsService.create', () => {
     expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
   });
 
-  it('idempotent replay of refused currency mismatch reproduces currency_unsupported and creates no account', async () => {
+  it('replays stored successful 201 response under the same key even after workspace base currency changes', async () => {
+    const createdAccount = account({ currency: 'USD' });
+    let storedRecord: IdempotencyRecord | undefined;
+    const idempStore: IdempotencyStore & {
+      read: ReturnType<typeof vi.fn>;
+      write: ReturnType<typeof vi.fn>;
+    } = {
+      read: vi.fn(async () => storedRecord),
+      write: vi.fn(
+        async (
+          _client,
+          _subject,
+          _route,
+          _key,
+          fingerprint,
+          status,
+          etag,
+          body,
+        ) => {
+          storedRecord = {
+            requestFingerprint: fingerprint,
+            responseStatus: status,
+            responseEtag: etag,
+            responseBody: body,
+          };
+          return true;
+        },
+      ),
+    };
+
     const store = fakeStore(
       'owner',
       [],
       undefined,
-      account(),
+      createdAccount,
       undefined,
       'USD',
     );
     const storeWithCreate = {
       ...store,
-      createAccount: vi.fn(),
+      createAccount: vi.fn().mockResolvedValue(createdAccount),
     };
-    const idempStore = fakeIdempotencyStore();
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
       idempStore,
     );
 
-    const command = { ...VALID_COMMAND, currency: 'EUR' };
-
     const first = await service.create(
       SUBJECT,
       WORKSPACE_ID,
-      command,
+      { ...VALID_COMMAND, currency: 'USD' },
       IDEMPOTENCY_KEY,
     );
-    expect(first.kind).toBe('currency_unsupported');
+    expect(first).toEqual({
+      kind: 'created',
+      account: createdAccount,
+    });
+    expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
 
+    // Workspace base currency mutates in store
+    storeWithCreate.readWorkspaceBaseCurrency.mockResolvedValue('EUR');
+
+    // Replay same key and same payload
     const second = await service.create(
       SUBJECT,
       WORKSPACE_ID,
-      command,
+      { ...VALID_COMMAND, currency: 'USD' },
       IDEMPOTENCY_KEY,
     );
-    expect(second.kind).toBe('currency_unsupported');
-    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
+    expect(second).toEqual({
+      kind: 'replayed',
+      status: 201,
+      etag: `"${createdAccount.version}"`,
+      body: createdAccount,
+    });
+    expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
   });
 });
 
