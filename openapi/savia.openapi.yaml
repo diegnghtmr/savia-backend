@@ -1856,7 +1856,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
         '403':
-          description: Workspace access is forbidden.
+          description: The actor lacks workspace write access, or the account is closed.
           content:
             application/problem+json:
               schema:
