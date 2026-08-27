@@ -663,7 +663,7 @@ describe('AccountsService.update', () => {
     expect(store.updateAccount).not.toHaveBeenCalled();
   });
 
-  it('answers forbidden when the account exists but is closed (closed accounts cannot be modified)', async () => {
+  it('answers closed when the account exists but is closed (closed accounts cannot be modified)', async () => {
     const closedAccount = account({
       id: ACCOUNT_ID,
       status: 'closed',
@@ -677,7 +677,7 @@ describe('AccountsService.update', () => {
       UPDATE_COMMAND,
     );
 
-    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN);
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.CLOSED);
     expect(store.readAccount).toHaveBeenCalledWith(
       CLIENT,
       WORKSPACE_ID,
@@ -847,7 +847,7 @@ describe('AccountsService.update', () => {
       UPDATE_COMMAND,
     );
 
-    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN);
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.CLOSED);
     expect(store.readAccount).toHaveBeenCalledTimes(2);
   });
 

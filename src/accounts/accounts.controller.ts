@@ -318,6 +318,15 @@ export class AccountsController {
       return;
     }
 
+    if (outcome.kind === ACCOUNT_UPDATE_OUTCOMES.CLOSED) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Account is closed',
+        status: 403,
+      });
+      return;
+    }
+
     if (outcome.kind === ACCOUNT_UPDATE_OUTCOMES.NOT_FOUND) {
       sendProblem(reply, {
         type: PROBLEM_TYPES.NOT_FOUND,

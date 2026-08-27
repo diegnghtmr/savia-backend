@@ -169,6 +169,7 @@ export const ACCOUNT_UPDATE_OUTCOMES = {
   FORBIDDEN: 'forbidden',
   NOT_FOUND: 'not_found',
   VERSION_CONFLICT: 'version_conflict',
+  CLOSED: 'closed',
 } as const;
 export type AccountUpdateOutcomeKind =
   (typeof ACCOUNT_UPDATE_OUTCOMES)[keyof typeof ACCOUNT_UPDATE_OUTCOMES];
@@ -186,11 +187,15 @@ export interface AccountUpdateNotFound {
 export interface AccountUpdateVersionConflict {
   readonly kind: typeof ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT;
 }
+export interface AccountUpdateClosed {
+  readonly kind: typeof ACCOUNT_UPDATE_OUTCOMES.CLOSED;
+}
 export type AccountUpdateOutcome =
   | AccountUpdateOk
   | AccountUpdateForbidden
   | AccountUpdateNotFound
-  | AccountUpdateVersionConflict;
+  | AccountUpdateVersionConflict
+  | AccountUpdateClosed;
 
 export interface AccountsPort {
   list(subject: string, query: AccountListQuery): Promise<AccountListOutcome>;

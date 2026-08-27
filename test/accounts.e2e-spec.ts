@@ -1263,7 +1263,7 @@ describe('PATCH /v1/accounts/:accountId', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
-  it('answers 403 problem+json when workspace access is forbidden or account is closed', async () => {
+  it('answers 403 problem+json when workspace access is forbidden', async () => {
     const update = vi.fn<AccountsPort['update']>().mockResolvedValue({
       kind: 'forbidden',
     } satisfies AccountUpdateOutcome);
@@ -1290,6 +1290,36 @@ describe('PATCH /v1/accounts/:accountId', () => {
     );
     const body = JSON.parse(response.payload);
     expect(body.title).toBe('Workspace access forbidden');
+    expect(body.status).toBe(403);
+  });
+
+  it('answers 403 problem+json with Account is closed when account is closed', async () => {
+    const update = vi.fn<AccountsPort['update']>().mockResolvedValue({
+      kind: 'closed',
+    } satisfies AccountUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchAccount(
+      application,
+      ACCOUNT_ID,
+      VALID_PATCH_BODY,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Account is closed');
     expect(body.status).toBe(403);
   });
 

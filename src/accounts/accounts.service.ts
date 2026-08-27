@@ -271,7 +271,7 @@ export class AccountsService implements AccountsPort {
       // and the SQL UPDATE RLS policy explicitly enforces accounts.status <> 'closed'.
       // We return 403 Forbidden rather than a confusing 404 (since the account exists).
       if (existing.status === 'closed') {
-        return { kind: ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN };
+        return { kind: ACCOUNT_UPDATE_OUTCOMES.CLOSED };
       }
 
       if (expectedVersions !== undefined) {
@@ -295,7 +295,7 @@ export class AccountsService implements AccountsPort {
       if (updated === undefined) {
         // A zero-row UPDATE has distinct causes:
         // 1. The account was deleted mid-transaction -> not-found (404)
-        // 2. The account was closed mid-transaction -> forbidden (403)
+        // 2. The account was closed mid-transaction -> closed (403)
         // 3. A concurrent update bumped the version -> version-conflict (412)
         // 4. Role revocation or RLS restriction -> forbidden (403)
         const reread = await this.store.readAccount(
@@ -307,7 +307,7 @@ export class AccountsService implements AccountsPort {
           return { kind: ACCOUNT_UPDATE_OUTCOMES.NOT_FOUND };
         }
         if (reread.status === 'closed') {
-          return { kind: ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN };
+          return { kind: ACCOUNT_UPDATE_OUTCOMES.CLOSED };
         }
         if (reread.version !== existing.version) {
           return { kind: ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT };

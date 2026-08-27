@@ -336,7 +336,7 @@ describe('AccountsService updateAccount database boundary', () => {
     expect(dbRow.rows[0]?.name).toBe('Workspace 2 Account');
   });
 
-  it('returns forbidden (403) when targeting a closed account: closed accounts cannot be modified', async () => {
+  it('returns closed (403) when targeting a closed account: closed accounts cannot be modified', async () => {
     // Closure is a lifecycle state; the SQL UPDATE RLS policy enforces status <> 'closed'.
     // Returning 403 communicates clearly to the client that the account exists and cannot be modified.
     const outcome = await service.update(
@@ -346,7 +346,7 @@ describe('AccountsService updateAccount database boundary', () => {
       { name: 'Attempt To Reopen Or Edit Closed' },
     );
 
-    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.FORBIDDEN);
+    expect(outcome.kind).toBe(ACCOUNT_UPDATE_OUTCOMES.CLOSED);
 
     // Verify row in database was unchanged
     const dbRow = await admin.query(
