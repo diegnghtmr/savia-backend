@@ -1,0 +1,227 @@
+import type { TransactionClient } from '../platform/pg-transaction.js';
+import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
+import type { CreateTransactionCommand, Transaction } from './ledger.port.js';
+import type {
+  LedgerAccountRecord,
+  LedgerStore,
+} from './transaction.service.js';
+
+interface TransactionRow extends Record<string, unknown> {
+  readonly id: string;
+  readonly accountId: string;
+  readonly type: Transaction['type'];
+  readonly status: Transaction['status'];
+  readonly amountMinor: string;
+  readonly currency: string;
+  readonly occurredAt: Date;
+  readonly description: string | null;
+  readonly notes: string | null;
+  readonly categoryId: string | null;
+  readonly payeeId: string | null;
+  readonly receiptId: string | null;
+  readonly reconciliationId: string | null;
+  readonly tagIds: string[] | null;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+  readonly version: number;
+}
+
+const INT8_MAX = 9223372036854775807n;
+
+export function negateAmountMinor(amountMinor: string): string {
+  if (amountMinor === '0' || amountMinor === '-0') {
+    return '0';
+  }
+  if (BigInt(amountMinor) < -INT8_MAX) {
+    throw new RangeError(
+      `amountMinor ${amountMinor} cannot be negated within int8; its counter-leg would overflow`,
+    );
+  }
+  if (amountMinor.startsWith('-')) {
+    return amountMinor.slice(1);
+  }
+  return `-${amountMinor}`;
+}
+
+export function toIso(value: unknown): string {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  throw new TypeError(
+    `Expected Date instance from database timestamp column, got ${typeof value}`,
+  );
+}
+
+export class PostgresTransactionAdapter implements LedgerStore {
+  public async readActiveRole(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<string | undefined> {
+    const result = await client.query<{ role: string | null }>(
+      'select public.workspace_actor_active_role($1::uuid) as role',
+      [workspaceId],
+    );
+    const role = result.rows[0]?.role;
+    return typeof role === 'string' ? role : undefined;
+  }
+
+  public async lockAndReadAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+  ): Promise<LedgerAccountRecord | undefined> {
+    // 1. Mandatory per-account advisory lock (serialized against closeAccount)
+    await client.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [accountId.toLowerCase()],
+    );
+
+    // 2. Pre-check account existence and status in workspace
+    const accountResult = await client.query<{ status: string }>(
+      'select a.status from public.accounts a where a.workspace_id = $1::uuid and a.id = $2::uuid',
+      [workspaceId, accountId],
+    );
+    const accountRow = accountResult.rows[0];
+    if (!accountRow) {
+      return undefined;
+    }
+    return { status: accountRow.status };
+  }
+
+  public async createTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    command: CreateTransactionCommand,
+  ): Promise<Transaction> {
+    // 1. Insert transaction header row
+    const txnSql = `
+insert into public.transactions (
+  workspace_id,
+  account_id,
+  type,
+  status,
+  amount_minor,
+  currency,
+  occurred_at,
+  description,
+  notes,
+  category_id,
+  payee_id,
+  receipt_id,
+  tag_ids,
+  created_by
+)
+values (
+  $1::uuid,
+  $2::uuid,
+  $3,
+  $4,
+  $5,
+  $6,
+  $7::timestamptz,
+  $8,
+  $9,
+  $10::uuid,
+  $11::uuid,
+  $12::uuid,
+  $13::uuid[],
+  $14::uuid
+)
+returning
+  id::text,
+  account_id::text as "accountId",
+  type,
+  status,
+  amount_minor as "amountMinor",
+  currency,
+  occurred_at as "occurredAt",
+  description,
+  notes,
+  category_id::text as "categoryId",
+  payee_id::text as "payeeId",
+  receipt_id::text as "receiptId",
+  reconciliation_id::text as "reconciliationId",
+  tag_ids as "tagIds",
+  created_at as "createdAt",
+  updated_at as "updatedAt",
+  version`;
+
+    const txnValues = [
+      workspaceId,
+      command.accountId,
+      command.type,
+      command.status,
+      command.amount.amountMinor,
+      command.amount.currency,
+      command.occurredAt,
+      command.description ?? null,
+      command.notes ?? null,
+      command.categoryId ?? null,
+      command.payeeId ?? null,
+      command.receiptId ?? null,
+      command.tagIds && command.tagIds.length > 0 ? command.tagIds : null,
+      subject,
+    ];
+
+    const txnResult = await client.query<TransactionRow>(txnSql, txnValues);
+    const row = txnResult.rows[0];
+    if (!row) {
+      throw new Error('Created transaction row could not be read.');
+    }
+
+    // 2. Insert balanced pair of ledger postings
+    const postingsSql = `
+insert into public.ledger_postings (
+  workspace_id,
+  transaction_id,
+  account_id,
+  leg_kind,
+  amount_minor,
+  currency,
+  status,
+  occurred_at
+)
+values
+  ($1::uuid, $2::uuid, $3::uuid, 'account', $4, $5, $6, $7),
+  ($1::uuid, $2::uuid, null, 'external', $8, $5, $6, $7)`;
+
+    const postingsValues = [
+      workspaceId,
+      row.id,
+      command.accountId,
+      command.amount.amountMinor,
+      command.amount.currency,
+      command.status,
+      row.occurredAt,
+      negateAmountMinor(command.amount.amountMinor),
+    ];
+
+    await client.query(postingsSql, postingsValues);
+
+    // 3. Enforce deferred constraints (e.g. balanced-postings check) before commit
+    await enforceDeferredConstraints(client);
+
+    return {
+      id: row.id,
+      type: row.type,
+      status: row.status,
+      accountId: row.accountId,
+      amount: {
+        amountMinor: String(row.amountMinor),
+        currency: row.currency,
+      },
+      occurredAt: toIso(row.occurredAt),
+      categoryId: row.categoryId,
+      payeeId: row.payeeId,
+      description: row.description,
+      notes: row.notes,
+      tagIds: Array.isArray(row.tagIds) ? row.tagIds : [],
+      receiptId: row.receiptId,
+      reconciliationId: row.reconciliationId,
+      createdAt: toIso(row.createdAt),
+      updatedAt: toIso(row.updatedAt),
+      version: row.version,
+    };
+  }
+}

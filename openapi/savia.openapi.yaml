@@ -561,6 +561,197 @@ components:
             - archived
       additionalProperties: false
       minProperties: 1
+    TransactionStatus:
+      type: string
+      enum:
+        - draft
+        - pending
+        - confirmed
+        - reconciled
+        - voided
+    TransactionType:
+      type: string
+      enum:
+        - income
+        - expense
+        - adjustment
+        - refund
+        - debt_payment
+        - fund_contribution
+    TransactionSplit:
+      type: object
+      additionalProperties: false
+      required:
+        - amount
+        - categoryId
+      properties:
+        amount:
+          $ref: '#/components/schemas/Money'
+        categoryId:
+          type: string
+          format: uuid
+        notes:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+        tagIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          uniqueItems: true
+    Transaction:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - type
+        - status
+        - accountId
+        - amount
+        - occurredAt
+        - createdAt
+        - updatedAt
+        - version
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        status:
+          $ref: '#/components/schemas/TransactionStatus'
+        accountId:
+          type: string
+          format: uuid
+        amount:
+          $ref: '#/components/schemas/Money'
+        baseCurrencyAmount:
+          $ref: '#/components/schemas/ConvertedMoney'
+        occurredAt:
+          type: string
+          format: date-time
+        categoryId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        payeeId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+        notes:
+          type:
+            - string
+            - 'null'
+          maxLength: 2000
+        tagIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          uniqueItems: true
+        splits:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionSplit'
+        source:
+          type: string
+          enum:
+            - web
+            - mobile
+            - cli
+            - mcp
+            - agent
+            - import
+            - system
+        receiptId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        reconciliationId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          minimum: 1
+    CreateTransactionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - accountId
+        - amount
+        - occurredAt
+      properties:
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        accountId:
+          type: string
+          format: uuid
+        amount:
+          $ref: '#/components/schemas/Money'
+        occurredAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum:
+            - draft
+            - pending
+            - confirmed
+          default: confirmed
+        categoryId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        payeeId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+        notes:
+          type:
+            - string
+            - 'null'
+          maxLength: 2000
+        tagIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          uniqueItems: true
+        splits:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionSplit'
+        receiptId:
+          type:
+            - string
+            - 'null'
+          format: uuid
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -2101,3 +2292,89 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/transactions:
+    post:
+      operationId: createTransaction
+      tags:
+        - Transactions
+      summary: Create income, expense or adjustment
+      x-financial: true
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransactionRequest'
+      responses:
+        '201':
+          description: Transaction created.
+          headers:
+            ETag:
+              description: Quoted version integer representing the current entity state.
+              required: true
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          description: The request header or body failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden. An absent workspace is indistinguishable from a denied one; no 404 is declared.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Idempotency key reused with different payload.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: The request body failed validation, account is unresolved or closed, or splits are unsupported.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: create_transaction
+        riskClass: financial_write
+        requiresApproval: true
+        requiredScopes:
+          - transactions:write
+      x-idempotency-required: true

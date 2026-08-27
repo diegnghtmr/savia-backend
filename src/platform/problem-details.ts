@@ -23,6 +23,9 @@ export const PROBLEM_TYPES = {
   BASE_CURRENCY_CHANGE_UNSUPPORTED: `${BASE_URI}/base-currency-change-unsupported`,
   ACCOUNT_HAS_UNSETTLED_TRANSACTIONS: `${BASE_URI}/account-has-unsettled-transactions`,
   ACCOUNT_ALREADY_CLOSED: `${BASE_URI}/account-already-closed`,
+  TRANSACTION_SPLITS_UNSUPPORTED: `${BASE_URI}/transaction-splits-unsupported`,
+  ACCOUNT_UNRESOLVED: `${BASE_URI}/account-unresolved`,
+  ACCOUNT_CLOSED: `${BASE_URI}/account-closed`,
 } as const;
 export interface Problem {
   readonly type: string;
