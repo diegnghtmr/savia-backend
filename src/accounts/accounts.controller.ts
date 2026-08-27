@@ -14,6 +14,7 @@ import type { FastifyReply } from 'fastify';
 
 import {
   ACCOUNT_BALANCE_OUTCOMES,
+  ACCOUNT_CLOSE_OUTCOMES,
   ACCOUNT_CREATE_OUTCOMES,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
@@ -436,5 +437,137 @@ export class AccountsController {
       .header('etag', `"${outcome.account.version}"`)
       .status(200)
       .send(outcome.account);
+  }
+
+  @Post(':accountId/close')
+  public async closeAccount(
+    @Param('accountId') accountId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(accountId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid account identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    const keyResult = validateIdempotencyKey(
+      request.headers['idempotency-key'],
+    );
+    if (keyResult.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid Idempotency-Key header',
+        detail: keyResult.reason,
+        status: 400,
+      });
+      return;
+    }
+
+    const ifMatch = parseIfMatch(request.headers['if-match']);
+    if (ifMatch.kind === 'malformed') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+      return;
+    }
+
+    let expectedVersions: number | readonly number[] | undefined;
+    if (ifMatch.kind === 'versions') {
+      expectedVersions =
+        ifMatch.versions.length === 1 ? ifMatch.versions[0] : ifMatch.versions;
+    } else {
+      expectedVersions = undefined;
+    }
+
+    const outcome = await this.accounts.close(
+      request.identity.subject,
+      header.workspaceId,
+      accountId,
+      keyResult.key,
+      expectedVersions,
+    );
+
+    if (outcome.kind === ACCOUNT_CLOSE_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_CLOSE_OUTCOMES.CLOSED) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Account is closed',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_CLOSE_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Account not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_CLOSE_OUTCOMES.HAS_UNSETTLED_TRANSACTIONS) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.ACCOUNT_HAS_UNSETTLED_TRANSACTIONS,
+        title: 'Account has unsettled transactions',
+        detail:
+          'Account cannot be closed while it has transactions in draft or pending status.',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_CLOSE_OUTCOMES.IDEMPOTENCY_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency key reused with different payload',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_CLOSE_OUTCOMES.VERSION_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+      return;
+    }
+
+    if (outcome.kind === ACCOUNT_CLOSE_OUTCOMES.REPLAYED) {
+      let r = reply.status(outcome.status);
+      if (outcome.etag) {
+        r = r.header('etag', outcome.etag);
+      }
+      void r.send(outcome.body);
+      return;
+    }
+
+    void reply.status(200).send(outcome.account);
   }
 }

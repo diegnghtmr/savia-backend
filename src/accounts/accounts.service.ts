@@ -4,6 +4,7 @@ import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import {
   ACCOUNT_BALANCE_OUTCOMES,
+  ACCOUNT_CLOSE_OUTCOMES,
   ACCOUNT_CREATE_OUTCOMES,
   ACCOUNT_LIST_OUTCOMES,
   ACCOUNT_READ_OUTCOMES,
@@ -11,6 +12,7 @@ import {
   type Account,
   type AccountBalance,
   type AccountBalanceOutcome,
+  type AccountCloseOutcome,
   type AccountCreateOutcome,
   type AccountCursor,
   type AccountListOutcome,
@@ -82,6 +84,17 @@ export interface AccountsStore {
     workspaceId: string,
     accountId: string,
     command: UpdateAccountCommand,
+    expectedVersions?: number | readonly number[],
+  ): Promise<Account | undefined>;
+  hasUnsettledTransactions(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+  ): Promise<boolean>;
+  closeAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
     expectedVersions?: number | readonly number[],
   ): Promise<Account | undefined>;
 }
@@ -370,6 +383,148 @@ export class AccountsService implements AccountsPort {
       return {
         kind: ACCOUNT_UPDATE_OUTCOMES.OK,
         account: updated,
+      };
+    });
+  }
+
+  public async close(
+    subject: string,
+    workspaceId: string,
+    accountId: string,
+    idempotencyKey: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<AccountCloseOutcome> {
+    const route = 'POST /v1/accounts/{accountId}/close';
+    const fingerprint = computeRequestFingerprint({ accountId });
+
+    return this.transaction.run(subject, async (client) => {
+      // 1. Role check
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (
+        role === undefined ||
+        !['owner', 'administrator', 'editor'].includes(role)
+      ) {
+        return { kind: ACCOUNT_CLOSE_OUTCOMES.FORBIDDEN };
+      }
+
+      // 2. Idempotency check
+      const existing = await this.idempotencyStore.read(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        workspaceId,
+      );
+      if (existing !== undefined) {
+        if (existing.requestFingerprint !== fingerprint) {
+          return { kind: ACCOUNT_CLOSE_OUTCOMES.IDEMPOTENCY_CONFLICT };
+        }
+        return {
+          kind: ACCOUNT_CLOSE_OUTCOMES.REPLAYED,
+          status: existing.responseStatus,
+          etag: existing.responseEtag,
+          body: existing.responseBody,
+        };
+      }
+
+      // 3. Existence and status check
+      const existingAccount = await this.store.readAccount(
+        client,
+        workspaceId,
+        accountId,
+      );
+      if (existingAccount === undefined) {
+        return { kind: ACCOUNT_CLOSE_OUTCOMES.NOT_FOUND };
+      }
+
+      if (existingAccount.status === 'closed') {
+        return { kind: ACCOUNT_CLOSE_OUTCOMES.CLOSED };
+      }
+
+      // 4. Precondition: If-Match version check
+      if (expectedVersions !== undefined) {
+        const matches =
+          typeof expectedVersions === 'number'
+            ? existingAccount.version === expectedVersions
+            : expectedVersions.includes(existingAccount.version);
+        if (!matches) {
+          return { kind: ACCOUNT_CLOSE_OUTCOMES.VERSION_CONFLICT };
+        }
+      }
+
+      // 5. Precondition: status-only open transactions (RULING 30)
+      const hasUnsettled = await this.store.hasUnsettledTransactions(
+        client,
+        workspaceId,
+        accountId,
+      );
+      if (hasUnsettled) {
+        return { kind: ACCOUNT_CLOSE_OUTCOMES.HAS_UNSETTLED_TRANSACTIONS };
+      }
+
+      // 6. Close account in one atomic conditional statement
+      const closed = await this.store.closeAccount(
+        client,
+        workspaceId,
+        accountId,
+        expectedVersions,
+      );
+
+      if (closed === undefined) {
+        const reread = await this.store.readAccount(
+          client,
+          workspaceId,
+          accountId,
+        );
+        if (reread === undefined) {
+          return { kind: ACCOUNT_CLOSE_OUTCOMES.NOT_FOUND };
+        }
+        if (reread.status === 'closed') {
+          return { kind: ACCOUNT_CLOSE_OUTCOMES.CLOSED };
+        }
+        if (reread.version !== existingAccount.version) {
+          return { kind: ACCOUNT_CLOSE_OUTCOMES.VERSION_CONFLICT };
+        }
+        return { kind: ACCOUNT_CLOSE_OUTCOMES.FORBIDDEN };
+      }
+
+      // 7. Write idempotency record (200, null etag)
+      const written = await this.idempotencyStore.write(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        fingerprint,
+        200,
+        null,
+        closed,
+        workspaceId,
+      );
+
+      if (!written) {
+        const reread = await this.idempotencyStore.read(
+          client,
+          subject,
+          route,
+          idempotencyKey,
+          workspaceId,
+        );
+        if (reread !== undefined) {
+          if (reread.requestFingerprint !== fingerprint) {
+            return { kind: ACCOUNT_CLOSE_OUTCOMES.IDEMPOTENCY_CONFLICT };
+          }
+          return {
+            kind: ACCOUNT_CLOSE_OUTCOMES.REPLAYED,
+            status: reread.responseStatus,
+            etag: reread.responseEtag,
+            body: reread.responseBody,
+          };
+        }
+      }
+
+      return {
+        kind: ACCOUNT_CLOSE_OUTCOMES.OK,
+        account: closed,
       };
     });
   }
