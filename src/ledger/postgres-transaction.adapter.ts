@@ -4,6 +4,7 @@ import type {
   CreateTransactionCommand,
   Transaction,
   TransactionCursor,
+  UpdateTransactionCommand,
 } from './ledger.port.js';
 import type {
   LedgerAccountRecord,
@@ -393,5 +394,118 @@ select t.id::text,
       },
       cursorAt: row.cursorAt,
     }));
+  }
+
+  public async updateTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+    command: UpdateTransactionCommand,
+    expectedVersions?: number | readonly number[],
+  ): Promise<Transaction | undefined> {
+    const assignments: string[] = [
+      'updated_at = now()',
+      'version = version + 1',
+    ];
+    const values: unknown[] = [workspaceId, transactionId];
+
+    if ('occurredAt' in command && command.occurredAt !== undefined) {
+      values.push(command.occurredAt);
+      assignments.push(`occurred_at = $${values.length}::timestamptz`);
+    }
+
+    if ('categoryId' in command) {
+      values.push(command.categoryId);
+      assignments.push(`category_id = $${values.length}::uuid`);
+    }
+
+    if ('payeeId' in command) {
+      values.push(command.payeeId);
+      assignments.push(`payee_id = $${values.length}::uuid`);
+    }
+
+    if ('description' in command) {
+      values.push(command.description);
+      assignments.push(`description = $${values.length}`);
+    }
+
+    if ('notes' in command) {
+      values.push(command.notes);
+      assignments.push(`notes = $${values.length}`);
+    }
+
+    if ('tagIds' in command) {
+      values.push(
+        command.tagIds && command.tagIds.length > 0 ? command.tagIds : null,
+      );
+      assignments.push(`tag_ids = $${values.length}::uuid[]`);
+    }
+
+    if ('status' in command && command.status !== undefined) {
+      values.push(command.status);
+      assignments.push(`status = $${values.length}`);
+    }
+
+    const versionParam =
+      expectedVersions === undefined
+        ? null
+        : typeof expectedVersions === 'number'
+          ? [expectedVersions]
+          : [...expectedVersions];
+    values.push(versionParam);
+    const versionParamIndex = values.length;
+
+    const sql = `
+update public.transactions
+   set ${assignments.join(', ')}
+ where workspace_id = $1::uuid
+   and id = $2::uuid
+   and ($${versionParamIndex}::integer[] is null or version = any($${versionParamIndex}::integer[]))
+returning
+   id::text,
+   account_id::text as "accountId",
+   type,
+   status,
+   amount_minor as "amountMinor",
+   currency,
+   occurred_at as "occurredAt",
+   description,
+   notes,
+   category_id::text as "categoryId",
+   payee_id::text as "payeeId",
+   receipt_id::text as "receiptId",
+   reconciliation_id::text as "reconciliationId",
+   tag_ids as "tagIds",
+   created_at as "createdAt",
+   updated_at as "updatedAt",
+   version`;
+
+    const result = await client.query<TransactionRow>(sql, values);
+    const row = result.rows[0];
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      id: row.id,
+      accountId: row.accountId,
+      type: row.type,
+      status: row.status,
+      amount: {
+        amountMinor: String(row.amountMinor),
+        currency: row.currency,
+      },
+      occurredAt: toIso(row.occurredAt),
+      categoryId: row.categoryId,
+      payeeId: row.payeeId,
+      description: row.description,
+      notes: row.notes,
+      tagIds: Array.isArray(row.tagIds) ? row.tagIds : [],
+      receiptId: row.receiptId,
+      reconciliationId: row.reconciliationId,
+      createdAt: toIso(row.createdAt),
+      updatedAt: toIso(row.updatedAt),
+      version: row.version,
+    };
   }
 }

@@ -247,6 +247,13 @@ describe('TransactionService createTransaction database boundary', () => {
         limit: number,
         filters: Parameters<PostgresTransactionAdapter['listTransactions']>[4],
       ) => realAdapter.listTransactions(client, ws, cursor, limit, filters),
+      updateTransaction: (
+        client: TransactionClient,
+        ws: string,
+        id: string,
+        cmd: Parameters<PostgresTransactionAdapter['updateTransaction']>[3],
+        exp?: Parameters<PostgresTransactionAdapter['updateTransaction']>[4],
+      ) => realAdapter.updateTransaction(client, ws, id, cmd, exp),
       createTransaction: async (
         client: TransactionClient,
         ws: string,

@@ -550,3 +550,130 @@ describe('PostgresTransactionAdapter.listTransactions', () => {
     expect(sql).not.toContain(`'${categoryId}'`);
   });
 });
+
+describe('PostgresTransactionAdapter.updateTransaction', () => {
+  const adapter = new PostgresTransactionAdapter();
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const transactionId = '00000000-0000-0000-0000-000000000t01';
+  const accountId = '00000000-0000-0000-0000-000000000a01';
+
+  it('issues atomic conditional UPDATE SQL with version guard, sets updated_at and version bump, takes no advisory lock, and maps row', async () => {
+    const occurredAtDate = new Date('2026-08-21T12:00:00.000Z');
+    const createdAtDate = new Date('2026-08-20T10:00:00.000Z');
+    const updatedAtDate = new Date('2026-08-21T12:00:00.000Z');
+
+    const client: TransactionClient = {
+      query: vi.fn().mockResolvedValue({
+        rows: [
+          {
+            id: transactionId,
+            accountId,
+            type: 'expense',
+            status: 'pending',
+            amountMinor: '5000',
+            currency: 'USD',
+            occurredAt: occurredAtDate,
+            description: 'Updated description',
+            notes: 'Updated notes',
+            categoryId: '00000000-0000-0000-0000-000000000c02',
+            payeeId: '00000000-0000-0000-0000-000000000p02',
+            receiptId: null,
+            reconciliationId: null,
+            tagIds: ['00000000-0000-0000-0000-000000000t02'],
+            createdAt: createdAtDate,
+            updatedAt: updatedAtDate,
+            version: 2,
+          },
+        ],
+      }),
+    };
+
+    const result = await adapter.updateTransaction(
+      client,
+      workspaceId,
+      transactionId,
+      {
+        occurredAt: '2026-08-21T12:00:00.000Z',
+        categoryId: '00000000-0000-0000-0000-000000000c02',
+        payeeId: '00000000-0000-0000-0000-000000000p02',
+        description: 'Updated description',
+        notes: 'Updated notes',
+        tagIds: ['00000000-0000-0000-0000-000000000t02'],
+        status: 'pending',
+      },
+      1,
+    );
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, unknown[]];
+
+    expect(sql).toContain('update public.transactions');
+    expect(sql).toContain('updated_at = now()');
+    expect(sql).toContain('version = version + 1');
+    expect(sql).toContain('occurred_at = $3::timestamptz');
+    expect(sql).toContain('category_id = $4::uuid');
+    expect(sql).toContain('payee_id = $5::uuid');
+    expect(sql).toContain('description = $6');
+    expect(sql).toContain('notes = $7');
+    expect(sql).toContain('tag_ids = $8::uuid[]');
+    expect(sql).toContain('status = $9');
+    expect(sql).toContain('where workspace_id = $1::uuid');
+    expect(sql).toContain('and id = $2::uuid');
+    expect(sql).toContain(
+      'and ($10::integer[] is null or version = any($10::integer[]))',
+    );
+    expect(sql).not.toContain('pg_advisory_xact_lock');
+    expect(values).toEqual([
+      workspaceId,
+      transactionId,
+      '2026-08-21T12:00:00.000Z',
+      '00000000-0000-0000-0000-000000000c02',
+      '00000000-0000-0000-0000-000000000p02',
+      'Updated description',
+      'Updated notes',
+      ['00000000-0000-0000-0000-000000000t02'],
+      'pending',
+      [1],
+    ]);
+
+    expect(result).toEqual({
+      id: transactionId,
+      accountId,
+      type: 'expense',
+      status: 'pending',
+      amount: {
+        amountMinor: '5000',
+        currency: 'USD',
+      },
+      occurredAt: '2026-08-21T12:00:00.000Z',
+      description: 'Updated description',
+      notes: 'Updated notes',
+      categoryId: '00000000-0000-0000-0000-000000000c02',
+      payeeId: '00000000-0000-0000-0000-000000000p02',
+      receiptId: null,
+      reconciliationId: null,
+      tagIds: ['00000000-0000-0000-0000-000000000t02'],
+      createdAt: '2026-08-20T10:00:00.000Z',
+      updatedAt: '2026-08-21T12:00:00.000Z',
+      version: 2,
+    });
+  });
+
+  it('returns undefined when client.query returns no rows (mismatched version, missing row, or forbidden status)', async () => {
+    const client: TransactionClient = {
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+    };
+
+    const result = await adapter.updateTransaction(
+      client,
+      workspaceId,
+      transactionId,
+      { description: 'Attempt' },
+      1,
+    );
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(result).toBeUndefined();
+  });
+});

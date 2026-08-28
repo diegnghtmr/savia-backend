@@ -11,10 +11,11 @@ import {
   TRANSACTION_TYPE,
   type CreateTransactionCommand,
   type TransactionType,
+  type UpdateTransactionCommand,
 } from './ledger.port.js';
 import { ensureNoSplits } from './splits-guard.js';
 
-export type { CreateTransactionCommand };
+export type { CreateTransactionCommand, UpdateTransactionCommand };
 
 const ALLOWED_FIELDS = [
   'type',
@@ -354,4 +355,196 @@ export function createTransactionCommand(
     tagIds: Object.freeze(tagIds),
     receiptId,
   });
+}
+
+const UPDATE_ALLOWED_FIELDS = [
+  'occurredAt',
+  'categoryId',
+  'payeeId',
+  'description',
+  'notes',
+  'tagIds',
+  'splits',
+  'status',
+] as const;
+
+const UPDATE_STATUSES = ['draft', 'pending', 'confirmed'] as const;
+
+export function createUpdateTransactionCommand(
+  input: unknown,
+): UpdateTransactionCommand {
+  const violations: FieldViolation[] = [];
+
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    add(violations, 'body', 'invalid-type', 'must be an object');
+    throw new TransactionCommandValidationError(Object.freeze(violations));
+  }
+
+  const body = input as Record<string, unknown>;
+  const keys = Object.keys(body);
+
+  if (keys.length === 0) {
+    add(
+      violations,
+      'body',
+      'empty-update',
+      'must contain at least one field to update',
+    );
+  }
+
+  for (const key of keys) {
+    if (
+      !UPDATE_ALLOWED_FIELDS.includes(
+        key as (typeof UPDATE_ALLOWED_FIELDS)[number],
+      )
+    ) {
+      add(violations, key, 'not-allowed', 'is not allowed');
+    }
+  }
+
+  // Splits guard: non-empty splits array is refused with dedicated 422 error
+  if ('splits' in body && body.splits !== undefined) {
+    if (!Array.isArray(body.splits)) {
+      add(violations, 'splits', 'invalid-type', 'must be an array');
+    } else {
+      ensureNoSplits(body.splits);
+    }
+  }
+
+  const command: {
+    occurredAt?: string;
+    categoryId?: string | null;
+    payeeId?: string | null;
+    description?: string | null;
+    notes?: string | null;
+    tagIds?: readonly string[];
+    status?: 'draft' | 'pending' | 'confirmed';
+  } = {};
+
+  if ('occurredAt' in body) {
+    if (body.occurredAt === undefined || typeof body.occurredAt !== 'string') {
+      add(violations, 'occurredAt', 'invalid-type', 'must be a string');
+    } else {
+      const trimmed = body.occurredAt.trim();
+      if (!trimmed || !ISO_DATE_TIME_PATTERN.test(trimmed)) {
+        add(
+          violations,
+          'occurredAt',
+          'invalid-date',
+          'must be a valid ISO 8601 date-time string',
+        );
+      } else {
+        const parsed = new Date(trimmed);
+        if (Number.isNaN(parsed.getTime())) {
+          add(
+            violations,
+            'occurredAt',
+            'invalid-date',
+            'must be a valid ISO 8601 date-time string',
+          );
+        } else {
+          command.occurredAt = trimmed;
+        }
+      }
+    }
+  }
+
+  if ('categoryId' in body) {
+    if (body.categoryId === null) {
+      command.categoryId = null;
+    } else if (typeof body.categoryId !== 'string') {
+      add(violations, 'categoryId', 'invalid-type', 'must be a string or null');
+    } else if (!UUID_PATTERN.test(body.categoryId)) {
+      add(violations, 'categoryId', 'invalid-format', 'must be a valid UUID');
+    } else {
+      command.categoryId = body.categoryId;
+    }
+  }
+
+  if ('payeeId' in body) {
+    if (body.payeeId === null) {
+      command.payeeId = null;
+    } else if (typeof body.payeeId !== 'string') {
+      add(violations, 'payeeId', 'invalid-type', 'must be a string or null');
+    } else if (!UUID_PATTERN.test(body.payeeId)) {
+      add(violations, 'payeeId', 'invalid-format', 'must be a valid UUID');
+    } else {
+      command.payeeId = body.payeeId;
+    }
+  }
+
+  if ('description' in body) {
+    command.description = nullableStringValue(
+      body.description,
+      'description',
+      violations,
+      500,
+    );
+  }
+
+  if ('notes' in body) {
+    command.notes = nullableStringValue(body.notes, 'notes', violations, 2000);
+  }
+
+  if ('tagIds' in body) {
+    if (body.tagIds === undefined) {
+      // do not populate
+    } else if (!Array.isArray(body.tagIds)) {
+      add(violations, 'tagIds', 'invalid-type', 'must be an array');
+    } else {
+      const seen = new Set<string>();
+      let hasDuplicates = false;
+      let allValidUuids = true;
+
+      for (const tag of body.tagIds) {
+        if (typeof tag !== 'string' || !UUID_PATTERN.test(tag)) {
+          allValidUuids = false;
+        } else {
+          if (seen.has(tag)) {
+            hasDuplicates = true;
+          }
+          seen.add(tag);
+        }
+      }
+
+      if (!allValidUuids) {
+        add(
+          violations,
+          'tagIds',
+          'invalid-format',
+          'must be an array of valid UUIDs',
+        );
+      }
+      if (hasDuplicates) {
+        add(
+          violations,
+          'tagIds',
+          'duplicate-values',
+          'tagIds must contain unique values',
+        );
+      }
+
+      if (allValidUuids && !hasDuplicates) {
+        command.tagIds = Object.freeze([...body.tagIds]);
+      }
+    }
+  }
+
+  if ('status' in body) {
+    command.status = enumValue(
+      body.status,
+      'status',
+      UPDATE_STATUSES,
+      violations,
+      'status must be one of draft, pending, confirmed',
+    ) as 'draft' | 'pending' | 'confirmed';
+  }
+
+  if (violations.length > 0) {
+    throw new TransactionCommandValidationError(
+      Object.freeze(sortViolations(violations)),
+    );
+  }
+
+  return Object.freeze(command);
 }

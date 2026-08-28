@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createTransactionCommand,
+  createUpdateTransactionCommand,
   TransactionCommandValidationError,
   type CreateTransactionCommand,
+  type UpdateTransactionCommand,
 } from '../../src/ledger/transaction-command.js';
 import { TransactionSplitsUnsupportedError } from '../../src/ledger/splits-guard.js';
 import type { FieldViolation } from '../../src/platform/problem-details.js';
@@ -333,6 +335,273 @@ describe('createTransactionCommand', () => {
           message: 'must be an array',
         });
       },
+    );
+  });
+});
+
+describe('createUpdateTransactionCommand', () => {
+  it('accepts valid minimal single-field update and returns frozen command without absent fields', () => {
+    const command = createUpdateTransactionCommand({
+      description: 'Updated groceries',
+    });
+
+    expect(command).toEqual({
+      description: 'Updated groceries',
+    } satisfies UpdateTransactionCommand);
+    expect('notes' in command).toBe(false);
+    expect('status' in command).toBe(false);
+    expect('categoryId' in command).toBe(false);
+    expect('payeeId' in command).toBe(false);
+    expect('tagIds' in command).toBe(false);
+    expect('occurredAt' in command).toBe(false);
+    expect(Object.isFrozen(command)).toBe(true);
+  });
+
+  it('accepts all valid fields simultaneously', () => {
+    const command = createUpdateTransactionCommand({
+      occurredAt: '2026-08-21T12:00:00.000Z',
+      categoryId: '00000000-0000-0000-0000-000000000002',
+      payeeId: '00000000-0000-0000-0000-000000000003',
+      description: 'New Description',
+      notes: 'New Notes',
+      tagIds: ['00000000-0000-0000-0000-000000000004'],
+      status: 'pending',
+    });
+
+    expect(command).toEqual({
+      occurredAt: '2026-08-21T12:00:00.000Z',
+      categoryId: '00000000-0000-0000-0000-000000000002',
+      payeeId: '00000000-0000-0000-0000-000000000003',
+      description: 'New Description',
+      notes: 'New Notes',
+      tagIds: ['00000000-0000-0000-0000-000000000004'],
+      status: 'pending',
+    });
+  });
+
+  it('decides field presence by "in" operator and preserves explicit null for nullable fields', () => {
+    const command = createUpdateTransactionCommand({
+      description: null,
+      notes: null,
+      categoryId: null,
+      payeeId: null,
+    });
+
+    expect('description' in command).toBe(true);
+    expect(command.description).toBeNull();
+    expect('notes' in command).toBe(true);
+    expect(command.notes).toBeNull();
+    expect('categoryId' in command).toBe(true);
+    expect(command.categoryId).toBeNull();
+    expect('payeeId' in command).toBe(true);
+    expect(command.payeeId).toBeNull();
+    expect('status' in command).toBe(false);
+  });
+
+  it('refuses empty body with empty-update violation (minProperties: 1)', () => {
+    expectViolations(
+      () => createUpdateTransactionCommand({}),
+      (violations) => {
+        expect(violations).toEqual([
+          {
+            field: 'body',
+            code: 'empty-update',
+            message: 'must contain at least one field to update',
+          },
+        ]);
+      },
+    );
+  });
+
+  it('refuses non-object body', () => {
+    for (const invalid of [null, undefined, 'string', 123, []]) {
+      expectViolations(
+        () => createUpdateTransactionCommand(invalid),
+        (violations) => {
+          expect(violations).toContainEqual({
+            field: 'body',
+            code: 'invalid-type',
+            message: 'must be an object',
+          });
+        },
+      );
+    }
+  });
+
+  it('refuses unknown properties and immutable fields (additionalProperties: false)', () => {
+    expectViolations(
+      () =>
+        createUpdateTransactionCommand({
+          description: 'Updated',
+          amount: { amountMinor: '5000', currency: 'USD' },
+          type: 'income',
+          accountId: '00000000-0000-0000-0000-000000000001',
+          unknownProp: 'test',
+        }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'amount',
+          code: 'not-allowed',
+          message: 'is not allowed',
+        });
+        expect(violations).toContainEqual({
+          field: 'type',
+          code: 'not-allowed',
+          message: 'is not allowed',
+        });
+        expect(violations).toContainEqual({
+          field: 'accountId',
+          code: 'not-allowed',
+          message: 'is not allowed',
+        });
+        expect(violations).toContainEqual({
+          field: 'unknownProp',
+          code: 'not-allowed',
+          message: 'is not allowed',
+        });
+      },
+    );
+  });
+
+  it('admits status values draft, pending, confirmed on update', () => {
+    for (const status of ['draft', 'pending', 'confirmed'] as const) {
+      const command = createUpdateTransactionCommand({ status });
+      expect(command.status).toBe(status);
+    }
+  });
+
+  it('refuses reconciled and voided status values on update', () => {
+    for (const status of ['reconciled', 'voided']) {
+      expectViolations(
+        () => createUpdateTransactionCommand({ status }),
+        (violations) => {
+          expect(violations).toContainEqual({
+            field: 'status',
+            code: 'unsupported',
+            message: expect.stringContaining('draft, pending, confirmed'),
+          });
+        },
+      );
+    }
+  });
+
+  it('refuses invalid occurredAt date-time string on update', () => {
+    for (const invalidDate of ['not-a-date', '2026-13-45', '2026-08-20']) {
+      expectViolations(
+        () => createUpdateTransactionCommand({ occurredAt: invalidDate }),
+        (violations) => {
+          expect(violations).toContainEqual({
+            field: 'occurredAt',
+            code: 'invalid-date',
+            message: expect.stringContaining('ISO 8601 date-time'),
+          });
+        },
+      );
+    }
+  });
+
+  it('refuses invalid categoryId or payeeId on update', () => {
+    expectViolations(
+      () =>
+        createUpdateTransactionCommand({
+          categoryId: 'not-a-uuid',
+          payeeId: 'not-a-uuid',
+        }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'categoryId',
+          code: 'invalid-format',
+          message: 'must be a valid UUID',
+        });
+        expect(violations).toContainEqual({
+          field: 'payeeId',
+          code: 'invalid-format',
+          message: 'must be a valid UUID',
+        });
+      },
+    );
+  });
+
+  it('refuses duplicate tagIds on update', () => {
+    expectViolations(
+      () =>
+        createUpdateTransactionCommand({
+          tagIds: [
+            '00000000-0000-0000-0000-000000000001',
+            '00000000-0000-0000-0000-000000000001',
+          ],
+        }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'tagIds',
+          code: 'duplicate-values',
+          message: expect.stringContaining('unique'),
+        });
+      },
+    );
+  });
+
+  it('throws TransactionSplitsUnsupportedError when non-empty splits array is provided on update', () => {
+    expect(() =>
+      createUpdateTransactionCommand({
+        splits: [
+          {
+            amount: { amountMinor: '5000', currency: 'USD' },
+            categoryId: '00000000-0000-0000-0000-000000000002',
+          },
+        ],
+      }),
+    ).toThrow(TransactionSplitsUnsupportedError);
+  });
+
+  it('accepts empty splits array [] on update', () => {
+    const command = createUpdateTransactionCommand({
+      splits: [],
+      description: 'Splits cleared',
+    });
+    expect(command.description).toBe('Splits cleared');
+  });
+
+  it('re-uses the SAME TransactionSplitsUnsupportedError between create and update command builders (anti-drift proof)', () => {
+    let createError: unknown;
+    let updateError: unknown;
+
+    try {
+      createTransactionCommand({
+        type: 'expense',
+        accountId: '00000000-0000-0000-0000-000000000001',
+        amount: { amountMinor: '100', currency: 'USD' },
+        occurredAt: '2026-08-20T10:00:00.000Z',
+        splits: [
+          {
+            amount: { amountMinor: '100', currency: 'USD' },
+            categoryId: '00000000-0000-0000-0000-000000000002',
+          },
+        ],
+      });
+    } catch (e) {
+      createError = e;
+    }
+
+    try {
+      createUpdateTransactionCommand({
+        splits: [
+          {
+            amount: { amountMinor: '100', currency: 'USD' },
+            categoryId: '00000000-0000-0000-0000-000000000002',
+          },
+        ],
+      });
+    } catch (e) {
+      updateError = e;
+    }
+
+    expect(createError).toBeInstanceOf(TransactionSplitsUnsupportedError);
+    expect(updateError).toBeInstanceOf(TransactionSplitsUnsupportedError);
+    expect((createError as Error).name).toBe((updateError as Error).name);
+    expect((createError as Error).message).toBe((updateError as Error).message);
+    expect((createError as Error).constructor).toBe(
+      (updateError as Error).constructor,
     );
   });
 });
