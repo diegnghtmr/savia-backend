@@ -404,7 +404,13 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
         expect(checkRes.rows).toHaveLength(1);
         expect(checkRes.rows[0].base_currency).toBe('USD');
         expect(checkRes.rows[0].quote_currency).toBe('EUR');
-        expect(checkRes.rows[0].rate).toBe('0.92');
+        // `rate numeric` declares no scale, so PostgreSQL PRESERVES the scale of the
+        // literal that was inserted: '0.9200' is stored and returned as '0.9200',
+        // not normalised to '0.92'. That is deliberate for a rate ledger -- the row
+        // keeps the rate exactly as it was agreed and submitted -- but it means the
+        // serialized form depends on what the caller wrote, so it is pinned here
+        // rather than left to be rediscovered as a surprise.
+        expect(checkRes.rows[0].rate).toBe('0.9200');
       } finally {
         if (rateId) await deleteExchangeRates([rateId]);
       }
