@@ -153,7 +153,9 @@ describe('ExchangeRateService createManualExchangeRate database boundary', () =>
     expect(created.id).toBeDefined();
     expect(created.baseCurrency).toBe('USD');
     expect(created.quoteCurrency).toBe('EUR');
-    expect(created.rate).toBe('0.92');
+    // numeric declares no scale, so the submitted scale survives round-trip:
+    // '0.9200' in, '0.9200' out. See the schema suite where this is pinned.
+    expect(created.rate).toBe('0.9200');
     expect(created.effectiveAt).toBe('2026-08-28T10:00:00.000Z');
     expect(created.source).toBe('manual');
     expect(created.manual).toBe(true);
@@ -178,7 +180,7 @@ describe('ExchangeRateService createManualExchangeRate database boundary', () =>
     expect(row.workspace_id).toBe(workspace1Id);
     expect(row.base_currency).toBe('USD');
     expect(row.quote_currency).toBe('EUR');
-    expect(row.rate).toBe('0.92');
+    expect(row.rate).toBe('0.9200');
     expect(row.source).toBe('manual');
     expect(row.manual).toBe(true);
     expect(row.notes).toBe('Owner manual rate entry');
@@ -224,7 +226,7 @@ describe('ExchangeRateService createManualExchangeRate database boundary', () =>
     );
     expect(outcome.kind).toBe(EXCHANGE_RATE_CREATE_OUTCOMES.CREATED);
     const created = (outcome as ExchangeRateCreateCreated).exchangeRate;
-    expect(created.rate).toBe('155.5');
+    expect(created.rate).toBe('155.5000');
   });
 
   it('403 forbidden: viewer role is refused by service and blocks persistence (0 rows written)', async () => {
