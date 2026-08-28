@@ -30,6 +30,7 @@ export const PROBLEM_TYPES = {
   TRANSACTION_VOIDED: `${BASE_URI}/transaction-voided`,
   TRANSACTION_DRAFT: `${BASE_URI}/transaction-draft`,
   TRANSFER_CURRENCY_MISMATCH: `${BASE_URI}/transfer-currency-mismatch`,
+  EXCHANGE_RATE_ALREADY_RECORDED: `${BASE_URI}/exchange-rate-already-recorded`,
 } as const;
 export interface Problem {
   readonly type: string;
