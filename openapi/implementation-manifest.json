@@ -136,6 +136,11 @@
       "operationId": "createTransfer",
       "method": "POST",
       "path": "/v1/transfers"
+    },
+    {
+      "operationId": "createManualExchangeRate",
+      "method": "POST",
+      "path": "/v1/exchange-rates"
     }
   ]
 }
