@@ -106,12 +106,17 @@ returning
         manual: row.manual,
       };
     } catch (error: unknown) {
-      // D3: Catch SQLSTATE 23505 unique constraint violation specifically
+      // D3: Catch SQLSTATE 23505 unique constraint violation specifically, and only
+      // for THIS constraint. Mapping any 23505 to "rate already recorded" would
+      // silently mislabel a future unique constraint on this table as a duplicate
+      // rate, so the constraint name is part of the condition rather than assumed.
       if (
         typeof error === 'object' &&
         error !== null &&
         'code' in error &&
-        (error as { code: string }).code === '23505'
+        (error as { code: string }).code === '23505' &&
+        (error as { constraint?: string }).constraint ===
+          'exchange_rates_workspace_pair_effective_at_key'
       ) {
         throw new ExchangeRateAlreadyRecordedError();
       }
