@@ -29,6 +29,7 @@ export const PROBLEM_TYPES = {
   TRANSACTION_RECONCILED: `${BASE_URI}/transaction-reconciled`,
   TRANSACTION_VOIDED: `${BASE_URI}/transaction-voided`,
   TRANSACTION_DRAFT: `${BASE_URI}/transaction-draft`,
+  TRANSFER_CURRENCY_MISMATCH: `${BASE_URI}/transfer-currency-mismatch`,
 } as const;
 export interface Problem {
   readonly type: string;
