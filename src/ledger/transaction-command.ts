@@ -12,10 +12,15 @@ import {
   type CreateTransactionCommand,
   type TransactionType,
   type UpdateTransactionCommand,
+  type VoidTransactionCommand,
 } from './ledger.port.js';
 import { ensureNoSplits } from './splits-guard.js';
 
-export type { CreateTransactionCommand, UpdateTransactionCommand };
+export type {
+  CreateTransactionCommand,
+  UpdateTransactionCommand,
+  VoidTransactionCommand,
+};
 
 const ALLOWED_FIELDS = [
   'type',
@@ -547,4 +552,63 @@ export function createUpdateTransactionCommand(
   }
 
   return Object.freeze(command);
+}
+
+const VOID_ALLOWED_FIELDS = ['reason'] as const;
+
+export function createVoidTransactionCommand(
+  input: unknown,
+): VoidTransactionCommand {
+  const violations: FieldViolation[] = [];
+
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    add(violations, 'body', 'invalid-type', 'must be an object');
+    throw new TransactionCommandValidationError(Object.freeze(violations));
+  }
+
+  const body = input as Record<string, unknown>;
+  const keys = Object.keys(body);
+
+  for (const key of keys) {
+    if (
+      !VOID_ALLOWED_FIELDS.includes(key as (typeof VOID_ALLOWED_FIELDS)[number])
+    ) {
+      add(violations, key, 'not-allowed', 'is not allowed');
+    }
+  }
+
+  let validatedReason: string | undefined;
+  if (!('reason' in body) || body.reason === undefined) {
+    add(violations, 'reason', 'required', 'must be a non-empty string');
+  } else if (typeof body.reason !== 'string') {
+    add(violations, 'reason', 'invalid-type', 'must be a string');
+  } else if (body.reason.includes('\0')) {
+    add(
+      violations,
+      'reason',
+      'invalid-characters',
+      'must not contain null characters',
+    );
+  } else {
+    const trimmed = body.reason.trim();
+    if (!trimmed) {
+      add(violations, 'reason', 'required', 'must be a non-empty string');
+    } else if ([...trimmed].length < 3) {
+      add(violations, 'reason', 'min-length', 'must be at least 3 characters');
+    } else if ([...trimmed].length > 500) {
+      add(violations, 'reason', 'max-length', 'must be at most 500 characters');
+    } else {
+      validatedReason = trimmed;
+    }
+  }
+
+  if (violations.length > 0) {
+    throw new TransactionCommandValidationError(
+      Object.freeze(sortViolations(violations)),
+    );
+  }
+
+  return Object.freeze({
+    reason: validatedReason!,
+  });
 }

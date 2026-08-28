@@ -7,6 +7,7 @@ import {
   TRANSACTION_LIST_OUTCOMES,
   TRANSACTION_READ_OUTCOMES,
   TRANSACTION_UPDATE_OUTCOMES,
+  TRANSACTION_VOID_OUTCOMES,
   type CreateTransactionCommand,
   type LedgerPort,
   type Transaction,
@@ -17,7 +18,9 @@ import {
   type TransactionReadOutcome,
   type TransactionStatus,
   type TransactionUpdateOutcome,
+  type TransactionVoidOutcome,
   type UpdateTransactionCommand,
+  type VoidTransactionCommand,
 } from './ledger.port.js';
 
 export interface LedgerTransaction {
@@ -82,6 +85,14 @@ export interface LedgerStore {
     workspaceId: string,
     transactionId: string,
     command: UpdateTransactionCommand,
+    expectedVersions?: number | readonly number[],
+  ): Promise<Transaction | undefined>;
+  voidTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+    accountId: string,
+    postingStatus: string,
     expectedVersions?: number | readonly number[],
   ): Promise<Transaction | undefined>;
 }
@@ -404,6 +415,154 @@ export class TransactionService implements LedgerPort {
       return {
         kind: TRANSACTION_UPDATE_OUTCOMES.OK,
         transaction: updated,
+      };
+    });
+  }
+
+  public async void(
+    subject: string,
+    workspaceId: string,
+    transactionId: string,
+    command: VoidTransactionCommand,
+    idempotencyKey: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<TransactionVoidOutcome> {
+    const route = 'POST /v1/transactions/{transactionId}/void';
+    const fingerprint = computeRequestFingerprint({
+      transactionId,
+      ...command,
+    });
+
+    return this.transaction.run(subject, async (client) => {
+      // 1. Role check: only owner, administrator, editor may void transactions
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (
+        role === undefined ||
+        !['owner', 'administrator', 'editor'].includes(role)
+      ) {
+        return { kind: TRANSACTION_VOID_OUTCOMES.FORBIDDEN };
+      }
+
+      // 2. Idempotency read: replay stored response if matched
+      const existing = await this.idempotencyStore.read(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        workspaceId,
+      );
+      if (existing !== undefined) {
+        if (existing.requestFingerprint !== fingerprint) {
+          return { kind: TRANSACTION_VOID_OUTCOMES.IDEMPOTENCY_CONFLICT };
+        }
+        return {
+          kind: TRANSACTION_VOID_OUTCOMES.REPLAYED,
+          status: existing.responseStatus,
+          etag: existing.responseEtag,
+          body: existing.responseBody,
+        };
+      }
+
+      // 3. Pre-read existing transaction for business checks & version pre-check
+      const existingTxn = await this.store.readTransaction(
+        client,
+        workspaceId,
+        transactionId,
+      );
+      if (existingTxn === undefined) {
+        return { kind: TRANSACTION_VOID_OUTCOMES.NOT_FOUND };
+      }
+      if (existingTxn.status === 'draft') {
+        return { kind: TRANSACTION_VOID_OUTCOMES.DRAFT };
+      }
+      if (existingTxn.status === 'voided') {
+        return { kind: TRANSACTION_VOID_OUTCOMES.VOIDED };
+      }
+      if (existingTxn.status === 'reconciled') {
+        return { kind: TRANSACTION_VOID_OUTCOMES.RECONCILED };
+      }
+      if (expectedVersions !== undefined) {
+        const matches =
+          typeof expectedVersions === 'number'
+            ? existingTxn.version === expectedVersions
+            : expectedVersions.includes(existingTxn.version);
+        if (!matches) {
+          return { kind: TRANSACTION_VOID_OUTCOMES.VERSION_CONFLICT };
+        }
+      }
+
+      // 4. Void transaction in store (advisory lock, status flip, reversal postings, enforceDeferredConstraints)
+      const voided = await this.store.voidTransaction(
+        client,
+        workspaceId,
+        transactionId,
+        existingTxn.accountId,
+        existingTxn.status,
+        expectedVersions !== undefined ? expectedVersions : existingTxn.version,
+      );
+
+      // 5. Zero-row update re-read to distinguish cause
+      if (voided === undefined) {
+        const reread = await this.store.readTransaction(
+          client,
+          workspaceId,
+          transactionId,
+        );
+        if (reread === undefined) {
+          return { kind: TRANSACTION_VOID_OUTCOMES.NOT_FOUND };
+        }
+        if (reread.status === 'draft') {
+          return { kind: TRANSACTION_VOID_OUTCOMES.DRAFT };
+        }
+        if (reread.status === 'voided') {
+          return { kind: TRANSACTION_VOID_OUTCOMES.VOIDED };
+        }
+        if (reread.status === 'reconciled') {
+          return { kind: TRANSACTION_VOID_OUTCOMES.RECONCILED };
+        }
+        if (reread.version !== existingTxn.version) {
+          return { kind: TRANSACTION_VOID_OUTCOMES.VERSION_CONFLICT };
+        }
+        return { kind: TRANSACTION_VOID_OUTCOMES.FORBIDDEN };
+      }
+
+      // 6. Write idempotency record (note: no ETag header in response per OpenAPI declared schema)
+      const written = await this.idempotencyStore.write(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        fingerprint,
+        200,
+        null,
+        voided,
+        workspaceId,
+      );
+
+      if (!written) {
+        const rereadIdempotency = await this.idempotencyStore.read(
+          client,
+          subject,
+          route,
+          idempotencyKey,
+          workspaceId,
+        );
+        if (rereadIdempotency !== undefined) {
+          if (rereadIdempotency.requestFingerprint !== fingerprint) {
+            return { kind: TRANSACTION_VOID_OUTCOMES.IDEMPOTENCY_CONFLICT };
+          }
+          return {
+            kind: TRANSACTION_VOID_OUTCOMES.REPLAYED,
+            status: rereadIdempotency.responseStatus,
+            etag: rereadIdempotency.responseEtag,
+            body: rereadIdempotency.responseBody,
+          };
+        }
+      }
+
+      return {
+        kind: TRANSACTION_VOID_OUTCOMES.OK,
+        transaction: voided,
       };
     });
   }

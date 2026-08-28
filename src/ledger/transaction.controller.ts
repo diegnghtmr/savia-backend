@@ -18,13 +18,16 @@ import {
   TRANSACTION_LIST_OUTCOMES,
   TRANSACTION_READ_OUTCOMES,
   TRANSACTION_UPDATE_OUTCOMES,
+  TRANSACTION_VOID_OUTCOMES,
   type LedgerPort,
   type TransactionListQuery,
   type UpdateTransactionCommand,
+  type VoidTransactionCommand,
 } from './ledger.port.js';
 import {
   createTransactionCommand,
   createUpdateTransactionCommand,
+  createVoidTransactionCommand,
   TransactionCommandValidationError,
   type CreateTransactionCommand,
 } from './transaction-command.js';
@@ -440,5 +443,166 @@ export class TransactionController {
       .header('etag', `"${outcome.transaction.version}"`)
       .status(200)
       .send(outcome.transaction);
+  }
+
+  @Post(':transactionId/void')
+  public async voidTransaction(
+    @Param('transactionId') transactionId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(transactionId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid transaction identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    const keyResult = validateIdempotencyKey(
+      request.headers['idempotency-key'],
+    );
+    if (keyResult.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid Idempotency-Key header',
+        detail: keyResult.reason,
+        status: 400,
+      });
+      return;
+    }
+
+    const ifMatchResult = parseIfMatch(request.headers['if-match']);
+    if (ifMatchResult.kind === 'malformed') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Malformed If-Match header',
+        status: 412,
+      });
+      return;
+    }
+
+    let command: VoidTransactionCommand;
+    try {
+      command = createVoidTransactionCommand(request.body);
+    } catch (error) {
+      if (error instanceof TransactionCommandValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Transaction void validation failed',
+          status: 422,
+          errors: error.violations,
+        });
+        return;
+      }
+      throw error;
+    }
+
+    let expectedVersions: number | readonly number[] | undefined;
+    if (ifMatchResult.kind === 'versions') {
+      expectedVersions =
+        ifMatchResult.versions.length === 1
+          ? ifMatchResult.versions[0]
+          : ifMatchResult.versions;
+    } else {
+      expectedVersions = undefined;
+    }
+
+    const outcome = await this.ledger.void(
+      request.identity.subject,
+      header.workspaceId,
+      transactionId,
+      command,
+      keyResult.key,
+      expectedVersions,
+    );
+
+    if (outcome.kind === TRANSACTION_VOID_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_VOID_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Transaction not found',
+        status: 404,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_VOID_OUTCOMES.DRAFT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.TRANSACTION_DRAFT,
+        title: 'Transaction is draft',
+        detail: 'Draft transactions cannot be voided.',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_VOID_OUTCOMES.VOIDED) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.TRANSACTION_VOIDED,
+        title: 'Transaction is voided',
+        detail: 'Voided transactions cannot be modified.',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_VOID_OUTCOMES.RECONCILED) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.TRANSACTION_RECONCILED,
+        title: 'Transaction is reconciled',
+        detail: 'Reconciled transactions cannot be modified.',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_VOID_OUTCOMES.VERSION_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Resource version mismatch',
+        status: 412,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_VOID_OUTCOMES.IDEMPOTENCY_CONFLICT) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency key reused with different payload',
+        status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_VOID_OUTCOMES.REPLAYED) {
+      let r = reply.status(outcome.status);
+      if (outcome.etag) {
+        r = r.header('etag', outcome.etag);
+      }
+      void r.send(outcome.body);
+      return;
+    }
+
+    void reply.status(200).send(outcome.transaction);
   }
 }

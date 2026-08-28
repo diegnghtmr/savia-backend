@@ -508,4 +508,120 @@ returning
       version: row.version,
     };
   }
+
+  public async voidTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+    accountId: string,
+    postingStatus: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<Transaction | undefined> {
+    // 1. Mandatory per-account advisory lock (serialized against closeAccount and createTransaction)
+    await client.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [accountId.toLowerCase()],
+    );
+
+    // 2. Status flip setting status='voided', voided_at=now(), updated_at=now(), version=version+1
+    const versionParam =
+      expectedVersions === undefined
+        ? null
+        : typeof expectedVersions === 'number'
+          ? [expectedVersions]
+          : [...expectedVersions];
+
+    const sql = `
+update public.transactions
+   set status = 'voided',
+       voided_at = now(),
+       updated_at = now(),
+       version = version + 1
+ where workspace_id = $1::uuid
+   and id = $2::uuid
+   and status in ('pending', 'confirmed')
+   and ($3::integer[] is null or version = any($3::integer[]))
+returning
+   id::text,
+   account_id::text as "accountId",
+   type,
+   status,
+   amount_minor as "amountMinor",
+   currency,
+   occurred_at as "occurredAt",
+   description,
+   notes,
+   category_id::text as "categoryId",
+   payee_id::text as "payeeId",
+   receipt_id::text as "receiptId",
+   reconciliation_id::text as "reconciliationId",
+   tag_ids as "tagIds",
+   voided_at as "voidedAt",
+   created_at as "createdAt",
+   updated_at as "updatedAt",
+   version`;
+
+    const result = await client.query<TransactionRow & { voidedAt: Date }>(
+      sql,
+      [workspaceId, transactionId, versionParam],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return undefined;
+    }
+
+    // 3. Append compensating posting set (negated amounts, same currency, void instant occurred_at)
+    const postingsSql = `
+insert into public.ledger_postings (
+  workspace_id,
+  transaction_id,
+  account_id,
+  leg_kind,
+  amount_minor,
+  currency,
+  status,
+  occurred_at
+)
+values
+  ($1::uuid, $2::uuid, $3::uuid, 'account', $4, $5, $6, $7),
+  ($1::uuid, $2::uuid, null, 'external', $8, $5, $6, $7)`;
+
+    const postingsValues = [
+      workspaceId,
+      row.id,
+      row.accountId,
+      negateAmountMinor(String(row.amountMinor)),
+      row.currency,
+      postingStatus,
+      row.voidedAt,
+      String(row.amountMinor),
+    ];
+
+    await client.query(postingsSql, postingsValues);
+
+    // 4. Enforce deferred constraints (balanced postings check) before commit
+    await enforceDeferredConstraints(client);
+
+    return {
+      id: row.id,
+      accountId: row.accountId,
+      type: row.type,
+      status: row.status,
+      amount: {
+        amountMinor: String(row.amountMinor),
+        currency: row.currency,
+      },
+      occurredAt: toIso(row.occurredAt),
+      categoryId: row.categoryId,
+      payeeId: row.payeeId,
+      description: row.description,
+      notes: row.notes,
+      tagIds: Array.isArray(row.tagIds) ? row.tagIds : [],
+      receiptId: row.receiptId,
+      reconciliationId: row.reconciliationId,
+      createdAt: toIso(row.createdAt),
+      updatedAt: toIso(row.updatedAt),
+      version: row.version,
+    };
+  }
 }

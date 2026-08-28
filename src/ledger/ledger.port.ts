@@ -291,6 +291,81 @@ export type TransactionUpdateOutcome =
   | TransactionUpdateVoided
   | TransactionUpdateReconciled;
 
+export interface VoidTransactionCommand {
+  readonly reason: string;
+}
+
+export const TRANSACTION_VOID_OUTCOMES = {
+  OK: 'ok',
+  REPLAYED: 'replayed',
+  IDEMPOTENCY_CONFLICT: 'idempotency_conflict',
+  FORBIDDEN: 'forbidden',
+  NOT_FOUND: 'not_found',
+  VERSION_CONFLICT: 'version_conflict',
+  DRAFT: 'draft',
+  VOIDED: 'voided',
+  RECONCILED: 'reconciled',
+} as const;
+export type TransactionVoidOutcomeKind =
+  (typeof TRANSACTION_VOID_OUTCOMES)[keyof typeof TRANSACTION_VOID_OUTCOMES];
+
+export interface TransactionVoidOk {
+  readonly kind: typeof TRANSACTION_VOID_OUTCOMES.OK;
+  readonly transaction: Transaction;
+}
+
+export interface TransactionVoidReplayed {
+  readonly kind: typeof TRANSACTION_VOID_OUTCOMES.REPLAYED;
+  readonly status: number;
+  readonly etag: string | null;
+  readonly body: unknown;
+}
+
+export interface TransactionVoidIdempotencyConflict {
+  readonly kind: typeof TRANSACTION_VOID_OUTCOMES.IDEMPOTENCY_CONFLICT;
+}
+
+export interface TransactionVoidForbidden {
+  readonly kind: typeof TRANSACTION_VOID_OUTCOMES.FORBIDDEN;
+}
+
+export interface TransactionVoidNotFound {
+  readonly kind: typeof TRANSACTION_VOID_OUTCOMES.NOT_FOUND;
+}
+
+export interface TransactionVoidVersionConflict {
+  readonly kind: typeof TRANSACTION_VOID_OUTCOMES.VERSION_CONFLICT;
+}
+
+export interface TransactionVoidDraft {
+  readonly kind: typeof TRANSACTION_VOID_OUTCOMES.DRAFT;
+}
+
+export interface TransactionVoidVoided {
+  readonly kind: typeof TRANSACTION_VOID_OUTCOMES.VOIDED;
+}
+
+export interface TransactionVoidReconciled {
+  readonly kind: typeof TRANSACTION_VOID_OUTCOMES.RECONCILED;
+}
+
+// voidTransaction declares 200, 401, 403, 404, 409, 412, 422 in the authority:
+// - 403 when the caller has no active role or is a viewer
+// - 404 when the transaction does not exist or belongs to another workspace (scoped SQL predicate)
+// - 409 on idempotency conflict, when transaction is draft, voided, or reconciled (Épica 5 stub)
+// - 412 when If-Match version precondition fails
+// - 422 on input validation errors (reason length bounds, missing/unknown properties)
+export type TransactionVoidOutcome =
+  | TransactionVoidOk
+  | TransactionVoidReplayed
+  | TransactionVoidIdempotencyConflict
+  | TransactionVoidForbidden
+  | TransactionVoidNotFound
+  | TransactionVoidVersionConflict
+  | TransactionVoidDraft
+  | TransactionVoidVoided
+  | TransactionVoidReconciled;
+
 export interface LedgerPort {
   create(
     subject: string,
@@ -315,4 +390,12 @@ export interface LedgerPort {
     idempotencyKey: string,
     expectedVersions?: number | readonly number[],
   ): Promise<TransactionUpdateOutcome>;
+  void(
+    subject: string,
+    workspaceId: string,
+    transactionId: string,
+    command: VoidTransactionCommand,
+    idempotencyKey: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<TransactionVoidOutcome>;
 }
