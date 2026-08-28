@@ -26,3 +26,16 @@ export function analyzeTestScriptReachability(
 export function extractRunBlocks(workflowSource: string): string[];
 export function collectPackageScripts(root: string): Record<string, string>;
 export function collectWorkflowSources(root: string): FileSource[];
+
+export interface DisposableSuiteAnalysis {
+  invoked: string[];
+  allowed: string[];
+  violations: string[];
+}
+
+export function analyzeDisposableSuiteAllowlist(
+  scripts: Record<string, string>,
+  suiteSource: string,
+): DisposableSuiteAnalysis;
+
+export function collectDisposableSuiteSource(root: string): string;

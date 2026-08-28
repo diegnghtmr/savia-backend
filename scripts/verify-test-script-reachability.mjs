@@ -189,6 +189,63 @@ export function analyzeTestScriptReachability(
   };
 }
 
+const DISPOSABLE_SUITE_SCRIPT = 'scripts/run-disposable-database-suite.sh';
+
+/**
+ * The reachability graph above proves a `test:*` script is invoked by CI. It says
+ * nothing about whether the ARGUMENT that script hands to
+ * run-disposable-database-suite.sh survives that script's own allow-list, which
+ * exits 64 on an unknown spec. A suite could therefore be wired into CI, run on
+ * every push, and never execute a single test. This closes that gap in both
+ * directions: an argument missing from the allow-list, and an allow-list entry no
+ * script passes any more.
+ */
+export function analyzeDisposableSuiteAllowlist(scripts, suiteSource) {
+  const violations = [];
+  const invoked = new Map();
+
+  for (const [name, body] of Object.entries(scripts || {})) {
+    const escaped = escapeRegex(DISPOSABLE_SUITE_SCRIPT);
+    const regex = new RegExp(`${escaped}\\s+(\\S+)`, 'g');
+    for (const match of String(body || '').matchAll(regex)) {
+      invoked.set(match[1], name);
+    }
+  }
+
+  const allowed = new Set();
+  for (const match of String(suiteSource || '').matchAll(
+    /^\s{2}(\S+\.integration-spec\.ts)\)\s*;;/gm,
+  )) {
+    allowed.add(match[1]);
+  }
+
+  for (const [spec, script] of invoked) {
+    if (!allowed.has(spec)) {
+      violations.push(
+        `Script '${script}' passes '${spec}' to ${DISPOSABLE_SUITE_SCRIPT}, which is not in that script's allow-list and would exit 64 without running any test (disposable-suite-allowlist-gate)`,
+      );
+    }
+  }
+
+  for (const spec of allowed) {
+    if (!invoked.has(spec)) {
+      violations.push(
+        `Allow-list entry '${spec}' in ${DISPOSABLE_SUITE_SCRIPT} is stale: no package.json script passes it (disposable-suite-allowlist-gate)`,
+      );
+    }
+  }
+
+  return { invoked: [...invoked.keys()], allowed: [...allowed], violations };
+}
+
+export function collectDisposableSuiteSource(root) {
+  try {
+    return readFileSync(resolve(root, DISPOSABLE_SUITE_SCRIPT), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 export function collectPackageScripts(root) {
   const pkgPath = resolve(root, 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
@@ -232,13 +289,19 @@ if (isMain) {
   const { checkedScripts, allowListed, violations } =
     analyzeTestScriptReachability(scripts, workflowSources, COVERAGE_ALLOWLIST);
 
-  if (violations.length > 0) {
+  const suite = analyzeDisposableSuiteAllowlist(
+    scripts,
+    collectDisposableSuiteSource(root),
+  );
+  const allViolations = [...violations, ...suite.violations];
+
+  if (allViolations.length > 0) {
     throw new Error(
-      `Unreachable test scripts found:\n${violations.map((v) => `  - ${v}`).join('\n')}`,
+      `Unreachable test scripts found:\n${allViolations.map((v) => `  - ${v}`).join('\n')}`,
     );
   }
 
   process.stdout.write(
-    `Test script reachability verified: ${checkedScripts.length} test scripts checked, ${allowListed.length} allow-listed.\n`,
+    `Test script reachability verified: ${checkedScripts.length} test scripts checked, ${allowListed.length} allow-listed, ${suite.invoked.length} disposable-suite specs allow-listed.\n`,
   );
 }
