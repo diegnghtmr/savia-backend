@@ -752,6 +752,50 @@ components:
             - string
             - 'null'
           format: uuid
+    UpdateTransactionRequest:
+      type: object
+      properties:
+        occurredAt:
+          type: string
+          format: date-time
+        categoryId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        payeeId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+        notes:
+          type:
+            - string
+            - 'null'
+          maxLength: 2000
+        tagIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          uniqueItems: true
+        splits:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionSplit'
+        status:
+          type: string
+          enum:
+            - draft
+            - pending
+            - confirmed
+      additionalProperties: false
+      minProperties: 1
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -2552,3 +2596,111 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+    patch:
+      operationId: updateTransaction
+      tags:
+        - Transactions
+      summary: Update transaction
+      x-financial: true
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+        - name: If-Match
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTransactionRequest'
+      responses:
+        '200':
+          description: Transaction updated.
+          headers:
+            ETag:
+              description: Quoted version integer representing the current entity state.
+              required: true
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          description: The transaction identifier or workspace identifier is not a valid UUID, or request validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden or transaction is voided.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Transaction not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Idempotency key conflict or transaction is reconciled.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '412':
+          description: Resource version precondition failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Validation failed or transaction splits unsupported.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: update_transaction
+        riskClass: financial_write
+        requiresApproval: true
+        requiredScopes:
+          - transactions:write
+      x-idempotency-required: true
