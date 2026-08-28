@@ -26,6 +26,7 @@ export const PROBLEM_TYPES = {
   TRANSACTION_SPLITS_UNSUPPORTED: `${BASE_URI}/transaction-splits-unsupported`,
   ACCOUNT_UNRESOLVED: `${BASE_URI}/account-unresolved`,
   ACCOUNT_CLOSED: `${BASE_URI}/account-closed`,
+  TRANSACTION_RECONCILED: `${BASE_URI}/transaction-reconciled`,
 } as const;
 export interface Problem {
   readonly type: string;

@@ -215,6 +215,82 @@ export interface TransactionListQuery {
   readonly query?: string;
 }
 
+export interface UpdateTransactionCommand {
+  readonly occurredAt?: string;
+  readonly categoryId?: string | null;
+  readonly payeeId?: string | null;
+  readonly description?: string | null;
+  readonly notes?: string | null;
+  readonly tagIds?: readonly string[];
+  readonly splits?: readonly TransactionSplit[];
+  readonly status?: 'draft' | 'pending' | 'confirmed';
+}
+
+export const TRANSACTION_UPDATE_OUTCOMES = {
+  OK: 'ok',
+  REPLAYED: 'replayed',
+  IDEMPOTENCY_CONFLICT: 'idempotency_conflict',
+  FORBIDDEN: 'forbidden',
+  NOT_FOUND: 'not_found',
+  VERSION_CONFLICT: 'version_conflict',
+  VOIDED: 'voided',
+  RECONCILED: 'reconciled',
+} as const;
+export type TransactionUpdateOutcomeKind =
+  (typeof TRANSACTION_UPDATE_OUTCOMES)[keyof typeof TRANSACTION_UPDATE_OUTCOMES];
+
+export interface TransactionUpdateOk {
+  readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.OK;
+  readonly transaction: Transaction;
+}
+
+export interface TransactionUpdateReplayed {
+  readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.REPLAYED;
+  readonly status: number;
+  readonly etag: string | null;
+  readonly body: unknown;
+}
+
+export interface TransactionUpdateIdempotencyConflict {
+  readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.IDEMPOTENCY_CONFLICT;
+}
+
+export interface TransactionUpdateForbidden {
+  readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN;
+}
+
+export interface TransactionUpdateNotFound {
+  readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.NOT_FOUND;
+}
+
+export interface TransactionUpdateVersionConflict {
+  readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.VERSION_CONFLICT;
+}
+
+export interface TransactionUpdateVoided {
+  readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.VOIDED;
+}
+
+export interface TransactionUpdateReconciled {
+  readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.RECONCILED;
+}
+
+// updateTransaction declares 200, 401, 403, 404, 409, 412, 422 in the authority:
+// - 403 when the caller has no active role or is a viewer; or when the transaction is voided
+// - 404 when the transaction does not exist or belongs to another workspace (scoped SQL predicate)
+// - 409 on idempotency conflict or when transaction is reconciled (Épica 5 stub)
+// - 412 when If-Match version precondition fails
+// - 422 on input validation errors or non-empty splits
+export type TransactionUpdateOutcome =
+  | TransactionUpdateOk
+  | TransactionUpdateReplayed
+  | TransactionUpdateIdempotencyConflict
+  | TransactionUpdateForbidden
+  | TransactionUpdateNotFound
+  | TransactionUpdateVersionConflict
+  | TransactionUpdateVoided
+  | TransactionUpdateReconciled;
+
 export interface LedgerPort {
   create(
     subject: string,
@@ -231,4 +307,12 @@ export interface LedgerPort {
     subject: string,
     query: TransactionListQuery,
   ): Promise<TransactionListOutcome>;
+  update(
+    subject: string,
+    workspaceId: string,
+    transactionId: string,
+    command: UpdateTransactionCommand,
+    idempotencyKey: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<TransactionUpdateOutcome>;
 }

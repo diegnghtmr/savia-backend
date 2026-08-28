@@ -6,6 +6,7 @@ import {
   TRANSACTION_CREATE_OUTCOMES,
   TRANSACTION_LIST_OUTCOMES,
   TRANSACTION_READ_OUTCOMES,
+  TRANSACTION_UPDATE_OUTCOMES,
   type CreateTransactionCommand,
   type LedgerPort,
   type Transaction,
@@ -15,6 +16,8 @@ import {
   type TransactionListQuery,
   type TransactionReadOutcome,
   type TransactionStatus,
+  type TransactionUpdateOutcome,
+  type UpdateTransactionCommand,
 } from './ledger.port.js';
 
 export interface LedgerTransaction {
@@ -74,6 +77,13 @@ export interface LedgerStore {
     limit: number,
     filters: TransactionFilterOptions,
   ): Promise<readonly TransactionItem[]>;
+  updateTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+    command: UpdateTransactionCommand,
+    expectedVersions?: number | readonly number[],
+  ): Promise<Transaction | undefined>;
 }
 
 export class TransactionService implements LedgerPort {
@@ -252,6 +262,148 @@ export class TransactionService implements LedgerPort {
             nextCursor,
           },
         },
+      };
+    });
+  }
+
+  public async update(
+    subject: string,
+    workspaceId: string,
+    transactionId: string,
+    command: UpdateTransactionCommand,
+    idempotencyKey: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<TransactionUpdateOutcome> {
+    const route = 'PATCH /v1/transactions/{transactionId}';
+    const fingerprint = computeRequestFingerprint({
+      transactionId,
+      ...command,
+    });
+
+    return this.transaction.run(subject, async (client) => {
+      // 1. Role check: only owner, administrator, editor may update transactions
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (
+        role === undefined ||
+        !['owner', 'administrator', 'editor'].includes(role)
+      ) {
+        return { kind: TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN };
+      }
+
+      // 2. Idempotency read: replay stored response if matched
+      const existing = await this.idempotencyStore.read(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        workspaceId,
+      );
+      if (existing !== undefined) {
+        if (existing.requestFingerprint !== fingerprint) {
+          return { kind: TRANSACTION_UPDATE_OUTCOMES.IDEMPOTENCY_CONFLICT };
+        }
+        return {
+          kind: TRANSACTION_UPDATE_OUTCOMES.REPLAYED,
+          status: existing.responseStatus,
+          etag: existing.responseEtag,
+          body: existing.responseBody,
+        };
+      }
+
+      // 3. Pre-read existing transaction for business checks & version pre-check
+      const existingTxn = await this.store.readTransaction(
+        client,
+        workspaceId,
+        transactionId,
+      );
+      if (existingTxn === undefined) {
+        return { kind: TRANSACTION_UPDATE_OUTCOMES.NOT_FOUND };
+      }
+      if (existingTxn.status === 'voided') {
+        return { kind: TRANSACTION_UPDATE_OUTCOMES.VOIDED };
+      }
+      // Reconciled transactions refuse field mutation (stub for Épica 5)
+      if (existingTxn.status === 'reconciled') {
+        return { kind: TRANSACTION_UPDATE_OUTCOMES.RECONCILED };
+      }
+      if (expectedVersions !== undefined) {
+        const matches =
+          typeof expectedVersions === 'number'
+            ? existingTxn.version === expectedVersions
+            : expectedVersions.includes(existingTxn.version);
+        if (!matches) {
+          return { kind: TRANSACTION_UPDATE_OUTCOMES.VERSION_CONFLICT };
+        }
+      }
+
+      // 4. Atomic conditional UPDATE guarded by expected version (or existingTxn.version)
+      const updated = await this.store.updateTransaction(
+        client,
+        workspaceId,
+        transactionId,
+        command,
+        expectedVersions !== undefined ? expectedVersions : existingTxn.version,
+      );
+
+      // 5. Zero-row update re-read to distinguish cause
+      if (updated === undefined) {
+        const reread = await this.store.readTransaction(
+          client,
+          workspaceId,
+          transactionId,
+        );
+        if (reread === undefined) {
+          return { kind: TRANSACTION_UPDATE_OUTCOMES.NOT_FOUND };
+        }
+        if (reread.status === 'voided') {
+          return { kind: TRANSACTION_UPDATE_OUTCOMES.VOIDED };
+        }
+        if (reread.status === 'reconciled') {
+          return { kind: TRANSACTION_UPDATE_OUTCOMES.RECONCILED };
+        }
+        if (reread.version !== existingTxn.version) {
+          return { kind: TRANSACTION_UPDATE_OUTCOMES.VERSION_CONFLICT };
+        }
+        return { kind: TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN };
+      }
+
+      // 6. Write idempotency record
+      const written = await this.idempotencyStore.write(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        fingerprint,
+        200,
+        `"${updated.version}"`,
+        updated,
+        workspaceId,
+      );
+
+      if (!written) {
+        const rereadIdempotency = await this.idempotencyStore.read(
+          client,
+          subject,
+          route,
+          idempotencyKey,
+          workspaceId,
+        );
+        if (rereadIdempotency !== undefined) {
+          if (rereadIdempotency.requestFingerprint !== fingerprint) {
+            return { kind: TRANSACTION_UPDATE_OUTCOMES.IDEMPOTENCY_CONFLICT };
+          }
+          return {
+            kind: TRANSACTION_UPDATE_OUTCOMES.REPLAYED,
+            status: rereadIdempotency.responseStatus,
+            etag: rereadIdempotency.responseEtag,
+            body: rereadIdempotency.responseBody,
+          };
+        }
+      }
+
+      return {
+        kind: TRANSACTION_UPDATE_OUTCOMES.OK,
+        transaction: updated,
       };
     });
   }
