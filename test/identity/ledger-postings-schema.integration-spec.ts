@@ -44,6 +44,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
 
   const account1Id = '00000000-0000-0000-0000-000000000771';
   const account2Id = '00000000-0000-0000-0000-000000000772';
+  const account3Id = '00000000-0000-0000-0000-000000000773';
 
   const transaction1Id = '00000000-0000-0000-0000-000000000781';
   const transaction2Id = '00000000-0000-0000-0000-000000000782';
@@ -57,6 +58,25 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
     amountMinor: string;
     currency?: string;
     status?: string;
+  };
+
+  type TransferSeed = {
+    id?: string;
+    workspaceId: string;
+    sourceAccountId: string;
+    destinationAccountId: string;
+    sourceAmountMinor?: string;
+    sourceCurrency?: string;
+    destinationAmountMinor?: string;
+    destinationCurrency?: string;
+    feeAmountMinor?: string | null;
+    feeCurrency?: string | null;
+    exchangeRate?: string | null;
+    referenceRate?: string | null;
+    occurredAt?: string;
+    status?: string;
+    transactionId?: string | null;
+    createdBy: string;
   };
 
   async function asSubject<T>(
@@ -147,6 +167,47 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
     );
   }
 
+  async function seedTransfer(transfer: TransferSeed): Promise<string> {
+    const res = await admin.query<{ id: string }>(
+      `insert into public.transfers
+         (id, workspace_id, source_account_id, destination_account_id,
+          source_amount_minor, source_currency,
+          destination_amount_minor, destination_currency,
+          fee_amount_minor, fee_currency,
+          exchange_rate, reference_rate,
+          occurred_at, status, transaction_id, created_by)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       returning id`,
+      [
+        transfer.id ?? randomUUID(),
+        transfer.workspaceId,
+        transfer.sourceAccountId,
+        transfer.destinationAccountId,
+        transfer.sourceAmountMinor ?? '1000',
+        transfer.sourceCurrency ?? 'USD',
+        transfer.destinationAmountMinor ?? '1000',
+        transfer.destinationCurrency ?? 'USD',
+        transfer.feeAmountMinor ?? null,
+        transfer.feeCurrency ?? null,
+        transfer.exchangeRate ?? null,
+        transfer.referenceRate ?? null,
+        transfer.occurredAt ?? '2026-08-24T12:00:00Z',
+        transfer.status ?? 'confirmed',
+        transfer.transactionId ?? null,
+        transfer.createdBy,
+      ],
+    );
+    return res.rows[0].id;
+  }
+
+  async function deleteTransfers(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await admin.query(
+      'delete from public.transfers where id = any($1::uuid[])',
+      [ids],
+    );
+  }
+
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
 
@@ -219,11 +280,13 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
 
     // Postings take composite foreign keys to BOTH siblings, so the RLS tests
     // need one live account and one live transaction per workspace.
+    // account3Id provides a distinct second in-workspace account for ws1 transfers.
     await admin.query(
       `insert into public.accounts (id, workspace_id, name, type, currency, created_by)
        values ($1, $2, 'Ledger Test Account 1', 'cash', 'USD', $3),
-              ($4, $5, 'Ledger Test Account 2', 'cash', 'USD', $6)`,
-      [account1Id, ws1Id, ownerA, account2Id, ws2Id, ownerB],
+              ($4, $5, 'Ledger Test Account 2', 'cash', 'USD', $6),
+              ($7, $2, 'Ledger Test Account 3', 'cash', 'USD', $3)`,
+      [account1Id, ws1Id, ownerA, account2Id, ws2Id, ownerB, account3Id],
     );
     await admin.query(
       `insert into public.transactions
@@ -245,6 +308,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
 
   afterAll(async () => {
     // Defensive sweep: postings die first (they carry restrict references),
+    // then transfers (which also carry restrict references to accounts),
     // then the workspace cascade removes the rest. Leftover UNBALANCED legs
     // would poison any later commit that writes to their own group through
     // the balance trigger's scoped scan.
@@ -252,6 +316,12 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       await admin
         .query(
           'delete from public.ledger_postings where workspace_id = any($1::uuid[])',
+          [[ws1Id, ws2Id, dosWsId]],
+        )
+        .catch(() => {});
+      await admin
+        .query(
+          'delete from public.transfers where workspace_id = any($1::uuid[])',
           [[ws1Id, ws2Id, dosWsId]],
         )
         .catch(() => {});
@@ -654,7 +724,12 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
     });
 
     it('12. A transfer-parented balanced pair also commits: nullable transaction_id skips the composite FK (MATCH SIMPLE), proving the transfer-parent shape is representable', async () => {
-      const transferId = randomUUID();
+      const transferId = await seedTransfer({
+        workspaceId: ws1Id,
+        sourceAccountId: account1Id,
+        destinationAccountId: account3Id,
+        createdBy: ownerA,
+      });
       const inserted = await admin.query<{ id: string }>(
         `insert into public.ledger_postings
            (workspace_id, transaction_id, transfer_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
@@ -674,6 +749,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         expect(stored.rows[0].total).toBe('0');
       } finally {
         await deletePostings(ids);
+        await deleteTransfers([transferId]);
       }
     });
 
@@ -876,7 +952,12 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
 
       // Positive control on the identical path: exactly-one-parent rows
       // commit (a balanced transfer-parented pair, one statement).
-      const transferId = randomUUID();
+      const transferId = await seedTransfer({
+        workspaceId: ws1Id,
+        sourceAccountId: account1Id,
+        destinationAccountId: account3Id,
+        createdBy: ownerA,
+      });
       const okInsert = await admin.query<{ id: string }>(
         `insert into public.ledger_postings
            (workspace_id, transaction_id, transfer_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
@@ -894,6 +975,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         expect(check.rows[0].n).toBe(2);
       } finally {
         await deletePostings(okIds);
+        await deleteTransfers([transferId]);
       }
     });
 
@@ -1053,7 +1135,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
 
       // Structural pin, plus: no SINGLE-COLUMN foreign key against either
       // sibling exists (a revert cannot pass silently), and the table carries
-      // exactly three FKs — the two composites plus the workspace cascade.
+      // exactly four FKs — the three composites plus the workspace cascade.
       const fkRes = await admin.query<{ def: string; confdeltype: string }>(
         `select pg_get_constraintdef(oid) as def, confdeltype
            from pg_constraint
@@ -1079,7 +1161,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
           where c.conrelid = 'public.ledger_postings'::regclass
             and c.contype = 'f'`,
       );
-      expect(countRes.rows[0].total).toBe(3);
+      expect(countRes.rows[0].total).toBe(4);
       expect(countRes.rows[0].single_column_siblings).toBe(0);
     });
 
@@ -1114,6 +1196,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       // referencer will be transfer-parented postings, so the account-delete
       // refusal has exactly one possible refuser — ours.
       const dispAcc2Id = '00000000-0000-0000-0000-000000000776';
+      const dispAcc3Id = '00000000-0000-0000-0000-000000000777';
 
       await admin.query(
         `insert into public.workspaces (id, name, kind, base_currency, created_by)
@@ -1128,8 +1211,9 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       await admin.query(
         `insert into public.accounts (id, workspace_id, name, type, currency, created_by)
          values ($1, $2, 'Ledger Restrict Account', 'cash', 'USD', $3),
-                ($4, $5, 'Ledger Restrict Account 2', 'cash', 'USD', $6)`,
-        [dispAccId, dispWsId, ownerA, dispAcc2Id, dispWsId, ownerA],
+                ($4, $2, 'Ledger Restrict Account 2', 'cash', 'USD', $3),
+                ($5, $2, 'Ledger Restrict Account 3', 'cash', 'USD', $3)`,
+        [dispAccId, dispWsId, ownerA, dispAcc2Id, dispAcc3Id],
       );
       await admin.query(
         `insert into public.transactions
@@ -1150,7 +1234,12 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
           [dispWsId, dispTxId, dispAccId],
         )
       ).rows.map((r) => r.id);
-      const transferId = randomUUID();
+      const dispTransferId = await seedTransfer({
+        workspaceId: dispWsId,
+        sourceAccountId: dispAccId,
+        destinationAccountId: dispAcc3Id,
+        createdBy: ownerA,
+      });
       const accPairIds = (
         await admin.query<{ id: string }>(
           `insert into public.ledger_postings
@@ -1158,7 +1247,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
            values ($1, null, $2, $3, 'account', '200', 'USD', 'confirmed', '2026-08-24T12:00:00Z'),
                   ($1, null, $2, null, 'external', '-200', 'USD', 'confirmed', '2026-08-24T12:00:00Z')
            returning id`,
-          [dispWsId, transferId, dispAcc2Id],
+          [dispWsId, dispTransferId, dispAcc2Id],
         )
       ).rows.map((r) => r.id);
       expect(txPairIds).toHaveLength(2);
@@ -1196,6 +1285,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         );
       } finally {
         await deletePostings([...txPairIds, ...accPairIds]);
+        await deleteTransfers([dispTransferId]);
       }
 
       // Positive controls: with the referencing postings gone, restrict no
@@ -1205,7 +1295,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       ]);
       await admin.query(
         'delete from public.accounts where id = any($1::uuid[])',
-        [[dispAccId, dispAcc2Id]],
+        [[dispAccId, dispAcc2Id, dispAcc3Id]],
       );
       await admin.query('delete from public.workspaces where id = $1', [
         dispWsId,
