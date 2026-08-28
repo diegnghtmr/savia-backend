@@ -182,6 +182,9 @@ jobs:
       - name: exchange rates schema integration
         shell: bash
         run: pnpm test:integration:exchange-rates-schema
+      - name: exchange rates create integration
+        shell: bash
+        run: pnpm test:integration:exchange-rates-create
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
