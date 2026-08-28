@@ -4,9 +4,11 @@ import {
   TRANSACTION_CREATE_OUTCOMES,
   TRANSACTION_LIST_OUTCOMES,
   TRANSACTION_READ_OUTCOMES,
+  TRANSACTION_UPDATE_OUTCOMES,
   type CreateTransactionCommand,
   type Transaction,
   type TransactionListQuery,
+  type UpdateTransactionCommand,
 } from '../../src/ledger/ledger.port.js';
 import {
   TransactionService,
@@ -108,7 +110,8 @@ function fakeStore(
   options: {
     role?: string | undefined;
     account?: LedgerAccountRecord | undefined;
-    transaction?: Transaction;
+    transaction?: Transaction | undefined;
+    updatedTransaction?: Transaction | undefined;
     items?: readonly TransactionItem[];
   } = {},
 ): LedgerStore & {
@@ -117,12 +120,23 @@ function fakeStore(
   createTransaction: ReturnType<typeof vi.fn>;
   readTransaction: ReturnType<typeof vi.fn>;
   listTransactions: ReturnType<typeof vi.fn>;
+  updateTransaction: ReturnType<typeof vi.fn>;
 } {
   const role = 'role' in options ? options.role : 'owner';
   const account = 'account' in options ? options.account : { status: 'active' };
-  const transaction = options.transaction ?? sampleTransaction();
+  const transaction =
+    'transaction' in options ? options.transaction : sampleTransaction();
+  const updatedTransaction =
+    'updatedTransaction' in options
+      ? options.updatedTransaction
+      : transaction !== undefined
+        ? { ...transaction, version: transaction.version + 1 }
+        : undefined;
   const items = options.items ?? [
-    { transaction, cursorAt: '2026-08-20T10:00:00.000000Z' },
+    {
+      transaction: transaction ?? sampleTransaction(),
+      cursorAt: '2026-08-20T10:00:00.000000Z',
+    },
   ];
   return {
     readActiveRole: vi.fn().mockResolvedValue(role),
@@ -130,6 +144,7 @@ function fakeStore(
     createTransaction: vi.fn().mockResolvedValue(transaction),
     readTransaction: vi.fn().mockResolvedValue(transaction),
     listTransactions: vi.fn().mockResolvedValue(items),
+    updateTransaction: vi.fn().mockResolvedValue(updatedTransaction),
   };
 }
 
@@ -186,6 +201,7 @@ describe('TransactionService.create', () => {
       createTransaction: vi.fn(),
       listTransactions: vi.fn(),
       readTransaction: vi.fn(),
+      updateTransaction: vi.fn(),
     };
 
     const command = sampleCommand();
@@ -234,6 +250,7 @@ describe('TransactionService.create', () => {
       createTransaction: vi.fn(),
       listTransactions: vi.fn(),
       readTransaction: vi.fn(),
+      updateTransaction: vi.fn(),
     };
 
     const command = sampleCommand();
@@ -615,5 +632,453 @@ describe('TransactionService.list', () => {
     expect(outcome.page.items).toEqual([txn1]);
     expect(outcome.page.pageInfo.hasNextPage).toBe(false);
     expect(outcome.page.pageInfo.nextCursor).toBeNull();
+  });
+});
+
+describe('TransactionService.update', () => {
+  const transactionId = '00000000-0000-0000-0000-000000000t01';
+  const idempotencyKey = '00000000-0000-4000-8000-000000000001';
+  const updateCommand: UpdateTransactionCommand = {
+    description: 'Updated Description',
+    status: 'pending',
+  };
+
+  it('refuses 403 when caller has no active membership role', async () => {
+    const fakeTransaction = new FakeTransaction();
+    const store = fakeStore({ role: undefined });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({ kind: TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN });
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.readTransaction).not.toHaveBeenCalled();
+    expect(store.updateTransaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses 403 when caller has viewer role (insufficient permissions for write)', async () => {
+    const fakeTransaction = new FakeTransaction();
+    const store = fakeStore({ role: 'viewer' });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({ kind: TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN });
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.readTransaction).not.toHaveBeenCalled();
+    expect(store.updateTransaction).not.toHaveBeenCalled();
+  });
+
+  it('pins authorization ahead of idempotency read: refuses 403 without replaying when matching idempotency record exists for viewer', async () => {
+    const callOrder: string[] = [];
+
+    const store = fakeStore({
+      role: 'viewer',
+    });
+    store.readActiveRole.mockImplementation(async () => {
+      callOrder.push('readActiveRole');
+      return 'viewer';
+    });
+
+    const txn = sampleTransaction({ description: 'Secret updated data' });
+    const idempotency: IdempotencyStore = {
+      read: vi.fn().mockImplementation(async () => {
+        callOrder.push('idempotencyStore.read');
+        return {
+          requestFingerprint: computeRequestFingerprint({
+            transactionId,
+            ...updateCommand,
+          }),
+          responseStatus: 200,
+          responseEtag: '"2"',
+          responseBody: txn,
+        };
+      }),
+      write: vi.fn().mockResolvedValue(true),
+    };
+
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({ kind: TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN });
+    expect(outcome).not.toHaveProperty('body');
+    expect(outcome).not.toHaveProperty('transaction');
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.readActiveRole).toHaveBeenCalledTimes(1);
+    expect(idempotency.read).not.toHaveBeenCalled();
+    expect(callOrder).toEqual(['readActiveRole']);
+  });
+
+  it('pins authorization ahead of idempotency read: refuses 403 without replaying when matching idempotency record exists for non-member', async () => {
+    const callOrder: string[] = [];
+
+    const store = fakeStore({
+      role: undefined,
+    });
+    store.readActiveRole.mockImplementation(async () => {
+      callOrder.push('readActiveRole');
+      return undefined;
+    });
+
+    const txn = sampleTransaction({ description: 'Secret updated data' });
+    const idempotency: IdempotencyStore = {
+      read: vi.fn().mockImplementation(async () => {
+        callOrder.push('idempotencyStore.read');
+        return {
+          requestFingerprint: computeRequestFingerprint({
+            transactionId,
+            ...updateCommand,
+          }),
+          responseStatus: 200,
+          responseEtag: '"2"',
+          responseBody: txn,
+        };
+      }),
+      write: vi.fn().mockResolvedValue(true),
+    };
+
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({ kind: TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN });
+    expect(outcome).not.toHaveProperty('body');
+    expect(outcome).not.toHaveProperty('transaction');
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.readActiveRole).toHaveBeenCalledTimes(1);
+    expect(idempotency.read).not.toHaveBeenCalled();
+    expect(callOrder).toEqual(['readActiveRole']);
+  });
+
+  it('replays stored response when idempotency key is matched with identical fingerprint', async () => {
+    const txn = sampleTransaction({ version: 2 });
+    const store = fakeStore({ role: 'editor' });
+    const idempotency = fakeIdempotencyStore({
+      requestFingerprint: computeRequestFingerprint({
+        transactionId,
+        ...updateCommand,
+      }),
+      responseStatus: 200,
+      responseEtag: '"2"',
+      responseBody: txn,
+    });
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.REPLAYED,
+      status: 200,
+      etag: '"2"',
+      body: txn,
+    });
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.readTransaction).not.toHaveBeenCalled();
+    expect(store.updateTransaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses 409 conflict when idempotency key is reused with different payload', async () => {
+    const store = fakeStore({ role: 'owner' });
+    const idempotency = fakeIdempotencyStore({
+      requestFingerprint: 'different-fingerprint',
+      responseStatus: 200,
+      responseEtag: '"2"',
+      responseBody: {},
+    });
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+    });
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.readTransaction).not.toHaveBeenCalled();
+    expect(store.updateTransaction).not.toHaveBeenCalled();
+  });
+
+  it('returns NOT_FOUND (404) when transaction is not found in workspace', async () => {
+    const store = fakeStore({
+      role: 'owner',
+      transaction: undefined,
+    });
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.NOT_FOUND,
+    });
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.readTransaction).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      transactionId,
+    );
+    expect(store.updateTransaction).not.toHaveBeenCalled();
+  });
+
+  it('returns VOIDED (403) when existing transaction status is voided: voided transactions cannot be modified', async () => {
+    const voidedTxn = sampleTransaction({ status: 'voided' });
+    const store = fakeStore({
+      role: 'owner',
+      transaction: voidedTxn,
+    });
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.VOIDED,
+    });
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.updateTransaction).not.toHaveBeenCalled();
+  });
+
+  it('returns RECONCILED (409) when existing transaction status is reconciled: reconciled transactions refuse modification', async () => {
+    const reconciledTxn = sampleTransaction({ status: 'reconciled' });
+    const store = fakeStore({
+      role: 'owner',
+      transaction: reconciledTxn,
+    });
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.RECONCILED,
+    });
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.updateTransaction).not.toHaveBeenCalled();
+  });
+
+  it('returns VERSION_CONFLICT (412) when expectedVersions does not match existing version in pre-check', async () => {
+    const existingTxn = sampleTransaction({ version: 2 });
+    const store = fakeStore({
+      role: 'owner',
+      transaction: existingTxn,
+    });
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+      1, // Stale version 1
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.VERSION_CONFLICT,
+    });
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.updateTransaction).not.toHaveBeenCalled();
+  });
+
+  it('updates transaction, records idempotency and returns OK outcome', async () => {
+    const existingTxn = sampleTransaction({ version: 1 });
+    const updatedTxn = sampleTransaction({
+      version: 2,
+      description: 'Updated Description',
+      status: 'pending',
+    });
+    const store = fakeStore({
+      role: 'owner',
+      transaction: existingTxn,
+      updatedTransaction: updatedTxn,
+    });
+    const idempotency = fakeIdempotencyStore(undefined, true);
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+      1,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.OK,
+      transaction: updatedTxn,
+    });
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.updateTransaction).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      1,
+    );
+    expect(idempotency.write).toHaveBeenCalledWith(
+      CLIENT,
+      SUBJECT,
+      'PATCH /v1/transactions/{transactionId}',
+      idempotencyKey,
+      expect.any(String),
+      200,
+      '"2"',
+      updatedTxn,
+      WORKSPACE_ID,
+    );
+  });
+
+  it('handles zero-row update with re-read distinguishing concurrent version conflict (412)', async () => {
+    const existingTxn = sampleTransaction({ version: 1 });
+    const rereadTxn = sampleTransaction({ version: 2 }); // Concurrently bumped
+    const store = fakeStore({
+      role: 'owner',
+      transaction: existingTxn,
+      updatedTransaction: undefined, // zero-row update
+    });
+    store.readTransaction
+      .mockResolvedValueOnce(existingTxn) // Pre-read
+      .mockResolvedValueOnce(rereadTxn); // Zero-row re-read
+
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+      1,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.VERSION_CONFLICT,
+    });
+  });
+
+  it('handles zero-row update with re-read distinguishing mid-transaction deletion (404)', async () => {
+    const existingTxn = sampleTransaction({ version: 1 });
+    const store = fakeStore({
+      role: 'owner',
+      transaction: existingTxn,
+      updatedTransaction: undefined,
+    });
+    store.readTransaction
+      .mockResolvedValueOnce(existingTxn)
+      .mockResolvedValueOnce(undefined); // Deleted
+
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.NOT_FOUND,
+    });
+  });
+
+  it('handles zero-row update with re-read distinguishing mid-transaction voiding (403)', async () => {
+    const existingTxn = sampleTransaction({ version: 1 });
+    const voidedTxn = sampleTransaction({ version: 2, status: 'voided' });
+    const store = fakeStore({
+      role: 'owner',
+      transaction: existingTxn,
+      updatedTransaction: undefined,
+    });
+    store.readTransaction
+      .mockResolvedValueOnce(existingTxn)
+      .mockResolvedValueOnce(voidedTxn);
+
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      updateCommand,
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.VOIDED,
+    });
   });
 });

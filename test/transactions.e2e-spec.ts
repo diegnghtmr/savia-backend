@@ -12,6 +12,7 @@ import {
   type TransactionCreateOutcome,
   type TransactionListOutcome,
   type TransactionReadOutcome,
+  type TransactionUpdateOutcome,
 } from '../src/ledger/ledger.port.js';
 import { LedgerModule } from '../src/ledger/ledger.module.js';
 import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
@@ -112,11 +113,16 @@ async function createApplication(
       pageInfo: { hasNextPage: false, nextCursor: null },
     },
   } satisfies TransactionListOutcome),
+  update: LedgerPort['update'] = vi.fn().mockResolvedValue({
+    kind: 'ok',
+    transaction: { ...TRANSACTION, version: 2 },
+  } satisfies TransactionUpdateOutcome),
 ): Promise<{
   application: NestFastifyApplication;
   create: LedgerPort['create'];
   read: LedgerPort['read'];
   list: LedgerPort['list'];
+  update: LedgerPort['update'];
 }> {
   const moduleRef = await Test.createTestingModule({
     imports: [LedgerModule],
@@ -124,7 +130,7 @@ async function createApplication(
     .overrideProvider(JoseJwtVerifier)
     .useValue(verifier)
     .overrideProvider(LEDGER_PORT)
-    .useValue({ create, read, list })
+    .useValue({ create, read, list, update })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -132,7 +138,7 @@ async function createApplication(
   registerProblemFilter(app);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
-  return { application: app, create, read, list };
+  return { application: app, create, read, list, update };
 }
 
 function postTransaction(
@@ -201,6 +207,35 @@ function listTransactions(
     method: 'GET',
     url,
     headers,
+  });
+}
+
+function patchTransaction(
+  application: NestFastifyApplication,
+  transactionId: string,
+  body: unknown,
+  options: {
+    token?: string;
+    workspaceHeader?: string;
+    idempotencyKey?: string;
+    ifMatch?: string;
+  } = {},
+) {
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+  };
+  if (options.token !== undefined)
+    headers.authorization = `Bearer ${options.token}`;
+  if (options.workspaceHeader !== undefined)
+    headers['x-workspace-id'] = options.workspaceHeader;
+  if (options.idempotencyKey !== undefined)
+    headers['idempotency-key'] = options.idempotencyKey;
+  if (options.ifMatch !== undefined) headers['if-match'] = options.ifMatch;
+  return application.inject({
+    method: 'PATCH',
+    url: `/v1/transactions/${transactionId}`,
+    headers,
+    payload: typeof body === 'string' ? body : JSON.stringify(body),
   });
 }
 
@@ -837,5 +872,629 @@ describe('GET /v1/transactions', () => {
     const body = response.json();
     expect(body.title).toBe('Workspace access forbidden');
     expect(body.status).toBe(403);
+  });
+});
+
+describe('PATCH /v1/transactions/:transactionId', () => {
+  const validUpdateBody = {
+    description: 'Updated Groceries',
+    status: 'pending',
+  };
+
+  it('answers 200 with updated transaction, strong quoted version ETag header, and passes all parameters to the port', async () => {
+    const updatedTransaction = {
+      ...TRANSACTION,
+      description: 'Updated Groceries',
+      status: 'pending' as const,
+      version: 2,
+    };
+    const update = vi.fn<LedgerPort['update']>().mockResolvedValue({
+      kind: 'ok',
+      transaction: updatedTransaction,
+    } satisfies TransactionUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        ifMatch: '"1"',
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('application/json');
+    expect(response.headers.etag).toBe('"2"');
+    expect(JSON.parse(response.payload)).toEqual(updatedTransaction);
+    expect(update).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      TRANSACTION.id,
+      {
+        description: 'Updated Groceries',
+        status: 'pending',
+      },
+      IDEMPOTENCY_KEY,
+      1,
+    );
+  });
+
+  it('answers 200 when If-Match header is omitted, passing expectedVersions as undefined', async () => {
+    const updatedTransaction = { ...TRANSACTION, version: 2 };
+    const update = vi.fn<LedgerPort['update']>().mockResolvedValue({
+      kind: 'ok',
+      transaction: updatedTransaction,
+    } satisfies TransactionUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(update).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      TRANSACTION.id,
+      {
+        description: 'Updated Groceries',
+        status: 'pending',
+      },
+      IDEMPOTENCY_KEY,
+      undefined,
+    );
+  });
+
+  it('answers 200 replayed with stored status, etag, and body when idempotency replay matches', async () => {
+    const update = vi.fn<LedgerPort['update']>().mockResolvedValue({
+      kind: 'replayed',
+      status: 200,
+      etag: '"2"',
+      body: { ...TRANSACTION, version: 2 },
+    } satisfies TransactionUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers.etag).toBe('"2"');
+    expect(JSON.parse(response.payload)).toEqual({
+      ...TRANSACTION,
+      version: 2,
+    });
+  });
+
+  it('answers 400 when X-Workspace-Id header is missing', async () => {
+    const update = vi.fn<LedgerPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Invalid X-Workspace-Id header');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 when transactionId path parameter is not a valid UUID', async () => {
+    const update = vi.fn<LedgerPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      'not-a-uuid',
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Invalid transaction identifier');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 when Idempotency-Key header is missing', async () => {
+    const update = vi.fn<LedgerPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Invalid Idempotency-Key header');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 when body is not valid JSON', async () => {
+    const update = vi.fn<LedgerPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      '{ invalid json',
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 when Authorization header is missing or bearer token is rejected', async () => {
+    const update = vi.fn<LedgerPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const res1 = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+    expect(res1.statusCode).toBe(401);
+
+    const res2 = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: 'invalid-token',
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+    expect(res2.statusCode).toBe(401);
+
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 403 problem+json when port reports forbidden', async () => {
+    const update = vi.fn<LedgerPort['update']>().mockResolvedValue({
+      kind: 'forbidden',
+    } satisfies TransactionUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Workspace access forbidden');
+    expect(body.status).toBe(403);
+  });
+
+  it('answers 403 problem+json with title "Transaction is voided" when port reports voided', async () => {
+    const update = vi.fn<LedgerPort['update']>().mockResolvedValue({
+      kind: 'voided',
+    } satisfies TransactionUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.FORBIDDEN);
+    expect(body.title).toBe('Transaction is voided');
+    expect(body.status).toBe(403);
+  });
+
+  it('answers 404 problem+json when port reports not_found', async () => {
+    const update = vi.fn<LedgerPort['update']>().mockResolvedValue({
+      kind: 'not_found',
+    } satisfies TransactionUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(404);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Transaction not found');
+    expect(body.status).toBe(404);
+  });
+
+  it('answers 409 problem+json when port reports idempotency conflict', async () => {
+    const update = vi.fn<LedgerPort['update']>().mockResolvedValue({
+      kind: 'idempotency_conflict',
+    } satisfies TransactionUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.title).toBe('Idempotency key reused with different payload');
+    expect(body.status).toBe(409);
+  });
+
+  it('answers 409 problem+json with transaction-reconciled problem type when port reports reconciled (Épica 5 stub)', async () => {
+    const update = vi.fn<LedgerPort['update']>().mockResolvedValue({
+      kind: 'reconciled',
+    } satisfies TransactionUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.TRANSACTION_RECONCILED);
+    expect(body.type).toBe('https://savia.app/problems/transaction-reconciled');
+    expect(body.title).toBe('Transaction is reconciled');
+    expect(body.status).toBe(409);
+  });
+
+  it('answers 412 problem+json when If-Match header is malformed', async () => {
+    const update = vi.fn<LedgerPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        ifMatch: 'malformed-etag',
+      },
+    );
+
+    expect(response.statusCode).toBe(412);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.PRECONDITION_FAILED);
+    expect(body.status).toBe(412);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 412 problem+json when port reports version_conflict (stale version)', async () => {
+    const update = vi.fn<LedgerPort['update']>().mockResolvedValue({
+      kind: 'version_conflict',
+    } satisfies TransactionUpdateOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      validUpdateBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        ifMatch: '"1"',
+      },
+    );
+
+    expect(response.statusCode).toBe(412);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.PRECONDITION_FAILED);
+    expect(body.title).toBe('Resource version mismatch');
+    expect(body.status).toBe(412);
+  });
+
+  it('answers 422 problem+json when body is empty object (empty-update, minProperties: 1)', async () => {
+    const update = vi.fn<LedgerPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      {},
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.UNPROCESSABLE);
+    expect(body.errors).toContainEqual({
+      field: 'body',
+      code: 'empty-update',
+      message: 'must contain at least one field to update',
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 422 problem+json when body contains unknown or immutable fields (additionalProperties: false)', async () => {
+    const update = vi.fn<LedgerPort['update']>();
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const response = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      {
+        ...validUpdateBody,
+        amount: { amountMinor: '5000', currency: 'USD' },
+      },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(422);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.UNPROCESSABLE);
+    expect(body.errors).toContainEqual({
+      field: 'amount',
+      code: 'not-allowed',
+      message: 'is not allowed',
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('answers 422 problem+json when splits array is non-empty and asserts literal equality of problem type with POST', async () => {
+    const update = vi.fn<LedgerPort['update']>();
+    const create = vi.fn<LedgerPort['create']>();
+    const { application } = await createApplication(
+      create,
+      undefined,
+      undefined,
+      update,
+    );
+
+    const postResponse = await postTransaction(
+      application,
+      {
+        ...VALID_CREATE_BODY,
+        splits: [
+          {
+            amount: { amountMinor: '5000', currency: 'USD' },
+            categoryId: CATEGORY_ID,
+          },
+        ],
+      },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    const patchResponse = await patchTransaction(
+      application,
+      TRANSACTION.id,
+      {
+        splits: [
+          {
+            amount: { amountMinor: '5000', currency: 'USD' },
+            categoryId: CATEGORY_ID,
+          },
+        ],
+      },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(postResponse.statusCode).toBe(422);
+    expect(patchResponse.statusCode).toBe(422);
+
+    const postBody = JSON.parse(postResponse.payload);
+    const patchBody = JSON.parse(patchResponse.payload);
+
+    expect(postBody.type).toBe(PROBLEM_TYPES.TRANSACTION_SPLITS_UNSUPPORTED);
+    expect(patchBody.type).toBe(PROBLEM_TYPES.TRANSACTION_SPLITS_UNSUPPORTED);
+    // Assert LITERAL EQUALITY of the problem-type string emitted by both operations:
+    expect(patchBody.type).toBe(postBody.type);
+    expect(patchBody.title).toBe(postBody.title);
   });
 });

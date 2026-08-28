@@ -7,6 +7,7 @@ import {
   TRANSACTION_CREATE_OUTCOMES,
   TRANSACTION_LIST_OUTCOMES,
   TRANSACTION_READ_OUTCOMES,
+  TRANSACTION_UPDATE_OUTCOMES,
   type LedgerPort,
   type Transaction,
 } from '../../src/ledger/ledger.port.js';
@@ -59,6 +60,10 @@ describe('TransactionController.createTransaction', () => {
           items: [mockTransaction],
           pageInfo: { hasNextPage: false, nextCursor: null },
         },
+      }),
+      update: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_UPDATE_OUTCOMES.OK,
+        transaction: mockTransaction,
       }),
       ...ledgerPortOverrides,
     };
@@ -336,6 +341,10 @@ describe('TransactionController.getTransaction', () => {
           pageInfo: { hasNextPage: false, nextCursor: null },
         },
       }),
+      update: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_UPDATE_OUTCOMES.OK,
+        transaction: mockTransaction,
+      }),
       ...ledgerPortOverrides,
     };
 
@@ -453,6 +462,7 @@ describe('TransactionController.listTransactions', () => {
           pageInfo: { hasNextPage: false, nextCursor: null },
         },
       }),
+      update: vi.fn(),
       ...ledgerPortOverrides,
     };
 
@@ -566,5 +576,474 @@ describe('TransactionController.listTransactions', () => {
       status: 'confirmed',
       query: 'Groceries',
     });
+  });
+});
+
+describe('TransactionController.updateTransaction', () => {
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const subject = '00000000-0000-0000-0000-000000000901';
+  const transactionId = '00000000-0000-0000-0000-000000007001';
+  const idempotencyKey = '00000000-0000-4000-8000-000000000001';
+
+  const mockTransaction: Transaction = {
+    id: transactionId,
+    type: 'expense',
+    status: 'confirmed',
+    accountId: '00000000-0000-0000-0000-000000000a01',
+    amount: { amountMinor: '5000', currency: 'USD' },
+    occurredAt: '2026-08-20T10:00:00.000Z',
+    categoryId: null,
+    payeeId: null,
+    description: 'Groceries',
+    notes: null,
+    tagIds: [],
+    receiptId: null,
+    reconciliationId: null,
+    createdAt: '2026-08-20T10:00:00.000Z',
+    updatedAt: '2026-08-20T10:00:00.000Z',
+    version: 2,
+  };
+
+  const validBody = {
+    description: 'Updated Groceries',
+    status: 'pending',
+  };
+
+  function createMocks(ledgerPortOverrides: Partial<LedgerPort> = {}) {
+    const fakeLedgerPort: LedgerPort = {
+      create: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_CREATE_OUTCOMES.CREATED,
+        transaction: mockTransaction,
+      }),
+      read: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_READ_OUTCOMES.OK,
+        transaction: mockTransaction,
+      }),
+      list: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_LIST_OUTCOMES.OK,
+        page: {
+          items: [mockTransaction],
+          pageInfo: { hasNextPage: false, nextCursor: null },
+        },
+      }),
+      update: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_UPDATE_OUTCOMES.OK,
+        transaction: mockTransaction,
+      }),
+      ...ledgerPortOverrides,
+    };
+
+    const controller = new TransactionController(fakeLedgerPort);
+
+    const reply = {
+      status: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      send: vi.fn().mockReturnThis(),
+      header: vi.fn().mockReturnThis(),
+      request: {
+        id: 'trace-123',
+        url: `/v1/transactions/${transactionId}`,
+      },
+    } as unknown as FastifyReply;
+
+    return { controller, fakeLedgerPort, reply };
+  }
+
+  it('answers 400 when X-Workspace-Id header is missing or invalid', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: { 'idempotency-key': idempotencyKey },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.BAD_REQUEST }),
+    );
+  });
+
+  it('answers 400 when transactionId path parameter is not a UUID', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction('not-a-uuid', request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.BAD_REQUEST }),
+    );
+  });
+
+  it('answers 400 when Idempotency-Key header is missing or invalid', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.BAD_REQUEST }),
+    );
+  });
+
+  it('answers 412 when If-Match header is malformed', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+        'if-match': 'malformed-etag',
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(412);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.PRECONDITION_FAILED }),
+    );
+  });
+
+  it('answers 422 when body is empty object (empty-update, minProperties: 1)', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: {},
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.UNPROCESSABLE }),
+    );
+  });
+
+  it('answers 422 when body contains unknown or immutable fields (additionalProperties: false)', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: { ...validBody, amount: { amountMinor: '5000', currency: 'USD' } },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.UNPROCESSABLE }),
+    );
+  });
+
+  it('answers 422 TRANSACTION_SPLITS_UNSUPPORTED when splits array is non-empty', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: {
+        ...validBody,
+        splits: [
+          {
+            amount: { amountMinor: '5000', currency: 'USD' },
+            categoryId: '00000000-0000-0000-0000-000000000002',
+          },
+        ],
+      },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.TRANSACTION_SPLITS_UNSUPPORTED,
+      }),
+    );
+  });
+
+  it('asserts literal equality of problem-type string between createTransaction and updateTransaction splits refusal', async () => {
+    const { controller } = createMocks();
+    const splitsBody = {
+      type: 'expense',
+      accountId: '00000000-0000-0000-0000-000000000a01',
+      amount: { amountMinor: '5000', currency: 'USD' },
+      occurredAt: '2026-08-20T10:00:00.000Z',
+      splits: [
+        {
+          amount: { amountMinor: '5000', currency: 'USD' },
+          categoryId: '00000000-0000-0000-0000-000000000002',
+        },
+      ],
+    };
+
+    let postProblem: { type?: string } = {};
+    let patchProblem: { type?: string } = {};
+
+    const postReply = {
+      status: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      send: vi.fn().mockImplementation((payload) => {
+        postProblem = payload;
+        return postReply;
+      }),
+      header: vi.fn().mockReturnThis(),
+      request: { id: 'trace-post', url: '/v1/transactions' },
+    } as unknown as FastifyReply;
+
+    const patchReply = {
+      status: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      send: vi.fn().mockImplementation((payload) => {
+        patchProblem = payload;
+        return patchReply;
+      }),
+      header: vi.fn().mockReturnThis(),
+      request: {
+        id: 'trace-patch',
+        url: `/v1/transactions/${transactionId}`,
+      },
+    } as unknown as FastifyReply;
+
+    const reqPost = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: splitsBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    const reqPatch = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: { description: 'Update', splits: splitsBody.splits },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.createTransaction(reqPost, postReply);
+    await controller.updateTransaction(transactionId, reqPatch, patchReply);
+
+    expect(postProblem.type).toBe(PROBLEM_TYPES.TRANSACTION_SPLITS_UNSUPPORTED);
+    expect(patchProblem.type).toBe(
+      PROBLEM_TYPES.TRANSACTION_SPLITS_UNSUPPORTED,
+    );
+    expect(patchProblem.type).toBe(postProblem.type);
+  });
+
+  it('answers 403 FORBIDDEN when ledger port returns FORBIDDEN', async () => {
+    const { controller, reply } = createMocks({
+      update: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(403);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.FORBIDDEN }),
+    );
+  });
+
+  it('answers 403 FORBIDDEN with title "Transaction is voided" when ledger port returns VOIDED', async () => {
+    const { controller, reply } = createMocks({
+      update: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_UPDATE_OUTCOMES.VOIDED }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(403);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Transaction is voided',
+      }),
+    );
+  });
+
+  it('answers 409 TRANSACTION_RECONCILED when ledger port returns RECONCILED (Épica 5 stub)', async () => {
+    const { controller, reply } = createMocks({
+      update: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_UPDATE_OUTCOMES.RECONCILED }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(409);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.TRANSACTION_RECONCILED,
+        title: 'Transaction is reconciled',
+      }),
+    );
+  });
+
+  it('answers 409 CONFLICT when idempotency conflict occurs', async () => {
+    const { controller, reply } = createMocks({
+      update: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_UPDATE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(409);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.CONFLICT }),
+    );
+  });
+
+  it('answers 404 NOT_FOUND when ledger port returns NOT_FOUND', async () => {
+    const { controller, reply } = createMocks({
+      update: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_UPDATE_OUTCOMES.NOT_FOUND }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(404);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.NOT_FOUND }),
+    );
+  });
+
+  it('answers 412 PRECONDITION_FAILED when ledger port returns VERSION_CONFLICT', async () => {
+    const { controller, reply } = createMocks({
+      update: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_UPDATE_OUTCOMES.VERSION_CONFLICT,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+        'if-match': '"1"',
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(412);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.PRECONDITION_FAILED }),
+    );
+  });
+
+  it('replays stored response on REPLAYED outcome', async () => {
+    const { controller, reply } = createMocks({
+      update: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_UPDATE_OUTCOMES.REPLAYED,
+        status: 200,
+        etag: '"2"',
+        body: mockTransaction,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(200);
+    expect(reply.header).toHaveBeenCalledWith('etag', '"2"');
+    expect(reply.send).toHaveBeenCalledWith(mockTransaction);
+  });
+
+  it('returns 200 with ETag header and updated transaction body on success', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+        'if-match': '"1"',
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(200);
+    expect(reply.header).toHaveBeenCalledWith('etag', '"2"');
+    expect(reply.send).toHaveBeenCalledWith(mockTransaction);
   });
 });
