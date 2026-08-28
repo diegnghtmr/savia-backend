@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   createTransactionCommand,
   createUpdateTransactionCommand,
+  createVoidTransactionCommand,
   TransactionCommandValidationError,
   type CreateTransactionCommand,
   type UpdateTransactionCommand,
+  type VoidTransactionCommand,
 } from '../../src/ledger/transaction-command.js';
 import { TransactionSplitsUnsupportedError } from '../../src/ledger/splits-guard.js';
 import type { FieldViolation } from '../../src/platform/problem-details.js';
@@ -602,6 +604,181 @@ describe('createUpdateTransactionCommand', () => {
     expect((createError as Error).message).toBe((updateError as Error).message);
     expect((createError as Error).constructor).toBe(
       (updateError as Error).constructor,
+    );
+  });
+});
+
+describe('createVoidTransactionCommand', () => {
+  it('accepts valid minimal reason (3 characters) and returns frozen command', () => {
+    const command = createVoidTransactionCommand({ reason: 'abc' });
+    expect(command).toEqual({
+      reason: 'abc',
+    } satisfies VoidTransactionCommand);
+    expect(Object.isFrozen(command)).toBe(true);
+  });
+
+  it('accepts valid long reason up to 500 characters', () => {
+    const longReason = 'a'.repeat(500);
+    const command = createVoidTransactionCommand({ reason: longReason });
+    expect(command.reason).toBe(longReason);
+  });
+
+  it('refuses non-object body with invalid-type violation', () => {
+    expectViolations(
+      () => createVoidTransactionCommand(null),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'body',
+          code: 'invalid-type',
+          message: 'must be an object',
+        });
+      },
+    );
+
+    expectViolations(
+      () => createVoidTransactionCommand('string'),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'body',
+          code: 'invalid-type',
+          message: 'must be an object',
+        });
+      },
+    );
+
+    expectViolations(
+      () => createVoidTransactionCommand([]),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'body',
+          code: 'invalid-type',
+          message: 'must be an object',
+        });
+      },
+    );
+  });
+
+  it('refuses absent reason with required violation', () => {
+    expectViolations(
+      () => createVoidTransactionCommand({}),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'reason',
+          code: 'required',
+          message: 'must be a non-empty string',
+        });
+      },
+    );
+  });
+
+  it('refuses non-string reason with invalid-type violation', () => {
+    expectViolations(
+      () => createVoidTransactionCommand({ reason: 12345 }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'reason',
+          code: 'invalid-type',
+          message: 'must be a string',
+        });
+      },
+    );
+
+    expectViolations(
+      () => createVoidTransactionCommand({ reason: true }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'reason',
+          code: 'invalid-type',
+          message: 'must be a string',
+        });
+      },
+    );
+  });
+
+  it('refuses null characters in reason with invalid-characters violation', () => {
+    expectViolations(
+      () => createVoidTransactionCommand({ reason: 'abc\0def' }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'reason',
+          code: 'invalid-characters',
+          message: 'must not contain null characters',
+        });
+      },
+    );
+  });
+
+  it('refuses whitespace-only reason with required violation', () => {
+    expectViolations(
+      () => createVoidTransactionCommand({ reason: '   ' }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'reason',
+          code: 'required',
+          message: 'must be a non-empty string',
+        });
+      },
+    );
+  });
+
+  it('refuses reason shorter than 3 characters with min-length violation', () => {
+    expectViolations(
+      () => createVoidTransactionCommand({ reason: 'ab' }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'reason',
+          code: 'min-length',
+          message: 'must be at least 3 characters',
+        });
+      },
+    );
+
+    expectViolations(
+      () => createVoidTransactionCommand({ reason: 'a' }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'reason',
+          code: 'min-length',
+          message: 'must be at least 3 characters',
+        });
+      },
+    );
+  });
+
+  it('refuses reason longer than 500 characters with max-length violation', () => {
+    const tooLong = 'a'.repeat(501);
+    expectViolations(
+      () => createVoidTransactionCommand({ reason: tooLong }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'reason',
+          code: 'max-length',
+          message: 'must be at most 500 characters',
+        });
+      },
+    );
+  });
+
+  it('refuses unknown fields with not-allowed violation', () => {
+    expectViolations(
+      () =>
+        createVoidTransactionCommand({
+          reason: 'Valid reason',
+          extraField: 'unexpected',
+          anotherExtra: 42,
+        }),
+      (violations) => {
+        expect(violations).toContainEqual({
+          field: 'extraField',
+          code: 'not-allowed',
+          message: 'is not allowed',
+        });
+        expect(violations).toContainEqual({
+          field: 'anotherExtra',
+          code: 'not-allowed',
+          message: 'is not allowed',
+        });
+      },
     );
   });
 });

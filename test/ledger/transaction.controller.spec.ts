@@ -8,6 +8,7 @@ import {
   TRANSACTION_LIST_OUTCOMES,
   TRANSACTION_READ_OUTCOMES,
   TRANSACTION_UPDATE_OUTCOMES,
+  TRANSACTION_VOID_OUTCOMES,
   type LedgerPort,
   type Transaction,
 } from '../../src/ledger/ledger.port.js';
@@ -63,6 +64,10 @@ describe('TransactionController.createTransaction', () => {
       }),
       update: vi.fn().mockResolvedValue({
         kind: TRANSACTION_UPDATE_OUTCOMES.OK,
+        transaction: mockTransaction,
+      }),
+      void: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_VOID_OUTCOMES.OK,
         transaction: mockTransaction,
       }),
       ...ledgerPortOverrides,
@@ -345,6 +350,10 @@ describe('TransactionController.getTransaction', () => {
         kind: TRANSACTION_UPDATE_OUTCOMES.OK,
         transaction: mockTransaction,
       }),
+      void: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_VOID_OUTCOMES.OK,
+        transaction: mockTransaction,
+      }),
       ...ledgerPortOverrides,
     };
 
@@ -463,6 +472,7 @@ describe('TransactionController.listTransactions', () => {
         },
       }),
       update: vi.fn(),
+      void: vi.fn(),
       ...ledgerPortOverrides,
     };
 
@@ -628,6 +638,10 @@ describe('TransactionController.updateTransaction', () => {
       }),
       update: vi.fn().mockResolvedValue({
         kind: TRANSACTION_UPDATE_OUTCOMES.OK,
+        transaction: mockTransaction,
+      }),
+      void: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_VOID_OUTCOMES.OK,
         transaction: mockTransaction,
       }),
       ...ledgerPortOverrides,
@@ -1045,5 +1059,437 @@ describe('TransactionController.updateTransaction', () => {
     expect(reply.status).toHaveBeenCalledWith(200);
     expect(reply.header).toHaveBeenCalledWith('etag', '"2"');
     expect(reply.send).toHaveBeenCalledWith(mockTransaction);
+  });
+});
+
+describe('TransactionController.voidTransaction', () => {
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const subject = '00000000-0000-0000-0000-000000000901';
+  const idempotencyKey = '00000000-0000-4000-8000-000000000001';
+  const transactionId = '00000000-0000-0000-0000-000000000701';
+
+  const mockVoidedTransaction: Transaction = {
+    id: transactionId,
+    type: 'expense',
+    status: 'voided',
+    accountId: '00000000-0000-0000-0000-000000000a01',
+    amount: { amountMinor: '5000', currency: 'USD' },
+    occurredAt: '2026-08-20T10:00:00.000Z',
+    categoryId: null,
+    payeeId: null,
+    description: 'Groceries',
+    notes: null,
+    tagIds: [],
+    receiptId: null,
+    reconciliationId: null,
+    createdAt: '2026-08-20T10:00:00.000Z',
+    updatedAt: '2026-08-20T10:00:00.000Z',
+    version: 2,
+  };
+
+  const validBody = {
+    reason: 'Voided due to customer cancellation',
+  };
+
+  function createMocks(ledgerPortOverrides: Partial<LedgerPort> = {}) {
+    const fakeLedgerPort: LedgerPort = {
+      create: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_CREATE_OUTCOMES.CREATED,
+        transaction: mockVoidedTransaction,
+      }),
+      read: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_READ_OUTCOMES.OK,
+        transaction: mockVoidedTransaction,
+      }),
+      list: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_LIST_OUTCOMES.OK,
+        page: {
+          items: [mockVoidedTransaction],
+          pageInfo: { hasNextPage: false, nextCursor: null },
+        },
+      }),
+      update: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_UPDATE_OUTCOMES.OK,
+        transaction: mockVoidedTransaction,
+      }),
+      void: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_VOID_OUTCOMES.OK,
+        transaction: mockVoidedTransaction,
+      }),
+      ...ledgerPortOverrides,
+    };
+
+    const controller = new TransactionController(fakeLedgerPort);
+
+    const reply = {
+      status: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      send: vi.fn().mockReturnThis(),
+      header: vi.fn().mockReturnThis(),
+      request: {
+        id: 'trace-123',
+        url: `/v1/transactions/${transactionId}/void`,
+      },
+    } as unknown as FastifyReply;
+
+    return { controller, fakeLedgerPort, reply };
+  }
+
+  it('answers 400 when X-Workspace-Id header is missing or invalid', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: { 'idempotency-key': idempotencyKey },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.BAD_REQUEST }),
+    );
+  });
+
+  it('answers 400 when transactionId is not a valid UUID', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction('not-a-uuid', request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.BAD_REQUEST }),
+    );
+  });
+
+  it('answers 400 when Idempotency-Key header is missing or malformed', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.BAD_REQUEST }),
+    );
+  });
+
+  it('answers 412 when If-Match header is malformed', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+        'if-match': 'malformed-unquoted',
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(412);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.PRECONDITION_FAILED }),
+    );
+  });
+
+  it('answers 422 with UNPROCESSABLE problem when void body validation fails (reason < 3 chars)', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: { reason: 'ab' },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        errors: expect.arrayContaining([
+          expect.objectContaining({ field: 'reason', code: 'min-length' }),
+        ]),
+      }),
+    );
+  });
+
+  it('answers 422 with UNPROCESSABLE problem when reason is absent', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: {},
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        errors: expect.arrayContaining([
+          expect.objectContaining({ field: 'reason', code: 'required' }),
+        ]),
+      }),
+    );
+  });
+
+  it('answers 422 with UNPROCESSABLE problem when extra properties are provided', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: { reason: 'Valid reason', extra: 'unexpected' },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        errors: expect.arrayContaining([
+          expect.objectContaining({ field: 'extra', code: 'not-allowed' }),
+        ]),
+      }),
+    );
+  });
+
+  it('answers 403 when outcome is FORBIDDEN', async () => {
+    const { controller, reply } = createMocks({
+      void: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_VOID_OUTCOMES.FORBIDDEN }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(403);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.FORBIDDEN }),
+    );
+  });
+
+  it('answers 404 when outcome is NOT_FOUND', async () => {
+    const { controller, reply } = createMocks({
+      void: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_VOID_OUTCOMES.NOT_FOUND }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(404);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.NOT_FOUND }),
+    );
+  });
+
+  it('answers 409 when outcome is DRAFT (TRANSACTION_DRAFT)', async () => {
+    const { controller, reply } = createMocks({
+      void: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_VOID_OUTCOMES.DRAFT }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(409);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.TRANSACTION_DRAFT,
+        title: 'Transaction is draft',
+      }),
+    );
+  });
+
+  it('answers 409 when outcome is VOIDED (TRANSACTION_VOIDED)', async () => {
+    const { controller, reply } = createMocks({
+      void: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_VOID_OUTCOMES.VOIDED }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(409);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.TRANSACTION_VOIDED,
+        title: 'Transaction is voided',
+      }),
+    );
+  });
+
+  it('answers 409 when outcome is RECONCILED (TRANSACTION_RECONCILED)', async () => {
+    const { controller, reply } = createMocks({
+      void: vi
+        .fn()
+        .mockResolvedValue({ kind: TRANSACTION_VOID_OUTCOMES.RECONCILED }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(409);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.TRANSACTION_RECONCILED,
+        title: 'Transaction is reconciled',
+      }),
+    );
+  });
+
+  it('answers 409 when outcome is IDEMPOTENCY_CONFLICT', async () => {
+    const { controller, reply } = createMocks({
+      void: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_VOID_OUTCOMES.IDEMPOTENCY_CONFLICT,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(409);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.CONFLICT }),
+    );
+  });
+
+  it('answers 412 when outcome is VERSION_CONFLICT', async () => {
+    const { controller, reply } = createMocks({
+      void: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_VOID_OUTCOMES.VERSION_CONFLICT,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+        'if-match': '"1"',
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(412);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: PROBLEM_TYPES.PRECONDITION_FAILED }),
+    );
+  });
+
+  it('replays stored response when outcome is REPLAYED', async () => {
+    const { controller, reply } = createMocks({
+      void: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_VOID_OUTCOMES.REPLAYED,
+        status: 200,
+        etag: null,
+        body: mockVoidedTransaction,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(200);
+    expect(reply.send).toHaveBeenCalledWith(mockVoidedTransaction);
+  });
+
+  it('returns 200 with voided transaction body (NO ETag response header declared)', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+        'if-match': '"1"',
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.voidTransaction(transactionId, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(200);
+    expect(reply.send).toHaveBeenCalledWith(mockVoidedTransaction);
+    // ETag is not set on void response per OpenAPI declared spec
+    expect(reply.header).not.toHaveBeenCalledWith('etag', expect.anything());
   });
 });
