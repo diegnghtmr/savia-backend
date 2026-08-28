@@ -38,6 +38,13 @@ create table public.exchange_rates (
   effective_at timestamptz not null,
   source text not null,
   manual boolean not null default true,
+  -- CreateManualExchangeRateRequest accepts an optional notes field (max 500 chars).
+  -- Without this column the API would accept that field and silently discard it,
+  -- losing user input. ExchangeRate does not return notes, so the read projection
+  -- deliberately omits it; the column exists so the submitted value is preserved.
+  notes text
+    constraint exchange_rates_notes_length_check
+    check (notes is null or length(notes) <= 500),
   created_by uuid not null references public.profiles(id) on delete restrict,
   created_at timestamptz not null default now(),
   -- Base and quote currencies must be distinct.
@@ -63,7 +70,7 @@ alter table public.exchange_rates force row level security;
 -- NO update or delete policies exist on this table.
 grant select on public.exchange_rates to savia_application;
 grant insert (workspace_id, base_currency, quote_currency, rate,
-              effective_at, source, manual, created_by)
+              effective_at, source, manual, notes, created_by)
   on public.exchange_rates to savia_application;
 
 -- Policies routed through public.workspace_actor_active_role helper.

@@ -253,6 +253,7 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
         'effective_at',
         'id',
         'manual',
+        'notes',
         'quote_currency',
         'rate',
         'source',
@@ -267,6 +268,7 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
         'created_by',
         'effective_at',
         'manual',
+        'notes',
         'quote_currency',
         'rate',
         'source',
@@ -303,6 +305,7 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
         'effective_at',
         'id',
         'manual',
+        'notes',
         'quote_currency',
         'rate',
         'source',
@@ -512,6 +515,41 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
         ),
       );
       expect(nonAlphabeticErr.code).toBe('23514');
+    });
+
+    it('4b. notes accepts exactly 500 characters and refuses 501', async () => {
+      // The contract caps notes at 500. Prove BOTH edges: a test that only rejected
+      // an over-long value would still pass if the column refused every note.
+      const atLimit = 'n'.repeat(500);
+      const overLimit = 'n'.repeat(501);
+
+      const overErr = await capturePgError(() =>
+        asSubject(ownerA, (client) =>
+          client.query(
+            `insert into public.exchange_rates
+               (workspace_id, base_currency, quote_currency, rate, effective_at, source, manual, notes, created_by)
+             values ($1, 'USD', 'EUR', '0.9200', '2026-08-28T09:00:00Z', 'manual', true, $2, $3)`,
+            [ws1Id, overLimit, ownerA],
+          ),
+        ),
+      );
+      expect(overErr.code).toBe('23514');
+      expect(overErr.message ?? '').toContain(
+        'exchange_rates_notes_length_check',
+      );
+
+      const acceptedRes = await asSubject(ownerA, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.exchange_rates
+             (workspace_id, base_currency, quote_currency, rate, effective_at, source, manual, notes, created_by)
+           values ($1, 'USD', 'EUR', '0.9300', '2026-08-28T09:00:00Z', 'manual', true, $2, $3)
+           returning id`,
+          [ws1Id, atLimit, ownerA],
+        ),
+      );
+      const acceptedId = acceptedRes.rows[0].id;
+      expect(acceptedId).toBeDefined();
+      await deleteExchangeRates([acceptedId]);
     });
 
     it('5. The UNIQUE constraint rejects a second row with the same (workspace, base, quote, effective_at), while a row differing ONLY in effective_at is ACCEPTED', async () => {
