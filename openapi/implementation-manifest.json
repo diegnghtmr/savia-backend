@@ -131,6 +131,11 @@
       "operationId": "voidTransaction",
       "method": "POST",
       "path": "/v1/transactions/{transactionId}/void"
+    },
+    {
+      "operationId": "createTransfer",
+      "method": "POST",
+      "path": "/v1/transfers"
     }
   ]
 }

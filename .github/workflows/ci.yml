@@ -176,6 +176,9 @@ jobs:
       - name: transfers schema integration
         shell: bash
         run: pnpm test:integration:transfers-schema
+      - name: transfers create integration
+        shell: bash
+        run: pnpm test:integration:transfers-create
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
