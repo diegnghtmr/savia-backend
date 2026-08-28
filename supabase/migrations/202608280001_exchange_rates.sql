@@ -21,12 +21,20 @@ begin;
 
 create table public.exchange_rates (
   id uuid primary key default gen_random_uuid(),
+  -- on delete cascade matches the house convention for workspace-scoped financial
+  -- tables (accounts, ledger_postings, transfers all use it). Note the deliberate
+  -- limit it places on FR-FX-004: rate history is preserved against retroactive
+  -- OVERWRITING, not against deletion of the owning workspace, which removes every
+  -- financial row of that workspace alike.
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
   base_currency char(3) not null check (base_currency ~ '^[A-Z]{3}$'),
   quote_currency char(3) not null check (quote_currency ~ '^[A-Z]{3}$'),
   -- Although the OpenAPI DecimalString pattern syntactically admits a negative number,
   -- a negative exchange rate is meaningless, so the database strictly refuses it.
-  rate numeric not null check (rate > 0),
+  -- The constraint is NAMED so a test can pin THIS check rather than pass on any
+  -- unrelated check violation the row might also trigger.
+  rate numeric not null
+    constraint exchange_rates_rate_positive_check check (rate > 0),
   effective_at timestamptz not null,
   source text not null,
   manual boolean not null default true,

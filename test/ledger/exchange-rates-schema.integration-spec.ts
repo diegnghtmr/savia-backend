@@ -436,6 +436,11 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
         ),
       );
       expect(zeroRateErr.code).toBe('23514');
+      // Pin the NAMED constraint: without this the test would also pass if the row
+      // tripped some unrelated check, proving nothing about the rate > 0 rule.
+      expect(zeroRateErr.message ?? '').toContain(
+        'exchange_rates_rate_positive_check',
+      );
 
       const negativeRateErr = await capturePgError(() =>
         asSubject(ownerA, (client) =>
@@ -448,9 +453,12 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
         ),
       );
       expect(negativeRateErr.code).toBe('23514');
+      expect(negativeRateErr.message ?? '').toContain(
+        'exchange_rates_rate_positive_check',
+      );
     });
 
-    it("4. The currency regex CHECK rejects a malformed code (e.g. 'us', 'USDD', 'usd')", async () => {
+    it('4. Malformed currency codes are refused: char(3) rejects an over-length code and the regex CHECK rejects a wrong alphabet or case', async () => {
       const tooShortErr = await capturePgError(() =>
         asSubject(ownerA, (client) =>
           client.query(
@@ -473,7 +481,11 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
           ),
         ),
       );
-      expect(tooLongErr.code).toBe('23514');
+      // A 4-character code never reaches the regex CHECK: char(3) refuses to store an
+      // over-length value first, so PostgreSQL raises 22001 string_data_right_truncation.
+      // Asserting 23514 here would simply fail. Length is guarded by the TYPE; the CHECK
+      // guards the alphabet and case, which the 'U5D' case below proves.
+      expect(tooLongErr.code).toBe('22001');
 
       const lowercaseQuoteErr = await capturePgError(() =>
         asSubject(ownerA, (client) =>
@@ -486,6 +498,20 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
         ),
       );
       expect(lowercaseQuoteErr.code).toBe('23514');
+
+      // A well-formed-length code that is still not three uppercase letters: this is
+      // what actually exercises the regex CHECK rather than the column type.
+      const nonAlphabeticErr = await capturePgError(() =>
+        asSubject(ownerA, (client) =>
+          client.query(
+            `insert into public.exchange_rates
+               (workspace_id, base_currency, quote_currency, rate, effective_at, source, manual, created_by)
+             values ($1, 'U5D', 'EUR', '0.9200', '2026-08-28T12:00:00Z', 'manual', true, $2)`,
+            [ws1Id, ownerA],
+          ),
+        ),
+      );
+      expect(nonAlphabeticErr.code).toBe('23514');
     });
 
     it('5. The UNIQUE constraint rejects a second row with the same (workspace, base, quote, effective_at), while a row differing ONLY in effective_at is ACCEPTED', async () => {
