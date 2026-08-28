@@ -806,6 +806,76 @@ components:
           minLength: 3
           maxLength: 500
       additionalProperties: false
+    Transfer:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - sourceAccountId
+        - destinationAccountId
+        - sourceAmount
+        - destinationAmount
+        - occurredAt
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        sourceAccountId:
+          type: string
+          format: uuid
+        destinationAccountId:
+          type: string
+          format: uuid
+        sourceAmount:
+          $ref: '#/components/schemas/Money'
+        destinationAmount:
+          $ref: '#/components/schemas/Money'
+        fee:
+          $ref: '#/components/schemas/Money'
+        exchangeRate:
+          anyOf:
+            - $ref: '#/components/schemas/DecimalString'
+            - type: 'null'
+        referenceRate:
+          anyOf:
+            - $ref: '#/components/schemas/DecimalString'
+            - type: 'null'
+        occurredAt:
+          type: string
+          format: date-time
+        status:
+          $ref: '#/components/schemas/TransactionStatus'
+        transactionId:
+          type: string
+          format: uuid
+    CreateTransferRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - sourceAccountId
+        - destinationAccountId
+        - amount
+        - occurredAt
+      properties:
+        sourceAccountId:
+          type: string
+          format: uuid
+        destinationAccountId:
+          type: string
+          format: uuid
+        amount:
+          $ref: '#/components/schemas/Money'
+        occurredAt:
+          type: string
+          format: date-time
+        fee:
+          $ref: '#/components/schemas/Money'
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -2813,6 +2883,86 @@ paths:
       x-savia-mcp-tool:
         name: void_transaction
         riskClass: destructive
+        requiresApproval: true
+        requiredScopes:
+          - transactions:write
+      x-idempotency-required: true
+  /v1/transfers:
+    post:
+      operationId: createTransfer
+      tags:
+        - Transfers
+      summary: Create same-currency transfer
+      x-financial: true
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransferRequest'
+      responses:
+        '201':
+          description: Transfer created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '400':
+          description: The request header or body failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Idempotency key reused with different payload.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Validation failed or business invariant violated.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: create_transfer
+        riskClass: financial_write
         requiresApproval: true
         requiredScopes:
           - transactions:write
