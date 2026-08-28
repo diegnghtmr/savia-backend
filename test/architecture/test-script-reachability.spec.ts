@@ -1,7 +1,9 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  analyzeDisposableSuiteAllowlist,
   analyzeTestScriptReachability,
+  collectDisposableSuiteSource,
   collectPackageScripts,
   collectWorkflowSources,
   COVERAGE_ALLOWLIST,
@@ -265,5 +267,85 @@ describe('unreachable test script recurrence guard (unreachable-test-script-gate
     );
     expect(analysis.violations).toHaveLength(0);
     expect(analysis.reachable).toContain('test:blocky');
+  });
+});
+
+describe('disposable suite allow-list guard (disposable-suite-allowlist-gate)', () => {
+  const SUITE = 'scripts/run-disposable-database-suite.sh';
+
+  it('catches a suite wired into CI whose spec the runner would reject with exit 64', () => {
+    // The exact defect this guard exists for: the script is reachable from CI and
+    // looks wired up, but the runner exits 64 before a single test executes.
+    const scripts = {
+      // transfers-create is present and correctly allow-listed, so the ONLY
+      // violation this fixture can produce is the ghost suite.
+      'test:integration:transfers-create': `bash ${SUITE} test/ledger/transfers-create.integration-spec.ts`,
+      'test:integration:ghost': `bash ${SUITE} test/ledger/ghost.integration-spec.ts`,
+    };
+    const suiteSource = [
+      'case "$spec" in',
+      '  test/ledger/transfers-create.integration-spec.ts) ;;',
+      '  *) exit 64 ;;',
+      'esac',
+    ].join('\n');
+
+    const analysis = analyzeDisposableSuiteAllowlist(scripts, suiteSource);
+
+    expect(analysis.violations).toHaveLength(1);
+    expect(analysis.violations[0]).toContain(
+      'test/ledger/ghost.integration-spec.ts',
+    );
+    expect(analysis.violations[0]).toContain('exit 64');
+  });
+
+  it('catches a stale allow-list entry no script passes any more', () => {
+    const scripts = {
+      'test:integration:transfers-create': `bash ${SUITE} test/ledger/transfers-create.integration-spec.ts`,
+    };
+    const suiteSource = [
+      'case "$spec" in',
+      '  test/ledger/transfers-create.integration-spec.ts) ;;',
+      '  test/ledger/removed.integration-spec.ts) ;;',
+      '  *) exit 64 ;;',
+      'esac',
+    ].join('\n');
+
+    const analysis = analyzeDisposableSuiteAllowlist(scripts, suiteSource);
+
+    expect(analysis.violations).toHaveLength(1);
+    expect(analysis.violations[0]).toContain('is stale');
+    expect(analysis.violations[0]).toContain(
+      'test/ledger/removed.integration-spec.ts',
+    );
+  });
+
+  it('passes when every invoked spec is allow-listed and vice versa', () => {
+    const scripts = {
+      'test:integration:a': `bash ${SUITE} test/ledger/a.integration-spec.ts`,
+      'test:integration:b': `bash ${SUITE} test/ledger/b.integration-spec.ts`,
+    };
+    const suiteSource = [
+      'case "$spec" in',
+      '  test/ledger/a.integration-spec.ts) ;;',
+      '  test/ledger/b.integration-spec.ts) ;;',
+      '  *) exit 64 ;;',
+      'esac',
+    ].join('\n');
+
+    const analysis = analyzeDisposableSuiteAllowlist(scripts, suiteSource);
+
+    expect(analysis.violations).toEqual([]);
+    expect(analysis.invoked).toHaveLength(2);
+    expect(analysis.allowed).toHaveLength(2);
+  });
+
+  it('holds against the real repository: every wired suite is runnable', () => {
+    const analysis = analyzeDisposableSuiteAllowlist(
+      collectPackageScripts(root),
+      collectDisposableSuiteSource(root),
+    );
+
+    expect(analysis.violations).toEqual([]);
+    expect(analysis.invoked.length).toBeGreaterThan(0);
   });
 });
