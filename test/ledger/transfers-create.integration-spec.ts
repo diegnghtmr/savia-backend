@@ -48,7 +48,6 @@ describe('TransferService createTransfer database boundary', () => {
 
   const accountActiveUSD1Id = id(7001);
   const accountActiveUSD2Id = id(7002);
-  const accountActiveEURId = id(7003);
   const accountClosedUSDId = id(7004);
   const accountForeignWsId = id(7005);
   const absentAccountId = id(7999);
@@ -139,15 +138,13 @@ describe('TransferService createTransfer database boundary', () => {
       `insert into public.accounts (id, workspace_id, name, type, currency, status, closed_at, created_by)
        values ($1, $2, 'USD Checking 1', 'checking', 'USD', 'active', null, $3),
               ($4, $2, 'USD Savings 2', 'savings', 'USD', 'active', null, $3),
-              ($5, $2, 'EUR Account', 'checking', 'EUR', 'active', null, $3),
-              ($6, $2, 'Closed USD Account', 'savings', 'USD', 'closed', now(), $3),
-              ($7, $8, 'Foreign WS2 Account', 'checking', 'USD', 'active', null, $3)`,
+              ($5, $2, 'Closed USD Account', 'savings', 'USD', 'closed', now(), $3),
+              ($6, $7, 'Foreign WS2 Account', 'checking', 'USD', 'active', null, $3)`,
       [
         accountActiveUSD1Id,
         workspace1Id,
         subjectOwner,
         accountActiveUSD2Id,
-        accountActiveEURId,
         accountClosedUSDId,
         accountForeignWsId,
         workspace2Id,
@@ -436,14 +433,27 @@ describe('TransferService createTransfer database boundary', () => {
     expect(outcome.kind).toBe(TRANSFER_CREATE_OUTCOMES.CREATED);
   });
 
-  it('refuses same-currency transfer when accounts have mismatched currencies (USD vs EUR) with CURRENCY_MISMATCH', async () => {
+  // The cross-account variant of this guard (sourceAccount.currency !==
+  // destinationAccount.currency) is unreachable against a real database:
+  // 202608240006_account_currency_invariant.sql forces every account's currency to
+  // equal its workspace's base_currency, and base_currency is char(3) NOT NULL, so
+  // two accounts in one workspace can never hold different currencies. Seeding that
+  // state is what broke this suite. That branch stays in production code as defense
+  // in depth, and its coverage lives in test/ledger/transfer.service.spec.ts, where a
+  // test double can fabricate the state the database forbids.
+  it('refuses a transfer whose request amount currency differs from the account currency with CURRENCY_MISMATCH', async () => {
     const key = '00000000-0000-4000-8000-000000001004';
     const command: CreateTransferCommand = {
       sourceAccountId: accountActiveUSD1Id,
-      destinationAccountId: accountActiveEURId,
-      amount: { amountMinor: '1000', currency: 'USD' },
+      destinationAccountId: accountActiveUSD2Id,
+      amount: { amountMinor: '1000', currency: 'EUR' },
       occurredAt: '2026-08-25T14:00:00.000Z',
     };
+
+    const before = await admin.query(
+      `select count(*)::text as count from public.transfers where workspace_id = $1::uuid`,
+      [workspace1Id],
+    );
 
     const outcome = await service.create(
       subjectOwner,
@@ -452,6 +462,15 @@ describe('TransferService createTransfer database boundary', () => {
       key,
     );
     expect(outcome.kind).toBe(TRANSFER_CREATE_OUTCOMES.CURRENCY_MISMATCH);
+
+    // A refused transfer must leave no trace. Earlier tests in this file already
+    // wrote transfers to this workspace, so pin that the count is UNCHANGED rather
+    // than zero -- otherwise this assertion would fail for the wrong reason.
+    const after = await admin.query(
+      `select count(*)::text as count from public.transfers where workspace_id = $1::uuid`,
+      [workspace1Id],
+    );
+    expect(after.rows[0].count).toBe(before.rows[0].count);
   });
 
   it('refuses unresolved source or destination account in workspace with ACCOUNT_UNRESOLVED', async () => {
