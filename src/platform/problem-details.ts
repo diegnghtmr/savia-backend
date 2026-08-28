@@ -28,6 +28,7 @@ export const PROBLEM_TYPES = {
   ACCOUNT_CLOSED: `${BASE_URI}/account-closed`,
   TRANSACTION_RECONCILED: `${BASE_URI}/transaction-reconciled`,
   TRANSACTION_VOIDED: `${BASE_URI}/transaction-voided`,
+  TRANSACTION_DRAFT: `${BASE_URI}/transaction-draft`,
 } as const;
 export interface Problem {
   readonly type: string;

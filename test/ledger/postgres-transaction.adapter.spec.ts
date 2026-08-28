@@ -677,3 +677,175 @@ describe('PostgresTransactionAdapter.updateTransaction', () => {
     expect(result).toBeUndefined();
   });
 });
+
+describe('PostgresTransactionAdapter.voidTransaction', () => {
+  const adapter = new PostgresTransactionAdapter();
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const transactionId = '00000000-0000-0000-0000-000000000701';
+  const accountId = '00000000-0000-0000-0000-000000000A01'; // Uppercase to verify lowercase lock
+
+  const sampleRow = {
+    id: transactionId,
+    accountId: accountId.toLowerCase(),
+    type: 'expense',
+    status: 'voided',
+    amountMinor: 5000n,
+    currency: 'USD',
+    occurredAt: new Date('2026-08-20T10:00:00.000Z'),
+    categoryId: null,
+    payeeId: null,
+    description: 'Groceries',
+    notes: null,
+    tagIds: [],
+    receiptId: null,
+    reconciliationId: null,
+    voidedAt: new Date('2026-08-27T19:00:00.000Z'),
+    createdAt: new Date('2026-08-20T10:00:00.000Z'),
+    updatedAt: new Date('2026-08-27T19:00:00.000Z'),
+    version: 2,
+  };
+
+  it('acquires advisory lock FIRST, flips status, appends reversal postings, and calls enforceDeferredConstraints', async () => {
+    const executedQueries: { sql: string; values?: readonly unknown[] }[] = [];
+
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockImplementation((sql: string, values?: readonly unknown[]) => {
+          executedQueries.push({ sql, values });
+          if (sql.includes('select pg_advisory_xact_lock')) {
+            return Promise.resolve({ rows: [] });
+          }
+          if (sql.includes('update public.transactions')) {
+            return Promise.resolve({ rows: [sampleRow] });
+          }
+          if (sql.includes('insert into public.ledger_postings')) {
+            return Promise.resolve({ rows: [] });
+          }
+          if (sql.includes('set constraints all immediate')) {
+            return Promise.resolve({ rows: [] });
+          }
+          return Promise.resolve({ rows: [] });
+        }),
+    };
+
+    const result = await adapter.voidTransaction(
+      client,
+      workspaceId,
+      transactionId,
+      accountId,
+      'confirmed',
+      1,
+    );
+
+    expect(client.query).toHaveBeenCalledTimes(5);
+
+    // 1. Advisory lock query must be first with lowercased accountId
+    expect(executedQueries[0]!.sql).toContain(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+    );
+    expect(executedQueries[0]!.values).toEqual([accountId.toLowerCase()]);
+
+    // 2. Status flip query must set status='voided', voided_at=now(), updated_at=now(), version=version+1
+    expect(executedQueries[1]!.sql).toContain("set status = 'voided'");
+    expect(executedQueries[1]!.sql).toContain('voided_at = now()');
+    expect(executedQueries[1]!.sql).toContain('updated_at = now()');
+    expect(executedQueries[1]!.sql).toContain('version = version + 1');
+    expect(executedQueries[1]!.sql).toContain(
+      "status in ('pending', 'confirmed')",
+    );
+    expect(executedQueries[1]!.values).toEqual([
+      workspaceId,
+      transactionId,
+      [1],
+    ]);
+
+    // 3. Postings insert query must append reversal with negated amount, SAME currency, void instant
+    expect(executedQueries[2]!.sql).toContain(
+      'insert into public.ledger_postings',
+    );
+    expect(executedQueries[2]!.values).toEqual([
+      workspaceId,
+      transactionId,
+      accountId.toLowerCase(),
+      '-5000', // Negated account leg amount
+      'USD', // Same currency
+      'confirmed', // Same status
+      sampleRow.voidedAt, // Void instant occurred_at
+      '5000', // Negated external leg amount (compensates original -5000)
+    ]);
+
+    // 4. enforceDeferredConstraints must be called AFTER postings insert
+    expect(executedQueries[3]!.sql).toContain('set constraints all immediate');
+    expect(executedQueries[4]!.sql).toContain('current_setting');
+
+    // 5. Returned transaction matches shape
+    expect(result).toEqual({
+      id: transactionId,
+      accountId: accountId.toLowerCase(),
+      type: 'expense',
+      status: 'voided',
+      amount: {
+        amountMinor: '5000',
+        currency: 'USD',
+      },
+      occurredAt: '2026-08-20T10:00:00.000Z',
+      categoryId: null,
+      payeeId: null,
+      description: 'Groceries',
+      notes: null,
+      tagIds: [],
+      receiptId: null,
+      reconciliationId: null,
+      createdAt: '2026-08-20T10:00:00.000Z',
+      updatedAt: '2026-08-27T19:00:00.000Z',
+      version: 2,
+    });
+
+    // Verify original postings were never UPDATEd or DELETEd
+    for (const q of executedQueries) {
+      expect(q.sql.toLowerCase()).not.toContain(
+        'delete from public.ledger_postings',
+      );
+      expect(q.sql.toLowerCase()).not.toContain(
+        'update public.ledger_postings',
+      );
+    }
+  });
+
+  it('returns undefined and aborts further writes when update returns no rows', async () => {
+    const executedQueries: string[] = [];
+    const client: TransactionClient = {
+      query: vi.fn().mockImplementation((sql: string) => {
+        executedQueries.push(sql);
+        if (sql.includes('select pg_advisory_xact_lock')) {
+          return Promise.resolve({ rows: [] });
+        }
+        if (sql.includes('update public.transactions')) {
+          return Promise.resolve({ rows: [] }); // Zero rows matched
+        }
+        return Promise.resolve({ rows: [] });
+      }),
+    };
+
+    const result = await adapter.voidTransaction(
+      client,
+      workspaceId,
+      transactionId,
+      accountId,
+      'confirmed',
+      1,
+    );
+
+    expect(result).toBeUndefined();
+    expect(client.query).toHaveBeenCalledTimes(2); // lock + update only
+    expect(
+      executedQueries.some((q) =>
+        q.includes('insert into public.ledger_postings'),
+      ),
+    ).toBe(false);
+    expect(
+      executedQueries.some((q) => q.includes('set constraints all immediate')),
+    ).toBe(false);
+  });
+});

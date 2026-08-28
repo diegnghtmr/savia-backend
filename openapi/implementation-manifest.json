@@ -126,6 +126,11 @@
       "operationId": "updateTransaction",
       "method": "PATCH",
       "path": "/v1/transactions/{transactionId}"
+    },
+    {
+      "operationId": "voidTransaction",
+      "method": "POST",
+      "path": "/v1/transactions/{transactionId}/void"
     }
   ]
 }

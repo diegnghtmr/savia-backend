@@ -13,6 +13,7 @@ import {
   type TransactionListOutcome,
   type TransactionReadOutcome,
   type TransactionUpdateOutcome,
+  type TransactionVoidOutcome,
 } from '../src/ledger/ledger.port.js';
 import { LedgerModule } from '../src/ledger/ledger.module.js';
 import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
@@ -117,12 +118,17 @@ async function createApplication(
     kind: 'ok',
     transaction: { ...TRANSACTION, version: 2 },
   } satisfies TransactionUpdateOutcome),
+  voidFn: LedgerPort['void'] = vi.fn().mockResolvedValue({
+    kind: 'ok',
+    transaction: { ...TRANSACTION, status: 'voided', version: 2 },
+  } satisfies TransactionVoidOutcome),
 ): Promise<{
   application: NestFastifyApplication;
   create: LedgerPort['create'];
   read: LedgerPort['read'];
   list: LedgerPort['list'];
   update: LedgerPort['update'];
+  voidFn: LedgerPort['void'];
 }> {
   const moduleRef = await Test.createTestingModule({
     imports: [LedgerModule],
@@ -130,7 +136,7 @@ async function createApplication(
     .overrideProvider(JoseJwtVerifier)
     .useValue(verifier)
     .overrideProvider(LEDGER_PORT)
-    .useValue({ create, read, list, update })
+    .useValue({ create, read, list, update, void: voidFn })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -138,7 +144,7 @@ async function createApplication(
   registerProblemFilter(app);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
-  return { application: app, create, read, list, update };
+  return { application: app, create, read, list, update, voidFn };
 }
 
 function postTransaction(
@@ -234,6 +240,35 @@ function patchTransaction(
   return application.inject({
     method: 'PATCH',
     url: `/v1/transactions/${transactionId}`,
+    headers,
+    payload: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+}
+
+function voidTransaction(
+  application: NestFastifyApplication,
+  transactionId: string,
+  body: unknown,
+  options: {
+    token?: string;
+    workspaceHeader?: string;
+    idempotencyKey?: string;
+    ifMatch?: string;
+  } = {},
+) {
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+  };
+  if (options.token !== undefined)
+    headers.authorization = `Bearer ${options.token}`;
+  if (options.workspaceHeader !== undefined)
+    headers['x-workspace-id'] = options.workspaceHeader;
+  if (options.idempotencyKey !== undefined)
+    headers['idempotency-key'] = options.idempotencyKey;
+  if (options.ifMatch !== undefined) headers['if-match'] = options.ifMatch;
+  return application.inject({
+    method: 'POST',
+    url: `/v1/transactions/${transactionId}/void`,
     headers,
     payload: typeof body === 'string' ? body : JSON.stringify(body),
   });
@@ -1496,5 +1531,391 @@ describe('PATCH /v1/transactions/:transactionId', () => {
     // Assert LITERAL EQUALITY of the problem-type string emitted by both operations:
     expect(patchBody.type).toBe(postBody.type);
     expect(patchBody.title).toBe(postBody.title);
+  });
+});
+
+describe('POST /v1/transactions/:transactionId/void (E2E HTTP Boundary)', () => {
+  const validVoidBody = {
+    reason: 'Customer cancelled transaction order',
+  };
+
+  it('answers 200 with voided transaction body and no etag header on success', async () => {
+    const voidFn = vi.fn<LedgerPort['void']>().mockResolvedValue({
+      kind: 'ok',
+      transaction: { ...TRANSACTION, status: 'voided', version: 2 },
+    } satisfies TransactionVoidOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      voidFn,
+    );
+
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        ifMatch: '"1"',
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['etag']).toBeUndefined();
+    const body = JSON.parse(response.payload);
+    expect(body.id).toBe(TRANSACTION.id);
+    expect(body.status).toBe('voided');
+    expect(body.version).toBe(2);
+
+    expect(voidFn).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      TRANSACTION.id,
+      validVoidBody,
+      IDEMPOTENCY_KEY,
+      1,
+    );
+  });
+
+  it('answers 401 when token is missing or rejected', async () => {
+    const { application } = await createApplication();
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('answers 400 when X-Workspace-Id header is missing', async () => {
+    const { application } = await createApplication();
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+  });
+
+  it('answers 400 when transactionId is not a valid UUID', async () => {
+    const { application } = await createApplication();
+    const response = await voidTransaction(
+      application,
+      'not-a-uuid',
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+  });
+
+  it('answers 400 when Idempotency-Key header is missing', async () => {
+    const { application } = await createApplication();
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.BAD_REQUEST);
+  });
+
+  it('answers 412 when If-Match header is malformed', async () => {
+    const { application } = await createApplication();
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        ifMatch: 'bad-header',
+      },
+    );
+
+    expect(response.statusCode).toBe(412);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.PRECONDITION_FAILED);
+  });
+
+  it('answers 422 problem+json when reason validation fails (< 3 chars)', async () => {
+    const { application } = await createApplication();
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      { reason: 'ab' },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(422);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.UNPROCESSABLE);
+    expect(body.errors).toContainEqual(
+      expect.objectContaining({ field: 'reason', code: 'min-length' }),
+    );
+  });
+
+  it('answers 403 problem+json when caller lacks permissions', async () => {
+    const voidFn = vi.fn<LedgerPort['void']>().mockResolvedValue({
+      kind: 'forbidden',
+    } satisfies TransactionVoidOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      voidFn,
+    );
+
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(403);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.FORBIDDEN);
+  });
+
+  it('answers 404 problem+json when transaction is not found', async () => {
+    const voidFn = vi.fn<LedgerPort['void']>().mockResolvedValue({
+      kind: 'not_found',
+    } satisfies TransactionVoidOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      voidFn,
+    );
+
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(404);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.NOT_FOUND);
+  });
+
+  it('answers 409 problem+json when transaction is in draft status (TRANSACTION_DRAFT)', async () => {
+    const voidFn = vi.fn<LedgerPort['void']>().mockResolvedValue({
+      kind: 'draft',
+    } satisfies TransactionVoidOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      voidFn,
+    );
+
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(409);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.TRANSACTION_DRAFT);
+    expect(body.title).toBe('Transaction is draft');
+  });
+
+  it('answers 409 problem+json when transaction is voided (TRANSACTION_VOIDED)', async () => {
+    const voidFn = vi.fn<LedgerPort['void']>().mockResolvedValue({
+      kind: 'voided',
+    } satisfies TransactionVoidOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      voidFn,
+    );
+
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(409);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.TRANSACTION_VOIDED);
+    expect(body.title).toBe('Transaction is voided');
+  });
+
+  it('answers 409 problem+json when transaction is reconciled (TRANSACTION_RECONCILED)', async () => {
+    const voidFn = vi.fn<LedgerPort['void']>().mockResolvedValue({
+      kind: 'reconciled',
+    } satisfies TransactionVoidOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      voidFn,
+    );
+
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(409);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.TRANSACTION_RECONCILED);
+    expect(body.title).toBe('Transaction is reconciled');
+  });
+
+  it('answers 409 problem+json on idempotency conflict', async () => {
+    const voidFn = vi.fn<LedgerPort['void']>().mockResolvedValue({
+      kind: 'idempotency_conflict',
+    } satisfies TransactionVoidOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      voidFn,
+    );
+
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(409);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.CONFLICT);
+  });
+
+  it('answers 412 problem+json on version conflict', async () => {
+    const voidFn = vi.fn<LedgerPort['void']>().mockResolvedValue({
+      kind: 'version_conflict',
+    } satisfies TransactionVoidOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      voidFn,
+    );
+
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        ifMatch: '"1"',
+      },
+    );
+
+    expect(response.statusCode).toBe(412);
+    const body = JSON.parse(response.payload);
+    expect(body.type).toBe(PROBLEM_TYPES.PRECONDITION_FAILED);
+  });
+
+  it('replays stored response on replayed outcome', async () => {
+    const voidFn = vi.fn<LedgerPort['void']>().mockResolvedValue({
+      kind: 'replayed',
+      status: 200,
+      etag: null,
+      body: { ...TRANSACTION, status: 'voided', version: 2 },
+    } satisfies TransactionVoidOutcome);
+    const { application } = await createApplication(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      voidFn,
+    );
+
+    const response = await voidTransaction(
+      application,
+      TRANSACTION.id,
+      validVoidBody,
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.payload);
+    expect(body.status).toBe('voided');
   });
 });

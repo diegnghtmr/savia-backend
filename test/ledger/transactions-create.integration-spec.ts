@@ -254,6 +254,14 @@ describe('TransactionService createTransaction database boundary', () => {
         cmd: Parameters<PostgresTransactionAdapter['updateTransaction']>[3],
         exp?: Parameters<PostgresTransactionAdapter['updateTransaction']>[4],
       ) => realAdapter.updateTransaction(client, ws, id, cmd, exp),
+      voidTransaction: (
+        client: TransactionClient,
+        ws: string,
+        id: string,
+        acc: string,
+        st: string,
+        exp?: Parameters<PostgresTransactionAdapter['voidTransaction']>[5],
+      ) => realAdapter.voidTransaction(client, ws, id, acc, st, exp),
       createTransaction: async (
         client: TransactionClient,
         ws: string,
