@@ -1,3 +1,5 @@
+import type { Cursor, PageInfo } from '../platform/cursor.js';
+
 export const LEDGER_PORT = Symbol('LedgerPort');
 
 export const TRANSACTION_TYPE = {
@@ -20,6 +22,13 @@ export const TRANSACTION_STATUS = {
 } as const;
 export type TransactionStatus =
   (typeof TRANSACTION_STATUS)[keyof typeof TRANSACTION_STATUS];
+
+const TRANSACTION_STATUS_VALUES: readonly string[] =
+  Object.values(TRANSACTION_STATUS);
+
+export function isTransactionStatus(value: string): value is TransactionStatus {
+  return TRANSACTION_STATUS_VALUES.includes(value);
+}
 
 export const TRANSACTION_SOURCE = {
   WEB: 'web',
@@ -165,6 +174,47 @@ export type TransactionReadOutcome =
   | TransactionReadForbidden
   | TransactionReadNotFound;
 
+export type TransactionCursor = Cursor;
+
+export interface TransactionPage {
+  readonly items: readonly Transaction[];
+  readonly pageInfo: PageInfo;
+}
+
+export const TRANSACTION_LIST_OUTCOMES = {
+  OK: 'ok',
+  FORBIDDEN: 'forbidden',
+} as const;
+export type TransactionListOutcomeKind =
+  (typeof TRANSACTION_LIST_OUTCOMES)[keyof typeof TRANSACTION_LIST_OUTCOMES];
+
+export interface TransactionListOk {
+  readonly kind: typeof TRANSACTION_LIST_OUTCOMES.OK;
+  readonly page: TransactionPage;
+}
+
+export interface TransactionListForbidden {
+  readonly kind: typeof TRANSACTION_LIST_OUTCOMES.FORBIDDEN;
+}
+
+// listTransactions declares 200, 401 and 403 in the authority only:
+// - 403 when the caller has no active role in the workspace (or workspace is absent)
+export type TransactionListOutcome =
+  | TransactionListOk
+  | TransactionListForbidden;
+
+export interface TransactionListQuery {
+  readonly workspaceId: string;
+  readonly cursor?: TransactionCursor;
+  readonly limit: number;
+  readonly accountId?: string;
+  readonly from?: string;
+  readonly to?: string;
+  readonly categoryId?: string;
+  readonly status?: TransactionStatus;
+  readonly query?: string;
+}
+
 export interface LedgerPort {
   create(
     subject: string,
@@ -177,4 +227,8 @@ export interface LedgerPort {
     workspaceId: string,
     transactionId: string,
   ): Promise<TransactionReadOutcome>;
+  list(
+    subject: string,
+    query: TransactionListQuery,
+  ): Promise<TransactionListOutcome>;
 }

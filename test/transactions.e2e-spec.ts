@@ -10,6 +10,7 @@ import {
   type LedgerPort,
   type Transaction,
   type TransactionCreateOutcome,
+  type TransactionListOutcome,
   type TransactionReadOutcome,
 } from '../src/ledger/ledger.port.js';
 import { LedgerModule } from '../src/ledger/ledger.module.js';
@@ -23,6 +24,7 @@ const TOKEN = 'accepted-token';
 const IDEMPOTENCY_KEY = 'a0000000-0000-0000-0000-000000000001';
 const TRANSACTION_ID = '00000000-0000-0000-0000-000000007001';
 const ACCOUNT_ID = 'b3a1c2d3-1111-4222-8333-a44455556666';
+const CATEGORY_ID = 'c1a1c2d3-1111-4222-8333-a44455556666';
 
 const TRANSACTION: Transaction = {
   id: TRANSACTION_ID,
@@ -103,10 +105,18 @@ async function createApplication(
     kind: 'ok',
     transaction: TRANSACTION,
   } satisfies TransactionReadOutcome),
+  list: LedgerPort['list'] = vi.fn().mockResolvedValue({
+    kind: 'ok',
+    page: {
+      items: [TRANSACTION],
+      pageInfo: { hasNextPage: false, nextCursor: null },
+    },
+  } satisfies TransactionListOutcome),
 ): Promise<{
   application: NestFastifyApplication;
   create: LedgerPort['create'];
   read: LedgerPort['read'];
+  list: LedgerPort['list'];
 }> {
   const moduleRef = await Test.createTestingModule({
     imports: [LedgerModule],
@@ -114,7 +124,7 @@ async function createApplication(
     .overrideProvider(JoseJwtVerifier)
     .useValue(verifier)
     .overrideProvider(LEDGER_PORT)
-    .useValue({ create, read })
+    .useValue({ create, read, list })
     .compile();
   app = moduleRef.createNestApplication<NestFastifyApplication>(
     new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -122,7 +132,7 @@ async function createApplication(
   registerProblemFilter(app);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
-  return { application: app, create, read };
+  return { application: app, create, read, list };
 }
 
 function postTransaction(
@@ -167,6 +177,29 @@ function getTransaction(
   return application.inject({
     method: 'GET',
     url: `/v1/transactions/${transactionId}`,
+    headers,
+  });
+}
+
+function listTransactions(
+  application: NestFastifyApplication,
+  queryString = '',
+  options: {
+    token?: string;
+    workspaceHeader?: string;
+  } = {},
+) {
+  const headers: Record<string, string> = {};
+  if (options.token !== undefined)
+    headers.authorization = `Bearer ${options.token}`;
+  if (options.workspaceHeader !== undefined)
+    headers['x-workspace-id'] = options.workspaceHeader;
+  const url = queryString
+    ? `/v1/transactions?${queryString}`
+    : '/v1/transactions';
+  return application.inject({
+    method: 'GET',
+    url,
     headers,
   });
 }
@@ -695,5 +728,114 @@ describe('POST /v1/transactions', () => {
     ];
     const uniqueTypes = new Set(types);
     expect(uniqueTypes.size).toBe(4);
+  });
+});
+
+describe('GET /v1/transactions', () => {
+  it('answers 200 with transaction page and exercises query decorator binding over real HTTP', async () => {
+    const page = {
+      items: [TRANSACTION],
+      pageInfo: { hasNextPage: false, nextCursor: null },
+    };
+    const list = vi.fn<LedgerPort['list']>().mockResolvedValue({
+      kind: 'ok',
+      page,
+    } satisfies TransactionListOutcome);
+    const { application } = await createApplication(undefined, undefined, list);
+
+    const queryString = `limit=25&accountId=${ACCOUNT_ID}&status=confirmed&categoryId=${CATEGORY_ID}&from=2026-08-01&to=2026-08-31&query=Groceries`;
+    const response = await listTransactions(application, queryString, {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('application/json');
+    expect(JSON.parse(response.payload)).toEqual(page);
+
+    expect(list).toHaveBeenCalledWith(SUBJECT, {
+      workspaceId: WORKSPACE_ID,
+      limit: 25,
+      accountId: ACCOUNT_ID,
+      status: 'confirmed',
+      categoryId: CATEGORY_ID,
+      from: '2026-08-01',
+      to: '2026-08-31',
+      query: 'Groceries',
+    });
+  });
+
+  it('answers 401 without bearer token or with rejected token', async () => {
+    const list = vi.fn<LedgerPort['list']>();
+    const { application } = await createApplication(undefined, undefined, list);
+
+    const res1 = await listTransactions(application, '', {
+      workspaceHeader: WORKSPACE_ID,
+    });
+    expect(res1.statusCode).toBe(401);
+
+    const res2 = await listTransactions(application, '', {
+      token: 'bad-token',
+      workspaceHeader: WORKSPACE_ID,
+    });
+    expect(res2.statusCode).toBe(401);
+
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 when X-Workspace-Id header is missing or not a UUID', async () => {
+    const list = vi.fn<LedgerPort['list']>();
+    const { application } = await createApplication(undefined, undefined, list);
+
+    const res1 = await listTransactions(application, '', { token: TOKEN });
+    expect(res1.statusCode).toBe(400);
+    expect(res1.json().title).toBe('Invalid X-Workspace-Id header');
+
+    const res2 = await listTransactions(application, '', {
+      token: TOKEN,
+      workspaceHeader: 'not-a-uuid',
+    });
+    expect(res2.statusCode).toBe(400);
+    expect(res2.json().title).toBe('Invalid X-Workspace-Id header');
+
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 when query parameter is invalid', async () => {
+    const list = vi.fn<LedgerPort['list']>();
+    const { application } = await createApplication(undefined, undefined, list);
+
+    const response = await listTransactions(application, 'limit=not-a-number', {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = response.json();
+    expect(body.title).toBe('Invalid list transactions query');
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('answers 403 problem+json when port returns forbidden', async () => {
+    const list = vi.fn<LedgerPort['list']>().mockResolvedValue({
+      kind: 'forbidden',
+    } satisfies TransactionListOutcome);
+    const { application } = await createApplication(undefined, undefined, list);
+
+    const response = await listTransactions(application, '', {
+      token: TOKEN,
+      workspaceHeader: WORKSPACE_ID,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    const body = response.json();
+    expect(body.title).toBe('Workspace access forbidden');
+    expect(body.status).toBe(403);
   });
 });

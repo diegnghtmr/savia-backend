@@ -1,9 +1,15 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
-import type { CreateTransactionCommand, Transaction } from './ledger.port.js';
+import type {
+  CreateTransactionCommand,
+  Transaction,
+  TransactionCursor,
+} from './ledger.port.js';
 import type {
   LedgerAccountRecord,
   LedgerStore,
+  TransactionFilterOptions,
+  TransactionItem,
 } from './transaction.service.js';
 
 interface TransactionRow extends Record<string, unknown> {
@@ -24,6 +30,10 @@ interface TransactionRow extends Record<string, unknown> {
   readonly createdAt: Date;
   readonly updatedAt: Date;
   readonly version: number;
+}
+
+interface TransactionListRow extends TransactionRow {
+  readonly cursorAt: string;
 }
 
 const INT8_MAX = 9223372036854775807n;
@@ -280,5 +290,108 @@ select t.id::text,
       updatedAt: toIso(row.updatedAt),
       version: row.version,
     };
+  }
+
+  public async listTransactions(
+    client: TransactionClient,
+    workspaceId: string,
+    cursor: TransactionCursor | undefined,
+    limit: number,
+    filters: TransactionFilterOptions,
+  ): Promise<readonly TransactionItem[]> {
+    const conditions = ['t.workspace_id = $1::uuid'];
+    const values: unknown[] = [workspaceId];
+
+    if (cursor !== undefined) {
+      values.push(cursor.createdAt, cursor.id);
+      conditions.push(
+        `(t.occurred_at < $${values.length - 1}::timestamptz or (t.occurred_at = $${values.length - 1}::timestamptz and t.id > $${values.length}::uuid))`,
+      );
+    }
+
+    if (filters.accountId !== undefined) {
+      values.push(filters.accountId);
+      conditions.push(`t.account_id = $${values.length}::uuid`);
+    }
+
+    if (filters.status !== undefined) {
+      values.push(filters.status);
+      conditions.push(`t.status = $${values.length}`);
+    }
+
+    if (filters.categoryId !== undefined) {
+      values.push(filters.categoryId);
+      conditions.push(`t.category_id = $${values.length}::uuid`);
+    }
+
+    if (filters.from !== undefined) {
+      values.push(filters.from);
+      conditions.push(`t.occurred_at >= $${values.length}::timestamptz`);
+    }
+
+    if (filters.to !== undefined) {
+      values.push(filters.to);
+      conditions.push(
+        `t.occurred_at < ($${values.length}::timestamptz + interval '1 day')`,
+      );
+    }
+
+    if (filters.query !== undefined) {
+      values.push(filters.query);
+      conditions.push(
+        `(t.description ilike ('%' || $${values.length} || '%') or t.notes ilike ('%' || $${values.length} || '%'))`,
+      );
+    }
+
+    values.push(limit);
+    const sql = `
+select t.id::text,
+       t.account_id::text as "accountId",
+       t.type,
+       t.status,
+       t.amount_minor as "amountMinor",
+       t.currency,
+       t.occurred_at as "occurredAt",
+       t.description,
+       t.notes,
+       t.category_id::text as "categoryId",
+       t.payee_id::text as "payeeId",
+       t.receipt_id::text as "receiptId",
+       t.reconciliation_id::text as "reconciliationId",
+       t.tag_ids as "tagIds",
+       t.created_at as "createdAt",
+       t.updated_at as "updatedAt",
+       t.version,
+       to_char(t.occurred_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
+  from public.transactions t
+ where ${conditions.join('\n   and ')}
+ order by t.occurred_at desc, t.id asc
+ limit $${values.length}`;
+
+    const result = await client.query<TransactionListRow>(sql, values);
+    return result.rows.map((row) => ({
+      transaction: {
+        id: row.id,
+        accountId: row.accountId,
+        type: row.type,
+        status: row.status,
+        amount: {
+          amountMinor: String(row.amountMinor),
+          currency: row.currency,
+        },
+        occurredAt: toIso(row.occurredAt),
+        categoryId: row.categoryId,
+        payeeId: row.payeeId,
+        description: row.description,
+        notes: row.notes,
+        tagIds: Array.isArray(row.tagIds) ? row.tagIds : [],
+        receiptId: row.receiptId,
+        reconciliationId: row.reconciliationId,
+        createdAt: toIso(row.createdAt),
+        updatedAt: toIso(row.updatedAt),
+        version: row.version,
+      },
+      cursorAt: row.cursorAt,
+    }));
   }
 }

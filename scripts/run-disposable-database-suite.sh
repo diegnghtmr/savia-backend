@@ -35,6 +35,7 @@ case "$spec" in
   test/identity/revoke-workspace-invitation.integration-spec.ts) ;;
   test/ledger/transactions-create.integration-spec.ts) ;;
   test/ledger/transactions-get.integration-spec.ts) ;;
+  test/ledger/transactions-list.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
