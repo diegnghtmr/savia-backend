@@ -9,6 +9,7 @@ import {
 import { TransactionService } from '../../src/ledger/transaction.service.js';
 import { PostgresTransactionAdapter } from '../../src/ledger/postgres-transaction.adapter.js';
 import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
+import { computeRequestFingerprint } from '../../src/platform/idempotency.service.js';
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
@@ -26,6 +27,7 @@ describe('TransactionService updateTransaction database boundary', () => {
   let pool: PostgresPool;
   let transaction: PgTransaction;
   let service: TransactionService;
+  let idempotencyAdapter: PostgresIdempotencyAdapter;
 
   const subjectOwner = subject(901);
   const subjectAdmin = subject(902);
@@ -64,10 +66,11 @@ describe('TransactionService updateTransaction database boundary', () => {
     admin = new Pool({ connectionString: url });
     pool = new PostgresPool(PostgresConfig.fromUrl(url));
     transaction = new PgTransaction(pool, { callbackTimeoutMs: 3_000 });
+    idempotencyAdapter = new PostgresIdempotencyAdapter();
     service = new TransactionService(
       transaction,
       new PostgresTransactionAdapter(),
-      new PostgresIdempotencyAdapter(),
+      idempotencyAdapter,
     );
 
     // 1. Auth Users
@@ -490,7 +493,7 @@ describe('TransactionService updateTransaction database boundary', () => {
     expect(dbRow.rows[0]?.version).toBe(2);
   });
 
-  it('voided transaction cannot be updated: returns VOIDED (403) and makes no mutation in database', async () => {
+  it('voided transaction cannot be updated: returns VOIDED outcome and makes no mutation in database', async () => {
     const key = '00000000-0000-4000-8000-000000000009';
     const outcome = await service.update(
       subjectOwner,
@@ -655,5 +658,77 @@ describe('TransactionService updateTransaction database boundary', () => {
       [txnWorkspace2Target],
     );
     expect(dbRow.rows[0]?.description).toBe('Workspace 2 Target');
+  });
+
+  it('pins authorization ahead of idempotency read: refuses 403 without replaying when matching idempotency record exists for viewer', async () => {
+    const key = '00000000-0000-4000-8000-000000000017';
+    const command: UpdateTransactionCommand = {
+      description: 'Viewer Replay Leak Check',
+    };
+    const fingerprint = computeRequestFingerprint({
+      transactionId: txnOwnerTarget,
+      ...command,
+    });
+
+    // Seed a 200 response in idempotency store
+    await idempotencyAdapter.write(
+      admin,
+      subjectViewer,
+      'PATCH /v1/transactions/{transactionId}',
+      key,
+      fingerprint,
+      200,
+      '"2"',
+      { id: txnOwnerTarget, description: 'Secret Leaked Data', version: 2 },
+      workspace1Id,
+    );
+
+    const outcome = await service.update(
+      subjectViewer,
+      workspace1Id,
+      txnOwnerTarget,
+      command,
+      key,
+    );
+
+    expect(outcome.kind).toBe(TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN);
+    expect(outcome).not.toHaveProperty('body');
+    expect(outcome).not.toHaveProperty('transaction');
+  });
+
+  it('pins authorization ahead of idempotency read: refuses 403 without replaying when matching idempotency record exists for non-member', async () => {
+    const key = '00000000-0000-4000-8000-000000000018';
+    const command: UpdateTransactionCommand = {
+      description: 'Non-Member Replay Leak Check',
+    };
+    const fingerprint = computeRequestFingerprint({
+      transactionId: txnOwnerTarget,
+      ...command,
+    });
+
+    // Seed a 200 response in idempotency store
+    await idempotencyAdapter.write(
+      admin,
+      subjectNonMember,
+      'PATCH /v1/transactions/{transactionId}',
+      key,
+      fingerprint,
+      200,
+      '"2"',
+      { id: txnOwnerTarget, description: 'Secret Leaked Data', version: 2 },
+      workspace1Id,
+    );
+
+    const outcome = await service.update(
+      subjectNonMember,
+      workspace1Id,
+      txnOwnerTarget,
+      command,
+      key,
+    );
+
+    expect(outcome.kind).toBe(TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN);
+    expect(outcome).not.toHaveProperty('body');
+    expect(outcome).not.toHaveProperty('transaction');
   });
 });
