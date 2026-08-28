@@ -1177,7 +1177,7 @@ describe('PATCH /v1/transactions/:transactionId', () => {
     expect(body.status).toBe(403);
   });
 
-  it('answers 403 problem+json with title "Transaction is voided" when port reports voided', async () => {
+  it('answers 409 problem+json with title "Transaction is voided" and TRANSACTION_VOIDED type when port reports voided', async () => {
     const update = vi.fn<LedgerPort['update']>().mockResolvedValue({
       kind: 'voided',
     } satisfies TransactionUpdateOutcome);
@@ -1199,14 +1199,14 @@ describe('PATCH /v1/transactions/:transactionId', () => {
       },
     );
 
-    expect(response.statusCode).toBe(403);
+    expect(response.statusCode).toBe(409);
     expect(response.headers['content-type']).toContain(
       'application/problem+json',
     );
     const body = JSON.parse(response.payload);
-    expect(body.type).toBe(PROBLEM_TYPES.FORBIDDEN);
+    expect(body.type).toBe(PROBLEM_TYPES.TRANSACTION_VOIDED);
     expect(body.title).toBe('Transaction is voided');
-    expect(body.status).toBe(403);
+    expect(body.status).toBe(409);
   });
 
   it('answers 404 problem+json when port reports not_found', async () => {

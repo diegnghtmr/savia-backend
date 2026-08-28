@@ -881,7 +881,7 @@ describe('TransactionController.updateTransaction', () => {
     );
   });
 
-  it('answers 403 FORBIDDEN with title "Transaction is voided" when ledger port returns VOIDED', async () => {
+  it('answers 409 TRANSACTION_VOIDED with title "Transaction is voided" when ledger port returns VOIDED', async () => {
     const { controller, reply } = createMocks({
       update: vi
         .fn()
@@ -898,10 +898,10 @@ describe('TransactionController.updateTransaction', () => {
 
     await controller.updateTransaction(transactionId, request, reply);
 
-    expect(reply.status).toHaveBeenCalledWith(403);
+    expect(reply.status).toHaveBeenCalledWith(409);
     expect(reply.send).toHaveBeenCalledWith(
       expect.objectContaining({
-        type: PROBLEM_TYPES.FORBIDDEN,
+        type: PROBLEM_TYPES.TRANSACTION_VOIDED,
         title: 'Transaction is voided',
       }),
     );

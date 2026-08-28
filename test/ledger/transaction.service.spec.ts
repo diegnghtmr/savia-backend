@@ -869,7 +869,7 @@ describe('TransactionService.update', () => {
     expect(store.updateTransaction).not.toHaveBeenCalled();
   });
 
-  it('returns VOIDED (403) when existing transaction status is voided: voided transactions cannot be modified', async () => {
+  it('returns VOIDED (409) when existing transaction status is voided: voided transactions cannot be modified', async () => {
     const voidedTxn = sampleTransaction({ status: 'voided' });
     const store = fakeStore({
       role: 'owner',

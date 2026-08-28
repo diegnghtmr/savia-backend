@@ -2660,7 +2660,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
         '403':
-          description: Workspace access is forbidden or transaction is voided.
+          description: Workspace access is forbidden.
           content:
             application/problem+json:
               schema:
@@ -2672,7 +2672,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
         '409':
-          description: Idempotency key conflict or transaction is reconciled.
+          description: The transaction is voided or reconciled, or the idempotency key was reused with a different payload.
           content:
             application/problem+json:
               schema:

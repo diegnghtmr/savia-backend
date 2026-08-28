@@ -382,10 +382,10 @@ export class TransactionController {
 
     if (outcome.kind === TRANSACTION_UPDATE_OUTCOMES.VOIDED) {
       sendProblem(reply, {
-        type: PROBLEM_TYPES.FORBIDDEN,
+        type: PROBLEM_TYPES.TRANSACTION_VOIDED,
         title: 'Transaction is voided',
         detail: 'Voided transactions cannot be modified.',
-        status: 403,
+        status: 409,
       });
       return;
     }

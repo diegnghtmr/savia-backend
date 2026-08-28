@@ -276,9 +276,9 @@ export interface TransactionUpdateReconciled {
 }
 
 // updateTransaction declares 200, 401, 403, 404, 409, 412, 422 in the authority:
-// - 403 when the caller has no active role or is a viewer; or when the transaction is voided
+// - 403 when the caller has no active role or is a viewer
 // - 404 when the transaction does not exist or belongs to another workspace (scoped SQL predicate)
-// - 409 on idempotency conflict or when transaction is reconciled (Épica 5 stub)
+// - 409 on idempotency conflict, when transaction is voided, or when transaction is reconciled (Épica 5 stub)
 // - 412 when If-Match version precondition fails
 // - 422 on input validation errors or non-empty splits
 export type TransactionUpdateOutcome =
