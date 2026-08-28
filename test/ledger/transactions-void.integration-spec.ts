@@ -386,7 +386,9 @@ describe('TransactionService voidTransaction database boundary', () => {
     );
     expect(outcome.kind).toBe(TRANSACTION_VOID_OUTCOMES.OK);
 
-    // Read balance after void: expense 15000 is reversed, so balance increases by 15000
+    // The fixture seeds this transaction's account leg as a POSITIVE 15000, so the
+    // appended reversal is -15000 and the account's net contribution returns to zero:
+    // the balance moves DOWN by exactly the amount the transaction had added.
     const finalBalance = await accountsAdapter.readAccountBalance(
       { query: admin.query.bind(admin) },
       workspace1Id,
@@ -395,7 +397,7 @@ describe('TransactionService voidTransaction database boundary', () => {
     expect(finalBalance).toBeDefined();
     const balanceAfterVoid = BigInt(finalBalance!.nativeBalance.amountMinor);
 
-    expect(balanceAfterVoid - balanceBeforeVoid).toBe(15000n);
+    expect(balanceAfterVoid - balanceBeforeVoid).toBe(-15000n);
   });
 
   it('4.1.e RULING 41 dating: asOf strictly between original occurred_at and void instant shows money as present', async () => {
@@ -551,12 +553,19 @@ describe('TransactionService voidTransaction database boundary', () => {
       ...validReason,
     });
 
-    // Seed idempotency record in DB for owner
-    await admin.query(
-      `insert into public.command_idempotency
-         (workspace_id, user_id, route, idempotency_key, request_fingerprint, response_status, response_body)
-       values ($1::uuid, $2::uuid, 'POST /v1/transactions/{transactionId}/void', $3::uuid, $4, 200, '{"id":"mock"}'::jsonb)`,
-      [workspace1Id, subjectViewer, matchingKey, fingerprint],
+    // Seed through the real adapter rather than raw SQL: it owns the table name
+    // (command_idempotency_records), its column names and its fingerprint format
+    // check, none of which a hand-written insert here can be trusted to track.
+    await idempotencyAdapter.write(
+      admin,
+      subjectViewer,
+      'POST /v1/transactions/{transactionId}/void',
+      matchingKey,
+      fingerprint,
+      200,
+      null,
+      { id: 'mock' },
+      workspace1Id,
     );
 
     // Call as viewer with matching idempotency record
