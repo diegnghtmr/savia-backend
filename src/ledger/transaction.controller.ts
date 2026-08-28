@@ -1,9 +1,19 @@
-import { Controller, Inject, Post, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Inject,
+  Param,
+  Post,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 
 import {
   LEDGER_PORT,
   TRANSACTION_CREATE_OUTCOMES,
+  TRANSACTION_READ_OUTCOMES,
   type LedgerPort,
 } from './ledger.port.js';
 import {
@@ -17,6 +27,7 @@ import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
+import { UUID_PATTERN } from '../platform/uuid.js';
 
 @Controller('v1/transactions')
 @UseGuards(JwtAuthGuard)
@@ -135,6 +146,61 @@ export class TransactionController {
     void reply
       .header('etag', `"${outcome.transaction.version}"`)
       .status(201)
+      .send(outcome.transaction);
+  }
+
+  @Get(':transactionId')
+  public async getTransaction(
+    @Param('transactionId') transactionId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(transactionId)) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid transaction identifier',
+        status: 400,
+      });
+      return;
+    }
+
+    const outcome = await this.ledger.read(
+      request.identity.subject,
+      header.workspaceId,
+      transactionId,
+    );
+
+    if (outcome.kind === TRANSACTION_READ_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_READ_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Transaction not found',
+        status: 404,
+      });
+      return;
+    }
+
+    void reply
+      .header('etag', `"${outcome.transaction.version}"`)
+      .status(200)
       .send(outcome.transaction);
   }
 }

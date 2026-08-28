@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   TRANSACTION_CREATE_OUTCOMES,
+  TRANSACTION_READ_OUTCOMES,
   type CreateTransactionCommand,
   type Transaction,
 } from '../../src/ledger/ledger.port.js';
@@ -24,10 +25,13 @@ const WORKSPACE_ID = '00000000-0000-0000-0000-000000000951';
 const CLIENT: TransactionClient = { query: vi.fn() };
 
 class FakeTransaction implements LedgerTransaction {
+  public readonly calls: ('run' | 'runRead')[] = [];
+
   public async run<T>(
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T> {
+    this.calls.push('run');
     if (subject !== SUBJECT) throw new Error('unexpected subject');
     return callback(CLIENT);
   }
@@ -36,6 +40,7 @@ class FakeTransaction implements LedgerTransaction {
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T> {
+    this.calls.push('runRead');
     if (subject !== SUBJECT) throw new Error('unexpected subject');
     return callback(CLIENT);
   }
@@ -106,6 +111,7 @@ function fakeStore(
   readActiveRole: ReturnType<typeof vi.fn>;
   lockAndReadAccount: ReturnType<typeof vi.fn>;
   createTransaction: ReturnType<typeof vi.fn>;
+  readTransaction: ReturnType<typeof vi.fn>;
 } {
   const role = 'role' in options ? options.role : 'owner';
   const account = 'account' in options ? options.account : { status: 'active' };
@@ -114,6 +120,7 @@ function fakeStore(
     readActiveRole: vi.fn().mockResolvedValue(role),
     lockAndReadAccount: vi.fn().mockResolvedValue(account),
     createTransaction: vi.fn().mockResolvedValue(transaction),
+    readTransaction: vi.fn().mockResolvedValue(transaction),
   };
 }
 
@@ -121,13 +128,10 @@ describe('TransactionService.create', () => {
   const idempotencyKey = '00000000-0000-4000-8000-000000000001';
 
   it('refuses 403 when caller has no active membership role', async () => {
+    const fakeTransaction = new FakeTransaction();
     const store = fakeStore({ role: undefined });
     const idempotency = fakeIdempotencyStore();
-    const service = new TransactionService(
-      new FakeTransaction(),
-      store,
-      idempotency,
-    );
+    const service = new TransactionService(fakeTransaction, store, idempotency);
 
     const outcome = await service.create(
       SUBJECT,
@@ -137,18 +141,16 @@ describe('TransactionService.create', () => {
     );
 
     expect(outcome).toEqual({ kind: TRANSACTION_CREATE_OUTCOMES.FORBIDDEN });
+    expect(fakeTransaction.calls).toEqual(['run']);
     expect(store.lockAndReadAccount).not.toHaveBeenCalled();
     expect(store.createTransaction).not.toHaveBeenCalled();
   });
 
   it('refuses 403 when caller has viewer role (insufficient permissions for write)', async () => {
+    const fakeTransaction = new FakeTransaction();
     const store = fakeStore({ role: 'viewer' });
     const idempotency = fakeIdempotencyStore();
-    const service = new TransactionService(
-      new FakeTransaction(),
-      store,
-      idempotency,
-    );
+    const service = new TransactionService(fakeTransaction, store, idempotency);
 
     const outcome = await service.create(
       SUBJECT,
@@ -158,6 +160,7 @@ describe('TransactionService.create', () => {
     );
 
     expect(outcome).toEqual({ kind: TRANSACTION_CREATE_OUTCOMES.FORBIDDEN });
+    expect(fakeTransaction.calls).toEqual(['run']);
     expect(store.lockAndReadAccount).not.toHaveBeenCalled();
     expect(store.createTransaction).not.toHaveBeenCalled();
   });
@@ -172,6 +175,7 @@ describe('TransactionService.create', () => {
       }),
       lockAndReadAccount: vi.fn(),
       createTransaction: vi.fn(),
+      readTransaction: vi.fn(),
     };
 
     const command = sampleCommand();
@@ -189,11 +193,8 @@ describe('TransactionService.create', () => {
       write: vi.fn().mockResolvedValue(true),
     };
 
-    const service = new TransactionService(
-      new FakeTransaction(),
-      store,
-      idempotency,
-    );
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
 
     const outcome = await service.create(
       SUBJECT,
@@ -205,6 +206,7 @@ describe('TransactionService.create', () => {
     expect(outcome).toEqual({ kind: TRANSACTION_CREATE_OUTCOMES.FORBIDDEN });
     expect(outcome).not.toHaveProperty('body');
     expect(outcome).not.toHaveProperty('transaction');
+    expect(fakeTransaction.calls).toEqual(['run']);
     expect(store.readActiveRole).toHaveBeenCalledTimes(1);
     expect(idempotency.read).not.toHaveBeenCalled();
     expect(callOrder).toEqual(['readActiveRole']);
@@ -220,6 +222,7 @@ describe('TransactionService.create', () => {
       }),
       lockAndReadAccount: vi.fn(),
       createTransaction: vi.fn(),
+      readTransaction: vi.fn(),
     };
 
     const command = sampleCommand();
@@ -237,11 +240,8 @@ describe('TransactionService.create', () => {
       write: vi.fn().mockResolvedValue(true),
     };
 
-    const service = new TransactionService(
-      new FakeTransaction(),
-      store,
-      idempotency,
-    );
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
 
     const outcome = await service.create(
       SUBJECT,
@@ -253,6 +253,7 @@ describe('TransactionService.create', () => {
     expect(outcome).toEqual({ kind: TRANSACTION_CREATE_OUTCOMES.FORBIDDEN });
     expect(outcome).not.toHaveProperty('body');
     expect(outcome).not.toHaveProperty('transaction');
+    expect(fakeTransaction.calls).toEqual(['run']);
     expect(store.readActiveRole).toHaveBeenCalledTimes(1);
     expect(idempotency.read).not.toHaveBeenCalled();
     expect(callOrder).toEqual(['readActiveRole']);
@@ -268,11 +269,8 @@ describe('TransactionService.create', () => {
       responseEtag: '"1"',
       responseBody: txn,
     });
-    const service = new TransactionService(
-      new FakeTransaction(),
-      store,
-      idempotency,
-    );
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
 
     const outcome = await service.create(
       SUBJECT,
@@ -281,6 +279,7 @@ describe('TransactionService.create', () => {
       idempotencyKey,
     );
     expect(outcome.kind).toBe(TRANSACTION_CREATE_OUTCOMES.REPLAYED);
+    expect(fakeTransaction.calls).toEqual(['run']);
     expect(store.lockAndReadAccount).not.toHaveBeenCalled();
     expect(store.createTransaction).not.toHaveBeenCalled();
   });
@@ -293,11 +292,8 @@ describe('TransactionService.create', () => {
       responseEtag: '"1"',
       responseBody: {},
     });
-    const service = new TransactionService(
-      new FakeTransaction(),
-      store,
-      idempotency,
-    );
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
 
     const outcome = await service.create(
       SUBJECT,
@@ -309,6 +305,7 @@ describe('TransactionService.create', () => {
     expect(outcome).toEqual({
       kind: TRANSACTION_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT,
     });
+    expect(fakeTransaction.calls).toEqual(['run']);
     expect(store.lockAndReadAccount).not.toHaveBeenCalled();
     expect(store.createTransaction).not.toHaveBeenCalled();
   });
@@ -319,11 +316,8 @@ describe('TransactionService.create', () => {
       account: undefined,
     });
     const idempotency = fakeIdempotencyStore();
-    const service = new TransactionService(
-      new FakeTransaction(),
-      store,
-      idempotency,
-    );
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
 
     const outcome = await service.create(
       SUBJECT,
@@ -335,6 +329,7 @@ describe('TransactionService.create', () => {
     expect(outcome).toEqual({
       kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED,
     });
+    expect(fakeTransaction.calls).toEqual(['run']);
     expect(store.lockAndReadAccount).toHaveBeenCalledWith(
       CLIENT,
       WORKSPACE_ID,
@@ -350,11 +345,8 @@ describe('TransactionService.create', () => {
       account: { status: 'closed' },
     });
     const idempotency = fakeIdempotencyStore();
-    const service = new TransactionService(
-      new FakeTransaction(),
-      store,
-      idempotency,
-    );
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
 
     const outcome = await service.create(
       SUBJECT,
@@ -366,6 +358,7 @@ describe('TransactionService.create', () => {
     expect(outcome).toEqual({
       kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED,
     });
+    expect(fakeTransaction.calls).toEqual(['run']);
     expect(store.lockAndReadAccount).toHaveBeenCalledWith(
       CLIENT,
       WORKSPACE_ID,
@@ -383,11 +376,8 @@ describe('TransactionService.create', () => {
       transaction: txn,
     });
     const idempotency = fakeIdempotencyStore(undefined, true);
-    const service = new TransactionService(
-      new FakeTransaction(),
-      store,
-      idempotency,
-    );
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
     const command = sampleCommand();
 
     const outcome = await service.create(
@@ -401,6 +391,7 @@ describe('TransactionService.create', () => {
       kind: TRANSACTION_CREATE_OUTCOMES.CREATED,
       transaction: txn,
     });
+    expect(fakeTransaction.calls).toEqual(['run']);
     expect(store.lockAndReadAccount).toHaveBeenCalledWith(
       CLIENT,
       WORKSPACE_ID,
@@ -423,5 +414,77 @@ describe('TransactionService.create', () => {
       txn,
       WORKSPACE_ID,
     );
+  });
+});
+
+describe('TransactionService.read', () => {
+  const transactionId = '00000000-0000-0000-0000-000000000t01';
+
+  it('refuses 403 when caller has no active membership role before any store read', async () => {
+    const fakeTransaction = new FakeTransaction();
+    const store = fakeStore({ role: undefined });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.read(SUBJECT, WORKSPACE_ID, transactionId);
+
+    expect(outcome).toEqual({ kind: TRANSACTION_READ_OUTCOMES.FORBIDDEN });
+    expect(fakeTransaction.calls).toEqual(['runRead']);
+    expect(store.readTransaction).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when transaction is not found in workspace', async () => {
+    const fakeTransaction = new FakeTransaction();
+    const store = fakeStore({ role: 'owner' });
+    store.readTransaction.mockResolvedValue(undefined);
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.read(SUBJECT, WORKSPACE_ID, transactionId);
+
+    expect(outcome).toEqual({ kind: TRANSACTION_READ_OUTCOMES.NOT_FOUND });
+    expect(fakeTransaction.calls).toEqual(['runRead']);
+    expect(store.readTransaction).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      transactionId,
+    );
+  });
+
+  it('returns 200 with transaction when found', async () => {
+    const fakeTransaction = new FakeTransaction();
+    const txn = sampleTransaction({ id: transactionId });
+    const store = fakeStore({ role: 'owner', transaction: txn });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.read(SUBJECT, WORKSPACE_ID, transactionId);
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_READ_OUTCOMES.OK,
+      transaction: txn,
+    });
+    expect(fakeTransaction.calls).toEqual(['runRead']);
+    expect(store.readTransaction).toHaveBeenCalledWith(
+      CLIENT,
+      WORKSPACE_ID,
+      transactionId,
+    );
+  });
+
+  it('admits a viewer because read operations require only an active membership role', async () => {
+    const fakeTransaction = new FakeTransaction();
+    const txn = sampleTransaction({ id: transactionId });
+    const store = fakeStore({ role: 'viewer', transaction: txn });
+    const idempotency = fakeIdempotencyStore();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.read(SUBJECT, WORKSPACE_ID, transactionId);
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_READ_OUTCOMES.OK,
+      transaction: txn,
+    });
+    expect(fakeTransaction.calls).toEqual(['runRead']);
   });
 });

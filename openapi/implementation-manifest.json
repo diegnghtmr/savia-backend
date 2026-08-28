@@ -111,6 +111,11 @@
       "operationId": "createTransaction",
       "method": "POST",
       "path": "/v1/transactions"
+    },
+    {
+      "operationId": "getTransaction",
+      "method": "GET",
+      "path": "/v1/transactions/{transactionId}"
     }
   ]
 }

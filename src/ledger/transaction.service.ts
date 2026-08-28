@@ -3,10 +3,12 @@ import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import {
   TRANSACTION_CREATE_OUTCOMES,
+  TRANSACTION_READ_OUTCOMES,
   type CreateTransactionCommand,
   type LedgerPort,
   type Transaction,
   type TransactionCreateOutcome,
+  type TransactionReadOutcome,
 } from './ledger.port.js';
 
 export interface LedgerTransaction {
@@ -40,6 +42,11 @@ export interface LedgerStore {
     subject: string,
     command: CreateTransactionCommand,
   ): Promise<Transaction>;
+  readTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+  ): Promise<Transaction | undefined>;
 }
 
 export class TransactionService implements LedgerPort {
@@ -145,6 +152,31 @@ export class TransactionService implements LedgerPort {
 
       return {
         kind: TRANSACTION_CREATE_OUTCOMES.CREATED,
+        transaction,
+      };
+    });
+  }
+
+  public read(
+    subject: string,
+    workspaceId: string,
+    transactionId: string,
+  ): Promise<TransactionReadOutcome> {
+    return this.transaction.runRead(subject, async (client) => {
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (role === undefined) {
+        return { kind: TRANSACTION_READ_OUTCOMES.FORBIDDEN };
+      }
+      const transaction = await this.store.readTransaction(
+        client,
+        workspaceId,
+        transactionId,
+      );
+      if (transaction === undefined) {
+        return { kind: TRANSACTION_READ_OUTCOMES.NOT_FOUND };
+      }
+      return {
+        kind: TRANSACTION_READ_OUTCOMES.OK,
         transaction,
       };
     });

@@ -238,6 +238,8 @@ describe('TransactionService createTransaction database boundary', () => {
         ws: string,
         acc: string,
       ) => realAdapter.lockAndReadAccount(client, ws, acc),
+      readTransaction: (client: TransactionClient, ws: string, txnId: string) =>
+        realAdapter.readTransaction(client, ws, txnId),
       createTransaction: async (
         client: TransactionClient,
         ws: string,
