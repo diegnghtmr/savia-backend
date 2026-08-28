@@ -37,6 +37,7 @@ case "$spec" in
   test/ledger/transactions-get.integration-spec.ts) ;;
   test/ledger/transactions-list.integration-spec.ts) ;;
   test/ledger/transactions-update.integration-spec.ts) ;;
+  test/ledger/transactions-void.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 

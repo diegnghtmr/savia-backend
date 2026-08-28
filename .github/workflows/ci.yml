@@ -170,6 +170,9 @@ jobs:
       - name: transactions update integration
         shell: bash
         run: pnpm test:integration:transactions-update
+      - name: transactions void integration
+        shell: bash
+        run: pnpm test:integration:transactions-void
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
