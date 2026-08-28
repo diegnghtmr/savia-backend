@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { computeRequestFingerprint } from '../../src/platform/idempotency.service.js';
 
 import {
   EXCHANGE_RATE_CREATE_OUTCOMES,
@@ -111,8 +112,10 @@ describe('ExchangeRateService.createManual', () => {
 
   it('replays response when idempotency key exists with matching fingerprint', async () => {
     const { service, mockStore } = createService('owner', {
-      requestFingerprint:
-        'b31a89c8fa7270ad1aa8572d42171120288825c0e1e63a8a3c8997a0f6a27e7d',
+      // Derive the fingerprint from COMMAND rather than pasting a literal hash.
+      // The literal previously here did not match, so the service correctly took
+      // the conflict path and this test never exercised replay at all.
+      requestFingerprint: computeRequestFingerprint(COMMAND),
       responseStatus: 201,
       responseEtag: null,
       responseBody: EXCHANGE_RATE,
@@ -125,16 +128,14 @@ describe('ExchangeRateService.createManual', () => {
       IDEMPOTENCY_KEY,
     );
 
-    if (outcome.kind === EXCHANGE_RATE_CREATE_OUTCOMES.REPLAYED) {
-      const replayed = outcome as ExchangeRateCreateReplayed;
-      expect(replayed.status).toBe(201);
-      expect(replayed.body).toEqual(EXCHANGE_RATE);
-      expect(mockStore.createManualExchangeRate).not.toHaveBeenCalled();
-    } else {
-      expect(outcome.kind).toBe(
-        EXCHANGE_RATE_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT,
-      );
-    }
+    // Demand REPLAYED outright. Accepting IDEMPOTENCY_CONFLICT as an alternative
+    // would keep this test green even if replay were deleted and every repeat call
+    // answered with a conflict, which is the opposite of the behaviour it names.
+    expect(outcome.kind).toBe(EXCHANGE_RATE_CREATE_OUTCOMES.REPLAYED);
+    const replayed = outcome as ExchangeRateCreateReplayed;
+    expect(replayed.status).toBe(201);
+    expect(replayed.body).toEqual(EXCHANGE_RATE);
+    expect(mockStore.createManualExchangeRate).not.toHaveBeenCalled();
   });
 
   it('returns IDEMPOTENCY_CONFLICT when idempotency key exists with mismatched fingerprint', async () => {
