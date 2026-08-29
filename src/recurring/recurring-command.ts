@@ -238,6 +238,7 @@ export function createRecurringRuleCommand(
         frequency,
         rrule,
         startsAt: startsAtDate,
+        after: new Date(),
       });
       anchorDayOfMonth = occurrenceResult.anchorDayOfMonth;
       nextOccurrenceAtString = occurrenceResult.nextOccurrenceAt.toISOString();

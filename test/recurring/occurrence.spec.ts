@@ -271,52 +271,342 @@ describe('occurrence arithmetic (RULING 51, 54, 56)', () => {
     });
   });
 
-  describe('parseRRule edge cases and validation', () => {
-    it('parses valid RRULE string with prefix RRULE:', () => {
-      const parsed = parseRRule('RRULE:FREQ=DAILY;INTERVAL=5');
-      expect(parsed.freq).toBe('DAILY');
-      expect(parsed.interval).toBe(5);
-    });
-
-    it('rejects empty or whitespace-only RRULE', () => {
-      expect(() => parseRRule('')).toThrow(OccurrenceCalculationError);
-      expect(() => parseRRule('   ')).toThrow(OccurrenceCalculationError);
-    });
-
-    it('rejects missing or unsupported FREQ', () => {
-      expect(() => parseRRule('INTERVAL=2')).toThrow(
+  describe('RULING 57: RRULE allowlist, strict parsing, and unsupported parts rejection', () => {
+    it('rejects COUNT constraint as unsupported (RULING 57)', () => {
+      expect(() => parseRRule('FREQ=DAILY;COUNT=1')).toThrow(
         OccurrenceCalculationError,
       );
-      expect(() => parseRRule('FREQ=HOURLY')).toThrow(
+      expect(() => parseRRule('FREQ=DAILY;COUNT=1')).toThrow(/COUNT/i);
+    });
+
+    it('rejects UNTIL constraint as unsupported (RULING 57)', () => {
+      expect(() => parseRRule('FREQ=DAILY;UNTIL=20261231T000000Z')).toThrow(
         OccurrenceCalculationError,
+      );
+      expect(() => parseRRule('FREQ=DAILY;UNTIL=20261231T000000Z')).toThrow(
+        /UNTIL/i,
       );
     });
 
-    it('rejects invalid INTERVAL', () => {
-      expect(() => parseRRule('FREQ=DAILY;INTERVAL=0')).toThrow(
+    it('rejects unsupported BY* parts per frequency (RULING 57)', () => {
+      // BYDAY is only allowed for WEEKLY
+      expect(() => parseRRule('FREQ=DAILY;BYDAY=MO')).toThrow(
         OccurrenceCalculationError,
       );
-      expect(() => parseRRule('FREQ=DAILY;INTERVAL=-2')).toThrow(
+      expect(() => parseRRule('FREQ=MONTHLY;BYDAY=MO')).toThrow(
         OccurrenceCalculationError,
       );
-      expect(() => parseRRule('FREQ=DAILY;INTERVAL=abc')).toThrow(
+      expect(() => parseRRule('FREQ=YEARLY;BYDAY=MO')).toThrow(
+        OccurrenceCalculationError,
+      );
+
+      // BYMONTHDAY is only allowed for MONTHLY and YEARLY
+      expect(() => parseRRule('FREQ=DAILY;BYMONTHDAY=15')).toThrow(
+        OccurrenceCalculationError,
+      );
+      expect(() => parseRRule('FREQ=WEEKLY;BYMONTHDAY=15')).toThrow(
+        OccurrenceCalculationError,
+      );
+
+      // BYMONTH is only allowed for YEARLY
+      expect(() => parseRRule('FREQ=DAILY;BYMONTH=6')).toThrow(
+        OccurrenceCalculationError,
+      );
+      expect(() => parseRRule('FREQ=WEEKLY;BYMONTH=6')).toThrow(
+        OccurrenceCalculationError,
+      );
+      expect(() => parseRRule('FREQ=MONTHLY;BYMONTH=6')).toThrow(
         OccurrenceCalculationError,
       );
     });
 
-    it('rejects invalid BYMONTHDAY', () => {
-      expect(() => parseRRule('FREQ=MONTHLY;BYMONTHDAY=0')).toThrow(
+    it('rejects non-allowlisted RFC 5545 parts (BYSETPOS, WKST, BYHOUR, etc.)', () => {
+      expect(() => parseRRule('FREQ=DAILY;BYSETPOS=1')).toThrow(
         OccurrenceCalculationError,
       );
-      expect(() => parseRRule('FREQ=MONTHLY;BYMONTHDAY=32')).toThrow(
+      expect(() => parseRRule('FREQ=WEEKLY;WKST=MO')).toThrow(
+        OccurrenceCalculationError,
+      );
+      expect(() => parseRRule('FREQ=DAILY;BYHOUR=12')).toThrow(
+        OccurrenceCalculationError,
+      );
+      expect(() => parseRRule('FREQ=DAILY;BYMINUTE=30')).toThrow(
+        OccurrenceCalculationError,
+      );
+      expect(() => parseRRule('FREQ=DAILY;BYSECOND=0')).toThrow(
+        OccurrenceCalculationError,
+      );
+      expect(() => parseRRule('FREQ=YEARLY;BYYEARDAY=100')).toThrow(
+        OccurrenceCalculationError,
+      );
+      expect(() => parseRRule('FREQ=YEARLY;BYWEEKNO=20')).toThrow(
         OccurrenceCalculationError,
       );
     });
 
-    it('rejects invalid BYDAY', () => {
-      expect(() => parseRRule('FREQ=WEEKLY;BYDAY=INVALID')).toThrow(
-        OccurrenceCalculationError,
+    describe('Strict integer and token parsing (RULING 57)', () => {
+      it('rejects INTERVAL with trailing characters, empty value, 0, negative, or leading plus', () => {
+        expect(() => parseRRule('FREQ=DAILY;INTERVAL=2junk')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=DAILY;INTERVAL=')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=DAILY;INTERVAL=0')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=DAILY;INTERVAL=-1')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=DAILY;INTERVAL=+2')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=DAILY;INTERVAL=abc')).toThrow(
+          OccurrenceCalculationError,
+        );
+      });
+
+      it('rejects BYMONTHDAY with trailing characters, empty, 0, out of range, or plus sign', () => {
+        expect(() => parseRRule('FREQ=MONTHLY;BYMONTHDAY=15junk')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=MONTHLY;BYMONTHDAY=')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=MONTHLY;BYMONTHDAY=0')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=MONTHLY;BYMONTHDAY=32')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=MONTHLY;BYMONTHDAY=-32')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=MONTHLY;BYMONTHDAY=+5')).toThrow(
+          OccurrenceCalculationError,
+        );
+      });
+
+      it('rejects BYMONTH with trailing characters, empty, 0, >12, or leading plus', () => {
+        expect(() => parseRRule('FREQ=YEARLY;BYMONTH=1junk')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=YEARLY;BYMONTH=')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=YEARLY;BYMONTH=0')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=YEARLY;BYMONTH=13')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=YEARLY;BYMONTH=+3')).toThrow(
+          OccurrenceCalculationError,
+        );
+      });
+
+      it('rejects BYDAY with numeric prefixes or invalid codes', () => {
+        expect(() => parseRRule('FREQ=WEEKLY;BYDAY=+1MO')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=WEEKLY;BYDAY=1MO')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=WEEKLY;BYDAY=-1FR')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=WEEKLY;BYDAY=MO,INVALID')).toThrow(
+          OccurrenceCalculationError,
+        );
+        expect(() => parseRRule('FREQ=WEEKLY;BYDAY=MO,,TU')).toThrow(
+          OccurrenceCalculationError,
+        );
+      });
+    });
+
+    describe('Positive tests for all allowlisted combinations', () => {
+      it('parses allowlisted DAILY rules', () => {
+        expect(parseRRule('FREQ=DAILY')).toEqual({
+          freq: 'DAILY',
+          interval: 1,
+        });
+        expect(parseRRule('FREQ=DAILY;INTERVAL=3')).toEqual({
+          freq: 'DAILY',
+          interval: 3,
+        });
+      });
+
+      it('parses allowlisted WEEKLY rules', () => {
+        expect(parseRRule('FREQ=WEEKLY')).toEqual({
+          freq: 'WEEKLY',
+          interval: 1,
+        });
+        expect(parseRRule('FREQ=WEEKLY;INTERVAL=2')).toEqual({
+          freq: 'WEEKLY',
+          interval: 2,
+        });
+        expect(parseRRule('FREQ=WEEKLY;BYDAY=MO,WE,FR')).toEqual({
+          freq: 'WEEKLY',
+          interval: 1,
+          byDay: ['MO', 'WE', 'FR'],
+        });
+        expect(parseRRule('FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,TH')).toEqual({
+          freq: 'WEEKLY',
+          interval: 2,
+          byDay: ['TU', 'TH'],
+        });
+      });
+
+      it('parses allowlisted MONTHLY rules', () => {
+        expect(parseRRule('FREQ=MONTHLY')).toEqual({
+          freq: 'MONTHLY',
+          interval: 1,
+        });
+        expect(parseRRule('FREQ=MONTHLY;INTERVAL=2')).toEqual({
+          freq: 'MONTHLY',
+          interval: 2,
+        });
+        expect(parseRRule('FREQ=MONTHLY;BYMONTHDAY=15')).toEqual({
+          freq: 'MONTHLY',
+          interval: 1,
+          byMonthDay: 15,
+        });
+        expect(parseRRule('FREQ=MONTHLY;BYMONTHDAY=-1')).toEqual({
+          freq: 'MONTHLY',
+          interval: 1,
+          byMonthDay: -1,
+        });
+        expect(parseRRule('FREQ=MONTHLY;INTERVAL=3;BYMONTHDAY=-5')).toEqual({
+          freq: 'MONTHLY',
+          interval: 3,
+          byMonthDay: -5,
+        });
+      });
+
+      it('parses allowlisted YEARLY rules', () => {
+        expect(parseRRule('FREQ=YEARLY')).toEqual({
+          freq: 'YEARLY',
+          interval: 1,
+        });
+        expect(parseRRule('FREQ=YEARLY;INTERVAL=2')).toEqual({
+          freq: 'YEARLY',
+          interval: 2,
+        });
+        expect(parseRRule('FREQ=YEARLY;BYMONTH=6')).toEqual({
+          freq: 'YEARLY',
+          interval: 1,
+          byMonth: 6,
+        });
+        expect(parseRRule('FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=28')).toEqual({
+          freq: 'YEARLY',
+          interval: 1,
+          byMonth: 2,
+          byMonthDay: 28,
+        });
+        expect(parseRRule('FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=-1')).toEqual({
+          freq: 'YEARLY',
+          interval: 1,
+          byMonth: 2,
+          byMonthDay: -1,
+        });
+        expect(
+          parseRRule('FREQ=YEARLY;INTERVAL=2;BYMONTH=4;BYMONTHDAY=15'),
+        ).toEqual({
+          freq: 'YEARLY',
+          interval: 2,
+          byMonth: 4,
+          byMonthDay: 15,
+        });
+      });
+    });
+  });
+
+  describe('RULING 58: nextOccurrenceAt must be strictly in the future', () => {
+    it('advances past startsAt to the first occurrence strictly after now for daily', () => {
+      const result = computeNextOccurrence({
+        frequency: 'daily',
+        startsAt: '2020-01-01T12:00:00.000Z',
+        after: '2026-08-29T12:00:00.000Z',
+      });
+      expect(result.nextOccurrenceAt.toISOString()).toBe(
+        '2026-08-30T12:00:00.000Z',
       );
+    });
+
+    it('advances past startsAt to the first occurrence strictly after now for weekly', () => {
+      // 2020-01-01 is Wednesday.
+      // 2026-08-29 is Saturday. Next Wednesday is 2026-09-02.
+      const result = computeNextOccurrence({
+        frequency: 'weekly',
+        startsAt: '2020-01-01T12:00:00.000Z',
+        after: '2026-08-29T12:00:00.000Z',
+      });
+      expect(result.nextOccurrenceAt.toISOString()).toBe(
+        '2026-09-02T12:00:00.000Z',
+      );
+    });
+
+    it('advances past startsAt to the first occurrence strictly after now for biweekly', () => {
+      const result = computeNextOccurrence({
+        frequency: 'biweekly',
+        startsAt: '2020-01-01T12:00:00.000Z',
+        after: '2026-08-29T12:00:00.000Z',
+      });
+      // 2020-01-01 + N * 14 days
+      expect(result.nextOccurrenceAt.getTime()).toBeGreaterThan(
+        new Date('2026-08-29T12:00:00.000Z').getTime(),
+      );
+      // Difference from 2020-01-01 in days must be divisible by 14
+      const diffDays = Math.round(
+        (result.nextOccurrenceAt.getTime() -
+          new Date('2020-01-01T12:00:00.000Z').getTime()) /
+          86_400_000,
+      );
+      expect(diffDays % 14).toBe(0);
+    });
+
+    it('advances past startsAt to the first occurrence strictly after now for monthly (preserving anchor)', () => {
+      const result = computeNextOccurrence({
+        frequency: 'monthly',
+        startsAt: '2020-01-31T14:30:00.000Z',
+        after: '2026-08-29T12:00:00.000Z',
+      });
+      expect(result.nextOccurrenceAt.toISOString()).toBe(
+        '2026-08-31T14:30:00.000Z',
+      );
+      expect(result.anchorDayOfMonth).toBe(31);
+    });
+
+    it('advances past startsAt to the first occurrence strictly after now for yearly (preserving anchor)', () => {
+      const result = computeNextOccurrence({
+        frequency: 'yearly',
+        startsAt: '2020-02-29T12:00:00.000Z',
+        after: '2026-08-29T12:00:00.000Z',
+      });
+      // Next Feb after Aug 2026 is Feb 2027 (non-leap -> Feb 28)
+      expect(result.nextOccurrenceAt.toISOString()).toBe(
+        '2027-02-28T12:00:00.000Z',
+      );
+      expect(result.anchorDayOfMonth).toBe(29);
+      expect(result.anchorMonth).toBe(1);
+    });
+
+    it('advances past startsAt to the first occurrence strictly after now for custom RRULE', () => {
+      const result = computeNextOccurrence({
+        frequency: 'custom',
+        rrule: 'FREQ=DAILY;INTERVAL=5',
+        startsAt: '2020-01-01T10:00:00.000Z',
+        after: '2026-08-29T12:00:00.000Z',
+      });
+      expect(result.nextOccurrenceAt.getTime()).toBeGreaterThan(
+        new Date('2026-08-29T12:00:00.000Z').getTime(),
+      );
+      const diffDays = Math.round(
+        (result.nextOccurrenceAt.getTime() -
+          new Date('2020-01-01T10:00:00.000Z').getTime()) /
+          86_400_000,
+      );
+      expect(diffDays % 5).toBe(0);
     });
   });
 });

@@ -5,6 +5,8 @@
  * RULING 54 — monthly and yearly arithmetic CLAMPS to the last valid day, and the ANCHOR is preserved.
  * RULING 55 — endsAt must be strictly after the effective start, and a rule that can never fire is rejected.
  * RULING 56 — All timestamps are timestamptz and all arithmetic is performed in UTC.
+ * RULING 57 — Reject every RRULE part that is not fully honoured by the computation.
+ * RULING 58 — nextOccurrenceAt must be strictly in the future.
  */
 
 export type RecurringFrequency =
@@ -37,14 +39,40 @@ export const RECURRING_BEHAVIORS: readonly RecurringBehavior[] = [
   'confirm_automatically',
 ] as const;
 
+/**
+ * RULING 57 — Reject every RRULE part or constraint that is not fully honoured by the computation.
+ *
+ * Explicit allowlist per frequency:
+ * - DAILY: FREQ, INTERVAL
+ * - WEEKLY: FREQ, INTERVAL, BYDAY
+ * - MONTHLY: FREQ, INTERVAL, BYMONTHDAY
+ * - YEARLY: FREQ, INTERVAL, BYMONTH, BYMONTHDAY
+ *
+ * Any other part (including COUNT, UNTIL, BYSETPOS, BYYEARDAY, BYWEEKNO, BYHOUR, BYMINUTE, BYSECOND, WKST,
+ * or unsupported BY* combinations for the selected frequency) must be rejected with an OccurrenceCalculationError.
+ */
+export const ALLOWED_RRULE_PARTS_BY_FREQ: Record<
+  'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY',
+  readonly string[]
+> = {
+  DAILY: ['FREQ', 'INTERVAL'],
+  WEEKLY: ['FREQ', 'INTERVAL', 'BYDAY'],
+  MONTHLY: ['FREQ', 'INTERVAL', 'BYMONTHDAY'],
+  YEARLY: ['FREQ', 'INTERVAL', 'BYMONTH', 'BYMONTHDAY'],
+} as const;
+
+const POSITIVE_INTEGER_REGEX = /^[1-9]\d*$/;
+const MONTH_DAY_REGEX = /^-?(?:[1-9]|[12]\d|3[01])$/;
+const MONTH_REGEX = /^(?:[1-9]|1[0-2])$/;
+const WEEKDAY_CODE_REGEX =
+  /^(?:SU|MO|TU|WE|TH|FR|SA)(?:,(?:SU|MO|TU|WE|TH|FR|SA))*$/;
+
 export interface ParsedRRule {
   readonly freq: 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY';
   readonly interval: number;
   readonly byMonthDay?: number;
   readonly byDay?: readonly string[];
   readonly byMonth?: number;
-  readonly count?: number;
-  readonly until?: Date;
 }
 
 export class OccurrenceCalculationError extends Error {
@@ -92,7 +120,7 @@ const DAY_CODES: Record<string, number> = {
 };
 
 /**
- * Parses an RFC 5545 RRULE string.
+ * Parses an RFC 5545 RRULE string according to RULING 57 (explicit allowlist and strict integer parsing).
  */
 export function parseRRule(rruleStr: string): ParsedRRule {
   const clean = rruleStr.trim().replace(/^RRULE:/i, '');
@@ -102,14 +130,26 @@ export function parseRRule(rruleStr: string): ParsedRRule {
 
   const parts = clean.split(';');
   const dict: Record<string, string> = {};
+  const seenKeys = new Set<string>();
+
   for (const part of parts) {
-    const [rawKey, ...rawValParts] = part.split('=');
-    if (!rawKey || rawValParts.length === 0) {
+    if (!part || !part.includes('=')) {
       throw new OccurrenceCalculationError(`Invalid RRULE segment: '${part}'.`);
     }
-    const key = rawKey.trim().toUpperCase();
-    const val = rawValParts.join('=').trim();
-    dict[key] = val;
+    const eqIdx = part.indexOf('=');
+    const rawKey = part.slice(0, eqIdx).trim().toUpperCase();
+    const rawVal = part.slice(eqIdx + 1).trim();
+
+    if (!rawKey || !rawVal) {
+      throw new OccurrenceCalculationError(`Invalid RRULE segment: '${part}'.`);
+    }
+    if (seenKeys.has(rawKey)) {
+      throw new OccurrenceCalculationError(
+        `Duplicate RRULE part: '${rawKey}'.`,
+      );
+    }
+    seenKeys.add(rawKey);
+    dict[rawKey] = rawVal;
   }
 
   const rawFreq = dict.FREQ?.toUpperCase();
@@ -118,13 +158,29 @@ export function parseRRule(rruleStr: string): ParsedRRule {
       `Unsupported or missing RRULE FREQ: '${dict.FREQ}'. Must be DAILY, WEEKLY, MONTHLY, or YEARLY.`,
     );
   }
+  const freq = rawFreq as 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY';
+
+  // RULING 57: Validate all parts belong to the frequency allowlist
+  const allowedParts = ALLOWED_RRULE_PARTS_BY_FREQ[freq];
+  for (const key of seenKeys) {
+    if (!allowedParts.includes(key)) {
+      throw new OccurrenceCalculationError(
+        `Unsupported RRULE part: '${key}' (RULING 57).`,
+      );
+    }
+  }
 
   let interval = 1;
   if (dict.INTERVAL !== undefined) {
-    const parsed = Number.parseInt(dict.INTERVAL, 10);
-    if (Number.isNaN(parsed) || parsed < 1) {
+    if (!POSITIVE_INTEGER_REGEX.test(dict.INTERVAL)) {
       throw new OccurrenceCalculationError(
-        `Invalid RRULE INTERVAL: '${dict.INTERVAL}'. Must be an integer >= 1.`,
+        `Invalid RRULE INTERVAL: '${dict.INTERVAL}'. Must be a positive integer >= 1.`,
+      );
+    }
+    const parsed = Number(dict.INTERVAL);
+    if (!Number.isSafeInteger(parsed) || parsed < 1) {
+      throw new OccurrenceCalculationError(
+        `Invalid RRULE INTERVAL: '${dict.INTERVAL}'. Must be a positive integer >= 1.`,
       );
     }
     interval = parsed;
@@ -132,71 +188,43 @@ export function parseRRule(rruleStr: string): ParsedRRule {
 
   let byMonthDay: number | undefined;
   if (dict.BYMONTHDAY !== undefined) {
-    const parsed = Number.parseInt(dict.BYMONTHDAY, 10);
-    if (Number.isNaN(parsed) || parsed === 0 || parsed < -31 || parsed > 31) {
+    if (!MONTH_DAY_REGEX.test(dict.BYMONTHDAY)) {
       throw new OccurrenceCalculationError(
         `Invalid RRULE BYMONTHDAY: '${dict.BYMONTHDAY}'. Must be between -31 and 31 (excluding 0).`,
       );
     }
-    byMonthDay = parsed;
+    byMonthDay = Number(dict.BYMONTHDAY);
   }
 
-  let byDay: string[] | undefined;
+  let byDay: readonly string[] | undefined;
   if (dict.BYDAY !== undefined) {
-    const days = dict.BYDAY.split(',').map((d) => d.trim().toUpperCase());
-    for (const day of days) {
-      const code = day.replace(/^[+-]?\d+/, '');
-      if (!(code in DAY_CODES)) {
-        throw new OccurrenceCalculationError(
-          `Invalid RRULE BYDAY code: '${day}'.`,
-        );
-      }
+    const rawByDay = dict.BYDAY.toUpperCase();
+    if (!WEEKDAY_CODE_REGEX.test(rawByDay)) {
+      throw new OccurrenceCalculationError(
+        `Invalid RRULE BYDAY: '${dict.BYDAY}'. Must be comma-separated weekday codes (SU, MO, TU, WE, TH, FR, SA).`,
+      );
     }
-    byDay = days;
+    const days = rawByDay.split(',');
+    byDay = Object.freeze(days);
   }
 
   let byMonth: number | undefined;
   if (dict.BYMONTH !== undefined) {
-    const parsed = Number.parseInt(dict.BYMONTH, 10);
-    if (Number.isNaN(parsed) || parsed < 1 || parsed > 12) {
+    if (!MONTH_REGEX.test(dict.BYMONTH)) {
       throw new OccurrenceCalculationError(
-        `Invalid RRULE BYMONTH: '${dict.BYMONTH}'. Must be 1..12.`,
+        `Invalid RRULE BYMONTH: '${dict.BYMONTH}'. Must be an integer 1..12.`,
       );
     }
-    byMonth = parsed;
+    byMonth = Number(dict.BYMONTH);
   }
 
-  let count: number | undefined;
-  if (dict.COUNT !== undefined) {
-    const parsed = Number.parseInt(dict.COUNT, 10);
-    if (Number.isNaN(parsed) || parsed < 1) {
-      throw new OccurrenceCalculationError(
-        `Invalid RRULE COUNT: '${dict.COUNT}'.`,
-      );
-    }
-    count = parsed;
-  }
-
-  let until: Date | undefined;
-  if (dict.UNTIL !== undefined) {
-    const parsed = new Date(dict.UNTIL);
-    if (Number.isNaN(parsed.getTime())) {
-      throw new OccurrenceCalculationError(
-        `Invalid RRULE UNTIL date: '${dict.UNTIL}'.`,
-      );
-    }
-    until = parsed;
-  }
-
-  return {
-    freq: rawFreq as 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY',
+  return Object.freeze({
+    freq,
     interval,
-    byMonthDay,
-    byDay: byDay ? Object.freeze(byDay) : undefined,
-    byMonth,
-    count,
-    until,
-  };
+    ...(byMonthDay !== undefined ? { byMonthDay } : {}),
+    ...(byDay !== undefined ? { byDay } : {}),
+    ...(byMonth !== undefined ? { byMonth } : {}),
+  });
 }
 
 export interface ComputeNextOccurrenceOptions {
@@ -206,6 +234,7 @@ export interface ComputeNextOccurrenceOptions {
   readonly currentOccurrence?: string | Date;
   readonly anchorDayOfMonth?: number;
   readonly anchorMonth?: number;
+  readonly after?: string | Date;
 }
 
 export interface NextOccurrenceResult {
@@ -220,6 +249,8 @@ export interface NextOccurrenceResult {
  * RULING 51: nextOccurrenceAt is COMPUTED, never received.
  * RULING 54: Monthly and yearly arithmetic CLAMPS to the last valid day, preserving anchorDayOfMonth.
  * RULING 56: All calculations in UTC.
+ * RULING 57: Fully honours parsed RRULE allowlist.
+ * RULING 58: nextOccurrenceAt advances to strictly future date when after is provided.
  */
 export function computeNextOccurrence(
   options: ComputeNextOccurrenceOptions,
@@ -253,28 +284,83 @@ export function computeNextOccurrence(
       ? options.anchorMonth
       : baseDate.getUTCMonth();
 
+  let parsedRRule: ParsedRRule | undefined;
+  if (frequency === 'custom') {
+    if (!rrule) {
+      throw new OccurrenceCalculationError(
+        'RRULE is required when frequency is custom (RULING 52).',
+      );
+    }
+    parsedRRule = parseRRule(rrule);
+  }
+
+  let nextOccurrenceAt = computeSingleOccurrenceStep(
+    baseDate,
+    frequency,
+    parsedRRule,
+    anchorDayOfMonth,
+    anchorMonth,
+  );
+
+  // RULING 58: nextOccurrenceAt must be strictly in the future (> after)
+  if (options.after !== undefined) {
+    const targetAfter =
+      typeof options.after === 'string'
+        ? new Date(options.after)
+        : options.after;
+
+    if (Number.isNaN(targetAfter.getTime())) {
+      throw new OccurrenceCalculationError('Invalid after date provided.');
+    }
+
+    const targetTime = targetAfter.getTime();
+    let iterations = 0;
+    const MAX_ITERATIONS = 10_000;
+
+    while (nextOccurrenceAt.getTime() <= targetTime) {
+      if (++iterations > MAX_ITERATIONS) {
+        throw new OccurrenceCalculationError(
+          'Cannot compute next occurrence: maximum iteration limit reached.',
+        );
+      }
+      nextOccurrenceAt = computeSingleOccurrenceStep(
+        nextOccurrenceAt,
+        frequency,
+        parsedRRule,
+        anchorDayOfMonth,
+        anchorMonth,
+      );
+    }
+  }
+
+  return {
+    nextOccurrenceAt,
+    anchorDayOfMonth,
+    anchorMonth,
+  };
+}
+
+function computeSingleOccurrenceStep(
+  baseDate: Date,
+  frequency: RecurringFrequency,
+  parsedRRule: ParsedRRule | undefined,
+  anchorDayOfMonth: number,
+  anchorMonth: number,
+): Date {
   const hours = baseDate.getUTCHours();
   const minutes = baseDate.getUTCMinutes();
   const seconds = baseDate.getUTCSeconds();
   const ms = baseDate.getUTCMilliseconds();
 
-  let nextOccurrenceAt: Date;
-
   switch (frequency) {
-    case 'daily': {
-      nextOccurrenceAt = new Date(baseDate.getTime() + 86_400_000);
-      break;
-    }
+    case 'daily':
+      return new Date(baseDate.getTime() + 86_400_000);
 
-    case 'weekly': {
-      nextOccurrenceAt = new Date(baseDate.getTime() + 7 * 86_400_000);
-      break;
-    }
+    case 'weekly':
+      return new Date(baseDate.getTime() + 7 * 86_400_000);
 
-    case 'biweekly': {
-      nextOccurrenceAt = new Date(baseDate.getTime() + 14 * 86_400_000);
-      break;
-    }
+    case 'biweekly':
+      return new Date(baseDate.getTime() + 14 * 86_400_000);
 
     case 'monthly': {
       // RULING 54: Clamps to last valid day of target month while preserving anchorDayOfMonth.
@@ -287,7 +373,7 @@ export function computeNextOccurrence(
       const maxDays = daysInMonth(targetYear, targetMonth);
       const clampedDay = Math.min(anchorDayOfMonth, maxDays);
 
-      nextOccurrenceAt = new Date(
+      return new Date(
         Date.UTC(
           targetYear,
           targetMonth,
@@ -298,7 +384,6 @@ export function computeNextOccurrence(
           ms,
         ),
       );
-      break;
     }
 
     case 'yearly': {
@@ -308,7 +393,7 @@ export function computeNextOccurrence(
       const maxDays = daysInMonth(targetYear, targetMonth);
       const clampedDay = Math.min(anchorDayOfMonth, maxDays);
 
-      nextOccurrenceAt = new Date(
+      return new Date(
         Date.UTC(
           targetYear,
           targetMonth,
@@ -319,23 +404,20 @@ export function computeNextOccurrence(
           ms,
         ),
       );
-      break;
     }
 
     case 'custom': {
-      if (!rrule) {
+      if (!parsedRRule) {
         throw new OccurrenceCalculationError(
           'RRULE is required when frequency is custom (RULING 52).',
         );
       }
-      const parsed = parseRRule(rrule);
-      nextOccurrenceAt = computeRRuleOccurrence(
+      return computeRRuleOccurrence(
         baseDate,
-        parsed,
+        parsedRRule,
         anchorDayOfMonth,
         anchorMonth,
       );
-      break;
     }
 
     default:
@@ -343,12 +425,6 @@ export function computeNextOccurrence(
         `Unknown frequency: '${String(frequency)}'.`,
       );
   }
-
-  return {
-    nextOccurrenceAt,
-    anchorDayOfMonth,
-    anchorMonth,
-  };
 }
 
 function computeRRuleOccurrence(
@@ -374,7 +450,7 @@ function computeRRuleOccurrence(
       // BYDAY list handling
       const currentDayOfWeek = baseDate.getUTCDay();
       const targetDayNumbers = rrule.byDay
-        .map((d) => DAY_CODES[d.replace(/^[+-]?\d+/, '')])
+        .map((d) => DAY_CODES[d])
         .filter((n): n is number => n !== undefined)
         .sort((a, b) => a - b);
 

@@ -126,16 +126,124 @@ describe('createRecurringRuleCommand validation (RULING 51, 52, 53, 55)', () => 
       expect(cmd2.rrule).toBeNull();
     });
 
-    it('accepts custom frequency when valid rrule is provided', () => {
+    it('accepts custom frequency when valid rrule is provided with future startsAt', () => {
       const command = createRecurringRuleCommand({
         ...VALID_REQUEST,
         frequency: 'custom',
         rrule: 'FREQ=WEEKLY;INTERVAL=3',
-        startsAt: '2026-08-01T12:00:00.000Z',
+        startsAt: '2028-08-01T12:00:00.000Z',
       });
       expect(command.frequency).toBe('custom');
       expect(command.rrule).toBe('FREQ=WEEKLY;INTERVAL=3');
-      expect(command.nextOccurrenceAt).toBe('2026-08-22T12:00:00.000Z');
+      expect(command.nextOccurrenceAt).toBe('2028-08-22T12:00:00.000Z');
+    });
+
+    it('rejects RRULE with COUNT constraint as 422 invalid-rrule (RULING 57)', () => {
+      try {
+        createRecurringRuleCommand({
+          ...VALID_REQUEST,
+          frequency: 'custom',
+          rrule: 'FREQ=DAILY;COUNT=1',
+        });
+        expect.unreachable('Should have failed validation');
+      } catch (e) {
+        const err = e as RecurringCommandValidationError;
+        expect(err.violations).toContainEqual(
+          expect.objectContaining({
+            field: 'rrule',
+            code: 'invalid-rrule',
+          }),
+        );
+      }
+    });
+
+    it('rejects RRULE with UNTIL constraint as 422 invalid-rrule (RULING 57)', () => {
+      try {
+        createRecurringRuleCommand({
+          ...VALID_REQUEST,
+          frequency: 'custom',
+          rrule: 'FREQ=DAILY;UNTIL=20261231T000000Z',
+        });
+        expect.unreachable('Should have failed validation');
+      } catch (e) {
+        const err = e as RecurringCommandValidationError;
+        expect(err.violations).toContainEqual(
+          expect.objectContaining({
+            field: 'rrule',
+            code: 'invalid-rrule',
+          }),
+        );
+      }
+    });
+
+    it('rejects RRULE with non-integer or malformed INTERVAL as 422 (RULING 57)', () => {
+      try {
+        createRecurringRuleCommand({
+          ...VALID_REQUEST,
+          frequency: 'custom',
+          rrule: 'FREQ=DAILY;INTERVAL=2junk',
+        });
+        expect.unreachable('Should have failed validation');
+      } catch (e) {
+        const err = e as RecurringCommandValidationError;
+        expect(err.violations).toContainEqual(
+          expect.objectContaining({
+            field: 'rrule',
+            code: 'invalid-rrule',
+          }),
+        );
+      }
+    });
+
+    it('rejects RRULE with unsupported BY* for frequency as 422 (RULING 57)', () => {
+      try {
+        createRecurringRuleCommand({
+          ...VALID_REQUEST,
+          frequency: 'custom',
+          rrule: 'FREQ=DAILY;BYDAY=MO',
+        });
+        expect.unreachable('Should have failed validation');
+      } catch (e) {
+        const err = e as RecurringCommandValidationError;
+        expect(err.violations).toContainEqual(
+          expect.objectContaining({
+            field: 'rrule',
+            code: 'invalid-rrule',
+          }),
+        );
+      }
+    });
+  });
+
+  describe('RULING 58: nextOccurrenceAt must be strictly in the future', () => {
+    it('advances a rule created with past startsAt to the first occurrence strictly after now()', () => {
+      const now = Date.now();
+      const command = createRecurringRuleCommand({
+        ...VALID_REQUEST,
+        frequency: 'daily',
+        startsAt: '2020-01-01T00:00:00.000Z',
+      });
+      expect(new Date(command.nextOccurrenceAt).getTime()).toBeGreaterThan(now);
+    });
+
+    it('rejects a rule with past startsAt when advancing to future passes endsAt (RULING 55 + 58)', () => {
+      try {
+        createRecurringRuleCommand({
+          ...VALID_REQUEST,
+          frequency: 'daily',
+          startsAt: '2020-01-01T00:00:00.000Z',
+          endsAt: '2020-06-01T00:00:00.000Z',
+        });
+        expect.unreachable('Should have failed');
+      } catch (e) {
+        const err = e as RecurringCommandValidationError;
+        expect(err.violations).toContainEqual(
+          expect.objectContaining({
+            field: 'endsAt',
+            code: 'unfireable-rule',
+          }),
+        );
+      }
     });
   });
 
