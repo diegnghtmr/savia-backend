@@ -3,9 +3,39 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   negateAmountMinor,
   toIso,
+  multiplyMinorByRate,
   PostgresAccountsAdapter,
 } from '../../src/accounts/postgres-accounts.adapter.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
+
+describe('multiplyMinorByRate', () => {
+  it('multiplies positive minor units by decimal rate without floating point', () => {
+    expect(multiplyMinorByRate('10000', '1.0800')).toBe('10800');
+    expect(multiplyMinorByRate('100', '0.9200')).toBe('92');
+  });
+
+  it('rounds half away from zero for positive amounts', () => {
+    expect(multiplyMinorByRate('100', '1.0850')).toBe('109');
+    expect(multiplyMinorByRate('100', '1.0849')).toBe('108');
+    expect(multiplyMinorByRate('1', '1.5')).toBe('2');
+  });
+
+  it('rounds half away from zero for negative amounts', () => {
+    expect(multiplyMinorByRate('-100', '1.0850')).toBe('-109');
+    expect(multiplyMinorByRate('-100', '1.0849')).toBe('-108');
+    expect(multiplyMinorByRate('-1', '1.5')).toBe('-2');
+  });
+
+  it('handles integer rate without decimal point', () => {
+    expect(multiplyMinorByRate('5000', '2')).toBe('10000');
+    expect(multiplyMinorByRate('-5000', '2')).toBe('-10000');
+  });
+
+  it('preserves precision for amounts past 2^53 without JS number truncation', () => {
+    const huge = '9007199254740993';
+    expect(multiplyMinorByRate(huge, '1.5')).toBe('13510798882111490');
+  });
+});
 
 describe('negateAmountMinor', () => {
   it('negates positive amountMinor without number conversion', () => {
@@ -227,7 +257,8 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     expect(client.query).toHaveBeenCalledTimes(1);
     const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
       .calls[0] as [string, unknown[]];
-    expect(sql).toContain('select a.currency');
+    expect(sql).toContain('select a.currency as "accountCurrency"');
+    expect(sql).toContain('join public.workspaces w');
     expect(sql).toContain('where a.workspace_id = $1::uuid');
     expect(sql).toContain('and a.id = $2::uuid');
     expect(values).toEqual([workspaceId, accountId]);
@@ -238,7 +269,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
       query: vi
         .fn()
         .mockResolvedValueOnce({
-          rows: [{ currency: 'USD' }],
+          rows: [{ accountCurrency: 'USD', workspaceBaseCurrency: 'USD' }],
         })
         .mockResolvedValueOnce({
           rows: [
@@ -330,7 +361,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
       query: vi
         .fn()
         .mockResolvedValueOnce({
-          rows: [{ currency: 'USD' }],
+          rows: [{ accountCurrency: 'USD', workspaceBaseCurrency: 'USD' }],
         })
         .mockResolvedValueOnce({
           rows: [
@@ -368,7 +399,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
       query: vi
         .fn()
         .mockResolvedValueOnce({
-          rows: [{ currency: 'COP' }],
+          rows: [{ accountCurrency: 'COP', workspaceBaseCurrency: 'COP' }],
         })
         .mockResolvedValueOnce({
           rows: [
@@ -420,7 +451,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
       query: vi
         .fn()
         .mockResolvedValueOnce({
-          rows: [{ currency: 'USD' }],
+          rows: [{ accountCurrency: 'USD', workspaceBaseCurrency: 'USD' }],
         })
         .mockResolvedValueOnce({
           rows: [
@@ -466,7 +497,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
       query: vi
         .fn()
         .mockResolvedValueOnce({
-          rows: [{ currency: 'USD' }],
+          rows: [{ accountCurrency: 'USD', workspaceBaseCurrency: 'USD' }],
         })
         .mockResolvedValueOnce({
           rows: [
@@ -500,7 +531,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
       query: vi
         .fn()
         .mockResolvedValueOnce({
-          rows: [{ currency: 'USD' }],
+          rows: [{ accountCurrency: 'USD', workspaceBaseCurrency: 'USD' }],
         })
         .mockResolvedValueOnce({
           rows: [
@@ -529,12 +560,137 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     expect(result.baseCurrencyEquivalent.rateDate).toBe('2026-07-16');
   });
 
+  it('converts balance using recorded exchange rate when account currency differs from workspace base currency (D5)', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ accountCurrency: 'EUR', workspaceBaseCurrency: 'USD' }],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              nativeBalance: '10000',
+              pendingBalance: '2000',
+              reconciledBalance: '3000',
+              foreignCurrencyLegs: '0',
+              effectiveAsOf: '2026-07-15T12:00:00.000Z',
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              rate: '1.0800',
+              rateDate: '2026-07-10',
+              rateSource: 'ecb',
+            },
+          ],
+        }),
+    };
+
+    const result = await adapter.readAccountBalance(
+      client,
+      workspaceId,
+      accountId,
+      '2026-07-15T12:00:00.000Z',
+    );
+
+    expect(result).toBeDefined();
+    if (!result) throw new Error('Expected result to be defined');
+
+    expect(result.nativeBalance).toEqual({
+      amountMinor: '10000',
+      currency: 'EUR',
+    });
+    expect(result.pendingBalance).toEqual({
+      amountMinor: '2000',
+      currency: 'EUR',
+    });
+    expect(result.reconciledBalance).toEqual({
+      amountMinor: '3000',
+      currency: 'EUR',
+    });
+    expect(result.baseCurrencyEquivalent).toEqual({
+      original: {
+        amountMinor: '10000',
+        currency: 'EUR',
+      },
+      converted: {
+        amountMinor: '10800',
+        currency: 'USD',
+      },
+      rate: '1.0800',
+      rateDate: '2026-07-10',
+      rateSource: 'ecb',
+    });
+
+    expect(client.query).toHaveBeenCalledTimes(3);
+    const [rateSql, rateValues] = (client.query as ReturnType<typeof vi.fn>)
+      .mock.calls[2] as [string, unknown[]];
+    expect(rateSql).toContain('from public.exchange_rates');
+    expect(rateSql).toContain('base_currency = $2');
+    expect(rateSql).toContain('quote_currency = $3');
+    expect(rateSql).toContain(
+      'effective_at <= coalesce($4::timestamptz, now())',
+    );
+    // The ordering prefers rates effective at or before asOf, and only then falls
+    // back to the earliest on record, so a balance asked for a date before the first
+    // rate still answers instead of failing. Pin both halves of that ordering.
+    expect(rateSql).toContain(
+      'order by (effective_at <= coalesce($4::timestamptz, now())) desc',
+    );
+    expect(rateSql).toContain('effective_at asc');
+    expect(rateSql).toContain('limit 1');
+    expect(rateValues).toEqual([
+      workspaceId,
+      'EUR',
+      'USD',
+      '2026-07-15T12:00:00.000Z',
+    ]);
+  });
+
+  it('throws an error when cross-currency account has no recorded exchange rate (D5)', async () => {
+    const client: TransactionClient = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ accountCurrency: 'EUR', workspaceBaseCurrency: 'USD' }],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              nativeBalance: '10000',
+              pendingBalance: '0',
+              reconciledBalance: '0',
+              foreignCurrencyLegs: '0',
+              effectiveAsOf: '2026-07-15T12:00:00.000Z',
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          rows: [],
+        }),
+    };
+
+    await expect(
+      adapter.readAccountBalance(
+        client,
+        workspaceId,
+        accountId,
+        '2026-07-15T12:00:00.000Z',
+      ),
+    ).rejects.toThrow(
+      'No exchange rate found for converting account currency EUR to workspace base currency USD.',
+    );
+  });
+
   it('throws an invariant error when balance aggregate query returns zero rows', async () => {
     const client: TransactionClient = {
       query: vi
         .fn()
         .mockResolvedValueOnce({
-          rows: [{ currency: 'USD' }],
+          rows: [{ accountCurrency: 'USD', workspaceBaseCurrency: 'USD' }],
         })
         .mockResolvedValueOnce({
           rows: [],
@@ -551,7 +707,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
       query: vi
         .fn()
         .mockResolvedValueOnce({
-          rows: [{ currency: 'USD' }],
+          rows: [{ accountCurrency: 'USD', workspaceBaseCurrency: 'USD' }],
         })
         .mockResolvedValueOnce({
           rows: [

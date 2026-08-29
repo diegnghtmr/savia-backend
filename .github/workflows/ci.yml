@@ -5,6 +5,15 @@ on:
   push:
     branches: [main]
 
+# Supersede an in-flight run when a branch is pushed again. Without this, every
+# correction pushed to an open pull request left the previous run consuming a
+# full ~55 minute slot that could no longer tell us anything useful.
+# main is deliberately exempt: a run there validates a commit that has already
+# landed, so it must finish rather than be replaced by the next merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   check:
     name: check

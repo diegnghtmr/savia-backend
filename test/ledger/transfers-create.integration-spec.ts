@@ -50,6 +50,7 @@ describe('TransferService createTransfer database boundary', () => {
   const accountActiveUSD2Id = id(7002);
   const accountClosedUSDId = id(7004);
   const accountForeignWsId = id(7005);
+  const accountActiveEURId = id(7006);
   const absentAccountId = id(7999);
 
   beforeAll(async () => {
@@ -132,6 +133,13 @@ describe('TransferService createTransfer database boundary', () => {
       ],
     );
 
+    // 3.5 Exchange Rates (seed order matters: rate must precede foreign-currency account)
+    await admin.query(
+      `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+       values ($1, 'EUR', 'USD', 1.0800, '2026-08-01T00:00:00.000Z', 'manual', $2)`,
+      [workspace1Id, subjectOwner],
+    );
+
     // 4. Accounts
     // accounts_check enforces (status = 'closed') = (closed_at is not null)
     await admin.query(
@@ -139,7 +147,8 @@ describe('TransferService createTransfer database boundary', () => {
        values ($1, $2, 'USD Checking 1', 'checking', 'USD', 'active', null, $3),
               ($4, $2, 'USD Savings 2', 'savings', 'USD', 'active', null, $3),
               ($5, $2, 'Closed USD Account', 'savings', 'USD', 'closed', now(), $3),
-              ($6, $7, 'Foreign WS2 Account', 'checking', 'USD', 'active', null, $3)`,
+              ($6, $7, 'Foreign WS2 Account', 'checking', 'USD', 'active', null, $3),
+              ($8, $2, 'EUR Checking Account', 'checking', 'EUR', 'active', null, $3)`,
       [
         accountActiveUSD1Id,
         workspace1Id,
@@ -148,6 +157,7 @@ describe('TransferService createTransfer database boundary', () => {
         accountClosedUSDId,
         accountForeignWsId,
         workspace2Id,
+        accountActiveEURId,
       ],
     );
   });
@@ -433,14 +443,39 @@ describe('TransferService createTransfer database boundary', () => {
     expect(outcome.kind).toBe(TRANSFER_CREATE_OUTCOMES.CREATED);
   });
 
-  // The cross-account variant of this guard (sourceAccount.currency !==
-  // destinationAccount.currency) is unreachable against a real database:
-  // 202608240006_account_currency_invariant.sql forces every account's currency to
-  // equal its workspace's base_currency, and base_currency is char(3) NOT NULL, so
-  // two accounts in one workspace can never hold different currencies. Seeding that
-  // state is what broke this suite. That branch stays in production code as defense
-  // in depth, and its coverage lives in test/ledger/transfer.service.spec.ts, where a
-  // test double can fabricate the state the database forbids.
+  // With 202608290001_relax_account_currency_invariant.sql relaxing the account currency
+  // invariant when an exchange rate is recorded, multiple currencies can coexist in a single
+  // workspace. Cross-account transfers between accounts in differing currencies remain
+  // unsupported in Épica 3 and are refused with CURRENCY_MISMATCH.
+  it('refuses a cross-account transfer when source and destination accounts hold differing currencies with CURRENCY_MISMATCH', async () => {
+    const key = '00000000-0000-4000-8000-000000001011';
+    const command: CreateTransferCommand = {
+      sourceAccountId: accountActiveUSD1Id,
+      destinationAccountId: accountActiveEURId,
+      amount: { amountMinor: '1000', currency: 'USD' },
+      occurredAt: '2026-08-25T14:00:00.000Z',
+    };
+
+    const before = await admin.query(
+      `select count(*)::text as count from public.transfers where workspace_id = $1::uuid`,
+      [workspace1Id],
+    );
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSFER_CREATE_OUTCOMES.CURRENCY_MISMATCH);
+
+    const after = await admin.query(
+      `select count(*)::text as count from public.transfers where workspace_id = $1::uuid`,
+      [workspace1Id],
+    );
+    expect(after.rows[0].count).toBe(before.rows[0].count);
+  });
+
   it('refuses a transfer whose request amount currency differs from the account currency with CURRENCY_MISMATCH', async () => {
     const key = '00000000-0000-4000-8000-000000001004';
     const command: CreateTransferCommand = {

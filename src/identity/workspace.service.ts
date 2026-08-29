@@ -310,6 +310,10 @@ export class WorkspaceService implements WorkspacePort {
         return { kind: WORKSPACE_UPDATE_OUTCOMES.VERSION_CONFLICT };
       }
 
+      // D3: WorkspaceService.update deliberately keeps refusing to change base_currency
+      // while accounts exist. FR-FX-009 specifies that changing a workspace's base currency
+      // "requerirá un asistente y generará auditoría", which is separate functionality
+      // deferred to a later epic.
       if (
         command.baseCurrency !== undefined &&
         command.baseCurrency !== workspace.baseCurrency

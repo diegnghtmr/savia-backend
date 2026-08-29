@@ -141,7 +141,6 @@ function fakeStore(
   } = {},
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
-  readWorkspaceBaseCurrency: ReturnType<typeof vi.fn>;
   listAccounts: ReturnType<typeof vi.fn>;
   readAccount: ReturnType<typeof vi.fn>;
   readAccountBalance: ReturnType<typeof vi.fn>;
@@ -153,17 +152,12 @@ function fakeStore(
   const normalized: AccountItem[] = rows.map((r) =>
     'account' in r ? r : toItem(r),
   );
-  // Distinguish an explicit `undefined` base currency (the workspace row is
-  // invisible) from the parameter never being supplied at all.
-  const resolvedBaseCurrency =
-    'baseCurrency' in overrides ? overrides.baseCurrency : 'USD';
   const resolvedClosedAcc =
     'closedAcc' in overrides
       ? overrides.closedAcc
       : account({ status: 'closed', version: 2 });
   return {
     readActiveRole: vi.fn().mockResolvedValue(role),
-    readWorkspaceBaseCurrency: vi.fn().mockResolvedValue(resolvedBaseCurrency),
     listAccounts: vi.fn().mockResolvedValue(normalized),
     readAccount: vi.fn().mockResolvedValue(singleAccount),
     readAccountBalance: vi.fn().mockResolvedValue(overrides.singleBalance),
@@ -538,6 +532,62 @@ describe('AccountsService.create', () => {
     expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
   });
 
+  it('answers currency_unsupported when the database refuses an account whose currency has no recorded rate', async () => {
+    // The currency rule now lives in a database trigger. Its refusal must come back
+    // as the 422 the contract declares, not as an unhandled error that would surface
+    // as a 500 for an ordinary caller who simply has not recorded the rate yet.
+    const store = fakeStore('owner');
+    const triggerViolation = Object.assign(
+      new Error(
+        'exchange rate required for account currency differing from workspace base currency',
+      ),
+      { code: '23514', constraint: 'accounts_currency_requires_exchange_rate' },
+    );
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockRejectedValue(triggerViolation),
+    };
+    const idempStore = fakeIdempotencyStore();
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe('currency_unsupported');
+  });
+
+  it('rethrows an unrelated check violation instead of mislabelling it as a currency problem', async () => {
+    // Matching on SQLSTATE 23514 alone would swallow every other check constraint on
+    // public.accounts and report it as a currency error. Pin that the constraint name
+    // is part of the condition.
+    const store = fakeStore('owner');
+    const otherViolation = Object.assign(new Error('some other check failed'), {
+      code: '23514',
+      constraint: 'accounts_check',
+    });
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockRejectedValue(otherViolation),
+    };
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      fakeIdempotencyStore(),
+    );
+
+    await expect(
+      service.create(SUBJECT, WORKSPACE_ID, VALID_COMMAND, IDEMPOTENCY_KEY),
+    ).rejects.toThrow('some other check failed');
+  });
+
   it('answers forbidden when the actor is a viewer and never creates account', async () => {
     const store = fakeStore('viewer');
     const storeWithCreate = {
@@ -785,15 +835,14 @@ describe('AccountsService.create', () => {
     }
   });
 
-  it('refuses creation with currency_unsupported when command currency differs from workspace base currency and never writes or creates account', async () => {
-    const store = fakeStore('owner', [], undefined, account(), undefined, {
-      baseCurrency: 'USD',
-    });
+  it('forwards command with non-base currency to store without application-level currency refusal (D4)', async () => {
+    const createdAccount = account({ currency: 'EUR' });
+    const store = fakeStore('owner', [], undefined, createdAccount);
     const storeWithCreate = {
       ...store,
-      createAccount: vi.fn(),
+      createAccount: vi.fn().mockResolvedValue(createdAccount),
     };
-    const idempStore = fakeIdempotencyStore();
+    const idempStore = fakeIdempotencyStore(undefined, true);
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
@@ -807,20 +856,13 @@ describe('AccountsService.create', () => {
       IDEMPOTENCY_KEY,
     );
 
-    expect(outcome.kind).toBe('currency_unsupported');
-    expect(idempStore.read).toHaveBeenCalledWith(
+    expect(outcome.kind).toBe('created');
+    expect(storeWithCreate.createAccount).toHaveBeenCalledWith(
       CLIENT,
+      WORKSPACE_ID,
       SUBJECT,
-      'POST /v1/accounts',
-      IDEMPOTENCY_KEY,
-      WORKSPACE_ID,
+      { ...VALID_COMMAND, currency: 'EUR' },
     );
-    expect(store.readWorkspaceBaseCurrency).toHaveBeenCalledWith(
-      CLIENT,
-      WORKSPACE_ID,
-    );
-    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
-    expect(idempStore.write).not.toHaveBeenCalled();
   });
 
   it('allows creation when command currency matches workspace base currency', async () => {
@@ -850,18 +892,12 @@ describe('AccountsService.create', () => {
       kind: 'created',
       account: createdAccount,
     });
-    expect(store.readWorkspaceBaseCurrency).toHaveBeenCalledWith(
-      CLIENT,
-      WORKSPACE_ID,
-    );
     expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
   });
 
   it('allows creation in a non-USD workspace when currency matches that workspace base currency', async () => {
     const createdAccount = account({ currency: 'EUR' });
-    const store = fakeStore('owner', [], undefined, createdAccount, undefined, {
-      baseCurrency: 'EUR',
-    });
+    const store = fakeStore('owner', [], undefined, createdAccount);
     const storeWithCreate = {
       ...store,
       createAccount: vi.fn().mockResolvedValue(createdAccount),
@@ -884,40 +920,10 @@ describe('AccountsService.create', () => {
       kind: 'created',
       account: createdAccount,
     });
-    expect(store.readWorkspaceBaseCurrency).toHaveBeenCalledWith(
-      CLIENT,
-      WORKSPACE_ID,
-    );
     expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
   });
 
-  it('answers forbidden when workspace base currency read is undefined', async () => {
-    const store = fakeStore('owner', [], undefined, account(), undefined, {
-      baseCurrency: undefined,
-    });
-    const storeWithCreate = {
-      ...store,
-      createAccount: vi.fn(),
-    };
-    const idempStore = fakeIdempotencyStore();
-    const service = new AccountsService(
-      new FakeTransaction(),
-      storeWithCreate,
-      idempStore,
-    );
-
-    const outcome = await service.create(
-      SUBJECT,
-      WORKSPACE_ID,
-      VALID_COMMAND,
-      IDEMPOTENCY_KEY,
-    );
-
-    expect(outcome.kind).toBe('forbidden');
-    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
-  });
-
-  it('replays stored successful 201 response under the same key even after workspace base currency changes', async () => {
+  it('replays stored successful 201 response under the same key without re-executing create', async () => {
     const createdAccount = account({ currency: 'USD' });
     let storedRecord: IdempotencyRecord | undefined;
     const idempStore: IdempotencyStore & {
@@ -947,9 +953,7 @@ describe('AccountsService.create', () => {
       ),
     };
 
-    const store = fakeStore('owner', [], undefined, createdAccount, undefined, {
-      baseCurrency: 'USD',
-    });
+    const store = fakeStore('owner', [], undefined, createdAccount);
     const storeWithCreate = {
       ...store,
       createAccount: vi.fn().mockResolvedValue(createdAccount),
@@ -972,19 +976,6 @@ describe('AccountsService.create', () => {
     });
     expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
 
-    // Workspace base currency mutates in store.
-    storeWithCreate.readWorkspaceBaseCurrency.mockResolvedValue('EUR');
-
-    // Pin the precondition this scenario is named for. Without these two lines
-    // the test still passes when the mutation above is deleted, because the
-    // idempotency branch returns before any second currency read: the scenario
-    // would silently degrade into ordinary replay coverage.
-    await expect(
-      storeWithCreate.readWorkspaceBaseCurrency(CLIENT, WORKSPACE_ID),
-    ).resolves.toBe('EUR');
-    const readsBeforeReplay =
-      storeWithCreate.readWorkspaceBaseCurrency.mock.calls.length;
-
     // Replay same key and same payload
     const second = await service.create(
       SUBJECT,
@@ -999,11 +990,6 @@ describe('AccountsService.create', () => {
       body: createdAccount,
     });
     expect(storeWithCreate.createAccount).toHaveBeenCalledTimes(1);
-    // The replay short-circuits before the currency check, so the mutated
-    // base currency is never consulted.
-    expect(storeWithCreate.readWorkspaceBaseCurrency.mock.calls.length).toBe(
-      readsBeforeReplay,
-    );
   });
 });
 
