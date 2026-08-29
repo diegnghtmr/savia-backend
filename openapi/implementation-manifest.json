@@ -151,6 +151,26 @@
       "operationId": "createCurrencyExchange",
       "method": "POST",
       "path": "/v1/currency-exchanges"
+    },
+    {
+      "operationId": "listTags",
+      "method": "GET",
+      "path": "/v1/tags"
+    },
+    {
+      "operationId": "createTag",
+      "method": "POST",
+      "path": "/v1/tags"
+    },
+    {
+      "operationId": "listPayees",
+      "method": "GET",
+      "path": "/v1/payees"
+    },
+    {
+      "operationId": "createPayee",
+      "method": "POST",
+      "path": "/v1/payees"
     }
   ]
 }

@@ -110,6 +110,10 @@ describe('health endpoint', () => {
       'POST /v1/currency-exchanges',
       'POST /v1/exchange-rates',
       'GET /v1/exchange-rates',
+      'POST /v1/tags',
+      'GET /v1/tags',
+      'POST /v1/payees',
+      'GET /v1/payees',
     ]);
 
     await app.close();
