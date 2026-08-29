@@ -42,6 +42,7 @@ case "$spec" in
   test/ledger/transfers-create.integration-spec.ts) ;;
   test/ledger/exchange-rates-schema.integration-spec.ts) ;;
   test/ledger/exchange-rates-create.integration-spec.ts) ;;
+  test/ledger/exchange-rates-list.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
