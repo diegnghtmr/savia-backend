@@ -876,6 +876,56 @@ components:
             - string
             - 'null'
           maxLength: 500
+    ExchangeRate:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - baseCurrency
+        - quoteCurrency
+        - rate
+        - effectiveAt
+        - source
+      properties:
+        id:
+          type: string
+          format: uuid
+        baseCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        quoteCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        rate:
+          $ref: '#/components/schemas/DecimalString'
+        effectiveAt:
+          type: string
+          format: date-time
+        source:
+          type: string
+        manual:
+          type: boolean
+    CreateManualExchangeRateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - baseCurrency
+        - quoteCurrency
+        - rate
+        - effectiveAt
+      properties:
+        baseCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        quoteCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        rate:
+          $ref: '#/components/schemas/DecimalString'
+        effectiveAt:
+          type: string
+          format: date-time
+        notes:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -2966,4 +3016,84 @@ paths:
         requiresApproval: true
         requiredScopes:
           - transactions:write
+      x-idempotency-required: true
+  /v1/exchange-rates:
+    post:
+      operationId: createManualExchangeRate
+      tags:
+        - Currencies
+      summary: Create manual exchange rate
+      x-financial: true
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateManualExchangeRateRequest'
+      responses:
+        '201':
+          description: Manual exchange rate created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExchangeRate'
+        '400':
+          description: The request header or body failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Validation failed or business invariant violated.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: create_manual_exchange_rate
+        riskClass: financial_write
+        requiresApproval: true
+        requiredScopes:
+          - currencies:write
       x-idempotency-required: true
