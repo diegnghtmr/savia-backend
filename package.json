@@ -49,6 +49,7 @@
     "test:integration:transactions-void": "bash scripts/run-disposable-database-suite.sh test/ledger/transactions-void.integration-spec.ts",
     "test:integration:transfers-schema": "bash scripts/run-disposable-database-suite.sh test/ledger/transfers-schema.integration-spec.ts",
     "test:integration:transfers-create": "bash scripts/run-disposable-database-suite.sh test/ledger/transfers-create.integration-spec.ts",
+    "test:integration:currency-exchanges-create": "bash scripts/run-disposable-database-suite.sh test/ledger/currency-exchanges-create.integration-spec.ts",
     "test:integration:exchange-rates-schema": "bash scripts/run-disposable-database-suite.sh test/ledger/exchange-rates-schema.integration-spec.ts",
     "test:integration:exchange-rates-create": "bash scripts/run-disposable-database-suite.sh test/ledger/exchange-rates-create.integration-spec.ts",
     "test:integration:exchange-rates-list": "bash scripts/run-disposable-database-suite.sh test/ledger/exchange-rates-list.integration-spec.ts",
