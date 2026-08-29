@@ -313,7 +313,7 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
       ]);
     });
 
-    it('Policies on public.exchange_rates are pinned: reads and inserts for savia_application, NO update or delete policy', async () => {
+    it('Policies on public.exchange_rates are pinned: application reads and inserts, elevated reads, NO update or delete policy', async () => {
       const policiesRes = await admin.query<{
         polname: string;
         polcmd: string;
@@ -338,6 +338,11 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
           'savia_application',
         ],
         ['application_reads_workspace_exchange_rate', 'r', 'savia_application'],
+        // Added by 202608290001_relax_account_currency_invariant.sql: the
+        // security-definer trigger that requires a rate before allowing a
+        // foreign-currency account runs as savia_elevated, which FORCEs RLS here
+        // and therefore needs its own read policy. It is read-only by design.
+        ['elevated_reads_exchange_rates', 'r', 'savia_elevated'],
       ]);
       expect(policiesRes.rows.some((r) => r.polcmd === 'w')).toBe(false);
       expect(policiesRes.rows.some((r) => r.polcmd === 'd')).toBe(false);
