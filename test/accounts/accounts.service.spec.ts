@@ -141,7 +141,6 @@ function fakeStore(
   } = {},
 ): AccountsStore & {
   readActiveRole: ReturnType<typeof vi.fn>;
-  readWorkspaceBaseCurrency: ReturnType<typeof vi.fn>;
   listAccounts: ReturnType<typeof vi.fn>;
   readAccount: ReturnType<typeof vi.fn>;
   readAccountBalance: ReturnType<typeof vi.fn>;
@@ -153,17 +152,12 @@ function fakeStore(
   const normalized: AccountItem[] = rows.map((r) =>
     'account' in r ? r : toItem(r),
   );
-  // Distinguish an explicit `undefined` base currency (the workspace row is
-  // invisible) from the parameter never being supplied at all.
-  const resolvedBaseCurrency =
-    'baseCurrency' in overrides ? overrides.baseCurrency : 'USD';
   const resolvedClosedAcc =
     'closedAcc' in overrides
       ? overrides.closedAcc
       : account({ status: 'closed', version: 2 });
   return {
     readActiveRole: vi.fn().mockResolvedValue(role),
-    readWorkspaceBaseCurrency: vi.fn().mockResolvedValue(resolvedBaseCurrency),
     listAccounts: vi.fn().mockResolvedValue(normalized),
     readAccount: vi.fn().mockResolvedValue(singleAccount),
     readAccountBalance: vi.fn().mockResolvedValue(overrides.singleBalance),
@@ -785,15 +779,14 @@ describe('AccountsService.create', () => {
     }
   });
 
-  it('refuses creation with currency_unsupported when command currency differs from workspace base currency and never writes or creates account', async () => {
-    const store = fakeStore('owner', [], undefined, account(), undefined, {
-      baseCurrency: 'USD',
-    });
+  it('forwards command with non-base currency to store without application-level currency refusal (D4)', async () => {
+    const createdAccount = account({ currency: 'EUR' });
+    const store = fakeStore('owner', [], undefined, createdAccount);
     const storeWithCreate = {
       ...store,
-      createAccount: vi.fn(),
+      createAccount: vi.fn().mockResolvedValue(createdAccount),
     };
-    const idempStore = fakeIdempotencyStore();
+    const idempStore = fakeIdempotencyStore(undefined, true);
     const service = new AccountsService(
       new FakeTransaction(),
       storeWithCreate,
@@ -807,20 +800,13 @@ describe('AccountsService.create', () => {
       IDEMPOTENCY_KEY,
     );
 
-    expect(outcome.kind).toBe('currency_unsupported');
-    expect(idempStore.read).toHaveBeenCalledWith(
+    expect(outcome.kind).toBe('created');
+    expect(storeWithCreate.createAccount).toHaveBeenCalledWith(
       CLIENT,
+      WORKSPACE_ID,
       SUBJECT,
-      'POST /v1/accounts',
-      IDEMPOTENCY_KEY,
-      WORKSPACE_ID,
+      { ...VALID_COMMAND, currency: 'EUR' },
     );
-    expect(store.readWorkspaceBaseCurrency).toHaveBeenCalledWith(
-      CLIENT,
-      WORKSPACE_ID,
-    );
-    expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
-    expect(idempStore.write).not.toHaveBeenCalled();
   });
 
   it('allows creation when command currency matches workspace base currency', async () => {

@@ -58,6 +58,69 @@ export function toIso(value: unknown): string {
   );
 }
 
+/**
+ * Multiplies an amount in minor units (integer string) by an exchange rate (decimal string)
+ * without using JavaScript floating-point arithmetic.
+ *
+ * Rate semantics (D1):
+ * `rate` means how many units of `quoteCurrency` equal ONE unit of `baseCurrency`.
+ * Standard convention: EUR/USD = 1.08 means 1 EUR = 1.08 USD.
+ * So converting an EUR account into a USD-based workspace needs a row with
+ * `base_currency = 'EUR'` and `quote_currency = 'USD'`.
+ *
+ * Rounding convention:
+ * Round half away from zero (standard commercial / financial rounding).
+ * When converting minor units via exchange rate, fractional minor units (sub-cents) with
+ * magnitude >= 0.5 round away from zero to ensure deterministic, standard financial rounding
+ * without floating-point inaccuracy or cumulative downward bias.
+ */
+export function multiplyMinorByRate(
+  amountMinorStr: string,
+  rateStr: string,
+): string {
+  const isNegativeRate = rateStr.startsWith('-');
+  const cleanRate = isNegativeRate ? rateStr.slice(1) : rateStr;
+  const dotIndex = cleanRate.indexOf('.');
+
+  let unscaledRateStr: string;
+  let scale = 0;
+  if (dotIndex === -1) {
+    unscaledRateStr = cleanRate;
+  } else {
+    const intPart = cleanRate.slice(0, dotIndex);
+    const fracPart = cleanRate.slice(dotIndex + 1);
+    scale = fracPart.length;
+    unscaledRateStr = intPart + fracPart;
+  }
+
+  const unscaledRate = BigInt(unscaledRateStr);
+  const rateNumerator = isNegativeRate ? -unscaledRate : unscaledRate;
+  const rateDenominator = 10n ** BigInt(scale);
+  const amountMinor = BigInt(amountMinorStr);
+
+  const product = amountMinor * rateNumerator;
+  if (rateDenominator === 1n) {
+    return product.toString();
+  }
+
+  if (product >= 0n) {
+    let quotient = product / rateDenominator;
+    const remainder = product % rateDenominator;
+    if (remainder * 2n >= rateDenominator) {
+      quotient += 1n;
+    }
+    return quotient.toString();
+  } else {
+    const absProduct = -product;
+    let quotient = absProduct / rateDenominator;
+    const remainder = absProduct % rateDenominator;
+    if (remainder * 2n >= rateDenominator) {
+      quotient += 1n;
+    }
+    return (-quotient).toString();
+  }
+}
+
 export class PostgresAccountsAdapter implements AccountsStore {
   public async readActiveRole(
     client: TransactionClient,
@@ -451,16 +514,19 @@ returning
     accountId: string,
     asOf?: string,
   ): Promise<AccountBalance | undefined> {
-    // 1. Account existence and currency lookup scoped strictly by workspace_id
+    // 1. Account existence, account currency, and workspace base currency lookup
+    // scoped strictly by workspace_id.
     const accountSql = `
-select a.currency
+select a.currency as "accountCurrency",
+       w.base_currency as "workspaceBaseCurrency"
   from public.accounts a
+  join public.workspaces w on w.id = a.workspace_id
  where a.workspace_id = $1::uuid
    and a.id = $2::uuid`;
-    const accountResult = await client.query<{ currency: string }>(accountSql, [
-      workspaceId,
-      accountId,
-    ]);
+    const accountResult = await client.query<{
+      accountCurrency: string;
+      workspaceBaseCurrency: string;
+    }>(accountSql, [workspaceId, accountId]);
     const accountRow = accountResult.rows[0];
     if (!accountRow) {
       return undefined;
@@ -506,36 +572,91 @@ select
       );
     }
 
-    const currency = accountRow.currency;
+    const accountCurrency = accountRow.accountCurrency;
+    const workspaceBaseCurrency = accountRow.workspaceBaseCurrency;
     const asOfIso = balanceRow.effectiveAsOf;
-    const rateDate = asOfIso.slice(0, 10);
+
+    let rate: string;
+    let rateDate: string;
+    let rateSource: string;
+    let convertedAmountMinor: string;
+
+    if (accountCurrency === workspaceBaseCurrency) {
+      rate = '1';
+      rateDate = asOfIso.slice(0, 10);
+      rateSource = 'identity';
+      convertedAmountMinor = balanceRow.nativeBalance;
+    } else {
+      // Rate semantics (D1):
+      // `rate` means how many units of `quoteCurrency` equal ONE unit of `baseCurrency`.
+      // Standard convention: EUR/USD = 1.08 means 1 EUR = 1.08 USD.
+      // So converting an EUR account into a USD-based workspace needs a row with
+      // `base_currency = 'EUR'` and `quote_currency = 'USD'`.
+      const rateSql = `
+select rate::text as rate,
+       to_char(effective_at at time zone 'utc', 'YYYY-MM-DD') as "rateDate",
+       source as "rateSource"
+  from public.exchange_rates
+ where workspace_id = $1::uuid
+   and base_currency = $2
+   and quote_currency = $3
+   and effective_at <= coalesce($4::timestamptz, now())
+ order by effective_at desc, id desc
+ limit 1`;
+
+      const rateResult = await client.query<{
+        rate: string;
+        rateDate: string;
+        rateSource: string;
+      }>(rateSql, [
+        workspaceId,
+        accountCurrency,
+        workspaceBaseCurrency,
+        asOf ?? null,
+      ]);
+
+      const rateRow = rateResult.rows[0];
+      if (!rateRow) {
+        throw new Error(
+          `No exchange rate found for converting account currency ${accountCurrency} to workspace base currency ${workspaceBaseCurrency}.`,
+        );
+      }
+
+      rate = rateRow.rate;
+      rateDate = rateRow.rateDate;
+      rateSource = rateRow.rateSource;
+      convertedAmountMinor = multiplyMinorByRate(
+        balanceRow.nativeBalance,
+        rate,
+      );
+    }
 
     return {
       accountId,
       nativeBalance: {
         amountMinor: balanceRow.nativeBalance,
-        currency,
+        currency: accountCurrency,
       },
       pendingBalance: {
         amountMinor: balanceRow.pendingBalance,
-        currency,
+        currency: accountCurrency,
       },
       reconciledBalance: {
         amountMinor: balanceRow.reconciledBalance,
-        currency,
+        currency: accountCurrency,
       },
       baseCurrencyEquivalent: {
         original: {
           amountMinor: balanceRow.nativeBalance,
-          currency,
+          currency: accountCurrency,
         },
         converted: {
-          amountMinor: balanceRow.nativeBalance,
-          currency,
+          amountMinor: convertedAmountMinor,
+          currency: workspaceBaseCurrency,
         },
-        rate: '1',
+        rate,
         rateDate,
-        rateSource: 'identity',
+        rateSource,
       },
       asOf: asOfIso,
     };
