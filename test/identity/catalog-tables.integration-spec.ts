@@ -262,17 +262,41 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
       ]);
     });
 
-    it('Exact grants are pinned: select, column-scoped insert and update present, delete absent on categories', async () => {
+    it('Supporting indexes exist for created_by on categories, tags, and payees', async () => {
+      for (const [table, idxName] of [
+        ['public.categories', 'categories_created_by_idx'],
+        ['public.tags', 'tags_created_by_idx'],
+        ['public.payees', 'payees_created_by_idx'],
+      ]) {
+        const res = await admin.query<{ colnames: string[] }>(
+          `select array_agg(a.attname::text order by k.ord) as colnames
+             from pg_index i
+             join pg_class idx on idx.oid = i.indexrelid
+             join lateral unnest(i.indkey::smallint[]) with ordinality as k(attnum, ord) on true
+             join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+            where idx.relname = $1
+              and i.indrelid = $2::regclass
+              and i.indisunique = false`,
+          [idxName, table],
+        );
+        expect(res.rows).toHaveLength(1);
+        expect(res.rows[0].colnames).toEqual(['created_by']);
+      }
+    });
+
+    it('Exact grants are pinned: select, column-scoped insert and update present, delete/truncate/references/trigger absent on categories', async () => {
       const result = await admin.query<{
         column_name: string;
         readable: boolean;
         insertable: boolean;
         updatable: boolean;
+        referenceable: boolean;
       }>(
         `select column_name,
                 has_column_privilege('savia_application', 'public.categories', column_name, 'select') as readable,
                 has_column_privilege('savia_application', 'public.categories', column_name, 'insert') as insertable,
-                has_column_privilege('savia_application', 'public.categories', column_name, 'update') as updatable
+                has_column_privilege('savia_application', 'public.categories', column_name, 'update') as updatable,
+                has_column_privilege('savia_application', 'public.categories', column_name, 'references') as referenceable
            from information_schema.columns
           where table_schema = 'public' and table_name = 'categories'
           order by column_name`,
@@ -320,29 +344,52 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
         'parent_id',
       ]);
 
-      const delResult = await admin.query<{ has_delete: boolean }>(
-        `select has_table_privilege('savia_application', 'public.categories', 'delete') as has_delete`,
-      );
-      expect(delResult.rows[0].has_delete).toBe(false);
+      const referenceable = result.rows
+        .filter((r) => r.referenceable)
+        .map((r) => r.column_name);
+      expect(referenceable).toEqual([]);
 
-      const updateTableResult = await admin.query<{ has_update: boolean }>(
-        `select has_table_privilege('savia_application', 'public.categories', 'update') as has_update`,
+      for (const priv of [
+        'select',
+        'insert',
+        'update',
+        'delete',
+        'truncate',
+        'references',
+        'trigger',
+      ] as const) {
+        const tablePrivRes = await admin.query<{ has_priv: boolean }>(
+          `select has_table_privilege('savia_application', 'public.categories', $1) as has_priv`,
+          [priv],
+        );
+        expect(tablePrivRes.rows[0].has_priv).toBe(priv === 'select');
+      }
+
+      // Direct DELETE attempt as savia_application is rejected with 42501
+      const deleteErr = await capturePgError(() =>
+        asSubject(ownerA, (client) =>
+          client.query(
+            `delete from public.categories where id = '00000000-0000-0000-0000-000000000000'`,
+          ),
+        ),
       );
-      expect(updateTableResult.rows[0].has_update).toBe(false);
+      expect(deleteErr.code).toBe('42501');
     });
 
-    it('Exact grants are pinned: select, column-scoped insert and update present, delete absent on tags and payees', async () => {
+    it('Exact grants are pinned: select, column-scoped insert and update present, delete/truncate/references/trigger absent on tags and payees', async () => {
       for (const table of ['tags', 'payees']) {
         const result = await admin.query<{
           column_name: string;
           readable: boolean;
           insertable: boolean;
           updatable: boolean;
+          referenceable: boolean;
         }>(
           `select column_name,
                   has_column_privilege('savia_application', $1, column_name, 'select') as readable,
                   has_column_privilege('savia_application', $1, column_name, 'insert') as insertable,
-                  has_column_privilege('savia_application', $1, column_name, 'update') as updatable
+                  has_column_privilege('savia_application', $1, column_name, 'update') as updatable,
+                  has_column_privilege('savia_application', $1, column_name, 'references') as referenceable
              from information_schema.columns
             where table_schema = 'public' and table_name = $2
             order by column_name`,
@@ -376,59 +423,167 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
           .map((r) => r.column_name);
         expect(updatable).toEqual(['archived', 'name']);
 
-        const delResult = await admin.query<{ has_delete: boolean }>(
-          `select has_table_privilege('savia_application', $1, 'delete') as has_delete`,
-          [`public.${table}`],
-        );
-        expect(delResult.rows[0].has_delete).toBe(false);
+        const referenceable = result.rows
+          .filter((r) => r.referenceable)
+          .map((r) => r.column_name);
+        expect(referenceable).toEqual([]);
 
-        const updateTableResult = await admin.query<{ has_update: boolean }>(
-          `select has_table_privilege('savia_application', $1, 'update') as has_update`,
-          [`public.${table}`],
+        for (const priv of [
+          'select',
+          'insert',
+          'update',
+          'delete',
+          'truncate',
+          'references',
+          'trigger',
+        ] as const) {
+          const tablePrivRes = await admin.query<{ has_priv: boolean }>(
+            `select has_table_privilege('savia_application', $1, $2) as has_priv`,
+            [`public.${table}`, priv],
+          );
+          expect(tablePrivRes.rows[0].has_priv).toBe(priv === 'select');
+        }
+
+        const deleteErr = await capturePgError(() =>
+          asSubject(ownerA, (client) =>
+            client.query(
+              `delete from public.${table} where id = '00000000-0000-0000-0000-000000000000'`,
+            ),
+          ),
         );
-        expect(updateTableResult.rows[0].has_update).toBe(false);
+        expect(deleteErr.code).toBe('42501');
       }
     });
 
-    it('Policies on categories, tags, and payees are pinned: application reads, inserts, and updates present; no delete policy', async () => {
+    it('Policies on categories, tags, and payees are pinned: predicates, commands, permissions, and complete role arrays', async () => {
       const getPolicies = async (tableName: string) => {
         const res = await admin.query<{
           polname: string;
           polcmd: string;
-          grantee: string | null;
+          polpermissive: boolean;
+          roles: string[];
+          polqual: string | null;
+          polwithcheck: string | null;
         }>(
           `select p.polname,
                   p.polcmd::text as polcmd,
-                  min(pg_get_userbyid(role_oid)) as grantee
+                  p.polpermissive,
+                  (
+                    select array_agg(pg_get_userbyid(r.oid)::text order by pg_get_userbyid(r.oid)::text)
+                    from unnest(p.polroles) as r(oid)
+                  ) as roles,
+                  pg_get_expr(p.polqual, p.polrelid) as polqual,
+                  pg_get_expr(p.polwithcheck, p.polrelid) as polwithcheck
              from pg_policy p
-             cross join lateral unnest(p.polroles::oid[]) as role_oids(role_oid)
             where p.polrelid = $1::regclass
-            group by p.polname, p.polcmd
             order by p.polname`,
           [`public.${tableName}`],
         );
-        return res.rows.map((r) => [r.polname, r.polcmd, r.grantee]);
+        return res.rows;
       };
 
       const categoriesPolicies = await getPolicies('categories');
       expect(categoriesPolicies).toEqual([
-        ['application_inserts_workspace_category', 'a', 'savia_application'],
-        ['application_reads_workspace_category', 'r', 'savia_application'],
-        ['application_updates_workspace_category', 'w', 'savia_application'],
+        {
+          polname: 'application_inserts_workspace_category',
+          polcmd: 'a',
+          polpermissive: true,
+          roles: ['savia_application'],
+          polqual: null,
+          polwithcheck:
+            "((workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text])) AND (created_by = (NULLIF(current_setting('app.subject_id'::text, true), ''::text))::uuid))",
+        },
+        {
+          polname: 'application_reads_workspace_category',
+          polcmd: 'r',
+          polpermissive: true,
+          roles: ['savia_application'],
+          polqual:
+            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text, 'viewer'::text]))",
+          polwithcheck: null,
+        },
+        {
+          polname: 'application_updates_workspace_category',
+          polcmd: 'w',
+          polpermissive: true,
+          roles: ['savia_application'],
+          polqual:
+            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text]))",
+          polwithcheck:
+            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text]))",
+        },
+        {
+          polname: 'elevated_reads_categories',
+          polcmd: 'r',
+          polpermissive: true,
+          roles: ['savia_elevated'],
+          polqual: 'true',
+          polwithcheck: null,
+        },
       ]);
 
       const tagsPolicies = await getPolicies('tags');
       expect(tagsPolicies).toEqual([
-        ['application_inserts_workspace_tag', 'a', 'savia_application'],
-        ['application_reads_workspace_tag', 'r', 'savia_application'],
-        ['application_updates_workspace_tag', 'w', 'savia_application'],
+        {
+          polname: 'application_inserts_workspace_tag',
+          polcmd: 'a',
+          polpermissive: true,
+          roles: ['savia_application'],
+          polqual: null,
+          polwithcheck:
+            "((workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text])) AND (created_by = (NULLIF(current_setting('app.subject_id'::text, true), ''::text))::uuid))",
+        },
+        {
+          polname: 'application_reads_workspace_tag',
+          polcmd: 'r',
+          polpermissive: true,
+          roles: ['savia_application'],
+          polqual:
+            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text, 'viewer'::text]))",
+          polwithcheck: null,
+        },
+        {
+          polname: 'application_updates_workspace_tag',
+          polcmd: 'w',
+          polpermissive: true,
+          roles: ['savia_application'],
+          polqual:
+            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text]))",
+          polwithcheck:
+            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text]))",
+        },
       ]);
 
       const payeesPolicies = await getPolicies('payees');
       expect(payeesPolicies).toEqual([
-        ['application_inserts_workspace_payee', 'a', 'savia_application'],
-        ['application_reads_workspace_payee', 'r', 'savia_application'],
-        ['application_updates_workspace_payee', 'w', 'savia_application'],
+        {
+          polname: 'application_inserts_workspace_payee',
+          polcmd: 'a',
+          polpermissive: true,
+          roles: ['savia_application'],
+          polqual: null,
+          polwithcheck:
+            "((workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text])) AND (created_by = (NULLIF(current_setting('app.subject_id'::text, true), ''::text))::uuid))",
+        },
+        {
+          polname: 'application_reads_workspace_payee',
+          polcmd: 'r',
+          polpermissive: true,
+          roles: ['savia_application'],
+          polqual:
+            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text, 'viewer'::text]))",
+          polwithcheck: null,
+        },
+        {
+          polname: 'application_updates_workspace_payee',
+          polcmd: 'w',
+          polpermissive: true,
+          roles: ['savia_application'],
+          polqual:
+            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text]))",
+          polwithcheck:
+            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text]))",
+        },
       ]);
     });
   });
@@ -625,7 +780,7 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
       );
     });
 
-    it('3. RULING 48 COMPOSITE SELF-FK: category self-FK REJECTS a parent belonging to a different workspace (cross-workspace poison-row guard)', async () => {
+    it('3. RULING 48 COMPOSITE SELF-FK: category self-FK REJECTS a parent belonging to a different workspace on INSERT and UPDATE, and pg_constraint pins FK definition', async () => {
       // 1. Create a parent category in workspace 1
       const ws1ParentRes = await asSubject(ownerA, (client) =>
         client.query<{ id: string }>(
@@ -637,11 +792,22 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
       );
       const ws1ParentId = ws1ParentRes.rows[0].id;
 
+      // 2. Create a parent category in workspace 2
+      const ws2ParentRes = await asSubject(ownerB, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.categories (workspace_id, name, kind, created_by)
+           values ($1, 'Workspace 2 Parent', 'expense', $2)
+           returning id`,
+          [ws2Id, ownerB],
+        ),
+      );
+      const ws2ParentId = ws2ParentRes.rows[0].id;
+
       try {
-        // 2. Attempt to create a child category in workspace 2 referencing the parent in workspace 1
+        // 3. Attempt to create a child category in workspace 2 referencing the parent in workspace 1
         // RULING 48 composite FK: (workspace_id, parent_id) references public.categories (workspace_id, id)
         // Must fail with SQLSTATE 23503 foreign_key_violation
-        const crossWsErr = await capturePgError(() =>
+        const crossWsInsertErr = await capturePgError(() =>
           asSubject(ownerB, (client) =>
             client.query(
               `insert into public.categories (workspace_id, parent_id, name, kind, created_by)
@@ -650,12 +816,12 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
             ),
           ),
         );
-        expect(crossWsErr.code).toBe('23503');
-        expect(crossWsErr.message ?? '').toContain(
+        expect(crossWsInsertErr.code).toBe('23503');
+        expect(crossWsInsertErr.message ?? '').toContain(
           'categories_parent_workspace_fkey',
         );
 
-        // 3. Attempt to reference a completely non-existent parent_id in workspace 1
+        // 4. Attempt to reference a completely non-existent parent_id in workspace 1
         const nonExistentParentErr = await capturePgError(() =>
           asSubject(ownerA, (client) =>
             client.query(
@@ -670,7 +836,7 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
           'categories_parent_workspace_fkey',
         );
 
-        // 4. Same workspace parent reference SUCCEEDS
+        // 5. Same workspace parent reference on INSERT SUCCEEDS
         const validChildRes = await asSubject(ownerA, (client) =>
           client.query<{ id: string }>(
             `insert into public.categories (workspace_id, parent_id, name, kind, created_by)
@@ -679,15 +845,67 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
             [ws1Id, ws1ParentId, ownerA],
           ),
         );
-        expect(validChildRes.rows[0].id).toBeDefined();
+        const validChildId = validChildRes.rows[0].id;
+        expect(validChildId).toBeDefined();
+
+        // 6. Attempt to UPDATE existing workspace-1 category to point to workspace-2 parent -> rejected with 23503
+        const crossWsUpdateErr = await capturePgError(() =>
+          asSubject(ownerA, (client) =>
+            client.query(
+              `update public.categories set parent_id = $1 where id = $2`,
+              [ws2ParentId, validChildId],
+            ),
+          ),
+        );
+        expect(crossWsUpdateErr.code).toBe('23503');
+        expect(crossWsUpdateErr.message ?? '').toContain(
+          'categories_parent_workspace_fkey',
+        );
+
+        // 7. Assert via pg_constraint that FK source columns are (workspace_id, parent_id), target (workspace_id, id), and ON DELETE RESTRICT
+        const fkRes = await admin.query<{
+          conname: string;
+          contype: string;
+          confdeltype: string;
+          conkey_cols: string[];
+          confkey_cols: string[];
+        }>(
+          `select c.conname,
+                  c.contype,
+                  c.confdeltype,
+                  array(
+                    select a.attname::text
+                    from unnest(c.conkey) with ordinality as k(attnum, ord)
+                    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum
+                    order by k.ord
+                  ) as conkey_cols,
+                  array(
+                    select a.attname::text
+                    from unnest(c.confkey) with ordinality as k(attnum, ord)
+                    join pg_attribute a on a.attrelid = c.confrelid and a.attnum = k.attnum
+                    order by k.ord
+                  ) as confkey_cols
+             from pg_constraint c
+            where c.conrelid = 'public.categories'::regclass
+              and c.conname = 'categories_parent_workspace_fkey'`,
+        );
+        expect(fkRes.rows).toHaveLength(1);
+        expect(fkRes.rows[0]).toEqual({
+          conname: 'categories_parent_workspace_fkey',
+          contype: 'f',
+          confdeltype: 'r',
+          conkey_cols: ['workspace_id', 'parent_id'],
+          confkey_cols: ['workspace_id', 'id'],
+        });
 
         await admin.query('delete from public.categories where id = $1', [
-          validChildRes.rows[0].id,
+          validChildId,
         ]);
       } finally {
-        await admin.query('delete from public.categories where id = $1', [
-          ws1ParentId,
-        ]);
+        await admin.query(
+          'delete from public.categories where id = any($1::uuid[])',
+          [[ws1ParentId, ws2ParentId]],
+        );
       }
     });
 
@@ -996,12 +1214,11 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
       }
     });
 
-    it('8. RLS access control: role permissions, update capability, viewer/outsider restrictions, and forged created_by', async () => {
-      // 1. Owner can insert category, tag, payee
+    it('8. Positive updates assert rowCount === 1 and read back row correctly for owner, administrator, and editor on categories, tags, and payees', async () => {
       const catRes = await asSubject(ownerA, (client) =>
         client.query<{ id: string }>(
           `insert into public.categories (workspace_id, name, kind, created_by)
-           values ($1, 'RLS Test Category', 'expense', $2)
+           values ($1, 'Positive Update Category', 'expense', $2)
            returning id`,
           [ws1Id, ownerA],
         ),
@@ -1011,7 +1228,7 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
       const tagRes = await asSubject(ownerA, (client) =>
         client.query<{ id: string }>(
           `insert into public.tags (workspace_id, name, created_by)
-           values ($1, 'RLS Test Tag', $2)
+           values ($1, 'Positive Update Tag', $2)
            returning id`,
           [ws1Id, ownerA],
         ),
@@ -1021,7 +1238,7 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
       const payeeRes = await asSubject(ownerA, (client) =>
         client.query<{ id: string }>(
           `insert into public.payees (workspace_id, name, created_by)
-           values ($1, 'RLS Test Payee', $2)
+           values ($1, 'Positive Update Payee', $2)
            returning id`,
           [ws1Id, ownerA],
         ),
@@ -1029,47 +1246,286 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
       const payeeId = payeeRes.rows[0].id;
 
       try {
-        // 2. Editor can update category, tag, payee (including archiving)
-        await asSubject(editorD, (client) =>
-          client.query(
-            `update public.categories
-                set name = 'RLS Test Category Updated', archived = true
-              where id = $1`,
-            [catId],
-          ),
-        );
-        const updatedCat = await asSubject(ownerA, (client) =>
-          client.query<{ name: string; archived: boolean }>(
-            `select name, archived from public.categories where id = $1`,
-            [catId],
-          ),
-        );
-        expect(updatedCat.rows[0].name).toBe('RLS Test Category Updated');
-        expect(updatedCat.rows[0].archived).toBe(true);
+        for (const [subjectId, roleLabel] of [
+          [ownerA, 'Owner'],
+          [adminC, 'Admin'],
+          [editorD, 'Editor'],
+        ]) {
+          // Category update
+          const newCatName = `Cat Updated by ${roleLabel}`;
+          const catUpdRes = await asSubject(subjectId, (client) =>
+            client.query(
+              `update public.categories set name = $1, archived = false where id = $2`,
+              [newCatName, catId],
+            ),
+          );
+          expect(catUpdRes.rowCount).toBe(1);
+          const catRead = await asSubject(subjectId, (client) =>
+            client.query<{ name: string; archived: boolean }>(
+              `select name, archived from public.categories where id = $1`,
+              [catId],
+            ),
+          );
+          expect(catRead.rows[0].name).toBe(newCatName);
+          expect(catRead.rows[0].archived).toBe(false);
 
-        await asSubject(editorD, (client) =>
-          client.query(
-            `update public.tags
-                set name = 'RLS Test Tag Updated', archived = true
-              where id = $1`,
-            [tagId],
+          // Tag update
+          const newTagName = `Tag Updated by ${roleLabel}`;
+          const tagUpdRes = await asSubject(subjectId, (client) =>
+            client.query(
+              `update public.tags set name = $1, archived = false where id = $2`,
+              [newTagName, tagId],
+            ),
+          );
+          expect(tagUpdRes.rowCount).toBe(1);
+          const tagRead = await asSubject(subjectId, (client) =>
+            client.query<{ name: string; archived: boolean }>(
+              `select name, archived from public.tags where id = $1`,
+              [tagId],
+            ),
+          );
+          expect(tagRead.rows[0].name).toBe(newTagName);
+          expect(tagRead.rows[0].archived).toBe(false);
+
+          // Payee update
+          const newPayeeName = `Payee Updated by ${roleLabel}`;
+          const payeeUpdRes = await asSubject(subjectId, (client) =>
+            client.query(
+              `update public.payees set name = $1, archived = false where id = $2`,
+              [newPayeeName, payeeId],
+            ),
+          );
+          expect(payeeUpdRes.rowCount).toBe(1);
+          const payeeRead = await asSubject(subjectId, (client) =>
+            client.query<{ name: string; archived: boolean }>(
+              `select name, archived from public.payees where id = $1`,
+              [payeeId],
+            ),
+          );
+          expect(payeeRead.rows[0].name).toBe(newPayeeName);
+          expect(payeeRead.rows[0].archived).toBe(false);
+        }
+      } finally {
+        await admin.query('delete from public.categories where id = $1', [catId]);
+        await admin.query('delete from public.tags where id = $1', [tagId]);
+        await admin.query('delete from public.payees where id = $1', [payeeId]);
+      }
+    });
+
+    it('9. Cross-workspace RLS isolation: owner A sees only workspace A, owner B only workspace B, cross-workspace update affects 0 rows, outsider sees none for categories, tags, and payees', async () => {
+      // Seed in workspace 1
+      const ws1CatRes = await asSubject(ownerA, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.categories (workspace_id, name, kind, created_by)
+           values ($1, 'Iso Cat WS1', 'expense', $2)
+           returning id`,
+          [ws1Id, ownerA],
+        ),
+      );
+      const ws1CatId = ws1CatRes.rows[0].id;
+
+      const ws1TagRes = await asSubject(ownerA, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.tags (workspace_id, name, created_by)
+           values ($1, 'Iso Tag WS1', $2)
+           returning id`,
+          [ws1Id, ownerA],
+        ),
+      );
+      const ws1TagId = ws1TagRes.rows[0].id;
+
+      const ws1PayeeRes = await asSubject(ownerA, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.payees (workspace_id, name, created_by)
+           values ($1, 'Iso Payee WS1', $2)
+           returning id`,
+          [ws1Id, ownerA],
+        ),
+      );
+      const ws1PayeeId = ws1PayeeRes.rows[0].id;
+
+      // Seed in workspace 2
+      const ws2CatRes = await asSubject(ownerB, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.categories (workspace_id, name, kind, created_by)
+           values ($1, 'Iso Cat WS2', 'expense', $2)
+           returning id`,
+          [ws2Id, ownerB],
+        ),
+      );
+      const ws2CatId = ws2CatRes.rows[0].id;
+
+      const ws2TagRes = await asSubject(ownerB, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.tags (workspace_id, name, created_by)
+           values ($1, 'Iso Tag WS2', $2)
+           returning id`,
+          [ws2Id, ownerB],
+        ),
+      );
+      const ws2TagId = ws2TagRes.rows[0].id;
+
+      const ws2PayeeRes = await asSubject(ownerB, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.payees (workspace_id, name, created_by)
+           values ($1, 'Iso Payee WS2', $2)
+           returning id`,
+          [ws2Id, ownerB],
+        ),
+      );
+      const ws2PayeeId = ws2PayeeRes.rows[0].id;
+
+      try {
+        // 1. Owner A reads only WS1
+        const ownerACats = await asSubject(ownerA, (client) =>
+          client.query<{ id: string }>(
+            `select id from public.categories where id = any($1::uuid[])`,
+            [[ws1CatId, ws2CatId]],
           ),
         );
+        expect(ownerACats.rows.map((r) => r.id)).toEqual([ws1CatId]);
 
-        await asSubject(editorD, (client) =>
-          client.query(
-            `update public.payees
-                set name = 'RLS Test Payee Updated', archived = true
-              where id = $1`,
-            [payeeId],
+        const ownerATags = await asSubject(ownerA, (client) =>
+          client.query<{ id: string }>(
+            `select id from public.tags where id = any($1::uuid[])`,
+            [[ws1TagId, ws2TagId]],
           ),
         );
+        expect(ownerATags.rows.map((r) => r.id)).toEqual([ws1TagId]);
 
-        // 3. Viewer can read
+        const ownerAPayees = await asSubject(ownerA, (client) =>
+          client.query<{ id: string }>(
+            `select id from public.payees where id = any($1::uuid[])`,
+            [[ws1PayeeId, ws2PayeeId]],
+          ),
+        );
+        expect(ownerAPayees.rows.map((r) => r.id)).toEqual([ws1PayeeId]);
+
+        // 2. Owner B reads only WS2
+        const ownerBCats = await asSubject(ownerB, (client) =>
+          client.query<{ id: string }>(
+            `select id from public.categories where id = any($1::uuid[])`,
+            [[ws1CatId, ws2CatId]],
+          ),
+        );
+        expect(ownerBCats.rows.map((r) => r.id)).toEqual([ws2CatId]);
+
+        const ownerBTags = await asSubject(ownerB, (client) =>
+          client.query<{ id: string }>(
+            `select id from public.tags where id = any($1::uuid[])`,
+            [[ws1TagId, ws2TagId]],
+          ),
+        );
+        expect(ownerBTags.rows.map((r) => r.id)).toEqual([ws2TagId]);
+
+        const ownerBPayees = await asSubject(ownerB, (client) =>
+          client.query<{ id: string }>(
+            `select id from public.payees where id = any($1::uuid[])`,
+            [[ws1PayeeId, ws2PayeeId]],
+          ),
+        );
+        expect(ownerBPayees.rows.map((r) => r.id)).toEqual([ws2PayeeId]);
+
+        // 3. Owner A attempting to update WS2 row affects 0 rows
+        const updateCatRes = await asSubject(ownerA, (client) =>
+          client.query(
+            `update public.categories set name = 'Hacked Cat' where id = $1`,
+            [ws2CatId],
+          ),
+        );
+        expect(updateCatRes.rowCount).toBe(0);
+
+        const updateTagRes = await asSubject(ownerA, (client) =>
+          client.query(
+            `update public.tags set name = 'Hacked Tag' where id = $1`,
+            [ws2TagId],
+          ),
+        );
+        expect(updateTagRes.rowCount).toBe(0);
+
+        const updatePayeeRes = await asSubject(ownerA, (client) =>
+          client.query(
+            `update public.payees set name = 'Hacked Payee' where id = $1`,
+            [ws2PayeeId],
+          ),
+        );
+        expect(updatePayeeRes.rowCount).toBe(0);
+
+        // 4. Outsider reads none
+        const outsiderCats = await asSubject(outsiderZ, (client) =>
+          client.query(
+            `select id from public.categories where id = any($1::uuid[])`,
+            [[ws1CatId, ws2CatId]],
+          ),
+        );
+        expect(outsiderCats.rows).toHaveLength(0);
+
+        const outsiderTags = await asSubject(outsiderZ, (client) =>
+          client.query(
+            `select id from public.tags where id = any($1::uuid[])`,
+            [[ws1TagId, ws2TagId]],
+          ),
+        );
+        expect(outsiderTags.rows).toHaveLength(0);
+
+        const outsiderPayees = await asSubject(outsiderZ, (client) =>
+          client.query(
+            `select id from public.payees where id = any($1::uuid[])`,
+            [[ws1PayeeId, ws2PayeeId]],
+          ),
+        );
+        expect(outsiderPayees.rows).toHaveLength(0);
+      } finally {
+        await admin.query(
+          'delete from public.categories where id = any($1::uuid[])',
+          [[ws1CatId, ws2CatId]],
+        );
+        await admin.query(
+          'delete from public.tags where id = any($1::uuid[])',
+          [[ws1TagId, ws2TagId]],
+        );
+        await admin.query(
+          'delete from public.payees where id = any($1::uuid[])',
+          [[ws1PayeeId, ws2PayeeId]],
+        );
+      }
+    });
+
+    it('10. Viewer and outsider restrictions: viewer can read but cannot insert/update; outsider cannot read or insert', async () => {
+      const catRes = await asSubject(ownerA, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.categories (workspace_id, name, kind, created_by)
+           values ($1, 'Viewer Restrict Cat', 'expense', $2)
+           returning id`,
+          [ws1Id, ownerA],
+        ),
+      );
+      const catId = catRes.rows[0].id;
+
+      const tagRes = await asSubject(ownerA, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.tags (workspace_id, name, created_by)
+           values ($1, 'Viewer Restrict Tag', $2)
+           returning id`,
+          [ws1Id, ownerA],
+        ),
+      );
+      const tagId = tagRes.rows[0].id;
+
+      const payeeRes = await asSubject(ownerA, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.payees (workspace_id, name, created_by)
+           values ($1, 'Viewer Restrict Payee', $2)
+           returning id`,
+          [ws1Id, ownerA],
+        ),
+      );
+      const payeeId = payeeRes.rows[0].id;
+
+      try {
+        // Viewer can read
         const viewerCatRes = await asSubject(viewerE, (client) =>
-          client.query(`select id from public.categories where id = $1`, [
-            catId,
-          ]),
+          client.query(`select id from public.categories where id = $1`, [catId]),
         );
         expect(viewerCatRes.rows).toHaveLength(1);
 
@@ -1083,7 +1539,7 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
         );
         expect(viewerPayeeRes.rows).toHaveLength(1);
 
-        // 4. Viewer CANNOT insert (42501)
+        // Viewer CANNOT insert (42501)
         const viewerInsertErr = await capturePgError(() =>
           asSubject(viewerE, (client) =>
             client.query(
@@ -1095,7 +1551,7 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
         );
         expect(viewerInsertErr.code).toBe('42501');
 
-        // 5. Viewer CANNOT update (0 rows updated or 42501)
+        // Viewer CANNOT update (0 rows updated)
         const viewerUpdateRes = await asSubject(viewerE, (client) =>
           client.query(
             `update public.categories set name = 'Viewer Mutated' where id = $1`,
@@ -1104,15 +1560,13 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
         );
         expect(viewerUpdateRes.rowCount).toBe(0);
 
-        // 6. Outsider cannot read
+        // Outsider cannot read
         const outsiderReadRes = await asSubject(outsiderZ, (client) =>
-          client.query(`select id from public.categories where id = $1`, [
-            catId,
-          ]),
+          client.query(`select id from public.categories where id = $1`, [catId]),
         );
         expect(outsiderReadRes.rows).toHaveLength(0);
 
-        // 7. Outsider cannot insert (42501)
+        // Outsider cannot insert (42501)
         const outsiderInsertErr = await capturePgError(() =>
           asSubject(outsiderZ, (client) =>
             client.query(
@@ -1123,24 +1577,174 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
           ),
         );
         expect(outsiderInsertErr.code).toBe('42501');
+      } finally {
+        await admin.query('delete from public.categories where id = $1', [catId]);
+        await admin.query('delete from public.tags where id = $1', [tagId]);
+        await admin.query('delete from public.payees where id = $1', [payeeId]);
+      }
+    });
 
-        // 8. Forged created_by (ownerA inserting with created_by = ownerB) is rejected with 42501
-        const forgedCreatedByErr = await capturePgError(() =>
+    it('11. Forged created_by is rejected with 42501 on categories, tags, and payees', async () => {
+      // Categories
+      const catForgedErr = await capturePgError(() =>
+        asSubject(ownerA, (client) =>
+          client.query(
+            `insert into public.categories (workspace_id, name, kind, created_by)
+             values ($1, 'Forged Category', 'expense', $2)`,
+            [ws1Id, ownerB],
+          ),
+        ),
+      );
+      expect(catForgedErr.code).toBe('42501');
+
+      // Tags
+      const tagForgedErr = await capturePgError(() =>
+        asSubject(ownerA, (client) =>
+          client.query(
+            `insert into public.tags (workspace_id, name, created_by)
+             values ($1, 'Forged Tag', $2)`,
+            [ws1Id, ownerB],
+          ),
+        ),
+      );
+      expect(tagForgedErr.code).toBe('42501');
+
+      // Payees
+      const payeeForgedErr = await capturePgError(() =>
+        asSubject(ownerA, (client) =>
+          client.query(
+            `insert into public.payees (workspace_id, name, created_by)
+             values ($1, 'Forged Payee', $2)`,
+            [ws1Id, ownerB],
+          ),
+        ),
+      );
+      expect(payeeForgedErr.code).toBe('42501');
+    });
+
+    it('12. Category hierarchy cycle guard (RULING 50): self-cycles and multi-row cycles rejected, valid re-parent accepted', async () => {
+      // 1. Self-parent A.parent_id = A.id on UPDATE is rejected with 23514 categories_parent_must_not_form_cycle
+      const rootCatRes = await asSubject(ownerA, (client) =>
+        client.query<{ id: string }>(
+          `insert into public.categories (workspace_id, name, kind, created_by)
+           values ($1, 'Cycle Root A', 'expense', $2)
+           returning id`,
+          [ws1Id, ownerA],
+        ),
+      );
+      const rootCatId = rootCatRes.rows[0].id;
+
+      try {
+        const selfUpdateErr = await capturePgError(() =>
           asSubject(ownerA, (client) =>
             client.query(
-              `insert into public.payees (workspace_id, name, created_by)
-               values ($1, 'Forged Payee', $2)`,
-              [ws1Id, ownerB],
+              `update public.categories set parent_id = $1 where id = $1`,
+              [rootCatId],
             ),
           ),
         );
-        expect(forgedCreatedByErr.code).toBe('42501');
+        expect(selfUpdateErr.code).toBe('23514');
+        expect(selfUpdateErr.constraint).toBe(
+          'categories_parent_must_not_form_cycle',
+        );
+
+        // 2. Self-parent on INSERT (explicit id === parent_id) is rejected with 23514 categories_parent_must_not_form_cycle
+        const explicitId = randomUUID();
+        const selfInsertErr = await capturePgError(() =>
+          admin.query(
+            `insert into public.categories (id, workspace_id, parent_id, name, kind, created_by)
+             values ($1, $2, $1, 'Self Parent Insert', 'expense', $3)`,
+            [explicitId, ws1Id, ownerA],
+          ),
+        );
+        expect(selfInsertErr.code).toBe('23514');
+        expect(selfInsertErr.constraint).toBe(
+          'categories_parent_must_not_form_cycle',
+        );
+
+        // 3. Two-row cycle: insert B under A, then UPDATE A to parent B -> rejected
+        const childBRes = await asSubject(ownerA, (client) =>
+          client.query<{ id: string }>(
+            `insert into public.categories (workspace_id, parent_id, name, kind, created_by)
+             values ($1, $2, 'Cycle Child B', 'expense', $3)
+             returning id`,
+            [ws1Id, rootCatId, ownerA],
+          ),
+        );
+        const childBId = childBRes.rows[0].id;
+
+        const twoRowCycleErr = await capturePgError(() =>
+          asSubject(ownerA, (client) =>
+            client.query(
+              `update public.categories set parent_id = $1 where id = $2`,
+              [childBId, rootCatId],
+            ),
+          ),
+        );
+        expect(twoRowCycleErr.code).toBe('23514');
+        expect(twoRowCycleErr.constraint).toBe(
+          'categories_parent_must_not_form_cycle',
+        );
+
+        // 4. Three-row cycle: insert C under B, then UPDATE A to parent C -> rejected
+        const childCRes = await asSubject(ownerA, (client) =>
+          client.query<{ id: string }>(
+            `insert into public.categories (workspace_id, parent_id, name, kind, created_by)
+             values ($1, $2, 'Cycle Child C', 'expense', $3)
+             returning id`,
+            [ws1Id, childBId, ownerA],
+          ),
+        );
+        const childCId = childCRes.rows[0].id;
+
+        const threeRowCycleErr = await capturePgError(() =>
+          asSubject(ownerA, (client) =>
+            client.query(
+              `update public.categories set parent_id = $1 where id = $2`,
+              [childCId, rootCatId],
+            ),
+          ),
+        );
+        expect(threeRowCycleErr.code).toBe('23514');
+        expect(threeRowCycleErr.constraint).toBe(
+          'categories_parent_must_not_form_cycle',
+        );
+
+        // 5. POSITIVE control: legitimate re-parent (move B from A to new root D) SUCCEEDS with rowCount === 1 and reads back correctly
+        const rootDRes = await asSubject(ownerA, (client) =>
+          client.query<{ id: string }>(
+            `insert into public.categories (workspace_id, name, kind, created_by)
+             values ($1, 'New Root D', 'expense', $2)
+             returning id`,
+            [ws1Id, ownerA],
+          ),
+        );
+        const rootDId = rootDRes.rows[0].id;
+
+        const reparentRes = await asSubject(ownerA, (client) =>
+          client.query(
+            `update public.categories set parent_id = $1 where id = $2`,
+            [rootDId, childBId],
+          ),
+        );
+        expect(reparentRes.rowCount).toBe(1);
+
+        const readBack = await asSubject(ownerA, (client) =>
+          client.query<{ parent_id: string }>(
+            `select parent_id from public.categories where id = $1`,
+            [childBId],
+          ),
+        );
+        expect(readBack.rows[0].parent_id).toBe(rootDId);
+
+        await admin.query(
+          'delete from public.categories where id = any($1::uuid[])',
+          [[childCId, childBId, rootDId]],
+        );
       } finally {
         await admin.query('delete from public.categories where id = $1', [
-          catId,
+          rootCatId,
         ]);
-        await admin.query('delete from public.tags where id = $1', [tagId]);
-        await admin.query('delete from public.payees where id = $1', [payeeId]);
       }
     });
   });

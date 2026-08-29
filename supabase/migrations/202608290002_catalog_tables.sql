@@ -84,6 +84,9 @@ create unique index categories_workspace_top_level_name_idx
 create index categories_workspace_parent_idx
   on public.categories (workspace_id, parent_id);
 
+create index categories_created_by_idx
+  on public.categories (created_by);
+
 create table public.tags (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
@@ -97,6 +100,9 @@ create table public.tags (
     unique (workspace_id, name)
 );
 
+create index tags_created_by_idx
+  on public.tags (created_by);
+
 create table public.payees (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
@@ -109,6 +115,9 @@ create table public.payees (
   constraint payees_workspace_id_name_key
     unique (workspace_id, name)
 );
+
+create index payees_created_by_idx
+  on public.payees (created_by);
 
 -- Catalog tables hold metadata, not financial balances. They deliberately omit the
 -- 'fitness:financial' comment tag while still carrying workspace_id.
@@ -246,5 +255,78 @@ create policy application_updates_workspace_payee
     public.workspace_actor_active_role(payees.workspace_id)
       in ('owner', 'administrator', 'editor')
   );
+
+-- savia_elevated select grant and policy for RLS bypass in security-definer trigger.
+-- public.categories FORCEs row level security, so savia_elevated (a nobypassrls role)
+-- needs an explicit select policy to read public.categories in security-definer triggers.
+grant select on public.categories to savia_elevated;
+
+create policy elevated_reads_categories
+  on public.categories
+  for select
+  to savia_elevated
+  using (true);
+
+-- Category hierarchy cycle guard
+grant usage, create on schema public to savia_elevated;   -- revoked below (RULING 13)
+
+-- RULING 50: the category hierarchy has no depth limit by contract; only cycles are forbidden.
+create function public.enforce_category_hierarchy_acyclic()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if new.parent_id is null then
+    return new;
+  end if;
+
+  if new.id is not null and new.parent_id = new.id then
+    raise exception 'category parent must not form a cycle'
+      using errcode = 'check_violation',
+            constraint = 'categories_parent_must_not_form_cycle';
+  end if;
+
+  -- Serialize on the workspace advisory lock to prevent write skew between concurrent updates.
+  -- Follows the project lock-ordering convention: SUBJECT -> WORKSPACE -> ACCOUNT.
+  perform pg_advisory_xact_lock(hashtextextended(new.workspace_id::text, 0));
+
+  if exists (
+    with recursive ancestors(id, parent_id) as (
+      select c.id, c.parent_id
+      from public.categories c
+      where c.workspace_id = new.workspace_id
+        and c.id = new.parent_id
+      union all
+      select c.id, c.parent_id
+      from public.categories c
+      join ancestors a on c.id = a.parent_id
+      where c.workspace_id = new.workspace_id
+    ) cycle id set is_cycle using path
+    select 1
+    from ancestors
+    where id = new.id
+  ) then
+    raise exception 'category parent must not form a cycle'
+      using errcode = 'check_violation',
+            constraint = 'categories_parent_must_not_form_cycle';
+  end if;
+
+  return new;
+end;
+$$;
+
+alter function public.enforce_category_hierarchy_acyclic() owner to savia_elevated;
+
+-- Immediately after the ownership transfer, never later (RULING 13).
+revoke create on schema public from savia_elevated;
+
+-- Trigger-only helper: no direct execute path needs it.
+revoke execute on function public.enforce_category_hierarchy_acyclic() from public;
+
+create trigger enforce_category_hierarchy_acyclic_trigger
+before insert or update of parent_id on public.categories
+for each row execute function public.enforce_category_hierarchy_acyclic();
 
 commit;
