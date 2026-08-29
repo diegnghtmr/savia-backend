@@ -107,6 +107,7 @@ describe('health endpoint', () => {
       'PATCH /v1/transactions/:transactionId',
       'POST /v1/transactions/:transactionId/void',
       'POST /v1/transfers',
+      'POST /v1/currency-exchanges',
       'POST /v1/exchange-rates',
       'GET /v1/exchange-rates',
     ]);

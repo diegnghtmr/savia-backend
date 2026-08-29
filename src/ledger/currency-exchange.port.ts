@@ -1,6 +1,8 @@
 import type { Money } from './ledger.port.js';
 import type { Transfer } from './transfer.port.js';
 
+export type { Transfer };
+
 export const CURRENCY_EXCHANGE_PORT = Symbol('CurrencyExchangePort');
 
 export interface CreateCurrencyExchangeCommand {
