@@ -2,12 +2,20 @@
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { decodeCursor, type Cursor } from '../../src/platform/cursor.js';
+import {
+  decodeCursor,
+  encodeCursor,
+  type Cursor,
+} from '../../src/platform/cursor.js';
 import {
   RECURRING_LIST_OUTCOMES,
   type CreateRecurringRuleCommand,
   type RecurringListOk,
 } from '../../src/recurring/recurring.port.js';
+import {
+  createRecurringRuleListQuery,
+  RecurringQueryValidationError,
+} from '../../src/recurring/recurring-query.js';
 import { RecurringService } from '../../src/recurring/recurring.service.js';
 import { PostgresRecurringAdapter } from '../../src/recurring/postgres-recurring.adapter.js';
 import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
@@ -161,6 +169,15 @@ describe('RecurringService listRecurringRules database boundary and cursor trave
       );
     }
 
+    // Force all 12 items in workspace 1 to share ONE explicit created_at timestamp
+    // so that EVERY page boundary is a (created_at, id) tie and exercises the id tiebreaker
+    await admin.query(
+      `update public.recurring_rules
+          set created_at = '2026-08-29 12:00:00.000000+00'
+        where workspace_id = $1`,
+      [workspace1Id],
+    );
+
     // Seed 1 item in workspace 2 for isolation testing
     await service.createRecurringRule(
       subjectWs2Owner,
@@ -234,7 +251,15 @@ describe('RecurringService listRecurringRules database boundary and cursor trave
     }
   });
 
-  it('allows active viewer to list recurring rules with full cursor pagination traversal', async () => {
+  it('allows active viewer to list recurring rules with full cursor pagination traversal under created_at ties', async () => {
+    // Fetch expected IDs directly from DB in total seek order: ORDER BY created_at, id
+    const expectedRes = await admin.query<{ id: string }>(
+      `select id::text from public.recurring_rules where workspace_id = $1 order by created_at, id`,
+      [workspace1Id],
+    );
+    const expectedIds = expectedRes.rows.map((r) => r.id);
+    expect(expectedIds).toHaveLength(TOTAL_ITEMS);
+
     const pageSize = 4;
     let currentCursor: Cursor | undefined;
     const collectedIds: string[] = [];
@@ -269,9 +294,8 @@ describe('RecurringService listRecurringRules database boundary and cursor trave
     expect(collectedIds).toHaveLength(TOTAL_ITEMS);
     expect(pagesFetched).toBe(Math.ceil(TOTAL_ITEMS / pageSize));
 
-    // Ensure no duplicates
-    const uniqueIds = new Set(collectedIds);
-    expect(uniqueIds.size).toBe(TOTAL_ITEMS);
+    // Assert traversal returned every id exactly once in the exact expected order
+    expect(collectedIds).toEqual(expectedIds);
   });
 
   it('enforces workspace isolation: does not return rules from another workspace', async () => {
@@ -294,5 +318,71 @@ describe('RecurringService listRecurringRules database boundary and cursor trave
     });
 
     expect(outcome.kind).toBe(RECURRING_LIST_OUTCOMES.FORBIDDEN);
+  });
+
+  describe('Cursor and limit validation coverage', () => {
+    it('rejects cursor minted in workspace A when replayed against workspace B', () => {
+      const cursorWs1 = encodeCursor({
+        workspaceId: workspace1Id,
+        createdAt: '2026-08-29T12:00:00.000000Z',
+        id: id(1901),
+      });
+
+      expect(() =>
+        createRecurringRuleListQuery({
+          workspaceId: workspace2Id,
+          cursorParam: cursorWs1,
+        }),
+      ).toThrow(RecurringQueryValidationError);
+
+      try {
+        createRecurringRuleListQuery({
+          workspaceId: workspace2Id,
+          cursorParam: cursorWs1,
+        });
+      } catch (e) {
+        const err = e as RecurringQueryValidationError;
+        expect(err.violations).toContainEqual(
+          expect.objectContaining({
+            field: 'cursor',
+            code: 'invalid',
+          }),
+        );
+      }
+    });
+
+    it('rejects limit at 0, negative, non-numeric, and above maximum', () => {
+      // 0 -> out-of-range
+      expect(() =>
+        createRecurringRuleListQuery({
+          workspaceId: workspace1Id,
+          limitParam: '0',
+        }),
+      ).toThrow(RecurringQueryValidationError);
+
+      // negative -> invalid format (non-digits)
+      expect(() =>
+        createRecurringRuleListQuery({
+          workspaceId: workspace1Id,
+          limitParam: '-5',
+        }),
+      ).toThrow(RecurringQueryValidationError);
+
+      // non-numeric -> invalid format
+      expect(() =>
+        createRecurringRuleListQuery({
+          workspaceId: workspace1Id,
+          limitParam: 'not-a-number',
+        }),
+      ).toThrow(RecurringQueryValidationError);
+
+      // above maximum (>200) -> out-of-range
+      expect(() =>
+        createRecurringRuleListQuery({
+          workspaceId: workspace1Id,
+          limitParam: '201',
+        }),
+      ).toThrow(RecurringQueryValidationError);
+    });
   });
 });
