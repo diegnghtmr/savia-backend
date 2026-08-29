@@ -209,6 +209,15 @@ jobs:
       - name: catalogs list integration
         shell: bash
         run: pnpm test:integration:catalogs-list
+      - name: recurring rules schema integration
+        shell: bash
+        run: pnpm test:integration:recurring-rules-schema
+      - name: recurring rules create integration
+        shell: bash
+        run: pnpm test:integration:recurring-rules-create
+      - name: recurring rules list integration
+        shell: bash
+        run: pnpm test:integration:recurring-rules-list
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

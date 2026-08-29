@@ -47,6 +47,9 @@ case "$spec" in
   test/identity/catalog-tables.integration-spec.ts) ;;
   test/catalogs/catalogs-create.integration-spec.ts) ;;
   test/catalogs/catalogs-list.integration-spec.ts) ;;
+  test/identity/recurring-rules-schema.integration-spec.ts) ;;
+  test/recurring/recurring-rules-create.integration-spec.ts) ;;
+  test/recurring/recurring-rules-list.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
