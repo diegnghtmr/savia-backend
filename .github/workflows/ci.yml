@@ -188,6 +188,9 @@ jobs:
       - name: transfers create integration
         shell: bash
         run: pnpm test:integration:transfers-create
+      - name: currency exchanges create integration
+        shell: bash
+        run: pnpm test:integration:currency-exchanges-create
       - name: exchange rates schema integration
         shell: bash
         run: pnpm test:integration:exchange-rates-schema
