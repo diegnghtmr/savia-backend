@@ -314,6 +314,78 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       }
     });
 
+    it('c2. Changing workspace base_currency is REFUSED when it would strand an account with no rate against the new base', async () => {
+      // The account-side trigger cannot see this: it fires on accounts, not on
+      // workspaces. Without the workspace-side trigger, a base currency change would
+      // silently leave existing accounts unconvertible and make getAccountBalance
+      // throw for accounts that were perfectly valid when created.
+      const originalRes = await admin.query<{ base_currency: string }>(
+        'select base_currency from public.workspaces where id = $1',
+        [ws1Id],
+      );
+      const originalBase = originalRes.rows[0].base_currency.trim();
+
+      const inserted = await admin.query<{ id: string }>(
+        `insert into public.accounts (workspace_id, name, type, currency, created_by)
+         values ($1, 'Account Stranded By Base Change', 'checking', 'GBP', $2)
+         returning id`,
+        [ws1Id, ownerA],
+      );
+      const accId = inserted.rows[0]?.id;
+      try {
+        const err = await capturePgError(() =>
+          admin.query(
+            `update public.workspaces set base_currency = 'JPY' where id = $1`,
+            [ws1Id],
+          ),
+        );
+        expect(err.code).toBe('23514');
+        expect(err.message ?? '').toContain(
+          'workspace base currency cannot change while accounts would be left without an exchange rate',
+        );
+
+        const unchanged = await admin.query<{ base_currency: string }>(
+          'select base_currency from public.workspaces where id = $1',
+          [ws1Id],
+        );
+        expect(unchanged.rows[0].base_currency.trim()).not.toBe('JPY');
+      } finally {
+        // Restore defensively. If the guard under test is ever missing, the update
+        // above SUCCEEDS and would leave this shared workspace on JPY, making every
+        // later test in this file fail for a reason that has nothing to do with them.
+        await admin.query(
+          'update public.workspaces set base_currency = $2 where id = $1',
+          [ws1Id, originalBase],
+        );
+        if (accId) await deleteAccount(accId);
+      }
+    });
+
+    it('c3. Changing workspace base_currency is ALLOWED when every account stays convertible', async () => {
+      // Prove the other half. A rule that refused every base currency change would
+      // also pass the test above while being far stricter than intended.
+      const before = await admin.query<{ base_currency: string }>(
+        'select base_currency from public.workspaces where id = $1',
+        [emptyWsId],
+      );
+      const original = before.rows[0].base_currency.trim();
+
+      await admin.query(
+        `update public.workspaces set base_currency = 'JPY' where id = $1`,
+        [emptyWsId],
+      );
+      const after = await admin.query<{ base_currency: string }>(
+        'select base_currency from public.workspaces where id = $1',
+        [emptyWsId],
+      );
+      expect(after.rows[0].base_currency.trim()).toBe('JPY');
+
+      await admin.query(
+        `update public.workspaces set base_currency = $2 where id = $1`,
+        [emptyWsId, original],
+      );
+    });
+
     it('d. A direct update of public.accounts setting currency to a value with no exchange rate raises SQLSTATE 23514', async () => {
       const inserted = await admin.query<{ id: string }>(
         `insert into public.accounts (workspace_id, name, type, currency, created_by)

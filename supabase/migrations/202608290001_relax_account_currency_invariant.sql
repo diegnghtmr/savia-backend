@@ -110,14 +110,66 @@ $$;
 
 alter function public.enforce_account_currency_has_exchange_rate() owner to savia_elevated;
 
+-- The account-side trigger alone leaves the invariant breakable from the OTHER
+-- direction. Dropping the old workspace trigger above removed the database's
+-- refusal to change base_currency, leaving that rule only in WorkspaceService.
+-- Changing base_currency can strand every existing account whose currency has no
+-- rate against the NEW base, and getAccountBalance would then throw for accounts
+-- that were perfectly valid when they were created.
+--
+-- The old trigger refused any base_currency change while differing accounts
+-- existed. This one enforces the weaker rule that matches the relaxed invariant:
+-- the change is allowed as long as every account remains convertible afterwards.
+create function public.enforce_workspace_base_currency_keeps_accounts_convertible()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  -- Same key derivation as the account-side trigger and the application locks, so
+  -- all paths serialize on one key. Without it, a concurrent account insert and a
+  -- base_currency update could each observe a state the other is about to invalidate.
+  perform pg_advisory_xact_lock(hashtextextended(new.id::text, 0));
+
+  if exists (
+    select 1
+    from public.accounts account
+    where account.workspace_id = new.id
+      and account.currency <> new.base_currency
+      and not exists (
+        select 1
+        from public.exchange_rates rate
+        where rate.workspace_id = new.id
+          and rate.base_currency = account.currency
+          and rate.quote_currency = new.base_currency
+      )
+  ) then
+    raise exception 'workspace base currency cannot change while accounts would be left without an exchange rate'
+      using errcode = 'check_violation',
+            constraint = 'workspace_base_currency_keeps_accounts_convertible';
+  end if;
+
+  return new;
+end;
+$$;
+
+alter function public.enforce_workspace_base_currency_keeps_accounts_convertible()
+  owner to savia_elevated;
+
 -- Immediately after the ownership transfers, never later (RULING 13).
 revoke create on schema public from savia_elevated;
 
 -- Trigger-only helpers: no direct execute path needs them from PUBLIC.
 revoke execute on function public.enforce_account_currency_has_exchange_rate() from public;
+revoke execute on function public.enforce_workspace_base_currency_keeps_accounts_convertible() from public;
 
 create trigger enforce_account_currency_has_exchange_rate_trigger
 before insert or update of currency, workspace_id on public.accounts
 for each row execute function public.enforce_account_currency_has_exchange_rate();
+
+create trigger enforce_workspace_base_currency_keeps_accounts_convertible_trigger
+before update of base_currency on public.workspaces
+for each row execute function public.enforce_workspace_base_currency_keeps_accounts_convertible();
 
 commit;
