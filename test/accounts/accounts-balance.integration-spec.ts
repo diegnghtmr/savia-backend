@@ -39,6 +39,7 @@ describe('AccountsService getAccountBalance database boundary', () => {
   const accountAsOfId = id(3003);
   const accountPrecisionId = id(3004);
   const accountW2Id = id(3005);
+  const accountForeignEURId = id(3006);
   const absentAccountId = id(9999);
 
   beforeAll(async () => {
@@ -106,6 +107,16 @@ describe('AccountsService getAccountBalance database boundary', () => {
       [workspace1Id, subjectDualMember, workspace2Id, subjectViewer],
     );
 
+    // 3.5 Exchange Rates (seed order matters: rate must precede foreign-currency account)
+    await admin.query(
+      `insert into public.exchange_rates
+         (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+       values
+         ($1, 'EUR', 'USD', 1.0800, '2026-07-01T00:00:00.000Z', 'ecb', $2),
+         ($1, 'EUR', 'USD', 1.1000, '2026-07-20T00:00:00.000Z', 'reuters', $2)`,
+      [workspace1Id, subjectDualMember],
+    );
+
     // 4. Accounts
     await admin.query(
       `insert into public.accounts
@@ -115,7 +126,8 @@ describe('AccountsService getAccountBalance database boundary', () => {
          ($4, $2, 'Draft Only Account', 'checking', 'USD', 'active', true, $3, '2026-07-01T00:00:00.000Z'::timestamptz, '2026-07-01T00:00:00.000Z'::timestamptz, 1),
          ($5, $2, 'AsOf Cutoff Account', 'checking', 'USD', 'active', true, $3, '2026-07-01T00:00:00.000Z'::timestamptz, '2026-07-01T00:00:00.000Z'::timestamptz, 1),
          ($6, $2, 'Precision Account', 'checking', 'USD', 'active', true, $3, '2026-07-01T00:00:00.000Z'::timestamptz, '2026-07-01T00:00:00.000Z'::timestamptz, 1),
-         ($7, $8, 'Foreign Workspace 2 Account', 'checking', 'USD', 'active', true, $3, '2026-07-01T00:00:00.000Z'::timestamptz, '2026-07-01T00:00:00.000Z'::timestamptz, 1)`,
+         ($7, $8, 'Foreign Workspace 2 Account', 'checking', 'USD', 'active', true, $3, '2026-07-01T00:00:00.000Z'::timestamptz, '2026-07-01T00:00:00.000Z'::timestamptz, 1),
+         ($9, $2, 'Foreign EUR Account', 'checking', 'EUR', 'active', true, $3, '2026-07-01T00:00:00.000Z'::timestamptz, '2026-07-01T00:00:00.000Z'::timestamptz, 1)`,
       [
         accountBucketMathId,
         workspace1Id,
@@ -125,10 +137,12 @@ describe('AccountsService getAccountBalance database boundary', () => {
         accountPrecisionId,
         accountW2Id,
         workspace2Id,
+        accountForeignEURId,
       ],
     );
 
     // 5. Seed balanced transactions and ledger postings
+    // Helper to seed a balanced transaction pair (account leg + external counter leg)
     // Helper to seed a balanced transaction pair (account leg + external counter leg)
     const seedPosting = async (
       txnId: string,
@@ -137,10 +151,11 @@ describe('AccountsService getAccountBalance database boundary', () => {
       status: 'draft' | 'pending' | 'confirmed' | 'reconciled',
       amountMinor: string,
       occurredAt: string,
+      currency: string = 'USD',
     ) => {
       await admin.query(
         `insert into public.transactions (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, description, created_by)
-         values ($1::uuid, $2::uuid, $3::uuid, 'adjustment', $4, $5, 'USD', $6::timestamptz, 'Seed posting', $7::uuid)`,
+         values ($1::uuid, $2::uuid, $3::uuid, 'adjustment', $4, $5, $8, $6::timestamptz, 'Seed posting', $7::uuid)`,
         [
           txnId,
           wsId,
@@ -149,6 +164,7 @@ describe('AccountsService getAccountBalance database boundary', () => {
           amountMinor,
           occurredAt,
           subjectDualMember,
+          currency,
         ],
       );
 
@@ -159,9 +175,18 @@ describe('AccountsService getAccountBalance database boundary', () => {
       await admin.query(
         `insert into public.ledger_postings (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
          values
-           ($1::uuid, $2::uuid, $3::uuid, 'account', $4, 'USD', $5, $6::timestamptz),
-           ($1::uuid, $2::uuid, null, 'external', $7, 'USD', $5, $6::timestamptz)`,
-        [wsId, txnId, accId, amountMinor, status, occurredAt, negAmount],
+           ($1::uuid, $2::uuid, $3::uuid, 'account', $4, $8, $5, $6::timestamptz),
+           ($1::uuid, $2::uuid, null, 'external', $7, $8, $5, $6::timestamptz)`,
+        [
+          wsId,
+          txnId,
+          accId,
+          amountMinor,
+          status,
+          occurredAt,
+          negAmount,
+          currency,
+        ],
       );
     };
 
@@ -244,6 +269,26 @@ describe('AccountsService getAccountBalance database boundary', () => {
       'confirmed',
       '100',
       '2026-07-02T12:00:00.000Z',
+    );
+
+    // Account 6 (Foreign EUR): postings before and after 2026-07-20
+    await seedPosting(
+      id(4010),
+      accountForeignEURId,
+      workspace1Id,
+      'confirmed',
+      '5000',
+      '2026-07-10T12:00:00.000Z',
+      'EUR',
+    );
+    await seedPosting(
+      id(4011),
+      accountForeignEURId,
+      workspace1Id,
+      'confirmed',
+      '5000',
+      '2026-07-25T12:00:00.000Z',
+      'EUR',
     );
   });
 
@@ -417,6 +462,61 @@ describe('AccountsService getAccountBalance database boundary', () => {
     expect(balance.baseCurrencyEquivalent.converted.amountMinor).toBe(
       '9007199254741093',
     );
+  });
+
+  it('9. converts cross-currency balance using recorded exchange rates with real rate, rateDate, rateSource and rounded baseCurrencyEquivalent', async () => {
+    const outcome = await service.readBalance(
+      subjectDualMember,
+      workspace1Id,
+      accountForeignEURId,
+    );
+    expect(outcome.kind).toBe(ACCOUNT_BALANCE_OUTCOMES.OK);
+    const balance = (outcome as AccountBalanceOk).balance;
+
+    expect(balance.nativeBalance).toEqual({
+      amountMinor: '10000',
+      currency: 'EUR',
+    });
+    expect(balance.baseCurrencyEquivalent.original).toEqual({
+      amountMinor: '10000',
+      currency: 'EUR',
+    });
+    // 10000 EUR * 1.1000 = 11000 USD
+    expect(balance.baseCurrencyEquivalent.converted).toEqual({
+      amountMinor: '11000',
+      currency: 'USD',
+    });
+    expect(balance.baseCurrencyEquivalent.rate).toBe('1.1000');
+    expect(balance.baseCurrencyEquivalent.rateDate).toBe('2026-07-20');
+    expect(balance.baseCurrencyEquivalent.rateSource).toBe('reuters');
+  });
+
+  it('10. applies historical exchange rate matching effective asOf cutoff for cross-currency conversion', async () => {
+    const outcome = await service.readBalance(
+      subjectDualMember,
+      workspace1Id,
+      accountForeignEURId,
+      '2026-07-15T00:00:00.000Z',
+    );
+    expect(outcome.kind).toBe(ACCOUNT_BALANCE_OUTCOMES.OK);
+    const balance = (outcome as AccountBalanceOk).balance;
+
+    expect(balance.nativeBalance).toEqual({
+      amountMinor: '5000',
+      currency: 'EUR',
+    });
+    expect(balance.baseCurrencyEquivalent.original).toEqual({
+      amountMinor: '5000',
+      currency: 'EUR',
+    });
+    // 5000 EUR * 1.0800 = 5400 USD
+    expect(balance.baseCurrencyEquivalent.converted).toEqual({
+      amountMinor: '5400',
+      currency: 'USD',
+    });
+    expect(balance.baseCurrencyEquivalent.rate).toBe('1.0800');
+    expect(balance.baseCurrencyEquivalent.rateDate).toBe('2026-07-01');
+    expect(balance.baseCurrencyEquivalent.rateSource).toBe('ecb');
   });
 });
 

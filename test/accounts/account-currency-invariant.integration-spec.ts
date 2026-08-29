@@ -1,4 +1,4 @@
-// Migrations under test: 202608240006_account_currency_invariant.sql
+// Migrations under test: 202608240006_account_currency_invariant.sql, 202608290001_relax_account_currency_invariant.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -21,7 +21,7 @@ async function capturePgError(
   throw new Error('Expected the statement to fail, but it succeeded.');
 }
 
-describe('Account currency workspace invariant, triggers, RLS, and security definer (202608240006_account_currency_invariant.sql)', () => {
+describe('Account currency workspace invariant, triggers, RLS, and security definer (202608290001_relax_account_currency_invariant.sql)', () => {
   let admin: Pool;
 
   const ownerA = subject(601);
@@ -149,6 +149,13 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
         ownerB,
       ],
     );
+
+    // Seed an exchange rate in ws1Id (base_currency: USD) for GBP -> USD
+    await admin.query(
+      `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+       values ($1, 'GBP', 'USD', 1.3000, '2026-07-01T00:00:00.000Z', 'manual', $2)`,
+      [ws1Id, ownerA],
+    );
   });
 
   afterAll(async () => {
@@ -179,7 +186,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
   });
 
   describe('Structure and Catalog metadata', () => {
-    it('1. Both triggers exist, fire row-level BEFORE their target events, execute security definer functions owned by savia_elevated with search_path pg_catalog, public', async () => {
+    it('1. Trigger exists on public.accounts, fires row-level BEFORE insert or update, executes security definer function owned by savia_elevated with search_path pg_catalog, public', async () => {
       const accountsTrigRes = await admin.query<{
         tgname: string;
         tgtype: number;
@@ -197,12 +204,12 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
            from pg_trigger t
            join pg_proc p on p.oid = t.tgfoid
           where t.tgrelid = 'public.accounts'::regclass
-            and t.tgname = 'enforce_account_currency_matches_workspace_trigger'`,
+            and t.tgname = 'enforce_account_currency_has_exchange_rate_trigger'`,
       );
       expect(accountsTrigRes.rows).toHaveLength(1);
       const accTrig = accountsTrigRes.rows[0];
       expect(accTrig.proname).toBe(
-        'enforce_account_currency_matches_workspace',
+        'enforce_account_currency_has_exchange_rate',
       );
       expect(accTrig.prosecdef).toBe(true);
       expect(accTrig.proowner).toBe('savia_elevated');
@@ -213,61 +220,29 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       expect(accTrig.tgtype & 4).toBe(4); // INSERT
       expect(accTrig.tgtype & 16).toBe(16); // UPDATE
 
-      const workspacesTrigRes = await admin.query<{
-        tgname: string;
-        tgtype: number;
-        proname: string;
-        prosecdef: boolean;
-        proowner: string;
-        proconfig: string[] | null;
-      }>(
-        `select t.tgname,
-                t.tgtype,
-                p.proname::text as proname,
-                p.prosecdef,
-                p.proowner::regrole::text as proowner,
-                p.proconfig
-           from pg_trigger t
-           join pg_proc p on p.oid = t.tgfoid
-          where t.tgrelid = 'public.workspaces'::regclass
-            and t.tgname = 'enforce_workspace_base_currency_account_invariant_trigger'`,
-      );
-      expect(workspacesTrigRes.rows).toHaveLength(1);
-      const wsTrig = workspacesTrigRes.rows[0];
-      expect(wsTrig.proname).toBe(
-        'enforce_workspace_base_currency_account_invariant',
-      );
-      expect(wsTrig.prosecdef).toBe(true);
-      expect(wsTrig.proowner).toBe('savia_elevated');
-      expect(wsTrig.proconfig).toEqual(['search_path=pg_catalog, public']);
-      // BEFORE (1) + ROW (2) + UPDATE (16) = 19
-      expect(wsTrig.tgtype & 1).toBe(1); // BEFORE
-      expect(wsTrig.tgtype & 2).toBe(2); // ROW
-      expect(wsTrig.tgtype & 16).toBe(16); // UPDATE
-
       const elevatedPrivRes = await admin.query<{
         can_read_accounts: boolean;
         can_read_workspaces: boolean;
-        accounts_policy_rows: number;
+        can_read_exchange_rates: boolean;
+        exchange_rates_policy_rows: number;
         public_exec_acc_fn: boolean;
-        public_exec_ws_fn: boolean;
       }>(
         `select has_table_privilege('savia_elevated', 'public.accounts', 'select') as can_read_accounts,
                 has_table_privilege('savia_elevated', 'public.workspaces', 'select') as can_read_workspaces,
+                has_table_privilege('savia_elevated', 'public.exchange_rates', 'select') as can_read_exchange_rates,
                 (select count(*)::int from pg_policy
-                  where polrelid = 'public.accounts'::regclass
-                    and polname = 'elevated_reads_accounts') as accounts_policy_rows,
-                has_function_privilege('public', 'public.enforce_account_currency_matches_workspace()', 'execute') as public_exec_acc_fn,
-                has_function_privilege('public', 'public.enforce_workspace_base_currency_account_invariant()', 'execute') as public_exec_ws_fn`,
+                  where polrelid = 'public.exchange_rates'::regclass
+                    and polname = 'elevated_reads_exchange_rates') as exchange_rates_policy_rows,
+                has_function_privilege('public', 'public.enforce_account_currency_has_exchange_rate()', 'execute') as public_exec_acc_fn`,
       );
       expect(elevatedPrivRes.rows[0].can_read_accounts).toBe(true);
       expect(elevatedPrivRes.rows[0].can_read_workspaces).toBe(true);
-      expect(elevatedPrivRes.rows[0].accounts_policy_rows).toBe(1);
+      expect(elevatedPrivRes.rows[0].can_read_exchange_rates).toBe(true);
+      expect(elevatedPrivRes.rows[0].exchange_rates_policy_rows).toBe(1);
       expect(elevatedPrivRes.rows[0].public_exec_acc_fn).toBe(false);
-      expect(elevatedPrivRes.rows[0].public_exec_ws_fn).toBe(false);
     });
 
-    it('2. Both triggers pin their specific UPDATE OF column lists in pg_trigger.tgattr', async () => {
+    it('2. The accounts trigger pins its specific UPDATE OF column list in pg_trigger.tgattr', async () => {
       const accountsColsRes = await admin.query<{ col_name: string }>(
         `select a.attname::text as col_name
            from pg_trigger t
@@ -275,29 +250,16 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
              on a.attrelid = t.tgrelid
             and a.attnum = any(string_to_array(t.tgattr::text, ' ')::int2[])
           where t.tgrelid = 'public.accounts'::regclass
-            and t.tgname = 'enforce_account_currency_matches_workspace_trigger'
+            and t.tgname = 'enforce_account_currency_has_exchange_rate_trigger'
           order by a.attname`,
       );
       const accountsCols = accountsColsRes.rows.map((r) => r.col_name);
       expect(accountsCols).toEqual(['currency', 'workspace_id']);
-
-      const workspacesColsRes = await admin.query<{ col_name: string }>(
-        `select a.attname::text as col_name
-           from pg_trigger t
-           join pg_attribute a
-             on a.attrelid = t.tgrelid
-            and a.attnum = any(string_to_array(t.tgattr::text, ' ')::int2[])
-          where t.tgrelid = 'public.workspaces'::regclass
-            and t.tgname = 'enforce_workspace_base_currency_account_invariant_trigger'
-          order by a.attname`,
-      );
-      const workspacesCols = workspacesColsRes.rows.map((r) => r.col_name);
-      expect(workspacesCols).toEqual(['base_currency']);
     });
   });
 
   describe('Invariant Enforcement (behavioral live proofs)', () => {
-    it('a. A direct privileged insert of an account whose currency differs from its workspace base currency raises SQLSTATE 23514 (check_violation)', async () => {
+    it('a. A direct privileged insert of an account whose currency differs from workspace base currency with NO exchange rate raises SQLSTATE 23514 (check_violation)', async () => {
       const err = await capturePgError(() =>
         admin.query(
           `insert into public.accounts (workspace_id, name, type, currency, created_by)
@@ -307,11 +269,11 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       );
       expect(err.code).toBe('23514');
       expect(err.message ?? '').toContain(
-        'account currency must match workspace base currency',
+        'exchange rate required for account currency differing from workspace base currency',
       );
     });
 
-    it('b. A direct privileged insert where account currency matches workspace base currency succeeds', async () => {
+    it('b. A direct privileged insert where account currency matches workspace base currency succeeds without exchange rate', async () => {
       const inserted = await admin.query<{ id: string }>(
         `insert into public.accounts (workspace_id, name, type, currency, created_by)
          values ($1, 'Matching Currency Account', 'checking', 'USD', $2)
@@ -331,7 +293,28 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       }
     });
 
-    it('c. A direct update of public.accounts setting currency to a different value raises SQLSTATE 23514', async () => {
+    it('c. A direct privileged insert where account currency differs from workspace base currency SUCCEEDS when an exchange rate exists', async () => {
+      const inserted = await admin.query<{ id: string }>(
+        `insert into public.accounts (workspace_id, name, type, currency, created_by)
+         values ($1, 'GBP Account With Rate', 'checking', 'GBP', $2)
+         returning id`,
+        [ws1Id, ownerA],
+      );
+      const accId = inserted.rows[0]?.id;
+      expect(accId).toBeDefined();
+      try {
+        const stored = await admin.query<{ count: number; currency: string }>(
+          'select count(*)::int as count, currency from public.accounts where id = $1 group by currency',
+          [accId],
+        );
+        expect(stored.rows[0].count).toBe(1);
+        expect(stored.rows[0].currency).toBe('GBP');
+      } finally {
+        if (accId) await deleteAccount(accId);
+      }
+    });
+
+    it('d. A direct update of public.accounts setting currency to a value with no exchange rate raises SQLSTATE 23514', async () => {
       const inserted = await admin.query<{ id: string }>(
         `insert into public.accounts (workspace_id, name, type, currency, created_by)
          values ($1, 'Account To Mutate Currency', 'checking', 'USD', $2)
@@ -349,7 +332,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
         );
         expect(err.code).toBe('23514');
         expect(err.message ?? '').toContain(
-          'account currency must match workspace base currency',
+          'exchange rate required for account currency differing from workspace base currency',
         );
 
         const unchanged = await admin.query<{ currency: string }>(
@@ -362,88 +345,26 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       }
     });
 
-    it('d. A direct update of public.workspaces setting base_currency to a different value while a matching account exists raises SQLSTATE 23514', async () => {
-      const inserted = await admin.query<{ id: string }>(
-        `insert into public.accounts (workspace_id, name, type, currency, created_by)
-         values ($1, 'Active Account In WS1', 'checking', 'USD', $2)
-         returning id`,
-        [ws1Id, ownerA],
-      );
-      const accId = inserted.rows[0]?.id;
-      expect(accId).toBeDefined();
-      try {
-        const err = await capturePgError(() =>
-          admin.query(
-            `update public.workspaces set base_currency = 'EUR' where id = $1`,
-            [ws1Id],
-          ),
-        );
-        expect(err.code).toBe('23514');
-        expect(err.message ?? '').toContain(
-          'workspace base currency cannot change while accounts with differing currencies exist',
-        );
-
-        const unchanged = await admin.query<{ base_currency: string }>(
-          'select base_currency from public.workspaces where id = $1',
-          [ws1Id],
-        );
-        expect(unchanged.rows[0].base_currency).toBe('USD');
-      } finally {
-        if (accId) await deleteAccount(accId);
-      }
-    });
-
-    it('e. Updating public.workspaces base_currency succeeds when the workspace has NO accounts (deliberately permitted, trigger does not over-refuse)', async () => {
-      const before = await admin.query<{ base_currency: string }>(
-        'select base_currency from public.workspaces where id = $1',
-        [emptyWsId],
-      );
-      expect(before.rows[0].base_currency).toBe('USD');
-
-      const updateRes = await admin.query(
-        `update public.workspaces set base_currency = 'EUR' where id = $1`,
-        [emptyWsId],
-      );
-      expect(updateRes.rowCount).toBe(1);
-
-      const after = await admin.query<{ base_currency: string }>(
-        'select base_currency from public.workspaces where id = $1',
-        [emptyWsId],
-      );
-      expect(after.rows[0].base_currency).toBe('EUR');
-
-      // Reset back to USD for hygiene
-      await admin.query(
-        `update public.workspaces set base_currency = 'USD' where id = $1`,
-        [emptyWsId],
-      );
-    });
-
-    it('f. SECURITY DEFINER DEFENSE IN DEPTH: an outsider attempting a mismatched insert fails with 23514 from the trigger rather than 42501 from RLS, detecting definer-to-invoker regression', async () => {
+    it('e. SECURITY DEFINER DEFENSE IN DEPTH: an outsider attempting an unrated insert fails with 23514 from the trigger rather than 42501 from RLS', async () => {
       // ownerA has NO membership in wsOtherId (wsOtherId base_currency is USD).
       // Under savia_application with app.subject_id = ownerA, RLS policy application_reads_member_workspace
       // returns zero rows for wsOtherId.
-      // With SECURITY INVOKER:
-      //   - The trigger lookup `select base_currency from public.workspaces` would return NULL due to RLS filtering.
-      //   - The trigger would not detect the currency mismatch and execution would continue until table RLS fails with 42501.
       // With SECURITY DEFINER owned by savia_elevated:
-      //   - The trigger reads base_currency ('USD') via elevated_reads_workspaces.
-      //   - It detects the mismatch ('EUR' <> 'USD') and raises 23514 (check_violation) before RLS.
-      // This test verifies that security definer is active and prevents regression to security invoker.
+      //   - The trigger reads base_currency ('USD') and exchange_rates via elevated policies.
+      //   - It detects the missing rate ('EUR' -> 'USD') and raises 23514 before table RLS fails with 42501.
       const blindErr = await capturePgError(() =>
         asSubject(ownerA, (client) =>
           client.query(
             `insert into public.accounts (workspace_id, name, type, currency, created_by)
-             values ($1, 'Cross-Workspace Mismatched Account', 'cash', 'EUR', $2)`,
+             values ($1, 'Cross-Workspace Unrated Account', 'cash', 'EUR', $2)`,
             [wsOtherId, ownerA],
           ),
         ),
       );
 
-      // Must be 23514 (check_violation from our trigger), NOT 42501 (RLS policy violation).
       expect(blindErr.code).toBe('23514');
       expect(blindErr.message ?? '').toContain(
-        'account currency must match workspace base currency',
+        'exchange rate required for account currency differing from workspace base currency',
       );
       expect(blindErr.message ?? '').not.toContain('row-level security');
       expect(blindErr.message ?? '').not.toContain('permission denied');
@@ -470,85 +391,11 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       }
     });
 
-    it('g. CONCURRENCY / WRITE SKEW SERIALIZATION: two concurrent transactions serialize via advisory lock; loser re-observes committed state and raises 23514', async () => {
-      // Starting condition: emptyWsId with base_currency = 'USD' and no accounts.
-      // Forced ordering:
-      // 1. Client 1 begins transaction and inserts a USD account. Trigger acquires workspace advisory lock.
-      // 2. Client 2 begins transaction and attempts to update workspace base_currency to 'EUR'.
-      //    Client 2's trigger blocks on the workspace advisory lock held by Client 1.
-      // 3. We prove Client 2 is blocked while Client 1 holds the lock.
-      // 4. Client 1 commits, persisting the USD account and releasing the advisory lock.
-      // 5. Client 2 unblocks, acquires advisory lock, scans accounts under READ COMMITTED,
-      //    sees Client 1's newly committed USD account, and raises 23514 (check_violation).
-      const client1 = await admin.connect();
-      const client2 = await admin.connect();
-      let createdAccountId: string | undefined;
-
-      try {
-        await client1.query('begin');
-        const insertRes = await client1.query<{ id: string }>(
-          `insert into public.accounts (workspace_id, name, type, currency, created_by)
-           values ($1, 'Concurrent Account', 'checking', 'USD', $2)
-           returning id`,
-          [emptyWsId, ownerA],
-        );
-        createdAccountId = insertRes.rows[0]?.id;
-
-        await client2.query('begin');
-
-        let client2Resolved = false;
-        let client2Error: CapturedPgError | undefined;
-
-        const client2Promise = client2
-          .query(
-            `update public.workspaces set base_currency = 'EUR' where id = $1`,
-            [emptyWsId],
-          )
-          .then(() => {
-            client2Resolved = true;
-          })
-          .catch((err: unknown) => {
-            client2Error = err as CapturedPgError;
-          });
-
-        // Give Client 2 time to execute and block on Client 1's advisory lock
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        expect(client2Resolved).toBe(false);
-        expect(client2Error).toBeUndefined();
-
-        // Client 1 commits: releases lock and makes inserted USD account visible under READ COMMITTED
-        await client1.query('commit');
-
-        // Client 2 should now unblock, acquire lock, scan accounts, see the USD account, and reject
-        await client2Promise;
-        expect(client2Resolved).toBe(false);
-        expect(client2Error).toBeDefined();
-        expect(client2Error?.code).toBe('23514');
-        expect(client2Error?.message ?? '').toContain(
-          'workspace base currency cannot change while accounts with differing currencies exist',
-        );
-
-        await client2.query('rollback').catch(() => {});
-
-        // Confirm workspace base_currency remains USD
-        const wsRes = await admin.query<{ base_currency: string }>(
-          'select base_currency from public.workspaces where id = $1',
-          [emptyWsId],
-        );
-        expect(wsRes.rows[0].base_currency).toBe('USD');
-      } finally {
-        if (createdAccountId) {
-          await deleteAccount(createdAccountId);
-        }
-        client1.release();
-        client2.release();
-      }
-    });
-
-    it('h. A direct update of public.accounts moving workspace_id to a workspace with differing base_currency raises SQLSTATE 23514', async () => {
+    it('f. A direct update of public.accounts moving workspace_id to a workspace with no exchange rate for account currency raises SQLSTATE 23514', async () => {
+      // GBP account in ws1Id (which has GBP->USD rate). ws2Id base_currency is EUR and has no GBP->EUR rate.
       const inserted = await admin.query<{ id: string }>(
         `insert into public.accounts (workspace_id, name, type, currency, created_by)
-         values ($1, 'Account To Move Across Workspaces', 'checking', 'USD', $2)
+         values ($1, 'Account To Move Across Workspaces', 'checking', 'GBP', $2)
          returning id`,
         [ws1Id, ownerA],
       );
@@ -563,7 +410,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
         );
         expect(err.code).toBe('23514');
         expect(err.message ?? '').toContain(
-          'account currency must match workspace base currency',
+          'exchange rate required for account currency differing from workspace base currency',
         );
 
         const unchanged = await admin.query<{ workspace_id: string }>(
