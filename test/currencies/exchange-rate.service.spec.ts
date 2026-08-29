@@ -3,10 +3,13 @@ import { computeRequestFingerprint } from '../../src/platform/idempotency.servic
 
 import {
   EXCHANGE_RATE_CREATE_OUTCOMES,
+  EXCHANGE_RATE_LIST_OUTCOMES,
   type CreateManualExchangeRateCommand,
   type ExchangeRate,
   type ExchangeRateCreateCreated,
   type ExchangeRateCreateReplayed,
+  type ExchangeRateListOk,
+  type ExchangeRateListQuery,
 } from '../../src/currencies/exchange-rate.port.js';
 import {
   ExchangeRateAlreadyRecordedError,
@@ -62,6 +65,7 @@ function createService(
     createManualExchangeRate: storeError
       ? vi.fn().mockRejectedValue(storeError)
       : vi.fn().mockResolvedValue(EXCHANGE_RATE),
+    listExchangeRates: vi.fn().mockResolvedValue([EXCHANGE_RATE]),
   };
 
   const mockIdempotencyStore: IdempotencyStore = {
@@ -213,5 +217,67 @@ describe('ExchangeRateService.createManual', () => {
       EXCHANGE_RATE,
       WORKSPACE_ID,
     );
+  });
+});
+
+describe('ExchangeRateService.list', () => {
+  const query: ExchangeRateListQuery = {
+    workspaceId: WORKSPACE_ID,
+    baseCurrency: 'USD',
+    quoteCurrency: 'EUR',
+    from: '2026-08-01',
+    to: '2026-08-28',
+  };
+
+  it('refuses with FORBIDDEN when caller has no role in workspace (non-member)', async () => {
+    const { service, mockStore } = createService(null);
+
+    const outcome = await service.list(SUBJECT, query);
+
+    expect(outcome.kind).toBe(EXCHANGE_RATE_LIST_OUTCOMES.FORBIDDEN);
+    expect(mockStore.readActiveRole).toHaveBeenCalled();
+    expect(mockStore.listExchangeRates).not.toHaveBeenCalled();
+  });
+
+  it('admits viewer role (D4: any active member may read)', async () => {
+    const { service, mockStore } = createService('viewer');
+
+    const outcome = await service.list(SUBJECT, query);
+
+    expect(outcome.kind).toBe(EXCHANGE_RATE_LIST_OUTCOMES.OK);
+    expect((outcome as ExchangeRateListOk).exchangeRates).toEqual([
+      EXCHANGE_RATE,
+    ]);
+    expect(mockStore.listExchangeRates).toHaveBeenCalledWith(
+      expect.anything(),
+      query,
+    );
+  });
+
+  it('admits owner, administrator, and editor roles', async () => {
+    for (const role of ['owner', 'administrator', 'editor'] as const) {
+      const { service, mockStore } = createService(role);
+
+      const outcome = await service.list(SUBJECT, query);
+
+      expect(outcome.kind).toBe(EXCHANGE_RATE_LIST_OUTCOMES.OK);
+      expect((outcome as ExchangeRateListOk).exchangeRates).toEqual([
+        EXCHANGE_RATE,
+      ]);
+      expect(mockStore.listExchangeRates).toHaveBeenCalledWith(
+        expect.anything(),
+        query,
+      );
+    }
+  });
+
+  it('returns empty array when store returns empty array (not an error)', async () => {
+    const { service, mockStore } = createService('owner');
+    mockStore.listExchangeRates = vi.fn().mockResolvedValue([]);
+
+    const outcome = await service.list(SUBJECT, query);
+
+    expect(outcome.kind).toBe(EXCHANGE_RATE_LIST_OUTCOMES.OK);
+    expect((outcome as ExchangeRateListOk).exchangeRates).toEqual([]);
   });
 });
