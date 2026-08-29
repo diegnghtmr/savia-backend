@@ -1306,7 +1306,9 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
           expect(payeeRead.rows[0].archived).toBe(false);
         }
       } finally {
-        await admin.query('delete from public.categories where id = $1', [catId]);
+        await admin.query('delete from public.categories where id = $1', [
+          catId,
+        ]);
         await admin.query('delete from public.tags where id = $1', [tagId]);
         await admin.query('delete from public.payees where id = $1', [payeeId]);
       }
@@ -1525,7 +1527,9 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
       try {
         // Viewer can read
         const viewerCatRes = await asSubject(viewerE, (client) =>
-          client.query(`select id from public.categories where id = $1`, [catId]),
+          client.query(`select id from public.categories where id = $1`, [
+            catId,
+          ]),
         );
         expect(viewerCatRes.rows).toHaveLength(1);
 
@@ -1562,7 +1566,9 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
 
         // Outsider cannot read
         const outsiderReadRes = await asSubject(outsiderZ, (client) =>
-          client.query(`select id from public.categories where id = $1`, [catId]),
+          client.query(`select id from public.categories where id = $1`, [
+            catId,
+          ]),
         );
         expect(outsiderReadRes.rows).toHaveLength(0);
 
@@ -1578,7 +1584,9 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
         );
         expect(outsiderInsertErr.code).toBe('42501');
       } finally {
-        await admin.query('delete from public.categories where id = $1', [catId]);
+        await admin.query('delete from public.categories where id = $1', [
+          catId,
+        ]);
         await admin.query('delete from public.tags where id = $1', [tagId]);
         await admin.query('delete from public.payees where id = $1', [payeeId]);
       }
