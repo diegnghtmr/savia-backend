@@ -203,6 +203,12 @@ jobs:
       - name: catalog tables integration
         shell: bash
         run: pnpm test:integration:catalog-tables
+      - name: catalogs create integration
+        shell: bash
+        run: pnpm test:integration:catalogs-create
+      - name: catalogs list integration
+        shell: bash
+        run: pnpm test:integration:catalogs-list
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
