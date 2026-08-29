@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { decodeCursor } from '../../src/platform/cursor.js';
 import { computeRequestFingerprint } from '../../src/platform/idempotency.service.js';
 import {
   CATALOG_CREATE_OUTCOMES,
@@ -106,7 +107,10 @@ describe('CatalogsService.createTag', () => {
     );
 
     expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.FORBIDDEN);
-    expect(mockStore.readActiveRole).toHaveBeenCalled();
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockIdempotencyStore.read).not.toHaveBeenCalled();
     expect(mockStore.createTag).not.toHaveBeenCalled();
   });
@@ -122,6 +126,10 @@ describe('CatalogsService.createTag', () => {
     );
 
     expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.FORBIDDEN);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockStore.createTag).not.toHaveBeenCalled();
   });
 
@@ -140,6 +148,10 @@ describe('CatalogsService.createTag', () => {
     if (outcome.kind === CATALOG_CREATE_OUTCOMES.CREATED) {
       expect(outcome.tag).toEqual(MOCK_TAG);
     }
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockStore.createTag).toHaveBeenCalledWith(
       expect.anything(),
       WORKSPACE_ID,
@@ -180,12 +192,19 @@ describe('CatalogsService.createTag', () => {
       expect(outcome.status).toBe(201);
       expect(outcome.body).toEqual(MOCK_TAG);
     }
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockStore.createTag).not.toHaveBeenCalled();
   });
 
   it('returns IDEMPOTENCY_CONFLICT when idempotency key is reused with different payload', async () => {
+    const differentCommand: CreateNamedResourceCommand = {
+      name: 'Utilities',
+    };
     const { service, mockStore } = createService('owner', {
-      requestFingerprint: 'different-fingerprint',
+      requestFingerprint: computeRequestFingerprint(differentCommand),
       responseStatus: 201,
       responseEtag: null,
       responseBody: MOCK_TAG,
@@ -199,11 +218,15 @@ describe('CatalogsService.createTag', () => {
     );
 
     expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockStore.createTag).not.toHaveBeenCalled();
   });
 
   it('returns CONFLICT when unique constraint is violated (duplicate tag name in workspace)', async () => {
-    const { service } = createService(
+    const { service, mockStore } = createService(
       'owner',
       undefined,
       new TagNameConflictError(),
@@ -217,6 +240,10 @@ describe('CatalogsService.createTag', () => {
     );
 
     expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.CONFLICT);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
   });
 });
 
@@ -232,6 +259,28 @@ describe('CatalogsService.createPayee', () => {
     );
 
     expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.FORBIDDEN);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+    expect(mockStore.createPayee).not.toHaveBeenCalled();
+  });
+
+  it('checks active role and returns FORBIDDEN if caller is not a member', async () => {
+    const { service, mockStore } = createService(null);
+
+    const outcome = await service.createPayee(
+      SUBJECT,
+      WORKSPACE_ID,
+      PAYEE_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.FORBIDDEN);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockStore.createPayee).not.toHaveBeenCalled();
   });
 
@@ -250,6 +299,10 @@ describe('CatalogsService.createPayee', () => {
     if (outcome.kind === CATALOG_CREATE_OUTCOMES.CREATED) {
       expect(outcome.payee).toEqual(MOCK_PAYEE);
     }
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockStore.createPayee).toHaveBeenCalledWith(
       expect.anything(),
       WORKSPACE_ID,
@@ -290,12 +343,19 @@ describe('CatalogsService.createPayee', () => {
       expect(outcome.status).toBe(201);
       expect(outcome.body).toEqual(MOCK_PAYEE);
     }
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockStore.createPayee).not.toHaveBeenCalled();
   });
 
   it('returns IDEMPOTENCY_CONFLICT when idempotency key is reused with different payload', async () => {
+    const differentCommand: CreateNamedResourceCommand = {
+      name: 'Different Payee Name',
+    };
     const { service, mockStore } = createService('owner', {
-      requestFingerprint: 'different-fingerprint',
+      requestFingerprint: computeRequestFingerprint(differentCommand),
       responseStatus: 201,
       responseEtag: null,
       responseBody: MOCK_PAYEE,
@@ -309,11 +369,15 @@ describe('CatalogsService.createPayee', () => {
     );
 
     expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockStore.createPayee).not.toHaveBeenCalled();
   });
 
   it('returns CONFLICT when unique constraint is violated (duplicate payee name in workspace)', async () => {
-    const { service } = createService(
+    const { service, mockStore } = createService(
       'owner',
       undefined,
       undefined,
@@ -328,6 +392,10 @@ describe('CatalogsService.createPayee', () => {
     );
 
     expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.CONFLICT);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
   });
 });
 
@@ -341,11 +409,15 @@ describe('CatalogsService.listTags', () => {
     });
 
     expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.FORBIDDEN);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockStore.listTags).not.toHaveBeenCalled();
   });
 
   it('admits viewer role and returns paginated tags with nextCursor null when no more pages', async () => {
-    const { service } = createService('viewer');
+    const { service, mockStore } = createService('viewer');
 
     const outcome = await service.listTags(SUBJECT, {
       workspaceId: WORKSPACE_ID,
@@ -353,6 +425,10 @@ describe('CatalogsService.listTags', () => {
     });
 
     expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     if (outcome.kind === CATALOG_LIST_OUTCOMES.OK) {
       expect(outcome.page.items).toEqual([MOCK_TAG]);
       expect(outcome.page.pageInfo.hasNextPage).toBe(false);
@@ -387,10 +463,23 @@ describe('CatalogsService.listTags', () => {
     });
 
     expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     if (outcome.kind === CATALOG_LIST_OUTCOMES.OK) {
       expect(outcome.page.items).toHaveLength(1);
       expect(outcome.page.pageInfo.hasNextPage).toBe(true);
       expect(outcome.page.pageInfo.nextCursor).not.toBeNull();
+      const decoded = decodeCursor(
+        outcome.page.pageInfo.nextCursor!,
+        WORKSPACE_ID,
+      );
+      expect(decoded).toEqual({
+        workspaceId: WORKSPACE_ID,
+        createdAt: '2026-08-28T12:00:00.000000Z',
+        id: '00000000-0000-0000-0000-000000000001',
+      });
     }
   });
 });
@@ -405,11 +494,15 @@ describe('CatalogsService.listPayees', () => {
     });
 
     expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.FORBIDDEN);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     expect(mockStore.listPayees).not.toHaveBeenCalled();
   });
 
   it('admits viewer role and returns paginated payees', async () => {
-    const { service } = createService('viewer');
+    const { service, mockStore } = createService('viewer');
 
     const outcome = await service.listPayees(SUBJECT, {
       workspaceId: WORKSPACE_ID,
@@ -417,10 +510,61 @@ describe('CatalogsService.listPayees', () => {
     });
 
     expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
     if (outcome.kind === CATALOG_LIST_OUTCOMES.OK) {
       expect(outcome.page.items).toEqual([MOCK_PAYEE]);
       expect(outcome.page.pageInfo.hasNextPage).toBe(false);
       expect(outcome.page.pageInfo.nextCursor).toBeNull();
+    }
+  });
+
+  it('computes nextCursor when more items exist than limit', async () => {
+    const { service, mockStore } = createService('owner');
+    mockStore.listPayees = vi.fn().mockResolvedValue([
+      {
+        payee: {
+          id: '00000000-0000-0000-0000-000000000001',
+          name: 'Payee1',
+          archived: false,
+        },
+        cursorAt: '2026-08-28T12:00:00.000000Z',
+      },
+      {
+        payee: {
+          id: '00000000-0000-0000-0000-000000000002',
+          name: 'Payee2',
+          archived: false,
+        },
+        cursorAt: '2026-08-28T12:01:00.000000Z',
+      },
+    ]);
+
+    const outcome = await service.listPayees(SUBJECT, {
+      workspaceId: WORKSPACE_ID,
+      limit: 1,
+    });
+
+    expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+    if (outcome.kind === CATALOG_LIST_OUTCOMES.OK) {
+      expect(outcome.page.items).toHaveLength(1);
+      expect(outcome.page.pageInfo.hasNextPage).toBe(true);
+      expect(outcome.page.pageInfo.nextCursor).not.toBeNull();
+      const decoded = decodeCursor(
+        outcome.page.pageInfo.nextCursor!,
+        WORKSPACE_ID,
+      );
+      expect(decoded).toEqual({
+        workspaceId: WORKSPACE_ID,
+        createdAt: '2026-08-28T12:00:00.000000Z',
+        id: '00000000-0000-0000-0000-000000000001',
+      });
     }
   });
 });
