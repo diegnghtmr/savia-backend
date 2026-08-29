@@ -4,14 +4,17 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   CATALOG_LIST_OUTCOMES,
+  type Category,
+  type CategoryListOk,
   type Payee,
   type PayeeListOk,
   type Tag,
   type TagListOk,
 } from '../../src/catalogs/catalogs.port.js';
 import {
-  createTagListQuery,
+  createCategoryListQuery,
   createPayeeListQuery,
+  createTagListQuery,
   CatalogQueryValidationError,
 } from '../../src/catalogs/catalog-query.js';
 import { decodeCursor } from '../../src/platform/cursor.js';
@@ -30,7 +33,7 @@ const subject = (number: number) =>
 const id = (number: number) =>
   `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
 
-describe('CatalogsService listTags and listPayees database boundary', () => {
+describe('CatalogsService listTags, listPayees, and listCategories database boundary', () => {
   let admin: Pool;
   let pool: PostgresPool;
   let transaction: PgTransaction;
@@ -74,6 +77,21 @@ describe('CatalogsService listTags and listPayees database boundary', () => {
     payee8003,
     payee8004,
     payee8005,
+  ];
+
+  const category8001 = id(8201);
+  const category8002 = id(8202);
+  const category8003 = id(8203);
+  const category8004 = id(8204);
+  const category8005 = id(8205);
+  const foreignCategoryId = id(8299);
+
+  const expectedCategoryOrder = [
+    category8001,
+    category8002,
+    category8003,
+    category8004,
+    category8005,
   ];
 
   async function listAllTags(
@@ -141,6 +159,41 @@ describe('CatalogsService listTags and listPayees database boundary', () => {
       kind: ok.kind,
       payees: ok.page.items,
       ids: ok.page.items.map((p) => p.id),
+      hasNextPage: ok.page.pageInfo.hasNextPage,
+      nextCursor: ok.page.pageInfo.nextCursor,
+    };
+  }
+
+  async function listAllCategories(
+    subjectId: string,
+    wsId: string,
+    options: {
+      readonly cursorParam?: string;
+      readonly limitParam?: string;
+    } = {},
+  ): Promise<
+    | {
+        readonly kind: typeof CATALOG_LIST_OUTCOMES.OK;
+        readonly categories: readonly Category[];
+        readonly ids: readonly string[];
+        readonly hasNextPage: boolean;
+        readonly nextCursor: string | null;
+      }
+    | { readonly kind: typeof CATALOG_LIST_OUTCOMES.FORBIDDEN }
+  > {
+    const query = createCategoryListQuery({
+      workspaceId: wsId,
+      cursorParam: options.cursorParam,
+      limitParam: options.limitParam,
+    });
+
+    const outcome = await service.listCategories(subjectId, query);
+    if (outcome.kind === CATALOG_LIST_OUTCOMES.FORBIDDEN) return outcome;
+    const ok = outcome as CategoryListOk;
+    return {
+      kind: ok.kind,
+      categories: ok.page.items,
+      ids: ok.page.items.map((c) => c.id),
       hasNextPage: ok.page.pageInfo.hasNextPage,
       nextCursor: ok.page.pageInfo.nextCursor,
     };
@@ -317,9 +370,93 @@ describe('CatalogsService listTags and listPayees database boundary', () => {
        values ($1::uuid, $2::uuid, 'Foreign Payee', false, '2026-08-28T12:00:00.000000Z'::timestamptz, $3::uuid)`,
       [foreignPayeeId, foreignWorkspaceId, subjectForeignOwner],
     );
+
+    // 9. Seed categories in workspace 1
+    const categorySeeds = [
+      {
+        id: category8001,
+        name: 'Seed Category 8001 Root',
+        parentId: null,
+        kind: 'expense',
+        icon: 'house',
+        colorToken: 'blue-500',
+        createdAt: '2026-08-20T10:00:00.000000Z',
+        archived: false,
+      },
+      {
+        id: category8002,
+        name: 'Seed Category 8002 Child',
+        parentId: category8001,
+        kind: 'expense',
+        icon: 'bed',
+        colorToken: 'indigo-500',
+        createdAt: '2026-08-20T10:00:00.000000Z', // identical timestamp to category8001
+        archived: false,
+      },
+      {
+        id: category8003,
+        name: 'Seed Category 8003 Root',
+        parentId: null,
+        kind: 'income',
+        icon: 'cash',
+        colorToken: 'emerald-500',
+        createdAt: '2026-08-25T14:00:00.000000Z',
+        archived: false,
+      },
+      {
+        id: category8004,
+        name: 'Seed Category 8004 Root',
+        parentId: null,
+        kind: 'transfer',
+        icon: 'arrows-left-right',
+        colorToken: 'zinc-500',
+        createdAt: '2026-08-28T12:00:00.000000Z',
+        archived: false,
+      },
+      {
+        id: category8005,
+        name: 'Seed Category 8005 Archived Child',
+        parentId: category8003,
+        kind: 'income',
+        icon: 'coins',
+        colorToken: null,
+        createdAt: '2026-08-28T18:00:00.000000Z',
+        archived: true, // Deliberately archived
+      },
+    ];
+
+    for (const c of categorySeeds) {
+      await admin.query(
+        `insert into public.categories (id, workspace_id, parent_id, name, kind, icon, color_token, archived, created_at, created_by)
+         values ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9::timestamptz, $10::uuid)`,
+        [
+          c.id,
+          workspace1Id,
+          c.parentId,
+          c.name,
+          c.kind,
+          c.icon,
+          c.colorToken,
+          c.archived,
+          c.createdAt,
+          subjectOwner,
+        ],
+      );
+    }
+
+    // 10. Seed foreign category in foreign workspace
+    await admin.query(
+      `insert into public.categories (id, workspace_id, parent_id, name, kind, icon, color_token, archived, created_at, created_by)
+       values ($1::uuid, $2::uuid, null, 'Foreign Category', 'other', null, null, false, '2026-08-28T12:00:00.000000Z'::timestamptz, $3::uuid)`,
+      [foreignCategoryId, foreignWorkspaceId, subjectForeignOwner],
+    );
   });
 
   afterAll(async () => {
+    await admin.query(
+      `delete from public.categories where workspace_id in ($1, $2)`,
+      [workspace1Id, foreignWorkspaceId],
+    );
     await admin.query(
       `delete from public.tags where workspace_id in ($1, $2)`,
       [workspace1Id, foreignWorkspaceId],
@@ -621,6 +758,165 @@ describe('CatalogsService listTags and listPayees database boundary', () => {
     });
   });
 
+  describe('Categories listing and pagination', () => {
+    it('200 happy path: returns all workspace categories in (created_at asc, id asc) order with correct projections', async () => {
+      const outcome = await listAllCategories(subjectOwner, workspace1Id);
+      expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (outcome.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+
+      expect(outcome.ids).toEqual(expectedCategoryOrder);
+      expect(outcome.hasNextPage).toBe(false);
+      expect(outcome.nextCursor).toBeNull();
+
+      // Check fields of root category
+      const cat1 = outcome.categories.find((c) => c.id === category8001);
+      expect(cat1).toBeDefined();
+      expect(cat1?.name).toBe('Seed Category 8001 Root');
+      expect(cat1?.parentId).toBeNull();
+      expect(cat1?.kind).toBe('expense');
+      expect(cat1?.icon).toBe('house');
+      expect(cat1?.colorToken).toBe('blue-500');
+      expect(cat1?.archived).toBe(false);
+
+      // Check fields of child category
+      const cat2 = outcome.categories.find((c) => c.id === category8002);
+      expect(cat2).toBeDefined();
+      expect(cat2?.name).toBe('Seed Category 8002 Child');
+      expect(cat2?.parentId).toBe(category8001);
+      expect(cat2?.kind).toBe('expense');
+      expect(cat2?.icon).toBe('bed');
+      expect(cat2?.colorToken).toBe('indigo-500');
+      expect(cat2?.archived).toBe(false);
+    });
+
+    it('cursor pagination walks the whole category set exactly once with no duplicates and no omissions (limit=2, limit=2, limit=2)', async () => {
+      const page1 = await listAllCategories(subjectOwner, workspace1Id, {
+        limitParam: '2',
+      });
+      expect(page1.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (page1.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+      expect(page1.ids).toEqual([category8001, category8002]);
+      expect(page1.hasNextPage).toBe(true);
+      expect(page1.nextCursor).not.toBeNull();
+
+      const page2 = await listAllCategories(subjectOwner, workspace1Id, {
+        limitParam: '2',
+        cursorParam: page1.nextCursor!,
+      });
+      expect(page2.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (page2.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+      expect(page2.ids).toEqual([category8003, category8004]);
+      expect(page2.hasNextPage).toBe(true);
+      expect(page2.nextCursor).not.toBeNull();
+
+      const page3 = await listAllCategories(subjectOwner, workspace1Id, {
+        limitParam: '2',
+        cursorParam: page2.nextCursor!,
+      });
+      expect(page3.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (page3.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+      expect(page3.ids).toEqual([category8005]);
+      expect(page3.hasNextPage).toBe(false);
+      expect(page3.nextCursor).toBeNull();
+
+      const collectedIds = [...page1.ids, ...page2.ids, ...page3.ids];
+      expect(collectedIds).toEqual(expectedCategoryOrder);
+      expect(new Set(collectedIds).size).toBe(expectedCategoryOrder.length);
+    });
+
+    it('rows sharing the same created_at are paged correctly across page boundaries (limit=1 on tied timestamp)', async () => {
+      const page1 = await listAllCategories(subjectOwner, workspace1Id, {
+        limitParam: '1',
+      });
+      expect(page1.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (page1.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+      expect(page1.ids).toEqual([category8001]);
+      expect(page1.hasNextPage).toBe(true);
+      expect(page1.nextCursor).not.toBeNull();
+
+      const page2 = await listAllCategories(subjectOwner, workspace1Id, {
+        limitParam: '1',
+        cursorParam: page1.nextCursor!,
+      });
+      expect(page2.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (page2.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+      expect(page2.ids).toEqual([category8002]);
+      expect(page2.hasNextPage).toBe(true);
+    });
+
+    it('a cursor minted in workspace A, replayed against workspace B, is rejected', async () => {
+      const pageWs1 = await listAllCategories(subjectOwner, workspace1Id, {
+        limitParam: '1',
+      });
+      expect(pageWs1.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (pageWs1.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+      const cursorWs1 = pageWs1.nextCursor!;
+
+      expect(() =>
+        createCategoryListQuery({
+          workspaceId: foreignWorkspaceId,
+          cursorParam: cursorWs1,
+        }),
+      ).toThrow(CatalogQueryValidationError);
+
+      const decodedForeign = decodeCursor(cursorWs1, foreignWorkspaceId);
+      expect(decodedForeign).toBeUndefined();
+    });
+
+    it('an archived category is still listed (query intentionally has no archived filter)', async () => {
+      const outcome = await listAllCategories(subjectOwner, workspace1Id);
+      expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (outcome.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+
+      const cat5 = outcome.categories.find((c) => c.id === category8005);
+      expect(cat5).toBeDefined();
+      expect(cat5?.archived).toBe(true);
+    });
+
+    it('an anchor category row deleted between pages does not break the seek', async () => {
+      const page1 = await listAllCategories(subjectOwner, workspace1Id, {
+        limitParam: '2',
+      });
+      expect(page1.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (page1.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+      expect(page1.ids).toEqual([category8001, category8002]);
+      const cursor1 = page1.nextCursor!;
+
+      const tempCategoryId = id(8288);
+      await admin.query(
+        `insert into public.categories (id, workspace_id, parent_id, name, kind, icon, color_token, archived, created_at, created_by)
+         values ($1::uuid, $2::uuid, null, 'Temp Anchor Category', 'expense', null, null, false, '2026-08-22T10:00:00.000000Z'::timestamptz, $3::uuid)`,
+        [tempCategoryId, workspace1Id, subjectOwner],
+      );
+
+      const pageWithTemp = await listAllCategories(subjectOwner, workspace1Id, {
+        limitParam: '1',
+        cursorParam: cursor1,
+      });
+      expect(pageWithTemp.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (pageWithTemp.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+      expect(pageWithTemp.ids).toEqual([tempCategoryId]);
+      const tempCursor = pageWithTemp.nextCursor!;
+
+      await admin.query(`delete from public.categories where id = $1::uuid`, [
+        tempCategoryId,
+      ]);
+
+      const pageAfterDelete = await listAllCategories(
+        subjectOwner,
+        workspace1Id,
+        {
+          limitParam: '2',
+          cursorParam: tempCursor,
+        },
+      );
+      expect(pageAfterDelete.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (pageAfterDelete.kind !== CATALOG_LIST_OUTCOMES.OK) return;
+
+      expect(pageAfterDelete.ids).toEqual([category8003, category8004]);
+    });
+  });
+
   describe('Isolation and Authorization', () => {
     it('admits a viewer because select policy admits all workspace roles', async () => {
       const tagOutcome = await listAllTags(subjectViewer, workspace1Id);
@@ -634,6 +930,15 @@ describe('CatalogsService listTags and listPayees database boundary', () => {
       if (payeeOutcome.kind === CATALOG_LIST_OUTCOMES.OK) {
         expect(payeeOutcome.ids).toEqual(expectedPayeeOrder);
       }
+
+      const categoryOutcome = await listAllCategories(
+        subjectViewer,
+        workspace1Id,
+      );
+      expect(categoryOutcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (categoryOutcome.kind === CATALOG_LIST_OUTCOMES.OK) {
+        expect(categoryOutcome.ids).toEqual(expectedCategoryOrder);
+      }
     });
 
     it('refuses a non-member with FORBIDDEN', async () => {
@@ -642,6 +947,12 @@ describe('CatalogsService listTags and listPayees database boundary', () => {
 
       const payeeOutcome = await listAllPayees(subjectNonMember, workspace1Id);
       expect(payeeOutcome.kind).toBe(CATALOG_LIST_OUTCOMES.FORBIDDEN);
+
+      const categoryOutcome = await listAllCategories(
+        subjectNonMember,
+        workspace1Id,
+      );
+      expect(categoryOutcome.kind).toBe(CATALOG_LIST_OUTCOMES.FORBIDDEN);
     });
 
     it('isolation vacuity guard: caller with no active role in foreign workspace gets 403 (target workspace genuinely contains rows)', async () => {
@@ -665,6 +976,18 @@ describe('CatalogsService listTags and listPayees database boundary', () => {
         foreignWorkspaceId,
       );
       expect(payeeOutcome.kind).toBe(CATALOG_LIST_OUTCOMES.FORBIDDEN);
+
+      const foreignCategoryCount = await admin.query<{ count: string }>(
+        'select count(*) as count from public.categories where workspace_id = $1::uuid',
+        [foreignWorkspaceId],
+      );
+      expect(Number(foreignCategoryCount.rows[0]?.count)).toBeGreaterThan(0);
+
+      const categoryOutcome = await listAllCategories(
+        subjectOwner,
+        foreignWorkspaceId,
+      );
+      expect(categoryOutcome.kind).toBe(CATALOG_LIST_OUTCOMES.FORBIDDEN);
     });
 
     it('refuses an absent workspace with 403 to prevent leaking existence', async () => {
@@ -673,9 +996,15 @@ describe('CatalogsService listTags and listPayees database boundary', () => {
 
       const payeeOutcome = await listAllPayees(subjectOwner, absentWorkspaceId);
       expect(payeeOutcome.kind).toBe(CATALOG_LIST_OUTCOMES.FORBIDDEN);
+
+      const categoryOutcome = await listAllCategories(
+        subjectOwner,
+        absentWorkspaceId,
+      );
+      expect(categoryOutcome.kind).toBe(CATALOG_LIST_OUTCOMES.FORBIDDEN);
     });
 
-    it('workspace isolation: foreign workspace tags and payees never leak into workspace 1 queries (RLS)', async () => {
+    it('workspace isolation: foreign workspace tags, payees, and categories never leak into workspace 1 queries (RLS)', async () => {
       const tagOutcome = await listAllTags(subjectOwner, workspace1Id);
       expect(tagOutcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
       if (tagOutcome.kind === CATALOG_LIST_OUTCOMES.OK) {
@@ -686,6 +1015,15 @@ describe('CatalogsService listTags and listPayees database boundary', () => {
       expect(payeeOutcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
       if (payeeOutcome.kind === CATALOG_LIST_OUTCOMES.OK) {
         expect(payeeOutcome.ids).not.toContain(foreignPayeeId);
+      }
+
+      const categoryOutcome = await listAllCategories(
+        subjectOwner,
+        workspace1Id,
+      );
+      expect(categoryOutcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+      if (categoryOutcome.kind === CATALOG_LIST_OUTCOMES.OK) {
+        expect(categoryOutcome.ids).not.toContain(foreignCategoryId);
       }
     });
   });

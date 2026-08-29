@@ -18,6 +18,7 @@ export interface CatalogListQueryInput {
 }
 export type TagListQueryInput = CatalogListQueryInput;
 export type PayeeListQueryInput = CatalogListQueryInput;
+export type CategoryListQueryInput = CatalogListQueryInput;
 
 export function createCatalogListQuery(
   input: CatalogListQueryInput,
@@ -41,3 +42,4 @@ export function createCatalogListQuery(
 
 export const createTagListQuery = createCatalogListQuery;
 export const createPayeeListQuery = createCatalogListQuery;
+export const createCategoryListQuery = createCatalogListQuery;

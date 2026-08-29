@@ -171,6 +171,16 @@
       "operationId": "createPayee",
       "method": "POST",
       "path": "/v1/payees"
+    },
+    {
+      "operationId": "listCategorys",
+      "method": "GET",
+      "path": "/v1/categories"
+    },
+    {
+      "operationId": "createCategory",
+      "method": "POST",
+      "path": "/v1/categories"
     }
   ]
 }

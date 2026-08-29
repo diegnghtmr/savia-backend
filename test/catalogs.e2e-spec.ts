@@ -8,6 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CATALOGS_PORT,
   type CatalogsPort,
+  type Category,
+  type CategoryCreateOutcome,
+  type CategoryListOutcome,
   type Payee,
   type Tag,
   type TagCreateOutcome,
@@ -34,6 +37,16 @@ const MOCK_PAYEE: Payee = {
   id: '00000000-0000-0000-0000-000000002001',
   name: 'Acme Supermarket',
   archived: false,
+};
+
+const MOCK_CATEGORY: Category = {
+  id: '00000000-0000-0000-0000-000000003001',
+  name: 'Food & Dining',
+  archived: false,
+  parentId: null,
+  kind: 'expense',
+  icon: 'fork-knife',
+  colorToken: 'emerald-500',
 };
 
 const authEnvironment = {
@@ -109,6 +122,21 @@ async function createApplication(
           pageInfo: { hasNextPage: false, nextCursor: null },
         },
       } satisfies PayeeListOutcome),
+    createCategory:
+      overrides.createCategory ??
+      vi.fn().mockResolvedValue({
+        kind: 'created',
+        category: MOCK_CATEGORY,
+      } satisfies CategoryCreateOutcome),
+    listCategories:
+      overrides.listCategories ??
+      vi.fn().mockResolvedValue({
+        kind: 'ok',
+        page: {
+          items: [MOCK_CATEGORY],
+          pageInfo: { hasNextPage: false, nextCursor: null },
+        },
+      } satisfies CategoryListOutcome),
   };
 
   const moduleRef = await Test.createTestingModule({
@@ -233,6 +261,62 @@ function getPayees(
   }
   const queryString = searchParams.toString();
   const url = `/v1/payees${queryString ? `?${queryString}` : ''}`;
+
+  return application.inject({
+    method: 'GET',
+    url,
+    headers,
+  });
+}
+
+function postCategory(
+  application: NestFastifyApplication,
+  body: unknown,
+  options: {
+    token?: string;
+    workspaceHeader?: string;
+    idempotencyKey?: string;
+  } = {},
+) {
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+  };
+  if (options.token !== undefined)
+    headers.authorization = `Bearer ${options.token}`;
+  if (options.workspaceHeader !== undefined)
+    headers['x-workspace-id'] = options.workspaceHeader;
+  if (options.idempotencyKey !== undefined)
+    headers['idempotency-key'] = options.idempotencyKey;
+  return application.inject({
+    method: 'POST',
+    url: '/v1/categories',
+    headers,
+    payload: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+}
+
+function getCategories(
+  application: NestFastifyApplication,
+  query: Record<string, string | undefined> = {},
+  options: {
+    token?: string;
+    workspaceHeader?: string;
+  } = {},
+) {
+  const headers: Record<string, string> = {};
+  if (options.token !== undefined)
+    headers.authorization = `Bearer ${options.token}`;
+  if (options.workspaceHeader !== undefined)
+    headers['x-workspace-id'] = options.workspaceHeader;
+
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) {
+      searchParams.set(key, value);
+    }
+  }
+  const queryString = searchParams.toString();
+  const url = `/v1/categories${queryString ? `?${queryString}` : ''}`;
 
   return application.inject({
     method: 'GET',
@@ -459,6 +543,142 @@ describe('GET /v1/payees', () => {
       pageInfo: { hasNextPage: false, nextCursor: null },
     });
     expect(port.listPayees).toHaveBeenCalledWith(SUBJECT, {
+      workspaceId: WORKSPACE_ID,
+      limit: 50,
+    });
+  });
+});
+
+describe('POST /v1/categories', () => {
+  it('answers 401 when Authorization header is missing', async () => {
+    const { application, port } = await createApplication();
+    const response = await postCategory(
+      application,
+      {
+        name: 'Food & Dining',
+        kind: 'expense',
+        parentId: null,
+        icon: 'fork-knife',
+        colorToken: 'emerald-500',
+      },
+      {
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(port.createCategory).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 when bearer token is rejected', async () => {
+    const { application, port } = await createApplication();
+    const response = await postCategory(
+      application,
+      {
+        name: 'Food & Dining',
+        kind: 'expense',
+        parentId: null,
+        icon: 'fork-knife',
+        colorToken: 'emerald-500',
+      },
+      {
+        token: 'rejected-token',
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(port.createCategory).not.toHaveBeenCalled();
+  });
+
+  it('answers 201 with created category when authenticated', async () => {
+    const { application, port } = await createApplication();
+    const response = await postCategory(
+      application,
+      {
+        name: 'Food & Dining',
+        kind: 'expense',
+        parentId: null,
+        icon: 'fork-knife',
+        colorToken: 'emerald-500',
+      },
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    );
+
+    expect(response.statusCode).toBe(201);
+    expect(JSON.parse(response.payload)).toEqual(MOCK_CATEGORY);
+    expect(port.createCategory).toHaveBeenCalledWith(
+      SUBJECT,
+      WORKSPACE_ID,
+      {
+        name: 'Food & Dining',
+        kind: 'expense',
+        parentId: null,
+        icon: 'fork-knife',
+        colorToken: 'emerald-500',
+      },
+      IDEMPOTENCY_KEY,
+    );
+  });
+});
+
+describe('GET /v1/categories', () => {
+  it('answers 401 when Authorization header is missing', async () => {
+    const { application, port } = await createApplication();
+    const response = await getCategories(
+      application,
+      {},
+      { workspaceHeader: WORKSPACE_ID },
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(port.listCategories).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 when bearer token is rejected', async () => {
+    const { application, port } = await createApplication();
+    const response = await getCategories(
+      application,
+      {},
+      { token: 'rejected-token', workspaceHeader: WORKSPACE_ID },
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(port.listCategories).not.toHaveBeenCalled();
+  });
+
+  it('answers 200 with paginated category page when authenticated', async () => {
+    const { application, port } = await createApplication();
+    const response = await getCategories(
+      application,
+      { limit: '50' },
+      { token: TOKEN, workspaceHeader: WORKSPACE_ID },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.payload)).toEqual({
+      items: [MOCK_CATEGORY],
+      pageInfo: { hasNextPage: false, nextCursor: null },
+    });
+    expect(port.listCategories).toHaveBeenCalledWith(SUBJECT, {
       workspaceId: WORKSPACE_ID,
       limit: 50,
     });
