@@ -45,6 +45,8 @@ case "$spec" in
   test/ledger/exchange-rates-create.integration-spec.ts) ;;
   test/ledger/exchange-rates-list.integration-spec.ts) ;;
   test/identity/catalog-tables.integration-spec.ts) ;;
+  test/catalogs/catalogs-create.integration-spec.ts) ;;
+  test/catalogs/catalogs-list.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
