@@ -402,7 +402,7 @@ describe('RecurringService createRecurringRule database boundary', () => {
   });
 
   describe('Idempotency handling', () => {
-    it('replays identical response for identical request and key', async () => {
+    it('replays identical response for identical request and key and does not persist duplicate row', async () => {
       const key = 'a0000000-0000-0000-0000-000000000010';
       const first = (await service.createRecurringRule(
         subjectOwner,
@@ -411,6 +411,11 @@ describe('RecurringService createRecurringRule database boundary', () => {
         key,
       )) as RecurringCreateCreated;
       expect(first.kind).toBe(RECURRING_CREATE_OUTCOMES.CREATED);
+
+      const countBefore = await admin.query<{ count: number }>(
+        'select count(*)::int as count from public.recurring_rules where workspace_id = $1',
+        [workspace1Id],
+      );
 
       const second = (await service.createRecurringRule(
         subjectOwner,
@@ -421,9 +426,15 @@ describe('RecurringService createRecurringRule database boundary', () => {
       expect(second.kind).toBe(RECURRING_CREATE_OUTCOMES.REPLAYED);
       expect(second.status).toBe(201);
       expect(second.body).toEqual(first.rule);
+
+      const countAfter = await admin.query<{ count: number }>(
+        'select count(*)::int as count from public.recurring_rules where workspace_id = $1',
+        [workspace1Id],
+      );
+      expect(countAfter.rows[0].count).toBe(countBefore.rows[0].count);
     });
 
-    it('conflicts when idempotency key is reused with different payload', async () => {
+    it('conflicts when idempotency key is reused with different payload and does not persist rule', async () => {
       const key = 'a0000000-0000-0000-0000-000000000011';
       const first = await service.createRecurringRule(
         subjectOwner,
@@ -433,6 +444,11 @@ describe('RecurringService createRecurringRule database boundary', () => {
       );
       expect(first.kind).toBe(RECURRING_CREATE_OUTCOMES.CREATED);
 
+      const countBefore = await admin.query<{ count: number }>(
+        'select count(*)::int as count from public.recurring_rules where workspace_id = $1',
+        [workspace1Id],
+      );
+
       const second = await service.createRecurringRule(
         subjectOwner,
         workspace1Id,
@@ -440,6 +456,12 @@ describe('RecurringService createRecurringRule database boundary', () => {
         key,
       );
       expect(second.kind).toBe(RECURRING_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT);
+
+      const countAfter = await admin.query<{ count: number }>(
+        'select count(*)::int as count from public.recurring_rules where workspace_id = $1',
+        [workspace1Id],
+      );
+      expect(countAfter.rows[0].count).toBe(countBefore.rows[0].count);
     });
   });
 });

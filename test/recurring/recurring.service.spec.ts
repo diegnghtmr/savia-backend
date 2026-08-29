@@ -234,12 +234,19 @@ describe('RecurringService', () => {
 
     it('replays response when identical request is submitted with same idempotency key', async () => {
       const fingerprint = computeRequestFingerprint(CREATE_COMMAND);
-      const { service } = createService('owner', true, true, true, undefined, {
-        requestFingerprint: fingerprint,
-        responseStatus: 201,
-        responseEtag: null,
-        responseBody: MOCK_RULE,
-      });
+      const { service, mockStore } = createService(
+        'owner',
+        true,
+        true,
+        true,
+        undefined,
+        {
+          requestFingerprint: fingerprint,
+          responseStatus: 201,
+          responseEtag: null,
+          responseBody: MOCK_RULE,
+        },
+      );
 
       const outcome = await service.createRecurringRule(
         SUBJECT,
@@ -253,15 +260,23 @@ describe('RecurringService', () => {
         expect(outcome.status).toBe(201);
         expect(outcome.body).toEqual(MOCK_RULE);
       }
+      expect(mockStore.createRecurringRule).not.toHaveBeenCalled();
     });
 
     it('conflicts when idempotency key is reused with different request body', async () => {
-      const { service } = createService('owner', true, true, true, undefined, {
-        requestFingerprint: 'different-fingerprint-sha256',
-        responseStatus: 201,
-        responseEtag: null,
-        responseBody: MOCK_RULE,
-      });
+      const { service, mockStore } = createService(
+        'owner',
+        true,
+        true,
+        true,
+        undefined,
+        {
+          requestFingerprint: 'different-fingerprint-sha256',
+          responseStatus: 201,
+          responseEtag: null,
+          responseBody: MOCK_RULE,
+        },
+      );
 
       const outcome = await service.createRecurringRule(
         SUBJECT,
@@ -271,6 +286,7 @@ describe('RecurringService', () => {
       );
 
       expect(outcome.kind).toBe(RECURRING_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT);
+      expect(mockStore.createRecurringRule).not.toHaveBeenCalled();
     });
   });
 

@@ -102,7 +102,27 @@ export class RecurringService implements RecurringRulesPort {
         return { kind: RECURRING_CREATE_OUTCOMES.FORBIDDEN };
       }
 
-      // 2. RULING 53: Validate workspace containment for categoryId, payeeId, tagIds before insert
+      // 2. Idempotency read
+      const existing = await this.idempotencyStore.read(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        workspaceId,
+      );
+      if (existing !== undefined) {
+        if (existing.requestFingerprint !== fingerprint) {
+          return { kind: RECURRING_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT };
+        }
+        return {
+          kind: RECURRING_CREATE_OUTCOMES.REPLAYED,
+          status: existing.responseStatus,
+          etag: existing.responseEtag,
+          body: existing.responseBody,
+        };
+      }
+
+      // 3. RULING 53: Validate workspace containment for categoryId, payeeId, tagIds before insert
       if (command.template.categoryId) {
         const catOk = await this.store.categoryBelongsToWorkspace(
           client,
@@ -136,7 +156,7 @@ export class RecurringService implements RecurringRulesPort {
         }
       }
 
-      // 3. Create rule (account_id workspace containment enforced by DB composite FK)
+      // 4. Create rule (account_id workspace containment enforced by DB composite FK)
       let rule: RecurringRule;
       try {
         rule = await this.store.createRecurringRule(
@@ -152,7 +172,7 @@ export class RecurringService implements RecurringRulesPort {
         throw error;
       }
 
-      // 4. Record idempotency
+      // 5. Write idempotency record
       const written = await this.idempotencyStore.write(
         client,
         subject,
