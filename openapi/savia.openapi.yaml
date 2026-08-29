@@ -876,6 +876,43 @@ components:
             - string
             - 'null'
           maxLength: 500
+    CreateCurrencyExchangeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - sourceAccountId
+        - destinationAccountId
+        - sourceAmount
+        - destinationAmount
+        - executedRate
+        - occurredAt
+      properties:
+        sourceAccountId:
+          type: string
+          format: uuid
+        destinationAccountId:
+          type: string
+          format: uuid
+        sourceAmount:
+          $ref: '#/components/schemas/Money'
+        destinationAmount:
+          $ref: '#/components/schemas/Money'
+        executedRate:
+          $ref: '#/components/schemas/DecimalString'
+        referenceRate:
+          anyOf:
+            - $ref: '#/components/schemas/DecimalString'
+            - type: 'null'
+        fee:
+          $ref: '#/components/schemas/Money'
+        occurredAt:
+          type: string
+          format: date-time
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
     ExchangeRate:
       type: object
       additionalProperties: false
@@ -3012,6 +3049,86 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
       x-savia-mcp-tool:
         name: create_transfer
+        riskClass: financial_write
+        requiresApproval: true
+        requiredScopes:
+          - transactions:write
+      x-idempotency-required: true
+  /v1/currency-exchanges:
+    post:
+      operationId: createCurrencyExchange
+      tags:
+        - Transfers
+      summary: Create cross-currency transfer
+      x-financial: true
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCurrencyExchangeRequest'
+      responses:
+        '201':
+          description: Currency exchange created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '400':
+          description: The request header or body failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Validation failed or business invariant violated.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: create_cross_currency_transfer
         riskClass: financial_write
         requiresApproval: true
         requiredScopes:

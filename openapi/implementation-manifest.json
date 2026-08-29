@@ -146,6 +146,11 @@
       "operationId": "listExchangeRates",
       "method": "GET",
       "path": "/v1/exchange-rates"
+    },
+    {
+      "operationId": "createCurrencyExchange",
+      "method": "POST",
+      "path": "/v1/currency-exchanges"
     }
   ]
 }
