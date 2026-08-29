@@ -1,16 +1,31 @@
-import { Controller, Inject, Post, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Inject,
+  Post,
+  Query,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 
 import {
   EXCHANGE_RATE_PORT,
   EXCHANGE_RATE_CREATE_OUTCOMES,
+  EXCHANGE_RATE_LIST_OUTCOMES,
   type CreateManualExchangeRateCommand,
+  type ExchangeRateListQuery,
   type ExchangeRatePort,
 } from './exchange-rate.port.js';
 import {
   createManualExchangeRateCommand,
   ExchangeRateCommandValidationError,
 } from './exchange-rate-command.js';
+import {
+  createExchangeRateListQuery,
+  ExchangeRateQueryValidationError,
+} from './exchange-rate-query.js';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
@@ -116,5 +131,63 @@ export class ExchangeRateController {
 
     // createManualExchangeRate has NO ETag response header
     void reply.status(201).send(outcome.exchangeRate);
+  }
+
+  @Get()
+  public async listExchangeRates(
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Query('baseCurrency') baseCurrencyParam?: string,
+    @Query('quoteCurrency') quoteCurrencyParam?: string,
+    @Query('from') fromParam?: string,
+    @Query('to') toParam?: string,
+  ): Promise<void> {
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+
+    let query: ExchangeRateListQuery;
+    try {
+      query = createExchangeRateListQuery({
+        workspaceId: header.workspaceId,
+        ...(baseCurrencyParam === undefined ? {} : { baseCurrencyParam }),
+        ...(quoteCurrencyParam === undefined ? {} : { quoteCurrencyParam }),
+        ...(fromParam === undefined ? {} : { fromParam }),
+        ...(toParam === undefined ? {} : { toParam }),
+      });
+    } catch (error) {
+      if (error instanceof ExchangeRateQueryValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid list exchange rates query',
+          status: 400,
+          errors: error.violations,
+        });
+        return;
+      }
+      throw error;
+    }
+
+    const outcome = await this.exchangeRatePort.list(
+      request.identity.subject,
+      query,
+    );
+
+    if (outcome.kind === EXCHANGE_RATE_LIST_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+
+    void reply.status(200).send(outcome.exchangeRates);
   }
 }

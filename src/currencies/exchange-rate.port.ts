@@ -59,6 +59,34 @@ export type ExchangeRateCreateOutcome =
   | ExchangeRateCreateForbidden
   | ExchangeRateCreateAlreadyRecorded;
 
+export interface ExchangeRateListQuery {
+  readonly workspaceId: string;
+  readonly baseCurrency?: string;
+  readonly quoteCurrency?: string;
+  readonly from?: string;
+  readonly to?: string;
+}
+
+export const EXCHANGE_RATE_LIST_OUTCOMES = {
+  OK: 'ok',
+  FORBIDDEN: 'forbidden',
+} as const;
+export type ExchangeRateListOutcomeKind =
+  (typeof EXCHANGE_RATE_LIST_OUTCOMES)[keyof typeof EXCHANGE_RATE_LIST_OUTCOMES];
+
+export interface ExchangeRateListOk {
+  readonly kind: typeof EXCHANGE_RATE_LIST_OUTCOMES.OK;
+  readonly exchangeRates: readonly ExchangeRate[];
+}
+
+export interface ExchangeRateListForbidden {
+  readonly kind: typeof EXCHANGE_RATE_LIST_OUTCOMES.FORBIDDEN;
+}
+
+export type ExchangeRateListOutcome =
+  | ExchangeRateListOk
+  | ExchangeRateListForbidden;
+
 export interface ExchangeRatePort {
   createManual(
     subject: string,
@@ -66,4 +94,9 @@ export interface ExchangeRatePort {
     command: CreateManualExchangeRateCommand,
     idempotencyKey: string,
   ): Promise<ExchangeRateCreateOutcome>;
+
+  list(
+    subject: string,
+    query: ExchangeRateListQuery,
+  ): Promise<ExchangeRateListOutcome>;
 }
