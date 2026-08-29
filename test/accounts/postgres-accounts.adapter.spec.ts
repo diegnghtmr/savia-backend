@@ -634,7 +634,13 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     expect(rateSql).toContain(
       'effective_at <= coalesce($4::timestamptz, now())',
     );
-    expect(rateSql).toContain('order by effective_at desc, id desc');
+    // The ordering prefers rates effective at or before asOf, and only then falls
+    // back to the earliest on record, so a balance asked for a date before the first
+    // rate still answers instead of failing. Pin both halves of that ordering.
+    expect(rateSql).toContain(
+      'order by (effective_at <= coalesce($4::timestamptz, now())) desc',
+    );
+    expect(rateSql).toContain('effective_at asc');
     expect(rateSql).toContain('limit 1');
     expect(rateValues).toEqual([
       workspaceId,
