@@ -3018,6 +3018,74 @@ paths:
           - transactions:write
       x-idempotency-required: true
   /v1/exchange-rates:
+    get:
+      operationId: listExchangeRates
+      tags:
+        - Currencies
+      summary: List exchange rates
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: baseCurrency
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/CurrencyCode'
+        - name: quoteCurrency
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/CurrencyCode'
+        - name: from
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: to
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Date'
+      responses:
+        '200':
+          description: Exchange rates.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExchangeRate'
+        '400':
+          description: The workspace identifier or query parameters failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden. An absent workspace is indistinguishable from a denied one; no 404 is declared.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createManualExchangeRate
       tags:

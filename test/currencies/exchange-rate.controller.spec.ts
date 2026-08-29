@@ -5,6 +5,7 @@ import type { AuthenticatedRequest } from '../../src/platform/authenticated-requ
 import { ExchangeRateController } from '../../src/currencies/exchange-rate.controller.js';
 import {
   EXCHANGE_RATE_CREATE_OUTCOMES,
+  EXCHANGE_RATE_LIST_OUTCOMES,
   type ExchangeRate,
   type ExchangeRatePort,
 } from '../../src/currencies/exchange-rate.port.js';
@@ -41,6 +42,7 @@ describe('ExchangeRateController.createManualExchangeRate', () => {
         kind: EXCHANGE_RATE_CREATE_OUTCOMES.CREATED,
         exchangeRate: mockExchangeRate,
       }),
+      list: vi.fn(),
       ...exchangeRatePortOverrides,
     };
 
@@ -219,6 +221,204 @@ describe('ExchangeRateController.createManualExchangeRate', () => {
       expect.objectContaining({
         type: PROBLEM_TYPES.EXCHANGE_RATE_ALREADY_RECORDED,
         title: 'Exchange rate already recorded',
+      }),
+    );
+  });
+});
+
+describe('ExchangeRateController.listExchangeRates', () => {
+  const workspaceId = '00000000-0000-0000-0000-000000000951';
+  const subject = '00000000-0000-0000-0000-000000000901';
+
+  const mockExchangeRates: readonly ExchangeRate[] = [
+    {
+      id: '00000000-0000-0000-0000-000000000fx1',
+      baseCurrency: 'USD',
+      quoteCurrency: 'EUR',
+      rate: '0.9200',
+      effectiveAt: '2026-08-28T12:00:00.000Z',
+      source: 'manual',
+      manual: true,
+    },
+    {
+      id: '00000000-0000-0000-0000-000000000fx2',
+      baseCurrency: 'USD',
+      quoteCurrency: 'GBP',
+      rate: '0.7800',
+      effectiveAt: '2026-08-27T10:00:00.000Z',
+      source: 'manual',
+      manual: true,
+    },
+  ];
+
+  function createMocks(
+    exchangeRatePortOverrides: Partial<ExchangeRatePort> = {},
+  ) {
+    const fakeExchangeRatePort: ExchangeRatePort = {
+      createManual: vi.fn(),
+      list: vi.fn().mockResolvedValue({
+        kind: EXCHANGE_RATE_LIST_OUTCOMES.OK,
+        exchangeRates: mockExchangeRates,
+      }),
+      ...exchangeRatePortOverrides,
+    };
+
+    const controller = new ExchangeRateController(fakeExchangeRatePort);
+
+    const reply = {
+      status: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      send: vi.fn().mockReturnThis(),
+      header: vi.fn().mockReturnThis(),
+      request: {
+        id: 'trace-123',
+        url: '/v1/exchange-rates',
+      },
+    } as unknown as FastifyReply;
+
+    return { controller, fakeExchangeRatePort, reply };
+  }
+
+  it('answers 400 when X-Workspace-Id header is missing', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: {},
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listExchangeRates(request, reply);
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+      }),
+    );
+  });
+
+  it('answers 400 when X-Workspace-Id header is not a valid UUID', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: { 'x-workspace-id': 'not-a-uuid' },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listExchangeRates(request, reply);
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+      }),
+    );
+  });
+
+  it('answers 400 when query validation fails (e.g. malformed baseCurrency)', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listExchangeRates(
+      request,
+      reply,
+      'usd', // lowercase -> invalid
+    );
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid list exchange rates query',
+      }),
+    );
+  });
+
+  it('answers 400 when from/to date query validation fails', async () => {
+    const { controller, reply } = createMocks();
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listExchangeRates(
+      request,
+      reply,
+      undefined,
+      undefined,
+      'invalid-from-date',
+    );
+    expect(reply.status).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid list exchange rates query',
+      }),
+    );
+  });
+
+  it('answers 200 with plain array of exchange rates and NO ETag header', async () => {
+    const { controller, reply, fakeExchangeRatePort } = createMocks();
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listExchangeRates(
+      request,
+      reply,
+      'USD',
+      'EUR',
+      '2026-08-01',
+      '2026-08-28',
+    );
+
+    expect(fakeExchangeRatePort.list).toHaveBeenCalledWith(subject, {
+      workspaceId,
+      baseCurrency: 'USD',
+      quoteCurrency: 'EUR',
+      from: '2026-08-01',
+      to: '2026-08-28',
+    });
+    expect(reply.header).not.toHaveBeenCalledWith('etag', expect.anything());
+    expect(reply.status).toHaveBeenCalledWith(200);
+    expect(reply.send).toHaveBeenCalledWith(mockExchangeRates);
+  });
+
+  it('answers 200 with empty array when no rates match (not an error)', async () => {
+    const { controller, reply } = createMocks({
+      list: vi.fn().mockResolvedValue({
+        kind: EXCHANGE_RATE_LIST_OUTCOMES.OK,
+        exchangeRates: [],
+      }),
+    });
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listExchangeRates(request, reply);
+    expect(reply.status).toHaveBeenCalledWith(200);
+    expect(reply.send).toHaveBeenCalledWith([]);
+  });
+
+  it('answers 403 when port reports forbidden', async () => {
+    const { controller, reply } = createMocks({
+      list: vi.fn().mockResolvedValue({
+        kind: EXCHANGE_RATE_LIST_OUTCOMES.FORBIDDEN,
+      }),
+    });
+    const request = {
+      headers: { 'x-workspace-id': workspaceId },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.listExchangeRates(request, reply);
+    expect(reply.status).toHaveBeenCalledWith(403);
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
       }),
     );
   });

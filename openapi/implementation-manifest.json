@@ -141,6 +141,11 @@
       "operationId": "createManualExchangeRate",
       "method": "POST",
       "path": "/v1/exchange-rates"
+    },
+    {
+      "operationId": "listExchangeRates",
+      "method": "GET",
+      "path": "/v1/exchange-rates"
     }
   ]
 }

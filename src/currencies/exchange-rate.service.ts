@@ -3,9 +3,12 @@ import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
   EXCHANGE_RATE_CREATE_OUTCOMES,
+  EXCHANGE_RATE_LIST_OUTCOMES,
   type CreateManualExchangeRateCommand,
   type ExchangeRate,
   type ExchangeRateCreateOutcome,
+  type ExchangeRateListOutcome,
+  type ExchangeRateListQuery,
   type ExchangeRatePort,
 } from './exchange-rate.port.js';
 
@@ -41,6 +44,11 @@ export interface ExchangeRateStore {
     subject: string,
     command: CreateManualExchangeRateCommand,
   ): Promise<ExchangeRate>;
+
+  listExchangeRates(
+    client: TransactionClient,
+    query: ExchangeRateListQuery,
+  ): Promise<readonly ExchangeRate[]>;
 }
 
 export class ExchangeRateService implements ExchangeRatePort {
@@ -142,6 +150,30 @@ export class ExchangeRateService implements ExchangeRatePort {
       return {
         kind: EXCHANGE_RATE_CREATE_OUTCOMES.CREATED,
         exchangeRate,
+      };
+    });
+  }
+
+  public async list(
+    subject: string,
+    query: ExchangeRateListQuery,
+  ): Promise<ExchangeRateListOutcome> {
+    return this.transaction.runRead(subject, async (client) => {
+      // 1. Role check: any active member (owner, administrator, editor, viewer) (D4)
+      const role = await this.store.readActiveRole(client, query.workspaceId);
+      if (
+        role === undefined ||
+        !['owner', 'administrator', 'editor', 'viewer'].includes(role)
+      ) {
+        return { kind: EXCHANGE_RATE_LIST_OUTCOMES.FORBIDDEN };
+      }
+
+      // 2. Query exchange rates via store (D1, D2, D3, D6)
+      const exchangeRates = await this.store.listExchangeRates(client, query);
+
+      return {
+        kind: EXCHANGE_RATE_LIST_OUTCOMES.OK,
+        exchangeRates,
       };
     });
   }
