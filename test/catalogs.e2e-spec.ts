@@ -8,6 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CATALOGS_PORT,
   type CatalogsPort,
+  type Category,
+  type CategoryCreateOutcome,
+  type CategoryListOutcome,
   type Payee,
   type Tag,
   type TagCreateOutcome,
@@ -34,6 +37,16 @@ const MOCK_PAYEE: Payee = {
   id: '00000000-0000-0000-0000-000000002001',
   name: 'Acme Supermarket',
   archived: false,
+};
+
+const MOCK_CATEGORY: Category = {
+  id: '00000000-0000-0000-0000-000000003001',
+  name: 'Food & Dining',
+  archived: false,
+  parentId: null,
+  kind: 'expense',
+  icon: 'fork-knife',
+  colorToken: 'emerald-500',
 };
 
 const authEnvironment = {
@@ -109,6 +122,21 @@ async function createApplication(
           pageInfo: { hasNextPage: false, nextCursor: null },
         },
       } satisfies PayeeListOutcome),
+    createCategory:
+      overrides.createCategory ??
+      vi.fn().mockResolvedValue({
+        kind: 'created',
+        category: MOCK_CATEGORY,
+      } satisfies CategoryCreateOutcome),
+    listCategories:
+      overrides.listCategories ??
+      vi.fn().mockResolvedValue({
+        kind: 'ok',
+        page: {
+          items: [MOCK_CATEGORY],
+          pageInfo: { hasNextPage: false, nextCursor: null },
+        },
+      } satisfies CategoryListOutcome),
   };
 
   const moduleRef = await Test.createTestingModule({

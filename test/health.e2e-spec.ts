@@ -114,6 +114,8 @@ describe('health endpoint', () => {
       'GET /v1/tags',
       'POST /v1/payees',
       'GET /v1/payees',
+      'POST /v1/categories',
+      'GET /v1/categories',
     ]);
 
     await app.close();

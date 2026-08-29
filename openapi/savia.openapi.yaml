@@ -978,6 +978,31 @@ components:
         archived:
           type: boolean
           default: false
+    Category:
+      allOf:
+        - $ref: '#/components/schemas/NamedResource'
+        - type: object
+          properties:
+            parentId:
+              type:
+                - string
+                - 'null'
+              format: uuid
+            kind:
+              type: string
+              enum:
+                - income
+                - expense
+                - transfer
+                - other
+            icon:
+              type:
+                - string
+                - 'null'
+            colorToken:
+              type:
+                - string
+                - 'null'
     Tag:
       allOf:
         - $ref: '#/components/schemas/NamedResource'
@@ -994,6 +1019,37 @@ components:
           type: string
           minLength: 1
           maxLength: 120
+    CreateCategoryRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - kind
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        kind:
+          type: string
+          enum:
+            - income
+            - expense
+            - transfer
+            - other
+        parentId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        icon:
+          type:
+            - string
+            - 'null'
+        colorToken:
+          type:
+            - string
+            - 'null'
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -3312,6 +3368,149 @@ paths:
         requiresApproval: true
         requiredScopes:
           - currencies:write
+      x-idempotency-required: true
+  /v1/categories:
+    get:
+      operationId: listCategorys
+      tags:
+        - Catalogs
+      summary: List categories
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Category page.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - items
+                  - pageInfo
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Category'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+        '400':
+          description: The workspace identifier or query parameters failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden. An absent workspace is indistinguishable from a denied one; no 404 is declared.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+    post:
+      operationId: createCategory
+      tags:
+        - Catalogs
+      summary: Create category
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCategoryRequest'
+      responses:
+        '201':
+          description: Category created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400':
+          description: The request header or body failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Validation failed or business invariant violated.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
       x-idempotency-required: true
   /v1/tags:
     get:

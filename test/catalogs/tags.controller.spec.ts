@@ -41,6 +41,8 @@ describe('TagsController', () => {
       }),
       createPayee: vi.fn(),
       listPayees: vi.fn(),
+      createCategory: vi.fn(),
+      listCategories: vi.fn(),
       ...catalogsPortOverrides,
     };
 

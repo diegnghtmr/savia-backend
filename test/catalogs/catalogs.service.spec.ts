@@ -4,6 +4,8 @@ import { computeRequestFingerprint } from '../../src/platform/idempotency.servic
 import {
   CATALOG_CREATE_OUTCOMES,
   CATALOG_LIST_OUTCOMES,
+  type Category,
+  type CreateCategoryCommand,
   type CreateNamedResourceCommand,
   type Payee,
   type Tag,
@@ -12,6 +14,8 @@ import {
   CatalogsService,
   TagNameConflictError,
   PayeeNameConflictError,
+  CategoryNameConflictError,
+  CategoryParentNotFoundError,
   type CatalogsStore,
   type CatalogsTransaction,
 } from '../../src/catalogs/catalogs.service.js';
@@ -34,12 +38,30 @@ const MOCK_PAYEE: Payee = {
   archived: false,
 };
 
+const MOCK_CATEGORY: Category = {
+  id: '00000000-0000-0000-0000-000000003001',
+  name: 'Food & Dining',
+  archived: false,
+  parentId: null,
+  kind: 'expense',
+  icon: 'fork-knife',
+  colorToken: 'emerald-500',
+};
+
 const TAG_COMMAND: CreateNamedResourceCommand = {
   name: 'Groceries',
 };
 
 const PAYEE_COMMAND: CreateNamedResourceCommand = {
   name: 'Acme Supermarket',
+};
+
+const CATEGORY_COMMAND: CreateCategoryCommand = {
+  name: 'Food & Dining',
+  kind: 'expense',
+  parentId: null,
+  icon: 'fork-knife',
+  colorToken: 'emerald-500',
 };
 
 function createService(
@@ -52,6 +74,7 @@ function createService(
   },
   storeTagError?: Error,
   storePayeeError?: Error,
+  storeCategoryError?: Error,
 ) {
   const dummyClient = {} as TransactionClient;
 
@@ -77,6 +100,14 @@ function createService(
       .fn()
       .mockResolvedValue([
         { payee: MOCK_PAYEE, cursorAt: '2026-08-28T12:00:00.000000Z' },
+      ]),
+    createCategory: storeCategoryError
+      ? vi.fn().mockRejectedValue(storeCategoryError)
+      : vi.fn().mockResolvedValue(MOCK_CATEGORY),
+    listCategories: vi
+      .fn()
+      .mockResolvedValue([
+        { category: MOCK_CATEGORY, cursorAt: '2026-08-28T12:00:00.000000Z' },
       ]),
   };
 
@@ -543,6 +574,278 @@ describe('CatalogsService.listPayees', () => {
     ]);
 
     const outcome = await service.listPayees(SUBJECT, {
+      workspaceId: WORKSPACE_ID,
+      limit: 1,
+    });
+
+    expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+    if (outcome.kind === CATALOG_LIST_OUTCOMES.OK) {
+      expect(outcome.page.items).toHaveLength(1);
+      expect(outcome.page.pageInfo.hasNextPage).toBe(true);
+      expect(outcome.page.pageInfo.nextCursor).not.toBeNull();
+      const decoded = decodeCursor(
+        outcome.page.pageInfo.nextCursor!,
+        WORKSPACE_ID,
+      );
+      expect(decoded).toEqual({
+        workspaceId: WORKSPACE_ID,
+        createdAt: '2026-08-28T12:00:00.000000Z',
+        id: '00000000-0000-0000-0000-000000000001',
+      });
+    }
+  });
+});
+
+describe('CatalogsService.createCategory', () => {
+  it('checks active role and returns FORBIDDEN if caller lacks editor+ role', async () => {
+    const { service, mockStore } = createService('viewer');
+
+    const outcome = await service.createCategory(
+      SUBJECT,
+      WORKSPACE_ID,
+      CATEGORY_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.FORBIDDEN);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+    expect(mockStore.createCategory).not.toHaveBeenCalled();
+  });
+
+  it('checks active role and returns FORBIDDEN if caller is not a member', async () => {
+    const { service, mockStore } = createService(null);
+
+    const outcome = await service.createCategory(
+      SUBJECT,
+      WORKSPACE_ID,
+      CATEGORY_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.FORBIDDEN);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+    expect(mockStore.createCategory).not.toHaveBeenCalled();
+  });
+
+  it('creates category successfully and records idempotency', async () => {
+    const { service, mockStore, mockIdempotencyStore } = createService('owner');
+
+    const outcome = await service.createCategory(
+      SUBJECT,
+      WORKSPACE_ID,
+      CATEGORY_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.CREATED);
+    if (outcome.kind === CATALOG_CREATE_OUTCOMES.CREATED) {
+      expect(outcome.category).toEqual(MOCK_CATEGORY);
+    }
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+    expect(mockStore.createCategory).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+      SUBJECT,
+      CATEGORY_COMMAND,
+    );
+    expect(mockIdempotencyStore.write).toHaveBeenCalledWith(
+      expect.anything(),
+      SUBJECT,
+      'POST /v1/categories',
+      IDEMPOTENCY_KEY,
+      computeRequestFingerprint(CATEGORY_COMMAND),
+      201,
+      null,
+      MOCK_CATEGORY,
+      WORKSPACE_ID,
+    );
+  });
+
+  it('returns REPLAYED when idempotency record with same fingerprint exists', async () => {
+    const fingerprint = computeRequestFingerprint(CATEGORY_COMMAND);
+    const { service, mockStore } = createService('owner', {
+      requestFingerprint: fingerprint,
+      responseStatus: 201,
+      responseEtag: null,
+      responseBody: MOCK_CATEGORY,
+    });
+
+    const outcome = await service.createCategory(
+      SUBJECT,
+      WORKSPACE_ID,
+      CATEGORY_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.REPLAYED);
+    if (outcome.kind === CATALOG_CREATE_OUTCOMES.REPLAYED) {
+      expect(outcome.status).toBe(201);
+      expect(outcome.body).toEqual(MOCK_CATEGORY);
+    }
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+    expect(mockStore.createCategory).not.toHaveBeenCalled();
+  });
+
+  it('returns IDEMPOTENCY_CONFLICT when idempotency key is reused with different payload', async () => {
+    const differentCommand: CreateCategoryCommand = {
+      name: 'Different Category',
+      kind: 'income',
+      parentId: null,
+      icon: null,
+      colorToken: null,
+    };
+    const { service, mockStore } = createService('owner', {
+      requestFingerprint: computeRequestFingerprint(differentCommand),
+      responseStatus: 201,
+      responseEtag: null,
+      responseBody: MOCK_CATEGORY,
+    });
+
+    const outcome = await service.createCategory(
+      SUBJECT,
+      WORKSPACE_ID,
+      CATEGORY_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+    expect(mockStore.createCategory).not.toHaveBeenCalled();
+  });
+
+  it('returns CONFLICT when unique constraint is violated (duplicate category name in workspace)', async () => {
+    const { service, mockStore } = createService(
+      'owner',
+      undefined,
+      undefined,
+      undefined,
+      new CategoryNameConflictError(),
+    );
+
+    const outcome = await service.createCategory(
+      SUBJECT,
+      WORKSPACE_ID,
+      CATEGORY_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.CONFLICT);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+  });
+
+  it('returns PARENT_NOT_FOUND when foreign key is violated (invalid parentId)', async () => {
+    const { service, mockStore } = createService(
+      'owner',
+      undefined,
+      undefined,
+      undefined,
+      new CategoryParentNotFoundError(),
+    );
+
+    const outcome = await service.createCategory(
+      SUBJECT,
+      WORKSPACE_ID,
+      CATEGORY_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe(CATALOG_CREATE_OUTCOMES.PARENT_NOT_FOUND);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+  });
+});
+
+describe('CatalogsService.listCategories', () => {
+  it('returns FORBIDDEN when caller is not an active workspace member', async () => {
+    const { service, mockStore } = createService(null);
+
+    const outcome = await service.listCategories(SUBJECT, {
+      workspaceId: WORKSPACE_ID,
+      limit: 50,
+    });
+
+    expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.FORBIDDEN);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+    expect(mockStore.listCategories).not.toHaveBeenCalled();
+  });
+
+  it('admits viewer role and returns paginated categories', async () => {
+    const { service, mockStore } = createService('viewer');
+
+    const outcome = await service.listCategories(SUBJECT, {
+      workspaceId: WORKSPACE_ID,
+      limit: 50,
+    });
+
+    expect(outcome.kind).toBe(CATALOG_LIST_OUTCOMES.OK);
+    expect(mockStore.readActiveRole).toHaveBeenCalledWith(
+      expect.anything(),
+      WORKSPACE_ID,
+    );
+    if (outcome.kind === CATALOG_LIST_OUTCOMES.OK) {
+      expect(outcome.page.items).toEqual([MOCK_CATEGORY]);
+      expect(outcome.page.pageInfo.hasNextPage).toBe(false);
+      expect(outcome.page.pageInfo.nextCursor).toBeNull();
+    }
+  });
+
+  it('computes nextCursor when more items exist than limit', async () => {
+    const { service, mockStore } = createService('owner');
+    mockStore.listCategories = vi.fn().mockResolvedValue([
+      {
+        category: {
+          id: '00000000-0000-0000-0000-000000000001',
+          name: 'Category1',
+          archived: false,
+          parentId: null,
+          kind: 'expense',
+          icon: null,
+          colorToken: null,
+        },
+        cursorAt: '2026-08-28T12:00:00.000000Z',
+      },
+      {
+        category: {
+          id: '00000000-0000-0000-0000-000000000002',
+          name: 'Category2',
+          archived: false,
+          parentId: null,
+          kind: 'expense',
+          icon: null,
+          colorToken: null,
+        },
+        cursorAt: '2026-08-28T12:01:00.000000Z',
+      },
+    ]);
+
+    const outcome = await service.listCategories(SUBJECT, {
       workspaceId: WORKSPACE_ID,
       limit: 1,
     });

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { TagsController } from './tags.controller.js';
 import { PayeesController } from './payees.controller.js';
+import { CategoriesController } from './categories.controller.js';
 import { CATALOGS_PORT } from './catalogs.port.js';
 import { CatalogsService } from './catalogs.service.js';
 import { PostgresCatalogsAdapter } from './postgres-catalogs.adapter.js';
@@ -11,7 +12,7 @@ import { PlatformModule } from '../platform/platform.module.js';
 
 @Module({
   imports: [PlatformModule],
-  controllers: [TagsController, PayeesController],
+  controllers: [TagsController, PayeesController, CategoriesController],
   providers: [
     PostgresCatalogsAdapter,
     {

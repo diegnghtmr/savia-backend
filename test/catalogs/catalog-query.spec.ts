@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createCatalogListQuery,
+  createCategoryListQuery,
   createPayeeListQuery,
   createTagListQuery,
   CatalogQueryValidationError,
@@ -93,12 +94,16 @@ describe('createCatalogListQuery', () => {
     }
   });
 
-  it('aliases createTagListQuery and createPayeeListQuery correctly', () => {
+  it('aliases createTagListQuery, createPayeeListQuery, and createCategoryListQuery correctly', () => {
     expect(createTagListQuery({ workspaceId })).toEqual({
       workspaceId,
       limit: 50,
     });
     expect(createPayeeListQuery({ workspaceId })).toEqual({
+      workspaceId,
+      limit: 50,
+    });
+    expect(createCategoryListQuery({ workspaceId })).toEqual({
       workspaceId,
       limit: 50,
     });
