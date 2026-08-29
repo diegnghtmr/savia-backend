@@ -200,6 +200,9 @@ jobs:
       - name: exchange rates list integration
         shell: bash
         run: pnpm test:integration:exchange-rates-list
+      - name: catalog tables integration
+        shell: bash
+        run: pnpm test:integration:catalog-tables
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
