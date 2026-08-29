@@ -95,8 +95,12 @@ begin
         and rate.base_currency = new.currency
         and rate.quote_currency = v_base_currency
     ) then
+      -- The constraint name is carried explicitly so the application can map THIS
+      -- violation to a 422 currency outcome, instead of letting a bare 23514 surface
+      -- as a 500. Matching on the message text would be brittle.
       raise exception 'exchange rate required for account currency differing from workspace base currency'
-        using errcode = 'check_violation';
+        using errcode = 'check_violation',
+              constraint = 'accounts_currency_requires_exchange_rate';
     end if;
   end if;
 

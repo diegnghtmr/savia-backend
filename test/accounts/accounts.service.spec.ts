@@ -532,6 +532,62 @@ describe('AccountsService.create', () => {
     expect(storeWithCreate.createAccount).not.toHaveBeenCalled();
   });
 
+  it('answers currency_unsupported when the database refuses an account whose currency has no recorded rate', async () => {
+    // The currency rule now lives in a database trigger. Its refusal must come back
+    // as the 422 the contract declares, not as an unhandled error that would surface
+    // as a 500 for an ordinary caller who simply has not recorded the rate yet.
+    const store = fakeStore('owner');
+    const triggerViolation = Object.assign(
+      new Error(
+        'exchange rate required for account currency differing from workspace base currency',
+      ),
+      { code: '23514', constraint: 'accounts_currency_requires_exchange_rate' },
+    );
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockRejectedValue(triggerViolation),
+    };
+    const idempStore = fakeIdempotencyStore();
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe('currency_unsupported');
+  });
+
+  it('rethrows an unrelated check violation instead of mislabelling it as a currency problem', async () => {
+    // Matching on SQLSTATE 23514 alone would swallow every other check constraint on
+    // public.accounts and report it as a currency error. Pin that the constraint name
+    // is part of the condition.
+    const store = fakeStore('owner');
+    const otherViolation = Object.assign(new Error('some other check failed'), {
+      code: '23514',
+      constraint: 'accounts_check',
+    });
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockRejectedValue(otherViolation),
+    };
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      fakeIdempotencyStore(),
+    );
+
+    await expect(
+      service.create(SUBJECT, WORKSPACE_ID, VALID_COMMAND, IDEMPOTENCY_KEY),
+    ).rejects.toThrow('some other check failed');
+  });
+
   it('answers forbidden when the actor is a viewer and never creates account', async () => {
     const store = fakeStore('viewer');
     const storeWithCreate = {

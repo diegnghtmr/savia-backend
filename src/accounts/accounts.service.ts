@@ -241,13 +241,26 @@ export class AccountsService implements AccountsPort {
         };
       }
 
-      // Create account (D4: invariant enforced at database boundary)
-      const account = await this.store.createAccount(
-        client,
-        workspaceId,
-        subject,
-        command,
-      );
+      // Create account (D4: invariant enforced at database boundary).
+      // The database now owns the currency rule, so its refusal must be translated
+      // back into the domain outcome the contract already declares. Without this,
+      // creating an account in a currency that has no recorded rate — an ordinary
+      // thing for a caller to attempt — would surface the raw check violation as a
+      // 500 instead of the 422 the authority declares for createAccount.
+      let account;
+      try {
+        account = await this.store.createAccount(
+          client,
+          workspaceId,
+          subject,
+          command,
+        );
+      } catch (error: unknown) {
+        if (isMissingExchangeRateViolation(error)) {
+          return { kind: ACCOUNT_CREATE_OUTCOMES.CURRENCY_UNSUPPORTED };
+        }
+        throw error;
+      }
 
       // Write idempotency record with workspaceId threaded
       const written = await this.idempotencyStore.write(
@@ -513,4 +526,24 @@ export class AccountsService implements AccountsPort {
       };
     });
   }
+}
+
+/**
+ * The account currency invariant moved into the database in
+ * 202608290001_relax_account_currency_invariant.sql. Its trigger raises
+ * check_violation carrying an explicit constraint name, so this matches on that
+ * name rather than on the SQLSTATE alone: a bare 23514 check would also swallow
+ * any unrelated check violation on public.accounts and mislabel it as a currency
+ * problem.
+ */
+function isMissingExchangeRateViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    String((error as { code: unknown }).code) === '23514' &&
+    'constraint' in error &&
+    String((error as { constraint: unknown }).constraint) ===
+      'accounts_currency_requires_exchange_rate'
+  );
 }
