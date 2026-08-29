@@ -518,6 +518,28 @@ describe('AccountsService getAccountBalance database boundary', () => {
     expect(balance.baseCurrencyEquivalent.rateDate).toBe('2026-07-01');
     expect(balance.baseCurrencyEquivalent.rateSource).toBe('ecb');
   });
+
+  it('11. falls back to the earliest recorded rate when asOf precedes every rate, instead of failing', async () => {
+    // The database invariant guarantees a rate EXISTS, not that one exists as of an
+    // arbitrary asOf. The earliest seeded rate is 2026-07-01, so this query lands
+    // before every rate on record. Without the fallback the lookup returns no row
+    // and a perfectly valid account answers 500 for a historical question.
+    const outcome = await service.readBalance(
+      subjectDualMember,
+      workspace1Id,
+      accountForeignEURId,
+      '2026-06-15T00:00:00.000Z',
+    );
+    expect(outcome.kind).toBe(ACCOUNT_BALANCE_OUTCOMES.OK);
+    const balance = (outcome as AccountBalanceOk).balance;
+
+    // The earliest rate is applied, and rateDate reports ITS real effective date --
+    // later than the asOf asked for. The answer is approximate, but it says so
+    // rather than pretending the rate was in force on the requested date.
+    expect(balance.baseCurrencyEquivalent.rate).toBe('1.0800');
+    expect(balance.baseCurrencyEquivalent.rateDate).toBe('2026-07-01');
+    expect(balance.baseCurrencyEquivalent.rateSource).toBe('ecb');
+  });
 });
 
 describe('getAccountBalance OpenAPI contract specification', () => {

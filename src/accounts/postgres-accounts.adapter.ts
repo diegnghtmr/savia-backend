@@ -592,6 +592,17 @@ select
       // Standard convention: EUR/USD = 1.08 means 1 EUR = 1.08 USD.
       // So converting an EUR account into a USD-based workspace needs a row with
       // `base_currency = 'EUR'` and `quote_currency = 'USD'`.
+      // The database invariant guarantees a rate EXISTS for this pair, but it does
+      // not guarantee one exists AS OF the requested instant. Two ordinary cases
+      // would otherwise find nothing and turn a valid account into a 500: a rate
+      // recorded with a future effective_at, and a historical balance queried for a
+      // date before the first rate was ever recorded.
+      //
+      // So: prefer the most recent rate effective at or before the requested
+      // instant; failing that, fall back to the EARLIEST rate on record. The
+      // returned rateDate always reports the effective date of the rate actually
+      // applied, so a caller can see when the fallback happened -- the answer is
+      // approximate in that case, but it is never silently mislabelled.
       const rateSql = `
 select rate::text as rate,
        to_char(effective_at at time zone 'utc', 'YYYY-MM-DD') as "rateDate",
@@ -600,8 +611,12 @@ select rate::text as rate,
  where workspace_id = $1::uuid
    and base_currency = $2
    and quote_currency = $3
-   and effective_at <= coalesce($4::timestamptz, now())
- order by effective_at desc, id desc
+ order by (effective_at <= coalesce($4::timestamptz, now())) desc,
+          case
+            when effective_at <= coalesce($4::timestamptz, now()) then effective_at
+          end desc,
+          effective_at asc,
+          id desc
  limit 1`;
 
       const rateResult = await client.query<{
