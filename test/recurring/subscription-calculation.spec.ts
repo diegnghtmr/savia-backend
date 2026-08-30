@@ -125,8 +125,12 @@ describe('computeIncreasePercent (RULING 59 & RULING 60)', () => {
         expect(computeIncreasePercent(usd('1000'), usd('abc'))).toBeNull();
         expect(computeIncreasePercent(usd('Infinity'), usd('1000'))).toBeNull();
         expect(computeIncreasePercent(usd('1000'), usd('Infinity'))).toBeNull();
-        expect(computeIncreasePercent(usd('-Infinity'), usd('1000'))).toBeNull();
-        expect(computeIncreasePercent(usd('1000'), usd('-Infinity'))).toBeNull();
+        expect(
+          computeIncreasePercent(usd('-Infinity'), usd('1000')),
+        ).toBeNull();
+        expect(
+          computeIncreasePercent(usd('1000'), usd('-Infinity')),
+        ).toBeNull();
         expect(computeIncreasePercent(usd('1.5'), usd('1000'))).toBeNull();
         expect(computeIncreasePercent(usd('1000'), usd('1.5'))).toBeNull();
         expect(computeIncreasePercent(usd(''), usd('1000'))).toBeNull();

@@ -200,7 +200,9 @@ describe('shared cursor encoding and decoding', () => {
         filter: 'detected',
       };
       const raw = encodeCursor(cursor);
-      expect(decodeCursor(raw, VALID_WORKSPACE_ID, 'confirmed')).toBeUndefined();
+      expect(
+        decodeCursor(raw, VALID_WORKSPACE_ID, 'confirmed'),
+      ).toBeUndefined();
       expect(decodeCursor(raw, VALID_WORKSPACE_ID, null)).toBeUndefined();
     });
 
