@@ -1050,6 +1050,92 @@ components:
           type:
             - string
             - 'null'
+    RecurringRule:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - frequency
+        - behavior
+        - active
+        - nextOccurrenceAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        frequency:
+          type: string
+          enum:
+            - daily
+            - weekly
+            - biweekly
+            - monthly
+            - yearly
+            - custom
+        rrule:
+          type:
+            - string
+            - 'null'
+        behavior:
+          type: string
+          enum:
+            - remind
+            - create_draft
+            - create_pending
+            - confirm_automatically
+        template:
+          $ref: '#/components/schemas/CreateTransactionRequest'
+        active:
+          type: boolean
+        nextOccurrenceAt:
+          type: string
+          format: date-time
+    CreateRecurringRuleRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - frequency
+        - behavior
+        - template
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        frequency:
+          type: string
+          enum:
+            - daily
+            - weekly
+            - biweekly
+            - monthly
+            - yearly
+            - custom
+        rrule:
+          type:
+            - string
+            - 'null'
+        behavior:
+          type: string
+          enum:
+            - remind
+            - create_draft
+            - create_pending
+            - confirm_automatically
+        template:
+          $ref: '#/components/schemas/CreateTransactionRequest'
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -3759,6 +3845,149 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Payee'
+        '400':
+          description: The request header or body failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Validation failed or business invariant violated.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-idempotency-required: true
+  /v1/recurring-rules:
+    get:
+      operationId: listRecurringRules
+      tags:
+        - Recurring
+      summary: List recurring rules
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Recurring rule page.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - items
+                  - pageInfo
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RecurringRule'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+        '400':
+          description: The workspace identifier or query parameters failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden. An absent workspace is indistinguishable from a denied one; no 404 is declared.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+    post:
+      operationId: createRecurringRule
+      tags:
+        - Recurring
+      summary: Create recurring rule
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRecurringRuleRequest'
+      responses:
+        '201':
+          description: Recurring rule created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecurringRule'
         '400':
           description: The request header or body failed validation.
           content:

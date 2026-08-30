@@ -26,7 +26,11 @@ module.exports = {
       },
       to: {
         path: '^src/([^/]+)/',
-        pathNot: ['^src/$1/', '^src/platform/'],
+        pathNot: [
+          '^src/$1/',
+          '^src/platform/',
+          '^src/ledger/transaction-command\\.ts$',
+        ],
       },
     },
     {
