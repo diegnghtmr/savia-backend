@@ -30,6 +30,11 @@ begin;
 --     or `payee_id` is non-null but has no matching row in `public.categories` or `public.payees` with
 --     the identical `workspace_id`. If any orphan rows exist, we raise an exception to abort the migration
 --     with a clear count, preventing silent data loss or destructive nullification.
+--
+-- D6. Referencing-side partial indexes on composite foreign keys:
+--     PostgreSQL indexes the referenced unique keys automatically, but never the referencing columns.
+--     Partial indexes `transactions_workspace_category_idx` and `transactions_workspace_payee_idx`
+--     support referential integrity checks and catalog filtering without indexing nulls.
 
 -- 1. Prerequisite: add composite unique constraint on public.payees (workspace_id, id)
 alter table public.payees
@@ -92,5 +97,9 @@ alter table public.transactions
   foreign key (workspace_id, payee_id)
   references public.payees (workspace_id, id)
   on delete restrict;
+
+-- 6. Add partial indexes on referencing columns (workspace_id, category_id) and (workspace_id, payee_id)
+create index transactions_workspace_category_idx on public.transactions (workspace_id, category_id) where category_id is not null;
+create index transactions_workspace_payee_idx    on public.transactions (workspace_id, payee_id)    where payee_id    is not null;
 
 commit;

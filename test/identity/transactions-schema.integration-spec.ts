@@ -1198,6 +1198,46 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
       expect(payeeFkRes.rows[0].confdeltype).toBe('r');
     });
 
+    it('26b. Structural pins: transactions_workspace_category_idx and transactions_workspace_payee_idx exist as partial indexes on (workspace_id, category_id) and (workspace_id, payee_id)', async () => {
+      const catRes = await admin.query<{
+        colnames: string[];
+        predicate: string;
+      }>(
+        `select array_agg(a.attname::text order by k.ord) as colnames,
+                pg_get_expr(i.indpred, i.indrelid) as predicate
+           from pg_index i
+           join pg_class idx on idx.oid = i.indexrelid
+           join lateral unnest(i.indkey::smallint[]) with ordinality as k(attnum, ord) on true
+           join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+          where idx.relname = 'transactions_workspace_category_idx'
+            and i.indrelid = 'public.transactions'::regclass
+            and i.indisunique = false
+          group by i.indpred, i.indrelid`,
+      );
+      expect(catRes.rows).toHaveLength(1);
+      expect(catRes.rows[0].colnames).toEqual(['workspace_id', 'category_id']);
+      expect(catRes.rows[0].predicate).toMatch(/category_id IS NOT NULL/i);
+
+      const payeeRes = await admin.query<{
+        colnames: string[];
+        predicate: string;
+      }>(
+        `select array_agg(a.attname::text order by k.ord) as colnames,
+                pg_get_expr(i.indpred, i.indrelid) as predicate
+           from pg_index i
+           join pg_class idx on idx.oid = i.indexrelid
+           join lateral unnest(i.indkey::smallint[]) with ordinality as k(attnum, ord) on true
+           join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+          where idx.relname = 'transactions_workspace_payee_idx'
+            and i.indrelid = 'public.transactions'::regclass
+            and i.indisunique = false
+          group by i.indpred, i.indrelid`,
+      );
+      expect(payeeRes.rows).toHaveLength(1);
+      expect(payeeRes.rows[0].colnames).toEqual(['workspace_id', 'payee_id']);
+      expect(payeeRes.rows[0].predicate).toMatch(/payee_id IS NOT NULL/i);
+    });
+
     it('27. Inserting a transaction with a category_id from ANOTHER workspace is refused with 23503 naming transactions_category_workspace_fkey — tested under savia_application and superuser; NO row created', async () => {
       const crossCatTxId = subject(896);
       const appErr = await capturePgError(() =>
