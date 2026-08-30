@@ -6,12 +6,17 @@ import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
   RECURRING_CREATE_OUTCOMES,
   RECURRING_LIST_OUTCOMES,
+  SUBSCRIPTION_LIST_OUTCOMES,
   type CreateRecurringRuleCommand,
   type RecurringCreateOutcome,
   type RecurringListOutcome,
   type RecurringRuleListQuery,
   type RecurringRulesPort,
   type RecurringRule,
+  type Subscription,
+  type SubscriptionListOutcome,
+  type SubscriptionListQuery,
+  type SubscriptionStatus,
 } from './recurring.port.js';
 
 export interface RecurringTransaction {
@@ -34,6 +39,11 @@ export class RecurringAccountNotFoundError extends Error {
 
 export interface RecurringRuleItem {
   readonly rule: RecurringRule;
+  readonly cursorAt: string;
+}
+
+export interface SubscriptionItem {
+  readonly subscription: Subscription;
   readonly cursorAt: string;
 }
 
@@ -74,6 +84,14 @@ export interface RecurringStore {
     cursor: Cursor | undefined,
     limit: number,
   ): Promise<readonly RecurringRuleItem[]>;
+
+  listSubscriptions(
+    client: TransactionClient,
+    workspaceId: string,
+    cursor: Cursor | undefined,
+    limit: number,
+    status?: SubscriptionStatus,
+  ): Promise<readonly SubscriptionItem[]>;
 }
 
 export class RecurringService implements RecurringRulesPort {
@@ -250,6 +268,56 @@ export class RecurringService implements RecurringRulesPort {
 
       return {
         kind: RECURRING_LIST_OUTCOMES.OK,
+        page: {
+          items,
+          pageInfo: {
+            hasNextPage,
+            nextCursor,
+          },
+        },
+      };
+    });
+  }
+
+  public async listSubscriptions(
+    subject: string,
+    query: SubscriptionListQuery,
+  ): Promise<SubscriptionListOutcome> {
+    return this.transaction.runRead(subject, async (client) => {
+      // 1. Role check: owner, administrator, editor, viewer
+      const role = await this.store.readActiveRole(client, query.workspaceId);
+      if (
+        role === undefined ||
+        !['owner', 'administrator', 'editor', 'viewer'].includes(role)
+      ) {
+        return { kind: SUBSCRIPTION_LIST_OUTCOMES.FORBIDDEN };
+      }
+
+      // 2. Fetch items (limit + 1 for hasNextPage)
+      const rows = await this.store.listSubscriptions(
+        client,
+        query.workspaceId,
+        query.cursor,
+        query.limit + 1,
+        query.status,
+      );
+
+      const hasNextPage = rows.length > query.limit;
+      const visible = hasNextPage ? rows.slice(0, query.limit) : rows;
+      const items = visible.map((entry) => entry.subscription);
+      const lastItem = visible[visible.length - 1];
+      const nextCursor =
+        hasNextPage && lastItem !== undefined
+          ? encodeCursor({
+              workspaceId: query.workspaceId,
+              createdAt: lastItem.cursorAt,
+              id: lastItem.subscription.id,
+              filter: query.status ?? null,
+            })
+          : null;
+
+      return {
+        kind: SUBSCRIPTION_LIST_OUTCOMES.OK,
         page: {
           items,
           pageInfo: {

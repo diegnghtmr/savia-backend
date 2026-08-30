@@ -118,6 +118,7 @@ describe('health endpoint', () => {
       'GET /v1/categories',
       'POST /v1/recurring-rules',
       'GET /v1/recurring-rules',
+      'GET /v1/subscriptions',
     ]);
 
     await app.close();

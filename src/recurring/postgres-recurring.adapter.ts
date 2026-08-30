@@ -3,12 +3,16 @@ import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   CreateRecurringRuleCommand,
   RecurringRule,
+  Subscription,
+  SubscriptionStatus,
 } from './recurring.port.js';
 import {
   RecurringAccountNotFoundError,
   type RecurringRuleItem,
   type RecurringStore,
+  type SubscriptionItem,
 } from './recurring.service.js';
+import { computeIncreasePercent } from './subscription-calculation.js';
 
 interface RecurringRuleRow extends Record<string, unknown> {
   readonly id: string;
@@ -19,6 +23,19 @@ interface RecurringRuleRow extends Record<string, unknown> {
   readonly template: RecurringRule['template'];
   readonly active: boolean;
   readonly nextOccurrenceAt: Date | string;
+  readonly cursorAt?: string;
+}
+
+interface SubscriptionRow extends Record<string, unknown> {
+  readonly id: string;
+  readonly payeeName: string;
+  readonly currentAmountMinor: string | number | bigint;
+  readonly currentCurrency: string;
+  readonly previousAmountMinor: string | number | bigint | null;
+  readonly previousCurrency: string | null;
+  readonly frequency: string;
+  readonly nextExpectedAt: Date | string | null;
+  readonly status: Subscription['status'];
   readonly cursorAt?: string;
 }
 
@@ -238,5 +255,75 @@ export class PostgresRecurringAdapter implements RecurringStore {
       },
       cursorAt: row.cursorAt ?? '',
     }));
+  }
+
+  public async listSubscriptions(
+    client: TransactionClient,
+    workspaceId: string,
+    cursor: Cursor | undefined,
+    limit: number,
+    status?: SubscriptionStatus,
+  ): Promise<readonly SubscriptionItem[]> {
+    const sql = `
+      select id::text,
+             payee_name as "payeeName",
+             current_amount_minor::text as "currentAmountMinor",
+             current_currency as "currentCurrency",
+             previous_amount_minor::text as "previousAmountMinor",
+             previous_currency as "previousCurrency",
+             frequency,
+             next_expected_at as "nextExpectedAt",
+             status,
+             to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
+        from public.subscriptions
+       where workspace_id = $1::uuid
+         and ($2::text is null or status = $2)
+         and ($3::timestamptz is null or (created_at, id) > ($3::timestamptz, $4::uuid))
+       order by created_at, id
+       limit $5
+    `;
+
+    const values = [
+      workspaceId,
+      status ?? null,
+      cursor?.createdAt ?? null,
+      cursor?.id ?? null,
+      limit,
+    ];
+
+    const result = await client.query<SubscriptionRow>(sql, values);
+
+    return result.rows.map((row) => {
+      const currentAmount = {
+        amountMinor: String(row.currentAmountMinor),
+        currency: row.currentCurrency,
+      };
+      const previousAmount =
+        row.previousAmountMinor !== null && row.previousCurrency !== null
+          ? {
+              amountMinor: String(row.previousAmountMinor),
+              currency: row.previousCurrency,
+            }
+          : undefined;
+
+      const increasePercent = computeIncreasePercent(
+        currentAmount,
+        previousAmount,
+      );
+
+      return {
+        subscription: {
+          id: row.id,
+          payeeName: row.payeeName,
+          currentAmount,
+          ...(previousAmount !== undefined ? { previousAmount } : {}),
+          increasePercent,
+          frequency: row.frequency,
+          nextExpectedAt: row.nextExpectedAt ? toIso(row.nextExpectedAt) : null,
+          status: row.status,
+        },
+        cursorAt: row.cursorAt ?? '',
+      };
+    });
   }
 }

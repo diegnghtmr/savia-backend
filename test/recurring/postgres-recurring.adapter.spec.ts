@@ -272,4 +272,78 @@ describe('PostgresRecurringAdapter', () => {
       expect(values).toEqual([workspaceId, null, null, 50]);
     });
   });
+
+  describe('listSubscriptions', () => {
+    it('executes select with workspaceId, status, and keyset cursor, computing increasePercent', async () => {
+      const client: TransactionClient = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              id: '00000000-0000-0000-0000-000000006001',
+              payeeName: 'Spotify',
+              currentAmountMinor: '999',
+              currentCurrency: 'USD',
+              previousAmountMinor: '899',
+              previousCurrency: 'USD',
+              frequency: 'monthly',
+              nextExpectedAt: '2026-09-29T12:00:00.000Z',
+              status: 'confirmed',
+              cursorAt: '2026-08-29T12:00:00.000000Z',
+            },
+            {
+              id: '00000000-0000-0000-0000-000000006002',
+              payeeName: 'Netflix',
+              currentAmountMinor: '1599',
+              currentCurrency: 'USD',
+              previousAmountMinor: null,
+              previousCurrency: null,
+              frequency: 'monthly',
+              nextExpectedAt: null,
+              status: 'detected',
+              cursorAt: '2026-08-29T13:00:00.000000Z',
+            },
+          ],
+        }),
+      };
+
+      const result = await adapter.listSubscriptions(
+        client,
+        workspaceId,
+        undefined,
+        50,
+        'confirmed',
+      );
+
+      expect(result).toHaveLength(2);
+      expect(result[0]!.subscription).toEqual({
+        id: '00000000-0000-0000-0000-000000006001',
+        payeeName: 'Spotify',
+        currentAmount: { amountMinor: '999', currency: 'USD' },
+        previousAmount: { amountMinor: '899', currency: 'USD' },
+        increasePercent: 11.12,
+        frequency: 'monthly',
+        nextExpectedAt: '2026-09-29T12:00:00.000Z',
+        status: 'confirmed',
+      });
+      expect(result[0]!.cursorAt).toBe('2026-08-29T12:00:00.000000Z');
+
+      expect(result[1]!.subscription).toEqual({
+        id: '00000000-0000-0000-0000-000000006002',
+        payeeName: 'Netflix',
+        currentAmount: { amountMinor: '1599', currency: 'USD' },
+        increasePercent: null,
+        frequency: 'monthly',
+        nextExpectedAt: null,
+        status: 'detected',
+      });
+      expect(result[1]!.subscription.previousAmount).toBeUndefined();
+
+      const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
+        .calls[0] as [string, unknown[]];
+      expect(sql).toContain('select id::text');
+      expect(sql).toContain('from public.subscriptions');
+      expect(sql).toContain('order by created_at, id');
+      expect(values).toEqual([workspaceId, 'confirmed', null, null, 50]);
+    });
+  });
 });

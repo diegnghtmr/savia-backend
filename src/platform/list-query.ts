@@ -9,6 +9,7 @@ export interface ListQueryInput {
   readonly cursorParam?: string;
   readonly limitParam?: string;
   readonly expectedWorkspaceId?: string;
+  readonly expectedFilter?: string | null;
 }
 
 export interface ListQueryResult {
@@ -52,7 +53,11 @@ export function parseListQuery(input: ListQueryInput): ListQueryResult {
 
   let cursor: Cursor | undefined;
   if (input.cursorParam !== undefined) {
-    cursor = decodeCursor(input.cursorParam, input.expectedWorkspaceId);
+    cursor = decodeCursor(
+      input.cursorParam,
+      input.expectedWorkspaceId,
+      input.expectedFilter,
+    );
     if (cursor === undefined) {
       violations.push(
         Object.freeze({
