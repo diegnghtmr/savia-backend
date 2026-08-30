@@ -191,6 +191,11 @@
       "operationId": "createRecurringRule",
       "method": "POST",
       "path": "/v1/recurring-rules"
+    },
+    {
+      "operationId": "listSubscriptions",
+      "method": "GET",
+      "path": "/v1/subscriptions"
     }
   ]
 }
