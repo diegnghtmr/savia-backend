@@ -36,16 +36,6 @@ export function createSubscriptionListQuery(
 ): SubscriptionListQuery {
   const violations: FieldViolation[] = [];
 
-  const base = parseListQuery({
-    cursorParam: input.cursorParam,
-    limitParam: input.limitParam,
-    expectedWorkspaceId: input.workspaceId,
-  });
-
-  for (const v of base.violations) {
-    violations.push(v);
-  }
-
   let status: SubscriptionStatus | undefined;
   if (input.statusParam !== undefined) {
     if (
@@ -62,6 +52,24 @@ export function createSubscriptionListQuery(
     } else {
       status = input.statusParam as SubscriptionStatus;
     }
+  }
+
+  const expectedFilter =
+    status !== undefined
+      ? status
+      : input.statusParam !== undefined
+        ? input.statusParam
+        : null;
+
+  const base = parseListQuery({
+    cursorParam: input.cursorParam,
+    limitParam: input.limitParam,
+    expectedWorkspaceId: input.workspaceId,
+    expectedFilter,
+  });
+
+  for (const v of base.violations) {
+    violations.push(v);
   }
 
   if (violations.length > 0) {

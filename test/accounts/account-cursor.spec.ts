@@ -168,4 +168,84 @@ describe('shared cursor encoding and decoding', () => {
       },
     );
   });
+
+  describe('filter-bound cursor encoding and decoding (4-element payload)', () => {
+    it('encodes and decodes a cursor bound to both workspaceId and a string filter', () => {
+      const cursor: Cursor = {
+        workspaceId: VALID_WORKSPACE_ID,
+        createdAt: VALID_TIMESTAMP,
+        id: VALID_ID,
+        filter: 'detected',
+      };
+      const raw = encodeCursor(cursor);
+      expect(decodeCursor(raw, VALID_WORKSPACE_ID, 'detected')).toEqual(cursor);
+    });
+
+    it('encodes and decodes a cursor bound to both workspaceId and null filter (explicit no-filter)', () => {
+      const cursor: Cursor = {
+        workspaceId: VALID_WORKSPACE_ID,
+        createdAt: VALID_TIMESTAMP,
+        id: VALID_ID,
+        filter: null,
+      };
+      const raw = encodeCursor(cursor);
+      expect(decodeCursor(raw, VALID_WORKSPACE_ID, null)).toEqual(cursor);
+    });
+
+    it('rejects a filter-bound cursor when expectedFilter does not match', () => {
+      const cursor: Cursor = {
+        workspaceId: VALID_WORKSPACE_ID,
+        createdAt: VALID_TIMESTAMP,
+        id: VALID_ID,
+        filter: 'detected',
+      };
+      const raw = encodeCursor(cursor);
+      expect(decodeCursor(raw, VALID_WORKSPACE_ID, 'confirmed')).toBeUndefined();
+      expect(decodeCursor(raw, VALID_WORKSPACE_ID, null)).toBeUndefined();
+    });
+
+    it('rejects a null-filter cursor when expectedFilter is a string', () => {
+      const cursor: Cursor = {
+        workspaceId: VALID_WORKSPACE_ID,
+        createdAt: VALID_TIMESTAMP,
+        id: VALID_ID,
+        filter: null,
+      };
+      const raw = encodeCursor(cursor);
+      expect(decodeCursor(raw, VALID_WORKSPACE_ID, 'detected')).toBeUndefined();
+    });
+
+    it('rejects a filter-bound cursor at a call site that does not expect a filter', () => {
+      const cursor: Cursor = {
+        workspaceId: VALID_WORKSPACE_ID,
+        createdAt: VALID_TIMESTAMP,
+        id: VALID_ID,
+        filter: 'detected',
+      };
+      const raw = encodeCursor(cursor);
+      expect(decodeCursor(raw, VALID_WORKSPACE_ID)).toBeUndefined();
+      expect(decodeCursor(raw)).toBeUndefined();
+    });
+
+    it('rejects a 3-element (workspace-only) cursor at a call site that expects a filter binding', () => {
+      const cursor: Cursor = {
+        workspaceId: VALID_WORKSPACE_ID,
+        createdAt: VALID_TIMESTAMP,
+        id: VALID_ID,
+      };
+      const raw = encodeCursor(cursor);
+      expect(decodeCursor(raw, VALID_WORKSPACE_ID, 'detected')).toBeUndefined();
+      expect(decodeCursor(raw, VALID_WORKSPACE_ID, null)).toBeUndefined();
+    });
+
+    it('rejects a 2-element (unbound) cursor at a call site that expects a filter binding', () => {
+      const cursor: Cursor = {
+        createdAt: VALID_TIMESTAMP,
+        id: VALID_ID,
+      };
+      const raw = encodeCursor(cursor);
+      expect(decodeCursor(raw, VALID_WORKSPACE_ID, 'detected')).toBeUndefined();
+      expect(decodeCursor(raw, VALID_WORKSPACE_ID, null)).toBeUndefined();
+    });
+  });
 });

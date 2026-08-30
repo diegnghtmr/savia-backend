@@ -9,6 +9,7 @@ export interface Cursor {
   readonly createdAt: string;
   readonly id: string;
   readonly workspaceId?: string;
+  readonly filter?: string | null;
 }
 
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -19,9 +20,11 @@ export const MAX_CURSOR_LENGTH = 256;
 
 export function encodeCursor(cursor: Cursor): string {
   const payload =
-    cursor.workspaceId !== undefined
-      ? [cursor.workspaceId, cursor.createdAt, cursor.id]
-      : [cursor.createdAt, cursor.id];
+    cursor.filter !== undefined
+      ? [cursor.workspaceId, cursor.createdAt, cursor.id, cursor.filter]
+      : cursor.workspaceId !== undefined
+        ? [cursor.workspaceId, cursor.createdAt, cursor.id]
+        : [cursor.createdAt, cursor.id];
   return Buffer.from(JSON.stringify(payload)).toString('base64url');
 }
 
@@ -42,6 +45,7 @@ function isValidTimestamp(createdAt: string): boolean {
 export function decodeCursor(
   raw: string,
   expectedWorkspaceId?: string,
+  expectedFilter?: string | null,
 ): Cursor | undefined {
   if (
     typeof raw !== 'string' ||
@@ -60,7 +64,7 @@ export function decodeCursor(
     }
 
     if (parsed.length === 2) {
-      if (expectedWorkspaceId !== undefined) {
+      if (expectedWorkspaceId !== undefined || expectedFilter !== undefined) {
         return undefined;
       }
       const [createdAt, id] = parsed;
@@ -81,7 +85,7 @@ export function decodeCursor(
       // bound ones, and replaying one at an unbound list merely shifts that
       // caller's own window, but accepting a shape we never emit is how the
       // binding quietly stops meaning anything.
-      if (expectedWorkspaceId === undefined) {
+      if (expectedWorkspaceId === undefined || expectedFilter !== undefined) {
         return undefined;
       }
       const [workspaceId, createdAt, id] = parsed;
@@ -102,6 +106,36 @@ export function decodeCursor(
         return undefined;
       }
       return { createdAt, id, workspaceId };
+    }
+
+    if (parsed.length === 4) {
+      // A 4-element cursor binds both workspaceId and a filter (string or null).
+      // If the caller did not request a filter binding, or did not specify workspaceId, reject.
+      if (expectedWorkspaceId === undefined || expectedFilter === undefined) {
+        return undefined;
+      }
+      const [workspaceId, createdAt, id, filter] = parsed;
+      if (
+        typeof workspaceId !== 'string' ||
+        typeof createdAt !== 'string' ||
+        typeof id !== 'string' ||
+        (typeof filter !== 'string' && filter !== null)
+      ) {
+        return undefined;
+      }
+      if (!UUID_PATTERN.test(workspaceId)) {
+        return undefined;
+      }
+      if (workspaceId !== expectedWorkspaceId) {
+        return undefined;
+      }
+      if (!isValidTimestamp(createdAt) || !UUID_PATTERN.test(id)) {
+        return undefined;
+      }
+      if (filter !== expectedFilter) {
+        return undefined;
+      }
+      return { createdAt, id, workspaceId, filter };
     }
 
     return undefined;

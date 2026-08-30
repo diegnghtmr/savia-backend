@@ -427,16 +427,58 @@ describe('RecurringService', () => {
       if (outcome.kind === SUBSCRIPTION_LIST_OUTCOMES.OK) {
         expect(outcome.page.items).toHaveLength(1);
         expect(outcome.page.pageInfo.hasNextPage).toBe(true);
-        expect(outcome.page.pageInfo.nextCursor).not.toBeNull();
-
         const decoded = decodeCursor(
           outcome.page.pageInfo.nextCursor!,
           WORKSPACE_ID,
+          null,
         );
         expect(decoded).toEqual({
           workspaceId: WORKSPACE_ID,
           createdAt: '2026-08-29T12:00:00.000000Z',
           id: MOCK_SUBSCRIPTION.id,
+          filter: null,
+        });
+      }
+    });
+
+    it('emits nextCursor binding the specific status filter when filtered', async () => {
+      const { service, mockStore } = createService('owner');
+      mockStore.listSubscriptions = vi.fn().mockResolvedValue([
+        {
+          subscription: MOCK_SUBSCRIPTION,
+          cursorAt: '2026-08-29T12:00:00.000000Z',
+        },
+        {
+          subscription: {
+            ...MOCK_SUBSCRIPTION,
+            id: '00000000-0000-0000-0000-000000006002',
+          },
+          cursorAt: '2026-08-29T13:00:00.000000Z',
+        },
+      ]);
+
+      const outcome = await service.listSubscriptions(SUBJECT, {
+        workspaceId: WORKSPACE_ID,
+        limit: 1,
+        status: 'confirmed',
+      });
+
+      expect(outcome.kind).toBe(SUBSCRIPTION_LIST_OUTCOMES.OK);
+      if (outcome.kind === SUBSCRIPTION_LIST_OUTCOMES.OK) {
+        expect(outcome.page.items).toHaveLength(1);
+        expect(outcome.page.pageInfo.hasNextPage).toBe(true);
+        expect(outcome.page.pageInfo.nextCursor).not.toBeNull();
+
+        const decoded = decodeCursor(
+          outcome.page.pageInfo.nextCursor!,
+          WORKSPACE_ID,
+          'confirmed',
+        );
+        expect(decoded).toEqual({
+          workspaceId: WORKSPACE_ID,
+          createdAt: '2026-08-29T12:00:00.000000Z',
+          id: MOCK_SUBSCRIPTION.id,
+          filter: 'confirmed',
         });
       }
     });

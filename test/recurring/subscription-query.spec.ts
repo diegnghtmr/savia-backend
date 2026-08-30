@@ -64,11 +64,12 @@ describe('createSubscriptionListQuery (RULING 61)', () => {
     }
   });
 
-  it('parses valid limit and cursor params', () => {
+  it('parses valid limit and cursor params when cursor matches the status filter', () => {
     const cursor = {
       workspaceId,
       createdAt: '2026-08-29T12:00:00.000000Z',
       id: '00000000-0000-0000-0000-000000000002',
+      filter: 'detected' as const,
     };
     const rawCursor = encodeCursor(cursor);
 
@@ -83,6 +84,100 @@ describe('createSubscriptionListQuery (RULING 61)', () => {
     expect(query.limit).toBe(25);
     expect(query.status).toBe('detected');
     expect(query.cursor).toEqual(cursor);
+  });
+
+  it('parses valid limit and cursor params when cursor matches omitted status (null filter)', () => {
+    const cursor = {
+      workspaceId,
+      createdAt: '2026-08-29T12:00:00.000000Z',
+      id: '00000000-0000-0000-0000-000000000002',
+      filter: null,
+    };
+    const rawCursor = encodeCursor(cursor);
+
+    const query = createSubscriptionListQuery({
+      workspaceId,
+      cursorParam: rawCursor,
+      limitParam: '25',
+    });
+
+    expect(query.workspaceId).toBe(workspaceId);
+    expect(query.limit).toBe(25);
+    expect(query.status).toBeUndefined();
+    expect(query.cursor).toEqual(cursor);
+  });
+
+  it('rejects a cursor bound to one status when replayed under a different status', () => {
+    const cursorDetected = encodeCursor({
+      workspaceId,
+      createdAt: '2026-08-29T12:00:00.000000Z',
+      id: '00000000-0000-0000-0000-000000000002',
+      filter: 'detected',
+    });
+
+    expect(() =>
+      createSubscriptionListQuery({
+        workspaceId,
+        cursorParam: cursorDetected,
+        statusParam: 'confirmed',
+      }),
+    ).toThrow(SubscriptionQueryValidationError);
+  });
+
+  it('rejects a cursor bound to a status when replayed under no filter (omitted status)', () => {
+    const cursorDetected = encodeCursor({
+      workspaceId,
+      createdAt: '2026-08-29T12:00:00.000000Z',
+      id: '00000000-0000-0000-0000-000000000002',
+      filter: 'detected',
+    });
+
+    expect(() =>
+      createSubscriptionListQuery({
+        workspaceId,
+        cursorParam: cursorDetected,
+      }),
+    ).toThrow(SubscriptionQueryValidationError);
+  });
+
+  it('rejects a no-filter (null) cursor when replayed under a status filter', () => {
+    const cursorUnfiltered = encodeCursor({
+      workspaceId,
+      createdAt: '2026-08-29T12:00:00.000000Z',
+      id: '00000000-0000-0000-0000-000000000002',
+      filter: null,
+    });
+
+    expect(() =>
+      createSubscriptionListQuery({
+        workspaceId,
+        cursorParam: cursorUnfiltered,
+        statusParam: 'detected',
+      }),
+    ).toThrow(SubscriptionQueryValidationError);
+  });
+
+  it('rejects a legacy 3-element cursor without filter binding', () => {
+    const cursorNoFilter = encodeCursor({
+      workspaceId,
+      createdAt: '2026-08-29T12:00:00.000000Z',
+      id: '00000000-0000-0000-0000-000000000002',
+    });
+
+    expect(() =>
+      createSubscriptionListQuery({
+        workspaceId,
+        cursorParam: cursorNoFilter,
+        statusParam: 'detected',
+      }),
+    ).toThrow(SubscriptionQueryValidationError);
+
+    expect(() =>
+      createSubscriptionListQuery({
+        workspaceId,
+        cursorParam: cursorNoFilter,
+      }),
+    ).toThrow(SubscriptionQueryValidationError);
   });
 
   it('rejects invalid limit values (0, negative, non-numeric, > 200)', () => {

@@ -361,15 +361,129 @@ describe('RecurringService listSubscriptions database boundary and cursor traver
         expect(page.pageInfo.nextCursor).not.toBeNull();
         currentCursor = page.pageInfo.nextCursor!;
 
-        // Cursor must decode into matching workspace and valid ISO timestamp
-        const decoded = decodeCursor(currentCursor, workspace1Id);
+        // Cursor must decode into matching workspace and valid ISO timestamp with null filter
+        const decoded = decodeCursor(currentCursor, workspace1Id, null);
         expect(decoded).toBeDefined();
         expect(decoded?.workspaceId).toBe(workspace1Id);
         expect(decoded?.createdAt).toBe('2026-08-29T12:00:00.000000Z');
+        expect(decoded?.filter).toBeNull();
       }
 
       expect(pageCount).toBe(4); // 12 / 3 = 4 pages
       expect(seenIds).toHaveLength(TOTAL_ITEMS);
+    });
+
+    it('traverses filtered status items across multiple pages returning exactly the filtered set once', async () => {
+      const PAGE_SIZE = 2;
+      const seenIds: string[] = [];
+      let currentCursor: string | undefined = undefined;
+      let pageCount = 0;
+
+      while (true) {
+        pageCount++;
+        const query = createSubscriptionListQuery({
+          workspaceId: workspace1Id,
+          limitParam: String(PAGE_SIZE),
+          cursorParam: currentCursor,
+          statusParam: 'detected',
+        });
+
+        const outcome = await service.listSubscriptions(subjectOwner, query);
+        expect(outcome.kind).toBe(SUBSCRIPTION_LIST_OUTCOMES.OK);
+        const page = (outcome as SubscriptionListOk).page;
+
+        for (const item of page.items) {
+          expect(item.status).toBe('detected');
+          expect(seenIds).not.toContain(item.id);
+          seenIds.push(item.id);
+        }
+
+        if (!page.pageInfo.hasNextPage) {
+          expect(page.pageInfo.nextCursor).toBeNull();
+          break;
+        }
+
+        expect(page.pageInfo.nextCursor).not.toBeNull();
+        currentCursor = page.pageInfo.nextCursor!;
+
+        const decoded = decodeCursor(currentCursor, workspace1Id, 'detected');
+        expect(decoded).toBeDefined();
+        expect(decoded?.workspaceId).toBe(workspace1Id);
+        expect(decoded?.filter).toBe('detected');
+      }
+
+      expect(pageCount).toBe(2); // 4 detected / 2 = 2 pages
+      expect(seenIds).toHaveLength(4);
+    });
+
+    it('rejects a cursor bound to status=detected when replayed under status=confirmed', async () => {
+      const page1Query = createSubscriptionListQuery({
+        workspaceId: workspace1Id,
+        limitParam: '2',
+        statusParam: 'detected',
+      });
+      const page1Outcome = await service.listSubscriptions(
+        subjectOwner,
+        page1Query,
+      );
+      expect(page1Outcome.kind).toBe(SUBSCRIPTION_LIST_OUTCOMES.OK);
+      const page1Cursor = (page1Outcome as SubscriptionListOk).page.pageInfo
+        .nextCursor!;
+      expect(page1Cursor).not.toBeNull();
+
+      expect(() =>
+        createSubscriptionListQuery({
+          workspaceId: workspace1Id,
+          cursorParam: page1Cursor,
+          statusParam: 'confirmed',
+        }),
+      ).toThrow(SubscriptionQueryValidationError);
+    });
+
+    it('rejects a cursor bound to status=detected when replayed under no filter', async () => {
+      const page1Query = createSubscriptionListQuery({
+        workspaceId: workspace1Id,
+        limitParam: '2',
+        statusParam: 'detected',
+      });
+      const page1Outcome = await service.listSubscriptions(
+        subjectOwner,
+        page1Query,
+      );
+      expect(page1Outcome.kind).toBe(SUBSCRIPTION_LIST_OUTCOMES.OK);
+      const page1Cursor = (page1Outcome as SubscriptionListOk).page.pageInfo
+        .nextCursor!;
+      expect(page1Cursor).not.toBeNull();
+
+      expect(() =>
+        createSubscriptionListQuery({
+          workspaceId: workspace1Id,
+          cursorParam: page1Cursor,
+        }),
+      ).toThrow(SubscriptionQueryValidationError);
+    });
+
+    it('rejects a no-filter (null) cursor when replayed under a status filter', async () => {
+      const page1Query = createSubscriptionListQuery({
+        workspaceId: workspace1Id,
+        limitParam: '3',
+      });
+      const page1Outcome = await service.listSubscriptions(
+        subjectOwner,
+        page1Query,
+      );
+      expect(page1Outcome.kind).toBe(SUBSCRIPTION_LIST_OUTCOMES.OK);
+      const page1Cursor = (page1Outcome as SubscriptionListOk).page.pageInfo
+        .nextCursor!;
+      expect(page1Cursor).not.toBeNull();
+
+      expect(() =>
+        createSubscriptionListQuery({
+          workspaceId: workspace1Id,
+          cursorParam: page1Cursor,
+          statusParam: 'detected',
+        }),
+      ).toThrow(SubscriptionQueryValidationError);
     });
 
     it('rejects a cursor minted in workspace 1 when replayed against workspace 2', () => {
@@ -377,6 +491,7 @@ describe('RecurringService listSubscriptions database boundary and cursor traver
         workspaceId: workspace1Id,
         createdAt: '2026-08-29T12:00:00.000000Z',
         id: id(2101),
+        filter: null,
       };
       const rawCursor = encodeCursor(ws1Cursor);
 

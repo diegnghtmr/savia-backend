@@ -312,6 +312,7 @@ export class RecurringService implements RecurringRulesPort {
               workspaceId: query.workspaceId,
               createdAt: lastItem.cursorAt,
               id: lastItem.subscription.id,
+              filter: query.status ?? null,
             })
           : null;
 
