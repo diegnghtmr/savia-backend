@@ -163,6 +163,20 @@ describe('TransactionService updateTransaction database boundary', () => {
       ],
     );
 
+    // 5b. Categories and Payees (satisfying foreign key bindings)
+    await admin.query(
+      `insert into public.categories (id, workspace_id, name, kind, created_by)
+       values ($1, $2, 'Category 1', 'expense', $3),
+              ($4, $2, 'Category 2', 'expense', $3)`,
+      [category1Id, workspace1Id, subjectOwner, category2Id],
+    );
+    await admin.query(
+      `insert into public.payees (id, workspace_id, name, created_by)
+       values ($1, $2, 'Payee 1', $3),
+              ($4, $2, 'Payee 2', $3)`,
+      [payee1Id, workspace1Id, subjectOwner, payee2Id],
+    );
+
     // 6. Transactions (satisfying check: (status = 'voided') = (voided_at is not null))
     await admin.query(
       `insert into public.transactions

@@ -204,6 +204,14 @@ describe('TransactionService listTransactions database boundary', () => {
       );
     }
 
+    // 5b. Categories for workspace 1
+    await admin.query(
+      `insert into public.categories (id, workspace_id, name, kind, created_by)
+       values ($1, $2, 'Category 1', 'expense', $3),
+              ($4, $2, 'Category 2', 'income', $3)`,
+      [category1Id, workspace1Id, subjectOwner, category2Id],
+    );
+
     // 6. Transactions in workspace 1
     const seeds = [
       {
