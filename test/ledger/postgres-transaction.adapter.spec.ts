@@ -5,6 +5,10 @@ import {
   toIso,
   PostgresTransactionAdapter,
 } from '../../src/ledger/postgres-transaction.adapter.js';
+import {
+  TransactionCategoryNotFoundError,
+  TransactionPayeeNotFoundError,
+} from '../../src/ledger/transaction.service.js';
 import type { CreateTransactionCommand } from '../../src/ledger/ledger.port.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 
@@ -286,6 +290,77 @@ describe('PostgresTransactionAdapter.createTransaction', () => {
       updatedAt: '2026-08-20T10:00:00.000Z',
       version: 1,
     });
+  });
+
+  it('throws TransactionCategoryNotFoundError when query fails with 23503 and constraint transactions_category_workspace_fkey', async () => {
+    const client: TransactionClient = {
+      query: vi.fn().mockRejectedValue({
+        code: '23503',
+        constraint: 'transactions_category_workspace_fkey',
+        message:
+          'insert or update on table "transactions" violates foreign key constraint "transactions_category_workspace_fkey"',
+      }),
+    };
+
+    const command: CreateTransactionCommand = {
+      type: 'expense',
+      accountId: '00000000-0000-0000-0000-000000000a01',
+      amount: { amountMinor: '5000', currency: 'USD' },
+      occurredAt: '2026-08-20T10:00:00.000Z',
+      status: 'confirmed',
+      categoryId: '00000000-0000-0000-0000-000000000c01',
+    };
+
+    await expect(
+      adapter.createTransaction(client, workspaceId, subject, command),
+    ).rejects.toThrow(TransactionCategoryNotFoundError);
+  });
+
+  it('throws TransactionPayeeNotFoundError when query fails with 23503 and constraint transactions_payee_workspace_fkey', async () => {
+    const client: TransactionClient = {
+      query: vi.fn().mockRejectedValue({
+        code: '23503',
+        constraint: 'transactions_payee_workspace_fkey',
+        message:
+          'insert or update on table "transactions" violates foreign key constraint "transactions_payee_workspace_fkey"',
+      }),
+    };
+
+    const command: CreateTransactionCommand = {
+      type: 'expense',
+      accountId: '00000000-0000-0000-0000-000000000a01',
+      amount: { amountMinor: '5000', currency: 'USD' },
+      occurredAt: '2026-08-20T10:00:00.000Z',
+      status: 'confirmed',
+      payeeId: '00000000-0000-0000-0000-000000000p01',
+    };
+
+    await expect(
+      adapter.createTransaction(client, workspaceId, subject, command),
+    ).rejects.toThrow(TransactionPayeeNotFoundError);
+  });
+
+  it('re-throws unmapped 23503 errors (e.g. transactions_account_workspace_fkey) untouched', async () => {
+    const unrelatedError = {
+      code: '23503',
+      constraint: 'transactions_account_workspace_fkey',
+      message: 'foreign key constraint violation',
+    };
+    const client: TransactionClient = {
+      query: vi.fn().mockRejectedValue(unrelatedError),
+    };
+
+    const command: CreateTransactionCommand = {
+      type: 'expense',
+      accountId: '00000000-0000-0000-0000-000000000a01',
+      amount: { amountMinor: '5000', currency: 'USD' },
+      occurredAt: '2026-08-20T10:00:00.000Z',
+      status: 'confirmed',
+    };
+
+    await expect(
+      adapter.createTransaction(client, workspaceId, subject, command),
+    ).rejects.toMatchObject(unrelatedError);
   });
 });
 
@@ -675,6 +750,52 @@ describe('PostgresTransactionAdapter.updateTransaction', () => {
 
     expect(client.query).toHaveBeenCalledTimes(1);
     expect(result).toBeUndefined();
+  });
+
+  it('throws TransactionCategoryNotFoundError when update query fails with 23503 and constraint transactions_category_workspace_fkey', async () => {
+    const client: TransactionClient = {
+      query: vi.fn().mockRejectedValue({
+        code: '23503',
+        constraint: 'transactions_category_workspace_fkey',
+      }),
+    };
+
+    await expect(
+      adapter.updateTransaction(client, workspaceId, transactionId, {
+        categoryId: '00000000-0000-0000-0000-000000000c02',
+      }),
+    ).rejects.toThrow(TransactionCategoryNotFoundError);
+  });
+
+  it('throws TransactionPayeeNotFoundError when update query fails with 23503 and constraint transactions_payee_workspace_fkey', async () => {
+    const client: TransactionClient = {
+      query: vi.fn().mockRejectedValue({
+        code: '23503',
+        constraint: 'transactions_payee_workspace_fkey',
+      }),
+    };
+
+    await expect(
+      adapter.updateTransaction(client, workspaceId, transactionId, {
+        payeeId: '00000000-0000-0000-0000-000000000p02',
+      }),
+    ).rejects.toThrow(TransactionPayeeNotFoundError);
+  });
+
+  it('re-throws unmapped 23503 errors on update untouched', async () => {
+    const unrelatedError = {
+      code: '23503',
+      constraint: 'some_other_fkey',
+    };
+    const client: TransactionClient = {
+      query: vi.fn().mockRejectedValue(unrelatedError),
+    };
+
+    await expect(
+      adapter.updateTransaction(client, workspaceId, transactionId, {
+        description: 'Test',
+      }),
+    ).rejects.toMatchObject(unrelatedError);
   });
 });
 

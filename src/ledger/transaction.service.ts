@@ -34,6 +34,20 @@ export interface LedgerTransaction {
   ): Promise<T>;
 }
 
+export class TransactionCategoryNotFoundError extends Error {
+  public constructor(message = 'Category not found in the workspace.') {
+    super(message);
+    this.name = 'TransactionCategoryNotFoundError';
+  }
+}
+
+export class TransactionPayeeNotFoundError extends Error {
+  public constructor(message = 'Payee not found in the workspace.') {
+    super(message);
+    this.name = 'TransactionPayeeNotFoundError';
+  }
+}
+
 export interface LedgerAccountRecord {
   readonly status: string;
 }
@@ -157,12 +171,23 @@ export class TransactionService implements LedgerPort {
       }
 
       // 4. Create transaction via store
-      const transaction = await this.store.createTransaction(
-        client,
-        workspaceId,
-        subject,
-        command,
-      );
+      let transaction: Transaction;
+      try {
+        transaction = await this.store.createTransaction(
+          client,
+          workspaceId,
+          subject,
+          command,
+        );
+      } catch (error) {
+        if (error instanceof TransactionCategoryNotFoundError) {
+          return { kind: TRANSACTION_CREATE_OUTCOMES.CATEGORY_NOT_FOUND };
+        }
+        if (error instanceof TransactionPayeeNotFoundError) {
+          return { kind: TRANSACTION_CREATE_OUTCOMES.PAYEE_NOT_FOUND };
+        }
+        throw error;
+      }
 
       // 5. Write idempotency record
       const written = await this.idempotencyStore.write(
@@ -348,13 +373,26 @@ export class TransactionService implements LedgerPort {
       }
 
       // 4. Atomic conditional UPDATE guarded by expected version (or existingTxn.version)
-      const updated = await this.store.updateTransaction(
-        client,
-        workspaceId,
-        transactionId,
-        command,
-        expectedVersions !== undefined ? expectedVersions : existingTxn.version,
-      );
+      let updated: Transaction | undefined;
+      try {
+        updated = await this.store.updateTransaction(
+          client,
+          workspaceId,
+          transactionId,
+          command,
+          expectedVersions !== undefined
+            ? expectedVersions
+            : existingTxn.version,
+        );
+      } catch (error) {
+        if (error instanceof TransactionCategoryNotFoundError) {
+          return { kind: TRANSACTION_UPDATE_OUTCOMES.CATEGORY_NOT_FOUND };
+        }
+        if (error instanceof TransactionPayeeNotFoundError) {
+          return { kind: TRANSACTION_UPDATE_OUTCOMES.PAYEE_NOT_FOUND };
+        }
+        throw error;
+      }
 
       // 5. Zero-row update re-read to distinguish cause
       if (updated === undefined) {
