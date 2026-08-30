@@ -218,6 +218,12 @@ jobs:
       - name: recurring rules list integration
         shell: bash
         run: pnpm test:integration:recurring-rules-list
+      - name: subscriptions schema integration
+        shell: bash
+        run: pnpm test:integration:subscriptions-schema
+      - name: subscriptions list integration
+        shell: bash
+        run: pnpm test:integration:subscriptions-list
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

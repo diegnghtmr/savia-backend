@@ -50,6 +50,8 @@ case "$spec" in
   test/identity/recurring-rules-schema.integration-spec.ts) ;;
   test/recurring/recurring-rules-create.integration-spec.ts) ;;
   test/recurring/recurring-rules-list.integration-spec.ts) ;;
+  test/identity/subscriptions-schema.integration-spec.ts) ;;
+  test/recurring/subscriptions-list.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
