@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { RecurringRulesController } from './recurring-rules.controller.js';
+import { SubscriptionsController } from './subscriptions.controller.js';
 import { RECURRING_RULES_PORT } from './recurring.port.js';
 import { RecurringService } from './recurring.service.js';
 import { PostgresRecurringAdapter } from './postgres-recurring.adapter.js';
@@ -10,7 +11,7 @@ import { PlatformModule } from '../platform/platform.module.js';
 
 @Module({
   imports: [PlatformModule],
-  controllers: [RecurringRulesController],
+  controllers: [RecurringRulesController, SubscriptionsController],
   providers: [
     PostgresRecurringAdapter,
     {

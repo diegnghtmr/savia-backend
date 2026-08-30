@@ -9,6 +9,7 @@ import {
   RECURRING_RULES_PORT,
   type RecurringRulesPort,
   type RecurringRule,
+  type Subscription,
 } from '../src/recurring/recurring.port.js';
 import { RecurringModule } from '../src/recurring/recurring.module.js';
 import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
@@ -43,6 +44,23 @@ const MOCK_RULE: RecurringRule = {
   },
   active: true,
   nextOccurrenceAt: '2026-09-29T12:00:00.000Z',
+};
+
+const MOCK_SUBSCRIPTION: Subscription = {
+  id: '00000000-0000-0000-0000-000000006001',
+  payeeName: 'Spotify',
+  currentAmount: {
+    amountMinor: '999',
+    currency: 'USD',
+  },
+  previousAmount: {
+    amountMinor: '899',
+    currency: 'USD',
+  },
+  increasePercent: 11.12,
+  frequency: 'monthly',
+  nextExpectedAt: '2026-09-29T12:00:00.000Z',
+  status: 'confirmed',
 };
 
 const VALID_CREATE_BODY = {
@@ -116,6 +134,15 @@ async function createApplication(
         kind: 'ok',
         page: {
           items: [MOCK_RULE],
+          pageInfo: { hasNextPage: false, nextCursor: null },
+        },
+      }),
+    listSubscriptions:
+      overrides.listSubscriptions ??
+      vi.fn().mockResolvedValue({
+        kind: 'ok',
+        page: {
+          items: [MOCK_SUBSCRIPTION],
           pageInfo: { hasNextPage: false, nextCursor: null },
         },
       }),
@@ -254,6 +281,66 @@ describe('Recurring Rules E2E HTTP Guard Verification', () => {
       );
       expect(response.json()).toEqual({
         items: [MOCK_RULE],
+        pageInfo: { hasNextPage: false, nextCursor: null },
+      });
+    });
+  });
+
+  describe('GET /v1/subscriptions', () => {
+    it('answers 401 when Authorization header is missing and does not invoke port', async () => {
+      const { application, port } = await createApplication();
+
+      const response = await application.inject({
+        method: 'GET',
+        url: '/v1/subscriptions',
+        headers: {
+          'x-workspace-id': WORKSPACE_ID,
+        },
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(port.listSubscriptions).not.toHaveBeenCalled();
+    });
+
+    it('answers 401 when Bearer token is rejected and does not invoke port', async () => {
+      const { application, port } = await createApplication();
+
+      const response = await application.inject({
+        method: 'GET',
+        url: '/v1/subscriptions',
+        headers: {
+          authorization: 'Bearer rejected-token',
+          'x-workspace-id': WORKSPACE_ID,
+        },
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(port.listSubscriptions).not.toHaveBeenCalled();
+    });
+
+    it('answers 200 with subscription page when authenticated and valid', async () => {
+      const { application, port } = await createApplication();
+
+      const response = await application.inject({
+        method: 'GET',
+        url: '/v1/subscriptions?limit=10&status=confirmed',
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          'x-workspace-id': WORKSPACE_ID,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(port.listSubscriptions).toHaveBeenCalledWith(
+        SUBJECT,
+        expect.objectContaining({
+          workspaceId: WORKSPACE_ID,
+          limit: 10,
+          status: 'confirmed',
+        }),
+      );
+      expect(response.json()).toEqual({
+        items: [MOCK_SUBSCRIPTION],
         pageInfo: { hasNextPage: false, nextCursor: null },
       });
     });

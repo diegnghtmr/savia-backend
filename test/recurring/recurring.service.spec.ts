@@ -4,8 +4,10 @@ import { computeRequestFingerprint } from '../../src/platform/idempotency.servic
 import {
   RECURRING_CREATE_OUTCOMES,
   RECURRING_LIST_OUTCOMES,
+  SUBSCRIPTION_LIST_OUTCOMES,
   type CreateRecurringRuleCommand,
   type RecurringRule,
+  type Subscription,
 } from '../../src/recurring/recurring.port.js';
 import {
   RecurringAccountNotFoundError,
@@ -44,6 +46,23 @@ const MOCK_RULE: RecurringRule = {
   },
   active: true,
   nextOccurrenceAt: '2026-09-29T12:00:00.000Z',
+};
+
+const MOCK_SUBSCRIPTION: Subscription = {
+  id: '00000000-0000-0000-0000-000000006001',
+  payeeName: 'Spotify',
+  currentAmount: {
+    amountMinor: '999',
+    currency: 'USD',
+  },
+  previousAmount: {
+    amountMinor: '899',
+    currency: 'USD',
+  },
+  increasePercent: 11.12,
+  frequency: 'monthly',
+  nextExpectedAt: '2026-09-29T12:00:00.000Z',
+  status: 'confirmed',
 };
 
 const CREATE_COMMAND: CreateRecurringRuleCommand = {
@@ -91,6 +110,12 @@ function createService(
       .mockResolvedValue([
         { rule: MOCK_RULE, cursorAt: '2026-08-29T12:00:00.000000Z' },
       ]),
+    listSubscriptions: vi.fn().mockResolvedValue([
+      {
+        subscription: MOCK_SUBSCRIPTION,
+        cursorAt: '2026-08-29T12:00:00.000000Z',
+      },
+    ]),
   };
 
   const mockIdempotencyStore: IdempotencyStore = {
@@ -345,6 +370,73 @@ describe('RecurringService', () => {
           workspaceId: WORKSPACE_ID,
           createdAt: '2026-08-29T12:00:00.000000Z',
           id: MOCK_RULE.id,
+        });
+      }
+    });
+  });
+
+  describe('listSubscriptions', () => {
+    it('returns FORBIDDEN when user has no active role or is non-member', async () => {
+      const { service } = createService(null);
+      const outcome = await service.listSubscriptions(SUBJECT, {
+        workspaceId: WORKSPACE_ID,
+        limit: 50,
+      });
+
+      expect(outcome.kind).toBe(SUBSCRIPTION_LIST_OUTCOMES.FORBIDDEN);
+    });
+
+    it('returns items and pageInfo for viewer or editor or owner', async () => {
+      const { service } = createService('viewer');
+      const outcome = await service.listSubscriptions(SUBJECT, {
+        workspaceId: WORKSPACE_ID,
+        limit: 50,
+        status: 'confirmed',
+      });
+
+      expect(outcome.kind).toBe(SUBSCRIPTION_LIST_OUTCOMES.OK);
+      if (outcome.kind === SUBSCRIPTION_LIST_OUTCOMES.OK) {
+        expect(outcome.page.items).toEqual([MOCK_SUBSCRIPTION]);
+        expect(outcome.page.pageInfo.hasNextPage).toBe(false);
+        expect(outcome.page.pageInfo.nextCursor).toBeNull();
+      }
+    });
+
+    it('emits nextCursor when subscription rows exceed limit', async () => {
+      const { service, mockStore } = createService('owner');
+      mockStore.listSubscriptions = vi.fn().mockResolvedValue([
+        {
+          subscription: MOCK_SUBSCRIPTION,
+          cursorAt: '2026-08-29T12:00:00.000000Z',
+        },
+        {
+          subscription: {
+            ...MOCK_SUBSCRIPTION,
+            id: '00000000-0000-0000-0000-000000006002',
+          },
+          cursorAt: '2026-08-29T13:00:00.000000Z',
+        },
+      ]);
+
+      const outcome = await service.listSubscriptions(SUBJECT, {
+        workspaceId: WORKSPACE_ID,
+        limit: 1,
+      });
+
+      expect(outcome.kind).toBe(SUBSCRIPTION_LIST_OUTCOMES.OK);
+      if (outcome.kind === SUBSCRIPTION_LIST_OUTCOMES.OK) {
+        expect(outcome.page.items).toHaveLength(1);
+        expect(outcome.page.pageInfo.hasNextPage).toBe(true);
+        expect(outcome.page.pageInfo.nextCursor).not.toBeNull();
+
+        const decoded = decodeCursor(
+          outcome.page.pageInfo.nextCursor!,
+          WORKSPACE_ID,
+        );
+        expect(decoded).toEqual({
+          workspaceId: WORKSPACE_ID,
+          createdAt: '2026-08-29T12:00:00.000000Z',
+          id: MOCK_SUBSCRIPTION.id,
         });
       }
     });

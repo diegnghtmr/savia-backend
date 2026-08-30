@@ -117,6 +117,66 @@ export interface RecurringListForbidden {
 
 export type RecurringListOutcome = RecurringListOk | RecurringListForbidden;
 
+// --- Subscriptions (Epica 4 Slice 5) ---
+
+export const SUBSCRIPTION_STATUSES = [
+  'detected',
+  'confirmed',
+  'ignored',
+  'cancelled',
+] as const;
+
+export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
+
+export interface SubscriptionAmount {
+  readonly amountMinor: string;
+  readonly currency: string;
+}
+
+export interface Subscription {
+  readonly id: string;
+  readonly payeeName: string;
+  readonly currentAmount: SubscriptionAmount;
+  readonly previousAmount?: SubscriptionAmount;
+  readonly increasePercent: number | null;
+  readonly frequency: string;
+  readonly nextExpectedAt: string | null;
+  readonly status: SubscriptionStatus;
+}
+
+export interface SubscriptionListQuery {
+  readonly workspaceId: string;
+  readonly cursor?: Cursor;
+  readonly limit: number;
+  readonly status?: SubscriptionStatus;
+}
+
+export interface SubscriptionPage {
+  readonly items: readonly Subscription[];
+  readonly pageInfo: PageInfo;
+}
+
+export const SUBSCRIPTION_LIST_OUTCOMES = {
+  OK: 'ok',
+  FORBIDDEN: 'forbidden',
+} as const;
+
+export type SubscriptionListOutcomeKind =
+  (typeof SUBSCRIPTION_LIST_OUTCOMES)[keyof typeof SUBSCRIPTION_LIST_OUTCOMES];
+
+export interface SubscriptionListOk {
+  readonly kind: typeof SUBSCRIPTION_LIST_OUTCOMES.OK;
+  readonly page: SubscriptionPage;
+}
+
+export interface SubscriptionListForbidden {
+  readonly kind: typeof SUBSCRIPTION_LIST_OUTCOMES.FORBIDDEN;
+}
+
+export type SubscriptionListOutcome =
+  | SubscriptionListOk
+  | SubscriptionListForbidden;
+
 export interface RecurringRulesPort {
   createRecurringRule(
     subject: string,
@@ -129,4 +189,9 @@ export interface RecurringRulesPort {
     subject: string,
     query: RecurringRuleListQuery,
   ): Promise<RecurringListOutcome>;
+
+  listSubscriptions(
+    subject: string,
+    query: SubscriptionListQuery,
+  ): Promise<SubscriptionListOutcome>;
 }

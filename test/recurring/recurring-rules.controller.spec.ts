@@ -59,6 +59,7 @@ function createMocks() {
   const port: RecurringRulesPort = {
     createRecurringRule: vi.fn(),
     listRecurringRules: vi.fn(),
+    listSubscriptions: vi.fn(),
   };
 
   const controller = new RecurringRulesController(port);
