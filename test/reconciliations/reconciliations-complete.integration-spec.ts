@@ -24,6 +24,7 @@ describe('completeReconciliation against a real database', () => {
   const foreignWorkspace = id(6103);
   const account = id(6104);
   const foreignAccount = id(6105);
+  const otherAccount = id(6106);
   const txConfirmed = id(6110);
   const txDraft = id(6111);
   const txPending = id(6112);
@@ -39,18 +40,20 @@ describe('completeReconciliation against a real database', () => {
     status: string,
     occurredAt: string,
     withPosting = true,
+    ws = workspace,
+    acc = account,
   ) {
     await admin.query(
       `insert into public.transactions (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by, voided_at) values ($1,$2,$3,'income',$4,100,'USD',$5,$6,case when $4='voided' then now() else null end)`,
-      [txId, workspace, account, status, occurredAt, owner],
+      [txId, ws, acc, status, occurredAt, owner],
     );
     if (withPosting)
       await admin.query(
         `insert into public.ledger_postings (workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at) values ($1,$2,$3,'account',100,'USD',$4,$5),($1,$2,null,'external',-100,'USD',$4,$5)`,
         [
-          workspace,
+          ws,
           txId,
-          account,
+          acc,
           status === 'voided' ? 'confirmed' : status,
           occurredAt,
         ],
@@ -109,8 +112,8 @@ describe('completeReconciliation against a real database', () => {
       [workspace, foreignWorkspace, owner],
     );
     await admin.query(
-      `insert into public.accounts (id,workspace_id,name,type,currency,status,created_by) values ($1,$3,'Complete Account','checking','USD','active',$4),($2,$5,'Foreign Account','checking','USD','active',$4)`,
-      [account, foreignAccount, workspace, owner, foreignWorkspace],
+      `insert into public.accounts (id,workspace_id,name,type,currency,status,created_by) values ($1,$3,'Complete Account','checking','USD','active',$4),($2,$5,'Foreign Account','checking','USD','active',$4),($6,$3,'Other Account','checking','USD','active',$4)`,
+      [account, foreignAccount, workspace, owner, foreignWorkspace, otherAccount],
     );
     await seedTransaction(txConfirmed, 'confirmed', '2026-08-20T10:00:00Z');
     await seedTransaction(txDraft, 'draft', '2026-08-20T10:00:00Z');
@@ -125,6 +128,8 @@ describe('completeReconciliation against a real database', () => {
       false,
     );
     await seedTransaction(txAtomic, 'confirmed', '2026-08-20T10:00:00Z');
+    await seedTransaction(id(6119), 'confirmed', '2026-08-20T10:00:00Z', true, foreignWorkspace, foreignAccount);
+    await seedTransaction(id(6120), 'confirmed', '2026-08-20T10:00:00Z', true, workspace, otherAccount);
     await seedTransaction(txPendingPosting, 'confirmed', '2026-08-20T10:00:00Z');
     await admin.query(
       `update public.ledger_postings set status='pending' where transaction_id=$1 and account_id=$2`,
@@ -181,7 +186,8 @@ describe('completeReconciliation against a real database', () => {
 
   it.each([
     ['unknown', id(6291)],
-    ['foreign workspace', foreignAccount],
+    ['foreign workspace', id(6119)],
+    ['wrong account', id(6120)],
     ['no posting', noPosting],
     ['draft', txDraft],
     ['pending', txPending],
