@@ -1244,6 +1244,26 @@ components:
             - 'null'
           maxLength: 1000
       additionalProperties: false
+    CompleteReconciliationRequest:
+      type: object
+      required:
+        - transactionIds
+      properties:
+        transactionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          uniqueItems: true
+        createAdjustment:
+          type: boolean
+          default: false
+        adjustmentReason:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+      additionalProperties: false
     Reconciliation:
       type: object
       required:
@@ -4375,6 +4395,76 @@ paths:
           description: >-
             An internal failure the client cannot act on. The cause is recorded
             server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-idempotency-required: true
+  /v1/reconciliations/{reconciliationId}/complete:
+    post:
+      operationId: completeReconciliation
+      tags:
+        - Reconciliations
+      summary: Complete reconciliation
+      parameters:
+        - name: reconciliationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteReconciliationRequest'
+      responses:
+        '200':
+          description: Reconciliation completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reconciliation'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Reconciliation not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Validation failed or business invariant violated.
           content:
             application/problem+json:
               schema:

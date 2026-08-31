@@ -122,6 +122,7 @@ describe('health endpoint', () => {
       'GET /v1/jobs/:jobId',
       'POST /v1/reconciliations',
       'GET /v1/reconciliations/:reconciliationId',
+      'POST /v1/reconciliations/:reconciliationId/complete',
     ]);
 
     await app.close();

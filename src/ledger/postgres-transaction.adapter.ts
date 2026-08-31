@@ -1,4 +1,8 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import type {
+  AdjustmentTransactionCommand,
+  LedgerWriter,
+} from '../platform/ledger-writer.port.js';
 import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
 import type {
   CreateTransactionCommand,
@@ -65,7 +69,22 @@ export function toIso(value: unknown): string {
   );
 }
 
-export class PostgresTransactionAdapter implements LedgerStore {
+export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
+  public async createAdjustmentTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    command: AdjustmentTransactionCommand,
+  ): Promise<void> {
+    await this.createTransaction(client, workspaceId, subject, {
+      type: 'adjustment',
+      accountId: command.accountId,
+      amount: { amountMinor: command.amountMinor, currency: command.currency },
+      occurredAt: command.occurredAt,
+      status: 'reconciled',
+      description: command.description,
+    });
+  }
   public async readActiveRole(
     client: TransactionClient,
     workspaceId: string,

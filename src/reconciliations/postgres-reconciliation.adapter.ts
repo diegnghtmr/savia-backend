@@ -278,4 +278,101 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
     }
     return mapRowToReconciliation(row);
   }
+
+  public async lockAndReadCompletion(
+    client: TransactionClient,
+    workspaceId: string,
+    reconciliationId: string,
+  ): Promise<Reconciliation | undefined> {
+    const initial = await this.findReconciliationById(
+      client,
+      workspaceId,
+      reconciliationId,
+    );
+    if (!initial) return undefined;
+    await client.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [initial.accountId.toLowerCase()],
+    );
+    return this.findReconciliationById(client, workspaceId, reconciliationId);
+  }
+
+  public async validateCompletionTransactions(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    transactionIds: readonly string[],
+    statementDate: string,
+  ): Promise<
+    | 'valid'
+    | 'not-found'
+    | 'no-posting'
+    | 'wrong-status'
+    | 'already-reconciled'
+    | 'after-cutoff'
+  > {
+    if (transactionIds.length === 0) return 'valid';
+    const result = await client.query<{
+      id: string;
+      status: string;
+      occurredAt: Date;
+      accountPostingCount: string;
+      reconciledPostingCount: string;
+    }>(
+      `
+      select t.id::text, t.status, t.occurred_at as "occurredAt",
+             count(lp.id) filter (where lp.account_id = $3::uuid)::text as "accountPostingCount",
+             count(lp.id) filter (where lp.account_id = $3::uuid and lp.status = 'reconciled')::text as "reconciledPostingCount"
+        from public.transactions t
+        left join public.ledger_postings lp on lp.workspace_id = t.workspace_id and lp.transaction_id = t.id
+       where t.workspace_id = $1::uuid and t.id = any($2::uuid[])
+       group by t.id`,
+      [workspaceId, transactionIds, accountId],
+    );
+    if (result.rows.length !== transactionIds.length) return 'not-found';
+    const cutoff = `${statementDate}T23:59:59.999999Z`;
+    for (const row of result.rows) {
+      if (row.accountPostingCount === '0') return 'no-posting';
+      if (row.status === 'reconciled' || row.reconciledPostingCount !== '0')
+        return 'already-reconciled';
+      if (row.status !== 'confirmed') return 'wrong-status';
+      if (row.occurredAt > new Date(cutoff)) return 'after-cutoff';
+    }
+    return 'valid';
+  }
+
+  public async reconcileTransactions(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    transactionIds: readonly string[],
+  ): Promise<void> {
+    if (transactionIds.length === 0) return;
+    await client.query(
+      `update public.transactions set status = 'reconciled' where workspace_id = $1::uuid and id = any($2::uuid[]) and status = 'confirmed'`,
+      [workspaceId, transactionIds],
+    );
+    await client.query(
+      `update public.ledger_postings set status = 'reconciled' where workspace_id = $1::uuid and transaction_id = any($2::uuid[]) and account_id = $3::uuid and status = 'confirmed'`,
+      [workspaceId, transactionIds, accountId],
+    );
+  }
+
+  public async completeReconciliation(
+    client: TransactionClient,
+    workspaceId: string,
+    reconciliationId: string,
+  ): Promise<Reconciliation | undefined> {
+    const result = await client.query<ReconciliationRow>(
+      `
+      update public.reconciliations set status = 'completed', completed_at = now()
+       where workspace_id = $1::uuid and id = $2::uuid and status = 'open'
+       returning id::text, account_id::text as "accountId", to_char(statement_date, 'YYYY-MM-DD') as "statementDate",
+       statement_balance_minor::text as "statementBalanceMinor", statement_currency as "statementCurrency",
+       system_balance_minor::text as "systemBalanceMinor", difference_minor::text as "differenceMinor", status, completed_at as "completedAt"`,
+      [workspaceId, reconciliationId],
+    );
+    const row = result.rows[0];
+    return row ? mapRowToReconciliation(row) : undefined;
+  }
 }

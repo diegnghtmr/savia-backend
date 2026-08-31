@@ -30,6 +30,7 @@ module.exports = {
           '^src/$1/',
           '^src/platform/',
           '^src/ledger/transaction-command\\.ts$',
+          '^src/ledger/ledger\\.module\\.ts$',
         ],
       },
     },

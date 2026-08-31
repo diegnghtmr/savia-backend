@@ -7,9 +7,11 @@ import { PostgresReconciliationAdapter } from './postgres-reconciliation.adapter
 import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PlatformModule } from '../platform/platform.module.js';
+import { LedgerModule } from '../ledger/ledger.module.js';
+import { LEDGER_WRITER } from '../platform/ledger-writer.port.js';
 
 @Module({
-  imports: [PlatformModule],
+  imports: [PlatformModule, LedgerModule],
   controllers: [ReconciliationsController],
   providers: [
     PostgresReconciliationAdapter,
@@ -19,12 +21,20 @@ import { PlatformModule } from '../platform/platform.module.js';
         PgTransaction,
         PostgresReconciliationAdapter,
         PostgresIdempotencyAdapter,
+        LEDGER_WRITER,
       ],
       useFactory: (
         transaction: PgTransaction,
         adapter: PostgresReconciliationAdapter,
         idempotency: PostgresIdempotencyAdapter,
-      ) => new ReconciliationService(transaction, adapter, idempotency),
+        ledgerWriter: import('../platform/ledger-writer.port.js').LedgerWriter,
+      ) =>
+        new ReconciliationService(
+          transaction,
+          adapter,
+          idempotency,
+          ledgerWriter,
+        ),
     },
     { provide: RECONCILIATIONS_PORT, useExisting: ReconciliationService },
   ],

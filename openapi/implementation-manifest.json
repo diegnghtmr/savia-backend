@@ -211,6 +211,11 @@
       "operationId": "getReconciliation",
       "method": "GET",
       "path": "/v1/reconciliations/{reconciliationId}"
+    },
+    {
+      "operationId": "completeReconciliation",
+      "method": "POST",
+      "path": "/v1/reconciliations/{reconciliationId}/complete"
     }
   ]
 }
