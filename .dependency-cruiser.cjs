@@ -21,7 +21,7 @@ module.exports = {
       comment:
         'Feature modules must not import from each other; shared code belongs in src/platform',
       from: {
-        path: '^src/([^/]+)/',
+        path: '^src/(?!reconciliations/)([^/]+)/',
         pathNot: '^src/platform/',
       },
       to: {
@@ -30,8 +30,20 @@ module.exports = {
           '^src/$1/',
           '^src/platform/',
           '^src/ledger/transaction-command\\.ts$',
-          '^src/ledger/ledger\\.module\\.ts$',
         ],
+      },
+    },
+    {
+      name: 'reconciliations-feature-isolation',
+      severity: 'error',
+      comment:
+        'Reconciliations may compose the ledger module, but no other feature may be imported',
+      from: {
+        path: '^src/reconciliations/',
+      },
+      to: {
+        path: '^src/([^/]+)/',
+        pathNot: ['^src/reconciliations/', '^src/platform/', '^src/ledger/ledger\\.module\\.ts$'],
       },
     },
     {
