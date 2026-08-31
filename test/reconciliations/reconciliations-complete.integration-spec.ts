@@ -58,7 +58,7 @@ describe('completeReconciliation against a real database', () => {
   async function seedReconciliation(
     recId: string,
     status = 'open',
-    difference = 100,
+    difference: number | string = 100,
     ws = workspace,
     acc = account,
   ) {
@@ -287,6 +287,26 @@ describe('completeReconciliation against a real database', () => {
           row.status === 'reconciled' && row.total === '0' && row.legs === '2',
       ),
     ).toBe(true);
+  });
+
+  it('rejects an adjustment whose counter-leg overflows without persisting writes', async () => {
+    const rec = id(6751);
+    await seedReconciliation(rec, 'open', '-9223372036854775808');
+    const beforeAdjustments = await admin.query(
+      "select count(*)::text as count from public.transactions where account_id=$1 and type='adjustment'",
+      [account],
+    );
+    const result = await complete(rec, [], { createAdjustment: true });
+    expect(result.kind).toBe('amount-out-of-range');
+    expect(
+      (await admin.query("select status from public.reconciliations where id=$1", [rec])).rows[0].status,
+    ).toBe('open');
+    expect(
+      (await admin.query("select count(*)::text as count from public.transactions where account_id=$1 and type='adjustment'", [account])).rows[0].count,
+    ).toBe(beforeAdjustments.rows[0].count);
+    expect(
+      (await admin.query("select count(*)::text as count from public.transactions where id=$1 and status='reconciled'", [txConfirmed])).rows[0].count,
+    ).toBe('0');
   });
 
   it('freezes snapshot values and replay leaves exactly one completion', async () => {

@@ -9,6 +9,7 @@ import {
   RECONCILIATION_GET_OUTCOMES,
   RECONCILIATION_COMPLETE_OUTCOMES,
   ReconciliationAccountNotFoundError,
+  ReconciliationCompletionRollbackError,
   type CreateReconciliationCommand,
   type CompleteReconciliationCommand,
   type Money,
@@ -274,7 +275,8 @@ export class ReconciliationService implements ReconciliationsPort {
       reconciliationId,
       ...command,
     });
-    return this.transaction.run(subject, async (client) => {
+    try {
+      return await this.transaction.run(subject, async (client) => {
       const role = await this.store.readActiveRole(client, workspaceId);
       if (
         role === undefined ||
@@ -319,6 +321,15 @@ export class ReconciliationService implements ReconciliationsPort {
       ) {
         return { kind: RECONCILIATION_COMPLETE_OUTCOMES.ADJUSTMENT_INVALID };
       }
+      const adjustmentAmount = BigInt(reconciliation.difference.amountMinor);
+      if (
+        command.createAdjustment &&
+        (adjustmentAmount < INT64_MIN ||
+          adjustmentAmount > INT64_MAX ||
+          adjustmentAmount === INT64_MIN)
+      ) {
+        throw new ReconciliationCompletionRollbackError('amount-out-of-range');
+      }
       const validation = await this.store.validateCompletionTransactions(
         client,
         workspaceId,
@@ -335,7 +346,6 @@ export class ReconciliationService implements ReconciliationsPort {
         command.transactionIds,
       );
       if (command.createAdjustment) {
-        try {
           await this.ledgerWriter.createAdjustmentTransaction(
             client,
             workspaceId,
@@ -348,16 +358,6 @@ export class ReconciliationService implements ReconciliationsPort {
               description: command.adjustmentReason ?? null,
             },
           );
-        } catch (error) {
-          if (
-            error instanceof RangeError ||
-            error instanceof AmountOutOfRangeError
-          )
-            return {
-              kind: RECONCILIATION_COMPLETE_OUTCOMES.AMOUNT_OUT_OF_RANGE,
-            };
-          throw error;
-        }
       }
       const completed = await this.store.completeReconciliation(
         client,
@@ -398,6 +398,15 @@ export class ReconciliationService implements ReconciliationsPort {
         kind: RECONCILIATION_COMPLETE_OUTCOMES.COMPLETED,
         reconciliation: completed,
       };
-    });
+      });
+    } catch (error: unknown) {
+      if (error instanceof ReconciliationCompletionRollbackError) {
+        return { kind: error.outcome };
+      }
+      if (error instanceof RangeError || error instanceof AmountOutOfRangeError) {
+        return { kind: RECONCILIATION_COMPLETE_OUTCOMES.AMOUNT_OUT_OF_RANGE };
+      }
+      throw error;
+    }
   }
 }

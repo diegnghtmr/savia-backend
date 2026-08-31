@@ -64,6 +64,15 @@ export class AmountOutOfRangeError extends Error {
   }
 }
 
+export class ReconciliationCompletionRollbackError extends Error {
+  public constructor(
+    public readonly outcome: 'transactions-invalid' | 'amount-out-of-range',
+  ) {
+    super('Reconciliation completion must be rolled back.');
+    this.name = 'ReconciliationCompletionRollbackError';
+  }
+}
+
 export const RECONCILIATION_CREATE_OUTCOMES = {
   CREATED: 'created',
   REPLAYED: 'replayed',
