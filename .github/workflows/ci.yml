@@ -224,6 +224,9 @@ jobs:
       - name: subscriptions list integration
         shell: bash
         run: pnpm test:integration:subscriptions-list
+      - name: jobs schema integration
+        shell: bash
+        run: pnpm test:integration:jobs-schema
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
