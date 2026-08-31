@@ -76,6 +76,12 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
     workspaceId: string,
     accountId: string,
   ): Promise<ReconciliationStoreAccount | undefined> {
+    // 1. Mandatory per-account advisory lock (serialized against closeAccount)
+    await client.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [accountId.toLowerCase()],
+    );
+
     const sql = `
       select id::text,
              currency,

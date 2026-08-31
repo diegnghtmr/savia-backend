@@ -563,4 +563,65 @@ describe('ReconciliationService createReconciliation database boundary and busin
       RECONCILIATION_CREATE_OUTCOMES.FORBIDDEN,
     );
   });
+
+  it('serializes against closeAccount via per-account advisory lock (RULING 77)', async () => {
+    // 1. Session A: raw admin client takes advisory lock on ws1AccountActiveUsd and leaves transaction open
+    const sessionA = await admin.connect();
+    await sessionA.query('BEGIN');
+    await sessionA.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [ws1AccountActiveUsd.toLowerCase()],
+    );
+
+    const command: CreateReconciliationCommand = {
+      accountId: ws1AccountActiveUsd,
+      statementDate: '2026-08-30',
+      statementBalance: {
+        amountMinor: '16250',
+        currency: 'USD',
+      },
+    };
+
+    let sessionBCompleted = false;
+    const sessionBPromise = service
+      .createReconciliation(
+        subjectOwner,
+        workspace1Id,
+        command,
+        id(5290),
+      )
+      .then((res) => {
+        sessionBCompleted = true;
+        return res;
+      });
+
+    // Session B must NOT complete while Session A holds the lock
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(sessionBCompleted).toBe(false);
+
+    // Session A closes the account and commits
+    await sessionA.query(
+      `update public.accounts set status = 'closed', closed_at = now(), version = version + 1 where id = $1`,
+      [ws1AccountActiveUsd],
+    );
+    await sessionA.query('COMMIT');
+    sessionA.release();
+
+    // Session B unblocks, reads under the lock that the account is closed, and answers ACCOUNT_CLOSED (422)
+    const outcome = await sessionBPromise;
+    expect(outcome.kind).toBe(RECONCILIATION_CREATE_OUTCOMES.ACCOUNT_CLOSED);
+
+    // Assert that NO open reconciliation exists against the closed account in the database
+    const recCheck = await admin.query<{ count: string }>(
+      `select count(*)::text from public.reconciliations where account_id = $1`,
+      [ws1AccountActiveUsd],
+    );
+    expect(recCheck.rows[0]?.count).toBe('0');
+
+    // Restore account to active for any subsequent operations
+    await admin.query(
+      `update public.accounts set status = 'active', closed_at = null, version = version + 1 where id = $1`,
+      [ws1AccountActiveUsd],
+    );
+  });
 });
