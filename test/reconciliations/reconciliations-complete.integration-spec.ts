@@ -32,6 +32,7 @@ describe('completeReconciliation against a real database', () => {
   const txAfterCutoff = id(6115);
   const noPosting = id(6116);
   const txAtomic = id(6117);
+  const txPendingPosting = id(6118);
 
   async function seedTransaction(
     txId: string,
@@ -124,6 +125,11 @@ describe('completeReconciliation against a real database', () => {
       false,
     );
     await seedTransaction(txAtomic, 'confirmed', '2026-08-20T10:00:00Z');
+    await seedTransaction(txPendingPosting, 'confirmed', '2026-08-20T10:00:00Z');
+    await admin.query(
+      `update public.ledger_postings set status='pending' where transaction_id=$1 and account_id=$2`,
+      [txPendingPosting, account],
+    );
   });
   afterAll(async () => {
     await admin.query('delete from public.workspaces where id in ($1,$2)', [
@@ -222,6 +228,19 @@ describe('completeReconciliation against a real database', () => {
         )
       ).rows[0].count,
     ).toBe('0');
+  });
+
+  it('rejects a confirmed header with a pending account posting', async () => {
+    const rec = id(6451);
+    await seedReconciliation(rec);
+    const result = await complete(rec, [txPendingPosting]);
+    expect(result.kind).toBe('transactions-invalid');
+    expect(
+      (await admin.query('select status from public.transactions where id=$1', [txPendingPosting])).rows[0].status,
+    ).toBe('confirmed');
+    expect(
+      (await admin.query('select status from public.ledger_postings where transaction_id=$1 and account_id=$2', [txPendingPosting, account])).rows[0].status,
+    ).toBe('pending');
   });
 
   it.each(['completed', 'cancelled'] as const)(

@@ -4,6 +4,7 @@ import {
   AmountOutOfRangeError,
   OpenReconciliationExistsError,
   ReconciliationAccountNotFoundError,
+  ReconciliationCompletionRollbackError,
   type Reconciliation,
   type ReconciliationStatus,
   type ReconciliationStore,
@@ -294,6 +295,13 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
       'select pg_advisory_xact_lock(hashtextextended($1, 0))',
       [initial.accountId.toLowerCase()],
     );
+    const account = await client.query<{ status: string }>(
+      'select status from public.accounts where workspace_id = $1::uuid and id = $2::uuid',
+      [workspaceId, initial.accountId],
+    );
+    if (!account.rows[0] || account.rows[0].status === 'closed') {
+      throw new ReconciliationCompletionRollbackError('transactions-invalid');
+    }
     return this.findReconciliationById(client, workspaceId, reconciliationId);
   }
 
@@ -312,18 +320,30 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
     | 'after-cutoff'
   > {
     if (transactionIds.length === 0) return 'valid';
+    await client.query(
+      `select id from public.ledger_postings where workspace_id = $1::uuid and transaction_id = any($2::uuid[]) and account_id = $3::uuid for update`,
+      [workspaceId, transactionIds, accountId],
+    );
     const result = await client.query<{
       id: string;
       status: string;
       occurredAt: Date;
       accountPostingCount: string;
+      confirmedPostingCount: string;
       reconciledPostingCount: string;
     }>(
       `
+      with locked_transactions as materialized (
+        select t.id, t.status, t.occurred_at
+          from public.transactions t
+         where t.workspace_id = $1::uuid and t.id = any($2::uuid[])
+         for update
+      )
       select t.id::text, t.status, t.occurred_at as "occurredAt",
              count(lp.id) filter (where lp.account_id = $3::uuid)::text as "accountPostingCount",
+             count(lp.id) filter (where lp.account_id = $3::uuid and lp.status = 'confirmed')::text as "confirmedPostingCount",
              count(lp.id) filter (where lp.account_id = $3::uuid and lp.status = 'reconciled')::text as "reconciledPostingCount"
-        from public.transactions t
+        from locked_transactions t
         left join public.ledger_postings lp on lp.workspace_id = t.workspace_id and lp.transaction_id = t.id
        where t.workspace_id = $1::uuid and t.id = any($2::uuid[])
        group by t.id`,
@@ -333,6 +353,8 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
     const cutoff = `${statementDate}T23:59:59.999999Z`;
     for (const row of result.rows) {
       if (row.accountPostingCount === '0') return 'no-posting';
+      if (row.accountPostingCount !== row.confirmedPostingCount)
+        return 'wrong-status';
       if (row.status === 'reconciled' || row.reconciledPostingCount !== '0')
         return 'already-reconciled';
       if (row.status !== 'confirmed') return 'wrong-status';
@@ -348,14 +370,18 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
     transactionIds: readonly string[],
   ): Promise<void> {
     if (transactionIds.length === 0) return;
-    await client.query(
+    const transactionResult = await client.query(
       `update public.transactions set status = 'reconciled' where workspace_id = $1::uuid and id = any($2::uuid[]) and status = 'confirmed'`,
       [workspaceId, transactionIds],
     );
-    await client.query(
+    if ((transactionResult.rowCount ?? 0) !== transactionIds.length)
+      throw new ReconciliationCompletionRollbackError('transactions-invalid');
+    const postingResult = await client.query(
       `update public.ledger_postings set status = 'reconciled' where workspace_id = $1::uuid and transaction_id = any($2::uuid[]) and account_id = $3::uuid and status = 'confirmed'`,
       [workspaceId, transactionIds, accountId],
     );
+    if ((postingResult.rowCount ?? 0) !== transactionIds.length)
+      throw new ReconciliationCompletionRollbackError('transactions-invalid');
   }
 
   public async completeReconciliation(
