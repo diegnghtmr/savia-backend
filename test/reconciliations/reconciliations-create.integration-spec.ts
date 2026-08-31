@@ -4,9 +4,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   RECONCILIATION_CREATE_OUTCOMES,
+  ReconciliationAccountNotFoundError,
   type CreateReconciliationCommand,
   type ReconciliationCreateCreated,
   type ReconciliationCreateReplayed,
+  type ReconciliationStore,
 } from '../../src/reconciliations/reconciliation.port.js';
 import { ReconciliationService } from '../../src/reconciliations/reconciliation.service.js';
 import { PostgresReconciliationAdapter } from '../../src/reconciliations/postgres-reconciliation.adapter.js';
@@ -763,5 +765,67 @@ describe('ReconciliationService createReconciliation database boundary and busin
     await admin.query(`delete from public.reconciliations where id = $1`, [
       rec.id,
     ]);
+  });
+
+  it('translates 23503 composite foreign key violation on insert to ReconciliationAccountNotFoundError (RULING 48 / RULING 73)', async () => {
+    const realAdapter = new PostgresReconciliationAdapter();
+    // Directly invoke createReconciliation on a real Postgres connection with an account that fails composite FK
+    await expect(
+      transaction.run(subjectOwner, async (client) => {
+        await realAdapter.createReconciliation(
+          client,
+          workspace1Id,
+          subjectOwner,
+          {
+            accountId: absentAccountId,
+            statementDate: '2026-08-30',
+            statementBalance: { amountMinor: '10000', currency: 'USD' },
+            systemBalance: { amountMinor: '10000', currency: 'USD' },
+            difference: { amountMinor: '0', currency: 'USD' },
+            status: 'open',
+            notes: null,
+          },
+        );
+      }),
+    ).rejects.toBeInstanceOf(ReconciliationAccountNotFoundError);
+  });
+
+  it('proves service handles composite foreign key 23503 race by returning ACCOUNT_NOT_FOUND (422)', async () => {
+    const realAdapter = new PostgresReconciliationAdapter();
+    // Wrap real adapter to bypass the readAccount pre-check and force execution to reach the real INSERT
+    const bypassingStore: ReconciliationStore = {
+      readActiveRole: (c, w) => realAdapter.readActiveRole(c, w),
+      readAccount: async () => ({
+        id: absentAccountId,
+        currency: 'USD',
+        status: 'active',
+      }),
+      readAccountBalance: async () => ({
+        nativeBalance: { amountMinor: '0', currency: 'USD' },
+      }),
+      createReconciliation: (c, w, s, d) =>
+        realAdapter.createReconciliation(c, w, s, d),
+      findReconciliationById: (c, w, id) =>
+        realAdapter.findReconciliationById(c, w, id),
+    };
+
+    const testService = new ReconciliationService(
+      transaction,
+      bypassingStore,
+      new PostgresIdempotencyAdapter(),
+    );
+
+    const outcome = await testService.createReconciliation(
+      subjectOwner,
+      workspace1Id,
+      {
+        accountId: absentAccountId,
+        statementDate: '2026-08-30',
+        statementBalance: { amountMinor: '10000', currency: 'USD' },
+      },
+      id(5294),
+    );
+
+    expect(outcome.kind).toBe(RECONCILIATION_CREATE_OUTCOMES.ACCOUNT_NOT_FOUND);
   });
 });
