@@ -54,6 +54,9 @@ case "$spec" in
   test/recurring/subscriptions-list.integration-spec.ts) ;;
   test/identity/jobs-schema.integration-spec.ts) ;;
   test/jobs/jobs-read.integration-spec.ts) ;;
+  test/identity/reconciliations-schema.integration-spec.ts) ;;
+  test/reconciliations/reconciliations-create.integration-spec.ts) ;;
+  test/reconciliations/reconciliations-get.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
