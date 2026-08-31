@@ -1224,6 +1224,63 @@ components:
             - string
             - 'null'
           format: date-time
+    CreateReconciliationRequest:
+      type: object
+      required:
+        - accountId
+        - statementDate
+        - statementBalance
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        statementDate:
+          $ref: '#/components/schemas/Date'
+        statementBalance:
+          $ref: '#/components/schemas/Money'
+        notes:
+          type:
+            - string
+            - 'null'
+          maxLength: 1000
+      additionalProperties: false
+    Reconciliation:
+      type: object
+      required:
+        - id
+        - accountId
+        - statementDate
+        - statementBalance
+        - systemBalance
+        - difference
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        statementDate:
+          $ref: '#/components/schemas/Date'
+        statementBalance:
+          $ref: '#/components/schemas/Money'
+        systemBalance:
+          $ref: '#/components/schemas/Money'
+        difference:
+          $ref: '#/components/schemas/Money'
+        status:
+          type: string
+          enum:
+            - open
+            - completed
+            - cancelled
+        completedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+      additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -4238,6 +4295,138 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Job not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /v1/reconciliations:
+    post:
+      operationId: createReconciliation
+      tags:
+        - Reconciliations
+      summary: Create reconciliation
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReconciliationRequest'
+      responses:
+        '201':
+          description: Reconciliation created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reconciliation'
+        '400':
+          description: The request header or body failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Validation failed or business invariant violated.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: >-
+            An internal failure the client cannot act on. The cause is recorded
+            server side and deliberately absent from this body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-idempotency-required: true
+  /v1/reconciliations/{reconciliationId}:
+    get:
+      operationId: getReconciliation
+      tags:
+        - Reconciliations
+      summary: Get reconciliation
+      parameters:
+        - name: reconciliationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Reconciliation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reconciliation'
+        '400':
+          description: The reconciliation identifier or workspace identifier is not a valid UUID.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: The bearer token is missing or unusable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Workspace access is forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Reconciliation not found.
           content:
             application/problem+json:
               schema:

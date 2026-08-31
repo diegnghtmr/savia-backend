@@ -201,6 +201,16 @@
       "operationId": "getJob",
       "method": "GET",
       "path": "/v1/jobs/{jobId}"
+    },
+    {
+      "operationId": "createReconciliation",
+      "method": "POST",
+      "path": "/v1/reconciliations"
+    },
+    {
+      "operationId": "getReconciliation",
+      "method": "GET",
+      "path": "/v1/reconciliations/{reconciliationId}"
     }
   ]
 }
