@@ -278,6 +278,53 @@ describe('completeReconciliation against a real database', () => {
     ).toBe('pending');
   });
 
+  it('serializes completion against a concurrent transaction edit in a second session', async () => {
+    const rec = id(6452);
+    await seedReconciliation(rec);
+    const blocker = await admin.connect();
+    try {
+      await blocker.query('begin');
+      await blocker.query(
+        "update public.transactions set status='pending' where id=$1",
+        [txAtomic],
+      );
+
+      const completion = complete(rec, [txAtomic]);
+      const deadline = Date.now() + 2_000;
+      let waiting = false;
+      while (!waiting && Date.now() < deadline) {
+        const activity = await admin.query<{ wait_event_type: string | null }>(
+          `select wait_event_type from pg_stat_activity where query like '%for update%' and wait_event_type = 'Lock'`,
+        );
+        waiting = activity.rows.length > 0;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+      await blocker.query('commit');
+
+      expect((await completion).kind).toBe('transactions-invalid');
+      expect(
+        (
+          await admin.query(
+            'select status from public.transactions where id=$1',
+            [txAtomic],
+          )
+        ).rows[0].status,
+      ).toBe('pending');
+      expect(
+        (
+          await admin.query(
+            "select count(*)::text as count from public.transactions where id=$1 and status='reconciled'",
+            [txAtomic],
+          )
+        ).rows[0].count,
+      ).toBe('0');
+    } finally {
+      await blocker.query('rollback').catch(() => undefined);
+      blocker.release();
+    }
+  });
+
   it('rejects completion after the account is closed under the completion lock', async () => {
     const rec = id(6461);
     await seedReconciliation(rec);
