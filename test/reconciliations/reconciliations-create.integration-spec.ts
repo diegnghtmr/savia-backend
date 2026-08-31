@@ -12,6 +12,7 @@ import {
 } from '../../src/reconciliations/reconciliation.port.js';
 import { ReconciliationService } from '../../src/reconciliations/reconciliation.service.js';
 import { PostgresReconciliationAdapter } from '../../src/reconciliations/postgres-reconciliation.adapter.js';
+import { PostgresAccountsAdapter } from '../../src/accounts/postgres-accounts.adapter.js';
 import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
@@ -614,12 +615,7 @@ describe('ReconciliationService createReconciliation database boundary and busin
 
     let sessionBCompleted = false;
     const sessionBPromise = service
-      .createReconciliation(
-        subjectOwner,
-        workspace1Id,
-        command,
-        id(5290),
-      )
+      .createReconciliation(subjectOwner, workspace1Id, command, id(5290))
       .then((res) => {
         sessionBCompleted = true;
         return res;
@@ -827,5 +823,77 @@ describe('ReconciliationService createReconciliation database boundary and busin
     );
 
     expect(outcome.kind).toBe(RECONCILIATION_CREATE_OUTCOMES.ACCOUNT_NOT_FOUND);
+  });
+
+  it('guarantees native balance PARITY between AccountsAdapter and ReconciliationAdapter over complex seeded ledger (RULING 69)', async () => {
+    const accountsAdapter = new PostgresAccountsAdapter();
+    const reconciliationAdapter = new PostgresReconciliationAdapter();
+
+    // 1. With asOf cutoff (2026-08-30T23:59:59.999999Z):
+    // Includes confirmed (10000) + reconciled (5000), excludes pending (3000) and after-cutoff (20000)
+    const asOf = '2026-08-30T23:59:59.999999Z';
+    const [accountsBalCutoff, recBalCutoff] = await transaction.runRead(
+      subjectOwner,
+      async (client) => {
+        const aBal = await accountsAdapter.readAccountBalance(
+          client,
+          workspace1Id,
+          ws1AccountActiveUsd,
+          asOf,
+        );
+        const rBal = await reconciliationAdapter.readAccountBalance(
+          client,
+          workspace1Id,
+          ws1AccountActiveUsd,
+          asOf,
+        );
+        return [aBal, rBal];
+      },
+    );
+
+    expect(accountsBalCutoff).toBeDefined();
+    expect(recBalCutoff).toBeDefined();
+    expect(accountsBalCutoff!.nativeBalance).toEqual({
+      amountMinor: '15000',
+      currency: 'USD',
+    });
+    expect(recBalCutoff!.nativeBalance).toEqual({
+      amountMinor: '15000',
+      currency: 'USD',
+    });
+    expect(accountsBalCutoff!.nativeBalance).toEqual(
+      recBalCutoff!.nativeBalance,
+    );
+
+    // 2. Without asOf cutoff (all confirmed + reconciled postings):
+    // Includes 10000 + 5000 + 20000 = 35000 USD
+    const [accountsBalFull, recBalFull] = await transaction.runRead(
+      subjectOwner,
+      async (client) => {
+        const aBal = await accountsAdapter.readAccountBalance(
+          client,
+          workspace1Id,
+          ws1AccountActiveUsd,
+        );
+        const rBal = await reconciliationAdapter.readAccountBalance(
+          client,
+          workspace1Id,
+          ws1AccountActiveUsd,
+        );
+        return [aBal, rBal];
+      },
+    );
+
+    expect(accountsBalFull).toBeDefined();
+    expect(recBalFull).toBeDefined();
+    expect(accountsBalFull!.nativeBalance).toEqual({
+      amountMinor: '35000',
+      currency: 'USD',
+    });
+    expect(recBalFull!.nativeBalance).toEqual({
+      amountMinor: '35000',
+      currency: 'USD',
+    });
+    expect(accountsBalFull!.nativeBalance).toEqual(recBalFull!.nativeBalance);
   });
 });

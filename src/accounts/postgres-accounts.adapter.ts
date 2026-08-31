@@ -1,4 +1,5 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import { buildNativeBalanceSql } from '../platform/native-balance-query.js';
 import type {
   Account,
   AccountBalance,
@@ -536,20 +537,11 @@ select a.currency as "accountCurrency",
     // The balance is reported in the account's currency, so postings in another currency
     // are neither summed into it nor silently dropped — their presence makes the balance
     // unreportable and the read fails loudly.
-    const balanceSql = `
-select
-  coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status in ('confirmed', 'reconciled')), 0)::text as "nativeBalance",
-  coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status = 'pending'), 0)::text as "pendingBalance",
-  coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status = 'reconciled'), 0)::text as "reconciledBalance",
-  count(*) filter (where posting.currency <> acct.currency)::text as "foreignCurrencyLegs",
-  to_char(coalesce($3::timestamptz, now()) at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "effectiveAsOf"
-  from public.ledger_postings posting
-  join public.accounts acct
-    on acct.id = posting.account_id
-   and acct.workspace_id = posting.workspace_id
- where posting.workspace_id = $1::uuid
-   and posting.account_id = $2::uuid
-   and posting.occurred_at <= coalesce($3::timestamptz, now())`;
+    const balanceSql = buildNativeBalanceSql([
+      `coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status = 'pending'), 0)::text as "pendingBalance"`,
+      `coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status = 'reconciled'), 0)::text as "reconciledBalance"`,
+      `to_char(coalesce($3::timestamptz, now()) at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "effectiveAsOf"`,
+    ]);
 
     const balanceResult = await client.query<{
       nativeBalance: string;
