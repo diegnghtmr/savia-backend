@@ -10,7 +10,10 @@ import { TransactionService } from '../../src/ledger/transaction.service.js';
 import { PostgresTransactionAdapter } from '../../src/ledger/postgres-transaction.adapter.js';
 import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
 import { computeRequestFingerprint } from '../../src/platform/idempotency.service.js';
-import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import {
+  PgTransaction,
+  type TransactionClient,
+} from '../../src/platform/pg-transaction.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 
@@ -45,8 +48,12 @@ describe('TransactionService updateTransaction database boundary', () => {
 
   const category1Id = id(8001);
   const category2Id = id(8002);
+  const categoryWs2Id = id(8003);
+  const absentCategoryId = id(8099);
   const payee1Id = id(8101);
   const payee2Id = id(8102);
+  const payeeWs2Id = id(8103);
+  const absentPayeeId = id(8199);
   const tag1Id = id(8201);
   const tag2Id = id(8202);
 
@@ -158,6 +165,38 @@ describe('TransactionService updateTransaction database boundary', () => {
         workspace1Id,
         subjectOwner,
         accountWorkspace2Id,
+        workspace2Id,
+        subjectWorkspace2Owner,
+      ],
+    );
+
+    // 5b. Categories and Payees (satisfying foreign key bindings)
+    await admin.query(
+      `insert into public.categories (id, workspace_id, name, kind, created_by)
+       values ($1, $2, 'Category 1', 'expense', $3),
+              ($4, $2, 'Category 2', 'expense', $3),
+              ($5, $6, 'Workspace 2 Category', 'expense', $7)`,
+      [
+        category1Id,
+        workspace1Id,
+        subjectOwner,
+        category2Id,
+        categoryWs2Id,
+        workspace2Id,
+        subjectWorkspace2Owner,
+      ],
+    );
+    await admin.query(
+      `insert into public.payees (id, workspace_id, name, created_by)
+       values ($1, $2, 'Payee 1', $3),
+              ($4, $2, 'Payee 2', $3),
+              ($5, $6, 'Workspace 2 Payee', $7)`,
+      [
+        payee1Id,
+        workspace1Id,
+        subjectOwner,
+        payee2Id,
+        payeeWs2Id,
         workspace2Id,
         subjectWorkspace2Owner,
       ],
@@ -730,5 +769,219 @@ describe('TransactionService updateTransaction database boundary', () => {
     expect(outcome.kind).toBe(TRANSACTION_UPDATE_OUTCOMES.FORBIDDEN);
     expect(outcome).not.toHaveProperty('body');
     expect(outcome).not.toHaveProperty('transaction');
+  });
+
+  it('update with cross-workspace category_id returns CATEGORY_NOT_FOUND outcome (422) and leaves transaction UNCHANGED', async () => {
+    const key = '00000000-0000-4000-8000-000000000019';
+    const initialTxn = await admin.query<{
+      category_id: string | null;
+      version: number;
+    }>('select category_id, version from public.transactions where id = $1', [
+      txnOwnerTarget,
+    ]);
+    const initialCat = initialTxn.rows[0].category_id;
+    const initialVer = initialTxn.rows[0].version;
+
+    const command: UpdateTransactionCommand = {
+      categoryId: categoryWs2Id, // Real row in Workspace 2
+    };
+
+    const outcome = await service.update(
+      subjectOwner,
+      workspace1Id,
+      txnOwnerTarget,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSACTION_UPDATE_OUTCOMES.CATEGORY_NOT_FOUND);
+
+    const stored = await admin.query<{
+      category_id: string | null;
+      version: number;
+    }>('select category_id, version from public.transactions where id = $1', [
+      txnOwnerTarget,
+    ]);
+    expect(stored.rows[0].category_id).toBe(initialCat);
+    expect(stored.rows[0].version).toBe(initialVer);
+  });
+
+  it('update with nonexistent category_id returns identical CATEGORY_NOT_FOUND outcome (422) and leaves transaction UNCHANGED', async () => {
+    const key = '00000000-0000-4000-8000-000000000020';
+    const initialTxn = await admin.query<{
+      category_id: string | null;
+      version: number;
+    }>('select category_id, version from public.transactions where id = $1', [
+      txnOwnerTarget,
+    ]);
+    const initialCat = initialTxn.rows[0].category_id;
+    const initialVer = initialTxn.rows[0].version;
+
+    const command: UpdateTransactionCommand = {
+      categoryId: absentCategoryId,
+    };
+
+    const outcome = await service.update(
+      subjectOwner,
+      workspace1Id,
+      txnOwnerTarget,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSACTION_UPDATE_OUTCOMES.CATEGORY_NOT_FOUND);
+
+    const stored = await admin.query<{
+      category_id: string | null;
+      version: number;
+    }>('select category_id, version from public.transactions where id = $1', [
+      txnOwnerTarget,
+    ]);
+    expect(stored.rows[0].category_id).toBe(initialCat);
+    expect(stored.rows[0].version).toBe(initialVer);
+  });
+
+  it('update with cross-workspace payee_id returns PAYEE_NOT_FOUND outcome (422) and leaves transaction UNCHANGED', async () => {
+    const key = '00000000-0000-4000-8000-000000000021';
+    const initialTxn = await admin.query<{
+      payee_id: string | null;
+      version: number;
+    }>('select payee_id, version from public.transactions where id = $1', [
+      txnOwnerTarget,
+    ]);
+    const initialPayee = initialTxn.rows[0].payee_id;
+    const initialVer = initialTxn.rows[0].version;
+
+    const command: UpdateTransactionCommand = {
+      payeeId: payeeWs2Id, // Real row in Workspace 2
+    };
+
+    const outcome = await service.update(
+      subjectOwner,
+      workspace1Id,
+      txnOwnerTarget,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSACTION_UPDATE_OUTCOMES.PAYEE_NOT_FOUND);
+
+    const stored = await admin.query<{
+      payee_id: string | null;
+      version: number;
+    }>('select payee_id, version from public.transactions where id = $1', [
+      txnOwnerTarget,
+    ]);
+    expect(stored.rows[0].payee_id).toBe(initialPayee);
+    expect(stored.rows[0].version).toBe(initialVer);
+  });
+
+  it('update with nonexistent payee_id returns identical PAYEE_NOT_FOUND outcome (422) and leaves transaction UNCHANGED', async () => {
+    const key = '00000000-0000-4000-8000-000000000022';
+    const initialTxn = await admin.query<{
+      payee_id: string | null;
+      version: number;
+    }>('select payee_id, version from public.transactions where id = $1', [
+      txnOwnerTarget,
+    ]);
+    const initialPayee = initialTxn.rows[0].payee_id;
+    const initialVer = initialTxn.rows[0].version;
+
+    const command: UpdateTransactionCommand = {
+      payeeId: absentPayeeId,
+    };
+
+    const outcome = await service.update(
+      subjectOwner,
+      workspace1Id,
+      txnOwnerTarget,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSACTION_UPDATE_OUTCOMES.PAYEE_NOT_FOUND);
+
+    const stored = await admin.query<{
+      payee_id: string | null;
+      version: number;
+    }>('select payee_id, version from public.transactions where id = $1', [
+      txnOwnerTarget,
+    ]);
+    expect(stored.rows[0].payee_id).toBe(initialPayee);
+    expect(stored.rows[0].version).toBe(initialVer);
+  });
+
+  it('positive control: update with legitimate same-workspace category_id and payee_id succeeds (200 OK)', async () => {
+    const key = '00000000-0000-4000-8000-000000000023';
+    const command: UpdateTransactionCommand = {
+      categoryId: category2Id,
+      payeeId: payee2Id,
+    };
+
+    const outcome = await service.update(
+      subjectOwner,
+      workspace1Id,
+      txnOwnerTarget,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSACTION_UPDATE_OUTCOMES.OK);
+    const updated = (outcome as TransactionUpdateOk).transaction;
+    expect(updated.categoryId).toBe(category2Id);
+    expect(updated.payeeId).toBe(payee2Id);
+
+    const stored = await admin.query<{
+      category_id: string | null;
+      payee_id: string | null;
+    }>('select category_id, payee_id from public.transactions where id = $1', [
+      txnOwnerTarget,
+    ]);
+    expect(stored.rows[0].category_id).toBe(category2Id);
+    expect(stored.rows[0].payee_id).toBe(payee2Id);
+  });
+
+  it('404 vs 422 distinction: update on absent transaction returns NOT_FOUND (404), while invalid catalog reference returns CATEGORY_NOT_FOUND (422)', async () => {
+    const key1 = '00000000-0000-4000-8000-000000000024';
+    const key2 = '00000000-0000-4000-8000-000000000025';
+
+    // 1. Absent transaction -> 404
+    const absentOutcome = await service.update(
+      subjectOwner,
+      workspace1Id,
+      absentTxnId,
+      { categoryId: categoryWs2Id },
+      key1,
+    );
+    expect(absentOutcome.kind).toBe(TRANSACTION_UPDATE_OUTCOMES.NOT_FOUND);
+
+    // 2. Existing transaction + absent category -> 422
+    const badCatOutcome = await service.update(
+      subjectOwner,
+      workspace1Id,
+      txnOwnerTarget,
+      { categoryId: categoryWs2Id },
+      key2,
+    );
+    expect(badCatOutcome.kind).toBe(
+      TRANSACTION_UPDATE_OUTCOMES.CATEGORY_NOT_FOUND,
+    );
+  });
+
+  it('unrelated 23503 control: adapter.updateTransaction with unmapped 23503 re-throws raw error untouched', async () => {
+    const adapter = new PostgresTransactionAdapter();
+    // Simulate an unmapped FK violation by mocking client query
+    const client: TransactionClient = {
+      query: async () => {
+        throw {
+          code: '23503',
+          constraint: 'transactions_workspace_id_fkey',
+        };
+      },
+    };
+
+    await expect(
+      adapter.updateTransaction(client, workspace1Id, txnOwnerTarget, {
+        description: 'Test',
+      }),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'transactions_workspace_id_fkey',
+    });
   });
 });

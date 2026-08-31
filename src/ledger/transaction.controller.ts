@@ -203,6 +203,26 @@ export class TransactionController {
       return;
     }
 
+    if (outcome.kind === TRANSACTION_CREATE_OUTCOMES.CATEGORY_NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Category not found',
+        detail: 'The specified category was not found in this workspace.',
+        status: 422,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_CREATE_OUTCOMES.PAYEE_NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Payee not found',
+        detail: 'The specified payee was not found in this workspace.',
+        status: 422,
+      });
+      return;
+    }
+
     if (outcome.kind === TRANSACTION_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT) {
       sendProblem(reply, {
         type: PROBLEM_TYPES.CONFLICT,
@@ -417,6 +437,26 @@ export class TransactionController {
         title: 'Transaction is reconciled',
         detail: 'Reconciled transactions cannot be modified.',
         status: 409,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_UPDATE_OUTCOMES.CATEGORY_NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Category not found',
+        detail: 'The specified category was not found in this workspace.',
+        status: 422,
+      });
+      return;
+    }
+
+    if (outcome.kind === TRANSACTION_UPDATE_OUTCOMES.PAYEE_NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Payee not found',
+        detail: 'The specified payee was not found in this workspace.',
+        status: 422,
       });
       return;
     }

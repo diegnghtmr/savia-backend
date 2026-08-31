@@ -105,6 +105,8 @@ export const TRANSACTION_CREATE_OUTCOMES = {
   FORBIDDEN: 'forbidden',
   ACCOUNT_UNRESOLVED: 'account_unresolved',
   ACCOUNT_CLOSED: 'account_closed',
+  CATEGORY_NOT_FOUND: 'category_not_found',
+  PAYEE_NOT_FOUND: 'payee_not_found',
 } as const;
 export type TransactionCreateOutcomeKind =
   (typeof TRANSACTION_CREATE_OUTCOMES)[keyof typeof TRANSACTION_CREATE_OUTCOMES];
@@ -137,13 +139,23 @@ export interface TransactionCreateAccountClosed {
   readonly kind: typeof TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED;
 }
 
+export interface TransactionCreateCategoryNotFound {
+  readonly kind: typeof TRANSACTION_CREATE_OUTCOMES.CATEGORY_NOT_FOUND;
+}
+
+export interface TransactionCreatePayeeNotFound {
+  readonly kind: typeof TRANSACTION_CREATE_OUTCOMES.PAYEE_NOT_FOUND;
+}
+
 export type TransactionCreateOutcome =
   | TransactionCreateCreated
   | TransactionCreateReplayed
   | TransactionCreateIdempotencyConflict
   | TransactionCreateForbidden
   | TransactionCreateAccountUnresolved
-  | TransactionCreateAccountClosed;
+  | TransactionCreateAccountClosed
+  | TransactionCreateCategoryNotFound
+  | TransactionCreatePayeeNotFound;
 
 export const TRANSACTION_READ_OUTCOMES = {
   OK: 'ok',
@@ -235,6 +247,8 @@ export const TRANSACTION_UPDATE_OUTCOMES = {
   VERSION_CONFLICT: 'version_conflict',
   VOIDED: 'voided',
   RECONCILED: 'reconciled',
+  CATEGORY_NOT_FOUND: 'category_not_found',
+  PAYEE_NOT_FOUND: 'payee_not_found',
 } as const;
 export type TransactionUpdateOutcomeKind =
   (typeof TRANSACTION_UPDATE_OUTCOMES)[keyof typeof TRANSACTION_UPDATE_OUTCOMES];
@@ -275,12 +289,20 @@ export interface TransactionUpdateReconciled {
   readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.RECONCILED;
 }
 
+export interface TransactionUpdateCategoryNotFound {
+  readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.CATEGORY_NOT_FOUND;
+}
+
+export interface TransactionUpdatePayeeNotFound {
+  readonly kind: typeof TRANSACTION_UPDATE_OUTCOMES.PAYEE_NOT_FOUND;
+}
+
 // updateTransaction declares 200, 401, 403, 404, 409, 412, 422 in the authority:
 // - 403 when the caller has no active role or is a viewer
 // - 404 when the transaction does not exist or belongs to another workspace (scoped SQL predicate)
 // - 409 on idempotency conflict, when transaction is voided, or when transaction is reconciled (Épica 5 stub)
 // - 412 when If-Match version precondition fails
-// - 422 on input validation errors or non-empty splits
+// - 422 on input validation errors, non-empty splits, or invalid category/payee references
 export type TransactionUpdateOutcome =
   | TransactionUpdateOk
   | TransactionUpdateReplayed
@@ -289,7 +311,9 @@ export type TransactionUpdateOutcome =
   | TransactionUpdateNotFound
   | TransactionUpdateVersionConflict
   | TransactionUpdateVoided
-  | TransactionUpdateReconciled;
+  | TransactionUpdateReconciled
+  | TransactionUpdateCategoryNotFound
+  | TransactionUpdatePayeeNotFound;
 
 export interface VoidTransactionCommand {
   readonly reason: string;

@@ -238,6 +238,72 @@ describe('TransactionController.createTransaction', () => {
     );
   });
 
+  it('answers 422 with Category not found problem when outcome is CATEGORY_NOT_FOUND', async () => {
+    const { controller, reply } = createMocks({
+      create: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_CREATE_OUTCOMES.CATEGORY_NOT_FOUND,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: {
+        ...validBody,
+        categoryId: '00000000-0000-0000-0000-000000000c01',
+      },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.createTransaction(request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.type).toHaveBeenCalledWith('application/problem+json');
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Category not found',
+        detail: 'The specified category was not found in this workspace.',
+        status: 422,
+        code: 'unprocessable',
+      }),
+    );
+  });
+
+  it('answers 422 with Payee not found problem when outcome is PAYEE_NOT_FOUND', async () => {
+    const { controller, reply } = createMocks({
+      create: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_CREATE_OUTCOMES.PAYEE_NOT_FOUND,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: {
+        ...validBody,
+        payeeId: '00000000-0000-0000-0000-000000000002',
+      },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.createTransaction(request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.type).toHaveBeenCalledWith('application/problem+json');
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Payee not found',
+        detail: 'The specified payee was not found in this workspace.',
+        status: 422,
+        code: 'unprocessable',
+      }),
+    );
+  });
+
   it('answers 409 CONFLICT when idempotency conflict occurs', async () => {
     const { controller, reply } = createMocks({
       create: vi.fn().mockResolvedValue({
@@ -1059,6 +1125,72 @@ describe('TransactionController.updateTransaction', () => {
     expect(reply.status).toHaveBeenCalledWith(200);
     expect(reply.header).toHaveBeenCalledWith('etag', '"2"');
     expect(reply.send).toHaveBeenCalledWith(mockTransaction);
+  });
+
+  it('answers 422 with Category not found problem when update outcome is CATEGORY_NOT_FOUND', async () => {
+    const { controller, reply } = createMocks({
+      update: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_UPDATE_OUTCOMES.CATEGORY_NOT_FOUND,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      params: { transactionId: mockTransaction.id },
+      body: {
+        categoryId: '00000000-0000-0000-0000-000000000c02',
+      },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(mockTransaction.id, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.type).toHaveBeenCalledWith('application/problem+json');
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Category not found',
+        detail: 'The specified category was not found in this workspace.',
+        status: 422,
+        code: 'unprocessable',
+      }),
+    );
+  });
+
+  it('answers 422 with Payee not found problem when update outcome is PAYEE_NOT_FOUND', async () => {
+    const { controller, reply } = createMocks({
+      update: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_UPDATE_OUTCOMES.PAYEE_NOT_FOUND,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      params: { transactionId: mockTransaction.id },
+      body: {
+        payeeId: '00000000-0000-0000-0000-000000000002',
+      },
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.updateTransaction(mockTransaction.id, request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.type).toHaveBeenCalledWith('application/problem+json');
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Payee not found',
+        detail: 'The specified payee was not found in this workspace.',
+        status: 422,
+        code: 'unprocessable',
+      }),
+    );
   });
 });
 

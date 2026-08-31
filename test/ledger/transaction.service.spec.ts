@@ -14,6 +14,8 @@ import {
 } from '../../src/ledger/ledger.port.js';
 import {
   TransactionService,
+  TransactionCategoryNotFoundError,
+  TransactionPayeeNotFoundError,
   type LedgerAccountRecord,
   type LedgerStore,
   type LedgerTransaction,
@@ -455,6 +457,68 @@ describe('TransactionService.create', () => {
       txn,
       WORKSPACE_ID,
     );
+  });
+
+  it('returns CATEGORY_NOT_FOUND outcome when store throws TransactionCategoryNotFoundError on create', async () => {
+    const fakeStore: LedgerStore = {
+      readActiveRole: vi.fn().mockResolvedValue('owner'),
+      lockAndReadAccount: vi.fn().mockResolvedValue({ status: 'active' }),
+      createTransaction: vi
+        .fn()
+        .mockRejectedValue(new TransactionCategoryNotFoundError()),
+      readTransaction: vi.fn(),
+      listTransactions: vi.fn(),
+      updateTransaction: vi.fn(),
+      voidTransaction: vi.fn(),
+    };
+    const fakeIdempotency = fakeIdempotencyStore();
+    const service = new TransactionService(
+      new FakeTransaction(),
+      fakeStore,
+      fakeIdempotency,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      sampleCommand({ categoryId: '00000000-0000-0000-0000-000000000c01' }),
+      '00000000-0000-4000-8000-000000000001',
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_CREATE_OUTCOMES.CATEGORY_NOT_FOUND,
+    });
+  });
+
+  it('returns PAYEE_NOT_FOUND outcome when store throws TransactionPayeeNotFoundError on create', async () => {
+    const fakeStore: LedgerStore = {
+      readActiveRole: vi.fn().mockResolvedValue('owner'),
+      lockAndReadAccount: vi.fn().mockResolvedValue({ status: 'active' }),
+      createTransaction: vi
+        .fn()
+        .mockRejectedValue(new TransactionPayeeNotFoundError()),
+      readTransaction: vi.fn(),
+      listTransactions: vi.fn(),
+      updateTransaction: vi.fn(),
+      voidTransaction: vi.fn(),
+    };
+    const fakeIdempotency = fakeIdempotencyStore();
+    const service = new TransactionService(
+      new FakeTransaction(),
+      fakeStore,
+      fakeIdempotency,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      sampleCommand({ payeeId: '00000000-0000-0000-0000-000000000p01' }),
+      '00000000-0000-4000-8000-000000000001',
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_CREATE_OUTCOMES.PAYEE_NOT_FOUND,
+    });
   });
 });
 
@@ -1092,6 +1156,60 @@ describe('TransactionService.update', () => {
 
     expect(outcome).toEqual({
       kind: TRANSACTION_UPDATE_OUTCOMES.VOIDED,
+    });
+  });
+
+  it('returns CATEGORY_NOT_FOUND outcome when store.updateTransaction throws TransactionCategoryNotFoundError on update', async () => {
+    const existingTxn = sampleTransaction({ version: 1 });
+    const store = fakeStore({
+      role: 'owner',
+      transaction: existingTxn,
+    });
+    store.updateTransaction.mockRejectedValue(
+      new TransactionCategoryNotFoundError(),
+    );
+
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      { categoryId: '00000000-0000-0000-0000-000000000c02' },
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.CATEGORY_NOT_FOUND,
+    });
+  });
+
+  it('returns PAYEE_NOT_FOUND outcome when store.updateTransaction throws TransactionPayeeNotFoundError on update', async () => {
+    const existingTxn = sampleTransaction({ version: 1 });
+    const store = fakeStore({
+      role: 'owner',
+      transaction: existingTxn,
+    });
+    store.updateTransaction.mockRejectedValue(
+      new TransactionPayeeNotFoundError(),
+    );
+
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.update(
+      SUBJECT,
+      WORKSPACE_ID,
+      transactionId,
+      { payeeId: '00000000-0000-0000-0000-000000000p02' },
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_UPDATE_OUTCOMES.PAYEE_NOT_FOUND,
     });
   });
 });

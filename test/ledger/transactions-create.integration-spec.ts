@@ -48,6 +48,13 @@ describe('TransactionService createTransaction database boundary', () => {
   const accountForeignWsId = id(6003);
   const absentAccountId = id(6999);
 
+  const catWs1CategoryId = id(8801);
+  const catWs2CategoryId = id(8802);
+  const catWs1PayeeId = id(8901);
+  const catWs2PayeeId = id(8902);
+  const absentCategoryId = id(8899);
+  const absentPayeeId = id(8999);
+
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
     pool = new PostgresPool(PostgresConfig.fromUrl(url));
@@ -135,6 +142,26 @@ describe('TransactionService createTransaction database boundary', () => {
         accountForeignWsId,
         workspace2Id,
       ],
+    );
+
+    // 5. Categories and Payees
+    await admin.query(
+      `insert into public.categories (id, workspace_id, name, kind, created_by)
+       values ($1, $2, 'WS1 Category', 'expense', $3),
+              ($4, $5, 'WS2 Category', 'expense', $3)`,
+      [
+        catWs1CategoryId,
+        workspace1Id,
+        subjectOwner,
+        catWs2CategoryId,
+        workspace2Id,
+      ],
+    );
+    await admin.query(
+      `insert into public.payees (id, workspace_id, name, created_by)
+       values ($1, $2, 'WS1 Payee', $3),
+              ($4, $5, 'WS2 Payee', $3)`,
+      [catWs1PayeeId, workspace1Id, subjectOwner, catWs2PayeeId, workspace2Id],
     );
   });
 
@@ -521,5 +548,162 @@ describe('TransactionService createTransaction database boundary', () => {
       `select count(*) from public.transactions where description = 'Viewer Attempt'`,
     );
     expect(Number(rows.rows[0].count)).toBe(0);
+  });
+
+  it('create with nonexistent category_id returns CATEGORY_NOT_FOUND outcome (422) and persists NO transaction row', async () => {
+    const key = '00000000-0000-4000-8000-000000000009';
+    const command: CreateTransactionCommand = {
+      type: 'expense',
+      accountId: accountActiveId,
+      amount: { amountMinor: '3000', currency: 'USD' },
+      occurredAt: '2026-08-20T16:00:00.000Z',
+      status: 'confirmed',
+      categoryId: absentCategoryId,
+      description: 'Absent Category Create',
+    };
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSACTION_CREATE_OUTCOMES.CATEGORY_NOT_FOUND);
+
+    const rows = await admin.query(
+      `select count(*) from public.transactions where description = 'Absent Category Create'`,
+    );
+    expect(Number(rows.rows[0].count)).toBe(0);
+  });
+
+  it('create with cross-workspace category_id returns identical CATEGORY_NOT_FOUND outcome (422) and persists NO transaction row', async () => {
+    const key = '00000000-0000-4000-8000-000000000010';
+    const command: CreateTransactionCommand = {
+      type: 'expense',
+      accountId: accountActiveId,
+      amount: { amountMinor: '3000', currency: 'USD' },
+      occurredAt: '2026-08-20T16:00:00.000Z',
+      status: 'confirmed',
+      categoryId: catWs2CategoryId, // Real row in Workspace 2
+      description: 'Cross Workspace Category Create',
+    };
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSACTION_CREATE_OUTCOMES.CATEGORY_NOT_FOUND);
+
+    const rows = await admin.query(
+      `select count(*) from public.transactions where description = 'Cross Workspace Category Create'`,
+    );
+    expect(Number(rows.rows[0].count)).toBe(0);
+  });
+
+  it('create with nonexistent payee_id returns PAYEE_NOT_FOUND outcome (422) and persists NO transaction row', async () => {
+    const key = '00000000-0000-4000-8000-000000000011';
+    const command: CreateTransactionCommand = {
+      type: 'expense',
+      accountId: accountActiveId,
+      amount: { amountMinor: '4000', currency: 'USD' },
+      occurredAt: '2026-08-20T17:00:00.000Z',
+      status: 'confirmed',
+      payeeId: absentPayeeId,
+      description: 'Absent Payee Create',
+    };
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSACTION_CREATE_OUTCOMES.PAYEE_NOT_FOUND);
+
+    const rows = await admin.query(
+      `select count(*) from public.transactions where description = 'Absent Payee Create'`,
+    );
+    expect(Number(rows.rows[0].count)).toBe(0);
+  });
+
+  it('create with cross-workspace payee_id returns identical PAYEE_NOT_FOUND outcome (422) and persists NO transaction row', async () => {
+    const key = '00000000-0000-4000-8000-000000000012';
+    const command: CreateTransactionCommand = {
+      type: 'expense',
+      accountId: accountActiveId,
+      amount: { amountMinor: '4000', currency: 'USD' },
+      occurredAt: '2026-08-20T17:00:00.000Z',
+      status: 'confirmed',
+      payeeId: catWs2PayeeId, // Real row in Workspace 2
+      description: 'Cross Workspace Payee Create',
+    };
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSACTION_CREATE_OUTCOMES.PAYEE_NOT_FOUND);
+
+    const rows = await admin.query(
+      `select count(*) from public.transactions where description = 'Cross Workspace Payee Create'`,
+    );
+    expect(Number(rows.rows[0].count)).toBe(0);
+  });
+
+  it('positive control: create with legitimate same-workspace category_id and payee_id succeeds (201 CREATED) and persists both', async () => {
+    const key = '00000000-0000-4000-8000-000000000013';
+    const command: CreateTransactionCommand = {
+      type: 'expense',
+      accountId: accountActiveId,
+      amount: { amountMinor: '5500', currency: 'USD' },
+      occurredAt: '2026-08-20T18:00:00.000Z',
+      status: 'confirmed',
+      categoryId: catWs1CategoryId,
+      payeeId: catWs1PayeeId,
+      description: 'Legitimate Catalog References',
+    };
+
+    const outcome = await service.create(
+      subjectOwner,
+      workspace1Id,
+      command,
+      key,
+    );
+    expect(outcome.kind).toBe(TRANSACTION_CREATE_OUTCOMES.CREATED);
+    const created = (outcome as TransactionCreateCreated).transaction;
+    expect(created.categoryId).toBe(catWs1CategoryId);
+    expect(created.payeeId).toBe(catWs1PayeeId);
+
+    const stored = await admin.query<{
+      category_id: string | null;
+      payee_id: string | null;
+    }>('select category_id, payee_id from public.transactions where id = $1', [
+      created.id,
+    ]);
+    expect(stored.rows[0].category_id).toBe(catWs1CategoryId);
+    expect(stored.rows[0].payee_id).toBe(catWs1PayeeId);
+  });
+
+  it('unrelated 23503 control: adapter.createTransaction directly violating an unmapped foreign key (e.g. account_id) re-throws raw 23503 untouched', async () => {
+    const adapter = new PostgresTransactionAdapter();
+    const command: CreateTransactionCommand = {
+      type: 'expense',
+      accountId: absentAccountId,
+      amount: { amountMinor: '1000', currency: 'USD' },
+      occurredAt: '2026-08-20T19:00:00.000Z',
+      status: 'confirmed',
+    };
+
+    await expect(
+      transaction.run(subjectOwner, (client) =>
+        adapter.createTransaction(client, workspace1Id, subjectOwner, command),
+      ),
+    ).rejects.toMatchObject({
+      code: '23503',
+    });
   });
 });

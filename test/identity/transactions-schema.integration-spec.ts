@@ -1,5 +1,6 @@
 // Migrations under test: 202608240003_transaction_tables.sql,
-// 202608240004_transaction_account_workspace_binding.sql
+// 202608240004_transaction_account_workspace_binding.sql,
+// 202608290005_transaction_catalog_bindings.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -78,14 +79,16 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
       currency?: string;
       occurredAt?: string;
       description?: string | null;
+      categoryId?: string | null;
+      payeeId?: string | null;
       voidedAt?: string | null;
     } = {},
   ): Promise<void> {
     await admin.query(
       `insert into public.transactions
          (id, workspace_id, account_id, type, status, amount_minor, currency,
-          occurred_at, description, created_by, voided_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          occurred_at, description, category_id, payee_id, created_by, voided_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         id,
         workspaceId,
@@ -96,6 +99,8 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
         overrides.currency ?? 'USD',
         overrides.occurredAt ?? '2026-08-24T12:00:00Z',
         overrides.description ?? 'Seeded transaction',
+        overrides.categoryId ?? null,
+        overrides.payeeId ?? null,
         createdBy,
         overrides.voidedAt ?? null,
       ],
@@ -1061,6 +1066,573 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
         [bindAccVictimId],
       );
       expect(accGoneRes.rows).toHaveLength(0);
+    });
+  });
+
+  describe('Cross-workspace category and payee catalog bindings (202608290005_transaction_catalog_bindings.sql)', () => {
+    const catWs1Id = '00000000-0000-0000-0000-000000000856';
+    const catWs2Id = '00000000-0000-0000-0000-000000000857';
+    const catAcc1Id = '00000000-0000-0000-0000-000000000876';
+    const catAcc2Id = '00000000-0000-0000-0000-000000000877';
+    const catWs1CategoryId = '00000000-0000-0000-0000-000000000831';
+    const catWs2CategoryId = '00000000-0000-0000-0000-000000000832';
+    const catWs1PayeeId = '00000000-0000-0000-0000-000000000841';
+    const catWs2PayeeId = '00000000-0000-0000-0000-000000000842';
+    const absentCategoryId = '00000000-0000-0000-0000-000000000839';
+    const absentPayeeId = '00000000-0000-0000-0000-000000000849';
+
+    const memCatWs1OwnerAId = '00000000-0000-0000-0000-000000000867';
+    const memCatWs1EditorDId = '00000000-0000-0000-0000-000000000868';
+    const memCatWs2OwnerBId = '00000000-0000-0000-0000-000000000869';
+
+    beforeAll(async () => {
+      await admin.query(
+        `insert into public.workspaces (id, name, kind, base_currency, created_by)
+         values ($1, 'Catalog Binding WS 1', 'shared', 'USD', $2),
+                ($3, 'Catalog Binding WS 2', 'shared', 'USD', $4)`,
+        [catWs1Id, ownerA, catWs2Id, ownerB],
+      );
+      await admin.query(
+        `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'owner', 'active'),
+                ($4, $5, $6, 'editor', 'active'),
+                ($7, $8, $9, 'owner', 'active')`,
+        [
+          memCatWs1OwnerAId,
+          catWs1Id,
+          ownerA,
+          memCatWs1EditorDId,
+          catWs1Id,
+          editorD,
+          memCatWs2OwnerBId,
+          catWs2Id,
+          ownerB,
+        ],
+      );
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, created_by)
+         values ($1, $2, 'Catalog Acc 1', 'cash', 'USD', $3),
+                ($4, $5, 'Catalog Acc 2', 'cash', 'USD', $6)`,
+        [catAcc1Id, catWs1Id, ownerA, catAcc2Id, catWs2Id, ownerB],
+      );
+      await admin.query(
+        `insert into public.categories (id, workspace_id, name, kind, created_by)
+         values ($1, $2, 'Groceries WS1', 'expense', $3),
+                ($4, $5, 'Groceries WS2', 'expense', $6)`,
+        [
+          catWs1CategoryId,
+          catWs1Id,
+          ownerA,
+          catWs2CategoryId,
+          catWs2Id,
+          ownerB,
+        ],
+      );
+      await admin.query(
+        `insert into public.payees (id, workspace_id, name, created_by)
+         values ($1, $2, 'Supermarket WS1', $3),
+                ($4, $5, 'Supermarket WS2', $6)`,
+        [catWs1PayeeId, catWs1Id, ownerA, catWs2PayeeId, catWs2Id, ownerB],
+      );
+    });
+
+    afterAll(async () => {
+      await admin.query(
+        'delete from public.transactions where workspace_id = any($1::uuid[])',
+        [[catWs1Id, catWs2Id]],
+      );
+      await admin.query(
+        'delete from public.categories where workspace_id = any($1::uuid[])',
+        [[catWs1Id, catWs2Id]],
+      );
+      await admin.query(
+        'delete from public.payees where workspace_id = any($1::uuid[])',
+        [[catWs1Id, catWs2Id]],
+      );
+      await admin.query(
+        'delete from public.workspaces where id = any($1::uuid[])',
+        [[catWs1Id, catWs2Id]],
+      );
+    });
+
+    it('25. payees_workspace_id_id_key exists as a composite unique constraint on public.payees (workspace_id, id)', async () => {
+      const uqRes = await admin.query<{ def: string }>(
+        `select pg_get_constraintdef(oid) as def
+           from pg_constraint
+          where conrelid = 'public.payees'::regclass
+            and conname = 'payees_workspace_id_id_key'
+            and contype = 'u'`,
+      );
+      expect(uqRes.rows).toHaveLength(1);
+      expect(uqRes.rows[0].def).toMatch(/unique \(workspace_id, id\)/i);
+    });
+
+    it('26. Structural pins: transactions_category_workspace_fkey and transactions_payee_workspace_fkey exist as composite foreign keys with ON DELETE RESTRICT', async () => {
+      const catFkRes = await admin.query<{ def: string; confdeltype: string }>(
+        `select pg_get_constraintdef(oid) as def, confdeltype
+           from pg_constraint
+          where conrelid = 'public.transactions'::regclass
+            and conname = 'transactions_category_workspace_fkey'
+            and contype = 'f'`,
+      );
+      expect(catFkRes.rows).toHaveLength(1);
+      expect(catFkRes.rows[0].def).toMatch(
+        /foreign key \(workspace_id, category_id\) references categories\(workspace_id, id\) on delete restrict/i,
+      );
+      expect(catFkRes.rows[0].confdeltype).toBe('r');
+
+      const payeeFkRes = await admin.query<{
+        def: string;
+        confdeltype: string;
+      }>(
+        `select pg_get_constraintdef(oid) as def, confdeltype
+           from pg_constraint
+          where conrelid = 'public.transactions'::regclass
+            and conname = 'transactions_payee_workspace_fkey'
+            and contype = 'f'`,
+      );
+      expect(payeeFkRes.rows).toHaveLength(1);
+      expect(payeeFkRes.rows[0].def).toMatch(
+        /foreign key \(workspace_id, payee_id\) references payees\(workspace_id, id\) on delete restrict/i,
+      );
+      expect(payeeFkRes.rows[0].confdeltype).toBe('r');
+    });
+
+    it('26b. Structural pins: transactions_workspace_category_idx and transactions_workspace_payee_idx exist as partial indexes on (workspace_id, category_id) and (workspace_id, payee_id)', async () => {
+      const catRes = await admin.query<{
+        colnames: string[];
+        predicate: string;
+      }>(
+        `select array_agg(a.attname::text order by k.ord) as colnames,
+                pg_get_expr(i.indpred, i.indrelid) as predicate
+           from pg_index i
+           join pg_class idx on idx.oid = i.indexrelid
+           join lateral unnest(i.indkey::smallint[]) with ordinality as k(attnum, ord) on true
+           join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+          where idx.relname = 'transactions_workspace_category_idx'
+            and i.indrelid = 'public.transactions'::regclass
+            and i.indisunique = false
+          group by i.indpred, i.indrelid`,
+      );
+      expect(catRes.rows).toHaveLength(1);
+      expect(catRes.rows[0].colnames).toEqual(['workspace_id', 'category_id']);
+      expect(catRes.rows[0].predicate).toMatch(/category_id IS NOT NULL/i);
+
+      const payeeRes = await admin.query<{
+        colnames: string[];
+        predicate: string;
+      }>(
+        `select array_agg(a.attname::text order by k.ord) as colnames,
+                pg_get_expr(i.indpred, i.indrelid) as predicate
+           from pg_index i
+           join pg_class idx on idx.oid = i.indexrelid
+           join lateral unnest(i.indkey::smallint[]) with ordinality as k(attnum, ord) on true
+           join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+          where idx.relname = 'transactions_workspace_payee_idx'
+            and i.indrelid = 'public.transactions'::regclass
+            and i.indisunique = false
+          group by i.indpred, i.indrelid`,
+      );
+      expect(payeeRes.rows).toHaveLength(1);
+      expect(payeeRes.rows[0].colnames).toEqual(['workspace_id', 'payee_id']);
+      expect(payeeRes.rows[0].predicate).toMatch(/payee_id IS NOT NULL/i);
+    });
+
+    it('27. Inserting a transaction with a category_id from ANOTHER workspace is refused with 23503 naming transactions_category_workspace_fkey — tested under savia_application and superuser; NO row created', async () => {
+      const crossCatTxId = subject(896);
+      const appErr = await capturePgError(() =>
+        asSubject(ownerA, (client) =>
+          client.query(
+            `insert into public.transactions
+               (workspace_id, account_id, type, status, amount_minor, currency, occurred_at, category_id, created_by)
+             values ($1, $2, 'expense', 'confirmed', 1000, 'USD', now(), $3, $4)`,
+            [catWs1Id, catAcc1Id, catWs2CategoryId, ownerA],
+          ),
+        ),
+      );
+      expect(appErr.code).toBe('23503');
+      expect(appErr.message ?? '').toContain(
+        'transactions_category_workspace_fkey',
+      );
+
+      const superErr = await capturePgError(() =>
+        seedTransaction(crossCatTxId, catWs1Id, catAcc1Id, ownerA, {
+          categoryId: catWs2CategoryId,
+        }),
+      );
+      expect(superErr.code).toBe('23503');
+      expect(superErr.message ?? '').toContain(
+        'transactions_category_workspace_fkey',
+      );
+
+      const check = await admin.query(
+        'select 1 from public.transactions where id = $1',
+        [crossCatTxId],
+      );
+      expect(check.rows).toHaveLength(0);
+    });
+
+    it('28. Updating an existing transaction category_id to a category from ANOTHER workspace is refused with 23503 naming transactions_category_workspace_fkey under savia_application role', async () => {
+      const txId = subject(897);
+      try {
+        await seedTransaction(txId, catWs1Id, catAcc1Id, ownerA, {
+          categoryId: catWs1CategoryId,
+        });
+
+        const updateErr = await capturePgError(() =>
+          asSubject(editorD, (client) =>
+            client.query(
+              `update public.transactions
+                  set category_id = $1, updated_at = now(), version = version + 1
+                where id = $2`,
+              [catWs2CategoryId, txId],
+            ),
+          ),
+        );
+        expect(updateErr.code).toBe('23503');
+        expect(updateErr.message ?? '').toContain(
+          'transactions_category_workspace_fkey',
+        );
+
+        const stored = await admin.query<{ category_id: string }>(
+          'select category_id from public.transactions where id = $1',
+          [txId],
+        );
+        expect(stored.rows[0].category_id).toBe(catWs1CategoryId);
+      } finally {
+        await deleteTransactions([txId]);
+      }
+    });
+
+    it('29. Inserting a transaction with a payee_id from ANOTHER workspace is refused with 23503 naming transactions_payee_workspace_fkey; NO row created', async () => {
+      const crossPayeeTxId = subject(898);
+      const appErr = await capturePgError(() =>
+        asSubject(ownerA, (client) =>
+          client.query(
+            `insert into public.transactions
+               (workspace_id, account_id, type, status, amount_minor, currency, occurred_at, payee_id, created_by)
+             values ($1, $2, 'expense', 'confirmed', 1000, 'USD', now(), $3, $4)`,
+            [catWs1Id, catAcc1Id, catWs2PayeeId, ownerA],
+          ),
+        ),
+      );
+      expect(appErr.code).toBe('23503');
+      expect(appErr.message ?? '').toContain(
+        'transactions_payee_workspace_fkey',
+      );
+
+      const superErr = await capturePgError(() =>
+        seedTransaction(crossPayeeTxId, catWs1Id, catAcc1Id, ownerA, {
+          payeeId: catWs2PayeeId,
+        }),
+      );
+      expect(superErr.code).toBe('23503');
+      expect(superErr.message ?? '').toContain(
+        'transactions_payee_workspace_fkey',
+      );
+
+      const check = await admin.query(
+        'select 1 from public.transactions where id = $1',
+        [crossPayeeTxId],
+      );
+      expect(check.rows).toHaveLength(0);
+    });
+
+    it('30. Updating an existing transaction payee_id to a payee from ANOTHER workspace is refused with 23503 naming transactions_payee_workspace_fkey under savia_application role', async () => {
+      const txId = subject(899);
+      try {
+        await seedTransaction(txId, catWs1Id, catAcc1Id, ownerA, {
+          payeeId: catWs1PayeeId,
+        });
+
+        const updateErr = await capturePgError(() =>
+          asSubject(editorD, (client) =>
+            client.query(
+              `update public.transactions
+                  set payee_id = $1, updated_at = now(), version = version + 1
+                where id = $2`,
+              [catWs2PayeeId, txId],
+            ),
+          ),
+        );
+        expect(updateErr.code).toBe('23503');
+        expect(updateErr.message ?? '').toContain(
+          'transactions_payee_workspace_fkey',
+        );
+
+        const stored = await admin.query<{ payee_id: string }>(
+          'select payee_id from public.transactions where id = $1',
+          [txId],
+        );
+        expect(stored.rows[0].payee_id).toBe(catWs1PayeeId);
+      } finally {
+        await deleteTransactions([txId]);
+      }
+    });
+
+    it('31. Inserting or updating a transaction with a nonexistent category_id is refused with 23503 naming transactions_category_workspace_fkey', async () => {
+      const absentCatTxId = subject(911);
+      const insertErr = await capturePgError(() =>
+        seedTransaction(absentCatTxId, catWs1Id, catAcc1Id, ownerA, {
+          categoryId: absentCategoryId,
+        }),
+      );
+      expect(insertErr.code).toBe('23503');
+      expect(insertErr.message ?? '').toContain(
+        'transactions_category_workspace_fkey',
+      );
+
+      const liveTxId = subject(912);
+      try {
+        await seedTransaction(liveTxId, catWs1Id, catAcc1Id, ownerA, {
+          categoryId: catWs1CategoryId,
+        });
+
+        const updateErr = await capturePgError(() =>
+          asSubject(ownerA, (client) =>
+            client.query(
+              `update public.transactions
+                  set category_id = $1, updated_at = now(), version = version + 1
+                where id = $2`,
+              [absentCategoryId, liveTxId],
+            ),
+          ),
+        );
+        expect(updateErr.code).toBe('23503');
+        expect(updateErr.message ?? '').toContain(
+          'transactions_category_workspace_fkey',
+        );
+      } finally {
+        await deleteTransactions([liveTxId]);
+      }
+    });
+
+    it('32. Inserting or updating a transaction with a nonexistent payee_id is refused with 23503 naming transactions_payee_workspace_fkey', async () => {
+      const absentPayeeTxId = subject(913);
+      const insertErr = await capturePgError(() =>
+        seedTransaction(absentPayeeTxId, catWs1Id, catAcc1Id, ownerA, {
+          payeeId: absentPayeeId,
+        }),
+      );
+      expect(insertErr.code).toBe('23503');
+      expect(insertErr.message ?? '').toContain(
+        'transactions_payee_workspace_fkey',
+      );
+
+      const liveTxId = subject(914);
+      try {
+        await seedTransaction(liveTxId, catWs1Id, catAcc1Id, ownerA, {
+          payeeId: catWs1PayeeId,
+        });
+
+        const updateErr = await capturePgError(() =>
+          asSubject(ownerA, (client) =>
+            client.query(
+              `update public.transactions
+                  set payee_id = $1, updated_at = now(), version = version + 1
+                where id = $2`,
+              [absentPayeeId, liveTxId],
+            ),
+          ),
+        );
+        expect(updateErr.code).toBe('23503');
+        expect(updateErr.message ?? '').toContain(
+          'transactions_payee_workspace_fkey',
+        );
+      } finally {
+        await deleteTransactions([liveTxId]);
+      }
+    });
+
+    it('33. Inserting and reading a transaction with BOTH category_id and payee_id null succeeds (MATCH SIMPLE nullable composite FK)', async () => {
+      let insertedId: string | undefined;
+      try {
+        const insertRes = await asSubject(ownerA, (client) =>
+          client.query(
+            `insert into public.transactions
+               (workspace_id, account_id, type, status, amount_minor, currency, occurred_at, category_id, payee_id, created_by)
+             values ($1, $2, 'income', 'confirmed', 2500, 'USD', now(), null, null, $3)
+             returning id, category_id, payee_id`,
+            [catWs1Id, catAcc1Id, ownerA],
+          ),
+        );
+        insertedId = insertRes.rows[0]?.id;
+        expect(insertedId).toBeDefined();
+        expect(insertRes.rows[0].category_id).toBeNull();
+        expect(insertRes.rows[0].payee_id).toBeNull();
+
+        const stored = await admin.query<{
+          category_id: string | null;
+          payee_id: string | null;
+        }>(
+          'select category_id, payee_id from public.transactions where id = $1',
+          [insertedId],
+        );
+        expect(stored.rows[0].category_id).toBeNull();
+        expect(stored.rows[0].payee_id).toBeNull();
+      } finally {
+        if (insertedId) await deleteTransactions([insertedId]);
+      }
+    });
+
+    it('34. Inserting and reading a transaction with legitimate same-workspace category_id and payee_id succeeds as savia_application', async () => {
+      let insertedId: string | undefined;
+      try {
+        const insertRes = await asSubject(ownerA, (client) =>
+          client.query(
+            `insert into public.transactions
+               (workspace_id, account_id, type, status, amount_minor, currency, occurred_at, category_id, payee_id, created_by)
+             values ($1, $2, 'expense', 'confirmed', 3500, 'USD', now(), $3, $4, $5)
+             returning id, category_id, payee_id`,
+            [catWs1Id, catAcc1Id, catWs1CategoryId, catWs1PayeeId, ownerA],
+          ),
+        );
+        insertedId = insertRes.rows[0]?.id;
+        expect(insertedId).toBeDefined();
+        expect(insertRes.rows[0].category_id).toBe(catWs1CategoryId);
+        expect(insertRes.rows[0].payee_id).toBe(catWs1PayeeId);
+
+        const readRes = await asSubject(editorD, (client) =>
+          client.query<{ category_id: string; payee_id: string }>(
+            'select category_id, payee_id from public.transactions where id = $1',
+            [insertedId],
+          ),
+        );
+        expect(readRes.rows[0].category_id).toBe(catWs1CategoryId);
+        expect(readRes.rows[0].payee_id).toBe(catWs1PayeeId);
+      } finally {
+        if (insertedId) await deleteTransactions([insertedId]);
+      }
+    });
+
+    it('35. Updating an existing transaction to legitimate same-workspace category_id and payee_id, and back to null, succeeds under savia_application', async () => {
+      const mutTxId = subject(917);
+      try {
+        await seedTransaction(mutTxId, catWs1Id, catAcc1Id, ownerA, {
+          categoryId: null,
+          payeeId: null,
+        });
+
+        // 1. Update from null to populated
+        const popRes = await asSubject(editorD, (client) =>
+          client.query(
+            `update public.transactions
+                set category_id = $1, payee_id = $2, updated_at = now(), version = version + 1
+              where id = $3`,
+            [catWs1CategoryId, catWs1PayeeId, mutTxId],
+          ),
+        );
+        expect(popRes.rowCount).toBe(1);
+
+        const storedPop = await admin.query<{
+          category_id: string;
+          payee_id: string;
+        }>(
+          'select category_id, payee_id from public.transactions where id = $1',
+          [mutTxId],
+        );
+        expect(storedPop.rows[0].category_id).toBe(catWs1CategoryId);
+        expect(storedPop.rows[0].payee_id).toBe(catWs1PayeeId);
+
+        // 2. Update from populated back to null
+        const nullRes = await asSubject(editorD, (client) =>
+          client.query(
+            `update public.transactions
+                set category_id = null, payee_id = null, updated_at = now(), version = version + 1
+              where id = $1`,
+            [mutTxId],
+          ),
+        );
+        expect(nullRes.rowCount).toBe(1);
+
+        const storedNull = await admin.query<{
+          category_id: string | null;
+          payee_id: string | null;
+        }>(
+          'select category_id, payee_id from public.transactions where id = $1',
+          [mutTxId],
+        );
+        expect(storedNull.rows[0].category_id).toBeNull();
+        expect(storedNull.rows[0].payee_id).toBeNull();
+      } finally {
+        await deleteTransactions([mutTxId]);
+      }
+    });
+
+    it('36. Deleting a category referenced by a transaction is REFUSED with 23503 (ON DELETE RESTRICT); succeeds once the transaction is removed', async () => {
+      const dispCatId = '00000000-0000-0000-0000-000000000833';
+      await admin.query(
+        `insert into public.categories (id, workspace_id, name, kind, created_by)
+         values ($1, $2, 'Disposable Category', 'expense', $3)`,
+        [dispCatId, catWs1Id, ownerA],
+      );
+
+      const refTxId = subject(918);
+      try {
+        await seedTransaction(refTxId, catWs1Id, catAcc1Id, ownerA, {
+          categoryId: dispCatId,
+        });
+
+        await expect(
+          admin.query('delete from public.categories where id = $1', [
+            dispCatId,
+          ]),
+        ).rejects.toMatchObject({ code: '23503' });
+
+        await deleteTransactions([refTxId]);
+
+        // Positive control: now the delete succeeds
+        await admin.query('delete from public.categories where id = $1', [
+          dispCatId,
+        ]);
+        const gone = await admin.query(
+          'select 1 from public.categories where id = $1',
+          [dispCatId],
+        );
+        expect(gone.rows).toHaveLength(0);
+      } finally {
+        await deleteTransactions([refTxId]);
+        await admin.query('delete from public.categories where id = $1', [
+          dispCatId,
+        ]);
+      }
+    });
+
+    it('37. Deleting a payee referenced by a transaction is REFUSED with 23503 (ON DELETE RESTRICT); succeeds once the transaction is removed', async () => {
+      const dispPayeeId = '00000000-0000-0000-0000-000000000843';
+      await admin.query(
+        `insert into public.payees (id, workspace_id, name, created_by)
+         values ($1, $2, 'Disposable Payee', $3)`,
+        [dispPayeeId, catWs1Id, ownerA],
+      );
+
+      const refTxId = subject(919);
+      try {
+        await seedTransaction(refTxId, catWs1Id, catAcc1Id, ownerA, {
+          payeeId: dispPayeeId,
+        });
+
+        await expect(
+          admin.query('delete from public.payees where id = $1', [dispPayeeId]),
+        ).rejects.toMatchObject({ code: '23503' });
+
+        await deleteTransactions([refTxId]);
+
+        // Positive control: now the delete succeeds
+        await admin.query('delete from public.payees where id = $1', [
+          dispPayeeId,
+        ]);
+        const gone = await admin.query(
+          'select 1 from public.payees where id = $1',
+          [dispPayeeId],
+        );
+        expect(gone.rows).toHaveLength(0);
+      } finally {
+        await deleteTransactions([refTxId]);
+        await admin.query('delete from public.payees where id = $1', [
+          dispPayeeId,
+        ]);
+      }
     });
   });
 });

@@ -6,11 +6,13 @@ import type {
   TransactionCursor,
   UpdateTransactionCommand,
 } from './ledger.port.js';
-import type {
-  LedgerAccountRecord,
-  LedgerStore,
-  TransactionFilterOptions,
-  TransactionItem,
+import {
+  TransactionCategoryNotFoundError,
+  TransactionPayeeNotFoundError,
+  type LedgerAccountRecord,
+  type LedgerStore,
+  type TransactionFilterOptions,
+  type TransactionItem,
 } from './transaction.service.js';
 
 interface TransactionRow extends Record<string, unknown> {
@@ -175,7 +177,27 @@ returning
       subject,
     ];
 
-    const txnResult = await client.query<TransactionRow>(txnSql, txnValues);
+    let txnResult: { rows: TransactionRow[] };
+    try {
+      txnResult = await client.query<TransactionRow>(txnSql, txnValues);
+    } catch (error: unknown) {
+      if (typeof error === 'object' && error !== null && 'code' in error) {
+        const pgError = error as { code: string; constraint?: string };
+        if (
+          pgError.code === '23503' &&
+          pgError.constraint === 'transactions_category_workspace_fkey'
+        ) {
+          throw new TransactionCategoryNotFoundError();
+        }
+        if (
+          pgError.code === '23503' &&
+          pgError.constraint === 'transactions_payee_workspace_fkey'
+        ) {
+          throw new TransactionPayeeNotFoundError();
+        }
+      }
+      throw error;
+    }
     const row = txnResult.rows[0];
     if (!row) {
       throw new Error('Created transaction row could not be read.');
@@ -480,7 +502,27 @@ returning
    updated_at as "updatedAt",
    version`;
 
-    const result = await client.query<TransactionRow>(sql, values);
+    let result: { rows: TransactionRow[] };
+    try {
+      result = await client.query<TransactionRow>(sql, values);
+    } catch (error: unknown) {
+      if (typeof error === 'object' && error !== null && 'code' in error) {
+        const pgError = error as { code: string; constraint?: string };
+        if (
+          pgError.code === '23503' &&
+          pgError.constraint === 'transactions_category_workspace_fkey'
+        ) {
+          throw new TransactionCategoryNotFoundError();
+        }
+        if (
+          pgError.code === '23503' &&
+          pgError.constraint === 'transactions_payee_workspace_fkey'
+        ) {
+          throw new TransactionPayeeNotFoundError();
+        }
+      }
+      throw error;
+    }
     const row = result.rows[0];
     if (!row) {
       return undefined;

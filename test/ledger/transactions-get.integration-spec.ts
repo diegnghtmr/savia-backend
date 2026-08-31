@@ -106,6 +106,18 @@ describe('TransactionService getTransaction database boundary', () => {
       [accountW1Id, workspace1Id, subjectDualMember, accountW2Id, workspace2Id],
     );
 
+    // 5b. Categories and Payees
+    await admin.query(
+      `insert into public.categories (id, workspace_id, name, kind, created_by)
+       values ($1, $2, 'Office Supplies Category', 'expense', $3)`,
+      [id(8001), workspace1Id, subjectDualMember],
+    );
+    await admin.query(
+      `insert into public.payees (id, workspace_id, name, created_by)
+       values ($1, $2, 'Office Supplies Payee', $3)`,
+      [id(8002), workspace1Id, subjectDualMember],
+    );
+
     // 6. Transactions
     // Workspace 1, Transaction A (full fields)
     await admin.query(
