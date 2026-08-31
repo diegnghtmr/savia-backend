@@ -243,6 +243,18 @@ describe('completeReconciliation against a real database', () => {
     ).toBe('pending');
   });
 
+  it('rejects completion after the account is closed under the completion lock', async () => {
+    const rec = id(6461);
+    await seedReconciliation(rec);
+    await admin.query('update public.accounts set status=\'closed\' where id=$1', [account]);
+    const result = await complete(rec, [], { createAdjustment: true });
+    expect(result.kind).toBe('transactions-invalid');
+    expect(
+      (await admin.query('select status from public.reconciliations where id=$1', [rec])).rows[0].status,
+    ).toBe('open');
+    await admin.query('update public.accounts set status=\'active\' where id=$1', [account]);
+  });
+
   it.each(['completed', 'cancelled'] as const)(
     'returns 409 for %s reconciliation',
     async (status) => {
