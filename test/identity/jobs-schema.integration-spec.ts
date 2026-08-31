@@ -252,6 +252,9 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
       expect(constraintNames).toContain('jobs_completed_at_terminal_check');
       expect(constraintNames).toContain('jobs_error_only_when_failed_check');
       expect(constraintNames).toContain(
+        'jobs_error_problem_details_shape_check',
+      );
+      expect(constraintNames).toContain(
         'jobs_result_only_when_completed_check',
       );
     });
@@ -613,12 +616,19 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
       );
 
       // 2. status = completed with error set -> fails
+      const validProblem = JSON.stringify({
+        type: 'https://savia.app/problems/bad-request',
+        title: 'Bad Request',
+        status: 400,
+        code: 'bad_request',
+        traceId: '00000000-0000-0000-0000-0000000000aa',
+      });
       const errCompletedWithError = await capturePgError(() =>
         asSubject(ownerA, async (client) => {
           await client.query(
             `insert into public.jobs (workspace_id, type, status, started_at, completed_at, error, created_by)
-             values ($1, $2, 'completed', now(), now(), '{"title":"error"}'::jsonb, $3)`,
-            [ws1Id, 'import_commit', ownerA],
+             values ($1, $2, 'completed', now(), now(), $3::jsonb, $4)`,
+            [ws1Id, 'import_commit', validProblem, ownerA],
           );
         }),
       );
@@ -626,6 +636,157 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
       expect(errCompletedWithError.constraint).toBe(
         'jobs_error_only_when_failed_check',
       );
+    });
+
+    it('enforces jobs_error_problem_details_shape_check: rejects non-object, missing keys, invalid types, and out-of-range status; accepts valid ProblemDetails', async () => {
+      // 1. JSON scalar string -> fails
+      const errScalar = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `insert into public.jobs (workspace_id, type, status, started_at, completed_at, error, created_by)
+             values ($1, 'import_commit', 'failed', now(), now(), '"oops"'::jsonb, $2)`,
+            [ws1Id, ownerA],
+          );
+        }),
+      );
+      expect(errScalar.code).toBe('23514');
+      expect(errScalar.constraint).toBe(
+        'jobs_error_problem_details_shape_check',
+      );
+
+      // 2. JSON array -> fails
+      const errArray = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `insert into public.jobs (workspace_id, type, status, started_at, completed_at, error, created_by)
+             values ($1, 'import_commit', 'failed', now(), now(), '[]'::jsonb, $2)`,
+            [ws1Id, ownerA],
+          );
+        }),
+      );
+      expect(errArray.code).toBe('23514');
+      expect(errArray.constraint).toBe(
+        'jobs_error_problem_details_shape_check',
+      );
+
+      // 3. Object missing code -> fails
+      const errMissingCode = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `insert into public.jobs (workspace_id, type, status, started_at, completed_at, error, created_by)
+             values ($1, 'import_commit', 'failed', now(), now(), $2::jsonb, $3)`,
+            [
+              ws1Id,
+              JSON.stringify({
+                type: 'https://savia.app/problems/bad-request',
+                title: 'Bad Request',
+                status: 400,
+                traceId: '00000000-0000-0000-0000-0000000000aa',
+              }),
+              ownerA,
+            ],
+          );
+        }),
+      );
+      expect(errMissingCode.code).toBe('23514');
+      expect(errMissingCode.constraint).toBe(
+        'jobs_error_problem_details_shape_check',
+      );
+
+      // 4. Object missing traceId -> fails
+      const errMissingTraceId = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `insert into public.jobs (workspace_id, type, status, started_at, completed_at, error, created_by)
+             values ($1, 'import_commit', 'failed', now(), now(), $2::jsonb, $3)`,
+            [
+              ws1Id,
+              JSON.stringify({
+                type: 'https://savia.app/problems/bad-request',
+                title: 'Bad Request',
+                status: 400,
+                code: 'bad_request',
+              }),
+              ownerA,
+            ],
+          );
+        }),
+      );
+      expect(errMissingTraceId.code).toBe('23514');
+      expect(errMissingTraceId.constraint).toBe(
+        'jobs_error_problem_details_shape_check',
+      );
+
+      // 5. Object whose status is a string -> fails
+      const errStringStatus = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `insert into public.jobs (workspace_id, type, status, started_at, completed_at, error, created_by)
+             values ($1, 'import_commit', 'failed', now(), now(), $2::jsonb, $3)`,
+            [
+              ws1Id,
+              JSON.stringify({
+                type: 'https://savia.app/problems/bad-request',
+                title: 'Bad Request',
+                status: '400',
+                code: 'bad_request',
+                traceId: '00000000-0000-0000-0000-0000000000aa',
+              }),
+              ownerA,
+            ],
+          );
+        }),
+      );
+      expect(errStringStatus.code).toBe('23514');
+      expect(errStringStatus.constraint).toBe(
+        'jobs_error_problem_details_shape_check',
+      );
+
+      // 6. Object whose status is out of range (e.g. 600) -> fails
+      const errOutOfRangeStatus = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `insert into public.jobs (workspace_id, type, status, started_at, completed_at, error, created_by)
+             values ($1, 'import_commit', 'failed', now(), now(), $2::jsonb, $3)`,
+            [
+              ws1Id,
+              JSON.stringify({
+                type: 'https://savia.app/problems/bad-request',
+                title: 'Bad Request',
+                status: 600,
+                code: 'bad_request',
+                traceId: '00000000-0000-0000-0000-0000000000aa',
+              }),
+              ownerA,
+            ],
+          );
+        }),
+      );
+      expect(errOutOfRangeStatus.code).toBe('23514');
+      expect(errOutOfRangeStatus.constraint).toBe(
+        'jobs_error_problem_details_shape_check',
+      );
+
+      // 7. Positive case: valid ProblemDetails object IS accepted
+      const validJobId = await asSubject(ownerA, async (client) => {
+        const ins = await client.query<{ id: string }>(
+          `insert into public.jobs (workspace_id, type, status, started_at, completed_at, error, created_by)
+           values ($1, 'import_commit', 'failed', now(), now(), $2::jsonb, $3) returning id`,
+          [
+            ws1Id,
+            JSON.stringify({
+              type: 'https://savia.app/problems/unprocessable-entity',
+              title: 'Invalid import statement',
+              status: 422,
+              code: 'import_statement_invalid',
+              traceId: '00000000-0000-0000-0000-0000000000aa',
+            }),
+            ownerA,
+          ],
+        );
+        return ins.rows[0]!.id;
+      });
+      expect(validJobId).toBeDefined();
     });
 
     it('enforces jobs_result_only_when_completed_check: result_resource_id is forbidden unless status = completed', async () => {

@@ -27,6 +27,9 @@ begin;
 -- RULING 68: error is stored as jsonb holding an RFC 9457 Problem Details object,
 -- and is returned verbatim under the error key. It is never a bare string.
 --
+-- RULING 76: error shape is enforced in the database by jobs_error_problem_details_shape_check
+-- because invariants are enforced at the persistence layer, not hoped for.
+--
 -- Architectural Decisions:
 -- D1. Workspace-scoped table: public.jobs.
 --     Uses `workspace_id uuid not null references public.workspaces(id) on delete cascade`,
@@ -36,10 +39,10 @@ begin;
 --
 -- D2. Status machine and type invariants:
 --     Enforces named CHECK constraints for type, status, progress_percent, started_at,
---     completed_at, error, and result_resource_id per RULING 65 and RULING 67.
+--     completed_at, error, error shape, and result_resource_id per RULING 65, RULING 67, and RULING 76.
 --
--- D3. Error payload storage:
---     `error jsonb` stores the Problem Details object directly.
+-- D3. Error payload storage and shape enforcement:
+--     `error jsonb` stores the Problem Details object directly. RULING 76 enforces its shape in the database so the read path never serves an invalid schema.
 --
 -- D4. RLS and Grants:
 --     Reads permitted for active workspace members (owner, administrator, editor, viewer).
@@ -81,6 +84,24 @@ create table public.jobs (
     check (
       (status = 'failed' and error is not null)
       or (status <> 'failed' and error is null)
+    ),
+  constraint jobs_error_problem_details_shape_check
+    check (
+      error is null
+      or (
+        jsonb_typeof(error) = 'object'
+        and error ? 'type'
+        and error ? 'title'
+        and error ? 'status'
+        and error ? 'code'
+        and error ? 'traceId'
+        and jsonb_typeof(error->'type') = 'string'
+        and jsonb_typeof(error->'title') = 'string'
+        and jsonb_typeof(error->'code') = 'string'
+        and jsonb_typeof(error->'traceId') = 'string'
+        and jsonb_typeof(error->'status') = 'number'
+        and (error->>'status') ~ '^[1-5][0-9]{2}$'
+      )
     ),
   constraint jobs_result_only_when_completed_check
     check (

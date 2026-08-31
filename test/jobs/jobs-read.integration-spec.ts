@@ -121,7 +121,7 @@ describe('JobsService getJob database boundary and isolation', () => {
       `insert into public.jobs (
          id, workspace_id, type, status, progress_percent, result_resource_id, error,
          created_by, created_at, started_at, completed_at
-       ) values ($1, $2, 'import_commit', 'failed', 45, null, '{"type":"https://savia.app/problems/bad-request","title":"Invalid import statement","status":400}'::jsonb, $3, '2026-08-31T12:10:00Z', '2026-08-31T12:10:01Z', '2026-08-31T12:10:05Z')`,
+       ) values ($1, $2, 'import_commit', 'failed', 45, null, '{"type":"https://savia.app/problems/unprocessable-entity","title":"Invalid import statement","status":422,"code":"import_statement_invalid","traceId":"00000000-0000-0000-0000-0000000000aa"}'::jsonb, $3, '2026-08-31T12:10:00Z', '2026-08-31T12:10:01Z', '2026-08-31T12:10:05Z')`,
       [jobW1FailedId, workspace1Id, subjectDualMember],
     );
 
@@ -274,9 +274,11 @@ describe('JobsService getJob database boundary and isolation', () => {
     expect(job.status).toBe('failed');
     expect(job.progressPercent).toBe(45);
     expect(job.error).toEqual({
-      type: 'https://savia.app/problems/bad-request',
+      type: 'https://savia.app/problems/unprocessable-entity',
       title: 'Invalid import statement',
-      status: 400,
+      status: 422,
+      code: 'import_statement_invalid',
+      traceId: '00000000-0000-0000-0000-0000000000aa',
     });
   });
 
