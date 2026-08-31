@@ -1,4 +1,5 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import { buildNativeBalanceSql } from '../platform/native-balance-query.js';
 import {
   AmountOutOfRangeError,
   OpenReconciliationExistsError,
@@ -114,18 +115,7 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
     accountId: string,
     asOf?: string,
   ): Promise<ReconciliationStoreBalance | undefined> {
-    const balanceSql = `
-      select
-        coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status in ('confirmed', 'reconciled')), 0)::text as "nativeBalance",
-        count(*) filter (where posting.currency <> acct.currency)::text as "foreignCurrencyLegs"
-        from public.ledger_postings posting
-        join public.accounts acct
-          on acct.id = posting.account_id
-         and acct.workspace_id = posting.workspace_id
-       where posting.workspace_id = $1::uuid
-         and posting.account_id = $2::uuid
-         and posting.occurred_at <= coalesce($3::timestamptz, now())
-    `;
+    const balanceSql = buildNativeBalanceSql();
     let balanceResult: {
       rows: { nativeBalance: string; foreignCurrencyLegs: string }[];
     };
