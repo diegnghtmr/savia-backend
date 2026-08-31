@@ -49,6 +49,15 @@ export class OpenReconciliationExistsError extends Error {
   }
 }
 
+export class AmountOutOfRangeError extends Error {
+  public constructor(
+    message = 'Amount or computed difference exceeds signed 64-bit integer range.',
+  ) {
+    super(message);
+    this.name = 'AmountOutOfRangeError';
+  }
+}
+
 export const RECONCILIATION_CREATE_OUTCOMES = {
   CREATED: 'created',
   REPLAYED: 'replayed',
@@ -59,6 +68,7 @@ export const RECONCILIATION_CREATE_OUTCOMES = {
   CURRENCY_MISMATCH: 'currency-mismatch',
   FUTURE_STATEMENT_DATE: 'future-statement-date',
   OPEN_RECONCILIATION_EXISTS: 'open-reconciliation-exists',
+  AMOUNT_OUT_OF_RANGE: 'amount-out-of-range',
 } as const;
 
 export type ReconciliationCreateOutcomeKind =
@@ -104,6 +114,10 @@ export interface ReconciliationCreateOpenExists {
   readonly kind: typeof RECONCILIATION_CREATE_OUTCOMES.OPEN_RECONCILIATION_EXISTS;
 }
 
+export interface ReconciliationCreateAmountOutOfRange {
+  readonly kind: typeof RECONCILIATION_CREATE_OUTCOMES.AMOUNT_OUT_OF_RANGE;
+}
+
 export type ReconciliationCreateOutcome =
   | ReconciliationCreateCreated
   | ReconciliationCreateReplayed
@@ -113,7 +127,8 @@ export type ReconciliationCreateOutcome =
   | ReconciliationCreateAccountClosed
   | ReconciliationCreateCurrencyMismatch
   | ReconciliationCreateFutureStatementDate
-  | ReconciliationCreateOpenExists;
+  | ReconciliationCreateOpenExists
+  | ReconciliationCreateAmountOutOfRange;
 
 export const RECONCILIATION_GET_OUTCOMES = {
   FOUND: 'found',

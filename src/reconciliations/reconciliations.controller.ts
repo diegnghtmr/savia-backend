@@ -160,6 +160,17 @@ export class ReconciliationsController {
       return;
     }
 
+    if (outcome.kind === RECONCILIATION_CREATE_OUTCOMES.AMOUNT_OUT_OF_RANGE) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Amount out of range',
+        detail:
+          'Computed balance or difference exceeds signed 64-bit integer range.',
+        status: 422,
+      });
+      return;
+    }
+
     if (outcome.kind === RECONCILIATION_CREATE_OUTCOMES.REPLAYED) {
       let r = reply.status(outcome.status);
       if (outcome.etag) {

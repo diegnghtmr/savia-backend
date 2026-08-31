@@ -25,7 +25,7 @@ const ALLOWED_FIELDS = [
 const ALLOWED_MONEY_KEYS = ['amountMinor', 'currency'] as const;
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const INT64_MIN = -9223372036854775807n;
+const INT64_MIN = -9223372036854775808n;
 const INT64_MAX = 9223372036854775807n;
 
 function isValidDate(dateStr: string): boolean {

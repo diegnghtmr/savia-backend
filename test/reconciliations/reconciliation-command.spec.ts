@@ -258,11 +258,51 @@ describe('createReconciliationCommand validator', () => {
       createReconciliationCommand({
         ...validPayload,
         statementBalance: {
+          amountMinor: '9223372036854775808', // INT64_MAX + 1
+          currency: 'USD',
+        },
+      }),
+    ).toThrow(ReconciliationCommandValidationError);
+
+    expect(() =>
+      createReconciliationCommand({
+        ...validPayload,
+        statementBalance: {
+          amountMinor: '-9223372036854775809', // INT64_MIN - 1
+          currency: 'USD',
+        },
+      }),
+    ).toThrow(ReconciliationCommandValidationError);
+
+    expect(() =>
+      createReconciliationCommand({
+        ...validPayload,
+        statementBalance: {
           amountMinor: '99999999999999999999999999999999',
           currency: 'USD',
         },
       }),
     ).toThrow(ReconciliationCommandValidationError);
+  });
+
+  it('accepts exact signed 64-bit boundary values for amountMinor', () => {
+    const cmdMax = createReconciliationCommand({
+      ...validPayload,
+      statementBalance: {
+        amountMinor: '9223372036854775807',
+        currency: 'USD',
+      },
+    });
+    expect(cmdMax.statementBalance.amountMinor).toBe('9223372036854775807');
+
+    const cmdMin = createReconciliationCommand({
+      ...validPayload,
+      statementBalance: {
+        amountMinor: '-9223372036854775808',
+        currency: 'USD',
+      },
+    });
+    expect(cmdMin.statementBalance.amountMinor).toBe('-9223372036854775808');
   });
 
   it('rejects missing or invalid currency in statementBalance', () => {

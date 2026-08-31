@@ -305,6 +305,28 @@ describe('ReconciliationsController', () => {
       );
     });
 
+    it('returns 422 when outcome is AMOUNT_OUT_OF_RANGE (RULING 78)', async () => {
+      const { controller, port, reply, createRequest, getStatus, getPayload } =
+        createMocks();
+      vi.mocked(port.createReconciliation).mockResolvedValue({
+        kind: RECONCILIATION_CREATE_OUTCOMES.AMOUNT_OUT_OF_RANGE,
+      });
+
+      const req = createRequest({
+        'x-workspace-id': WORKSPACE_ID,
+        'idempotency-key': IDEMPOTENCY_KEY,
+      });
+
+      await controller.createReconciliation(req, reply);
+      expect(getStatus()).toBe(422);
+      expect(getPayload()).toEqual(
+        expect.objectContaining({
+          status: 422,
+          title: 'Amount out of range',
+        }),
+      );
+    });
+
     it('returns replayed response when outcome is REPLAYED', async () => {
       const {
         controller,
