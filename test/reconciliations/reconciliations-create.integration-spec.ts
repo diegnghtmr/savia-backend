@@ -803,6 +803,14 @@ describe('ReconciliationService createReconciliation database boundary and busin
         realAdapter.createReconciliation(c, w, s, d),
       findReconciliationById: (c, w, id) =>
         realAdapter.findReconciliationById(c, w, id),
+      lockAndReadCompletion: (c, w, id) =>
+        realAdapter.lockAndReadCompletion(c, w, id),
+      validateCompletionTransactions: (c, w, a, ids, date) =>
+        realAdapter.validateCompletionTransactions(c, w, a, ids, date),
+      reconcileTransactions: (c, w, a, ids) =>
+        realAdapter.reconcileTransactions(c, w, a, ids),
+      completeReconciliation: (c, w, id) =>
+        realAdapter.completeReconciliation(c, w, id),
     };
 
     const testService = new ReconciliationService(

@@ -49,6 +49,7 @@ function createMocks() {
   const port: ReconciliationsPort = {
     createReconciliation: vi.fn(),
     getReconciliation: vi.fn(),
+    completeReconciliation: vi.fn(),
   };
 
   const controller = new ReconciliationsController(port);
