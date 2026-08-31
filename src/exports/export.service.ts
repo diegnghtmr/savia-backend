@@ -50,6 +50,7 @@ export class ExportService implements ExportsPort {
       return { kind: EXPORT_OUTCOMES.UNSUPPORTED_RESOURCE };
     const route = 'POST /v1/export-jobs';
     const fingerprint = computeRequestFingerprint(command);
+    let uploadedPath: string | undefined;
     try {
       return await this.transaction.run(subject, async (client) => {
         const role = await this.store.readActiveRole(client, workspaceId);
@@ -75,6 +76,7 @@ export class ExportService implements ExportsPort {
         const rows = await this.store.readRows(client, workspaceId, command);
         const artifact = await serialize(command.format, rows);
         await this.storage.upload(path, artifact.content, artifact.contentType);
+        uploadedPath = path;
         try {
           const signature = await this.storage.sign(
             path,
@@ -127,6 +129,8 @@ export class ExportService implements ExportsPort {
         }
       });
     } catch (error) {
+      if (uploadedPath !== undefined)
+        await this.storage.remove(uploadedPath).catch(() => undefined);
       const problem =
         error instanceof ExportFailure
           ? error.problem
