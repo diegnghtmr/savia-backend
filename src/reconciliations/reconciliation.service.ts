@@ -2,6 +2,7 @@ import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
+  AmountOutOfRangeError,
   OpenReconciliationExistsError,
   RECONCILIATION_CREATE_OUTCOMES,
   RECONCILIATION_GET_OUTCOMES,
@@ -12,8 +13,12 @@ import {
   type ReconciliationCreateOutcome,
   type ReconciliationGetOutcome,
   type ReconciliationStore,
+  type ReconciliationStoreBalance,
   type ReconciliationsPort,
 } from './reconciliation.port.js';
+
+const INT64_MIN = -9223372036854775808n;
+const INT64_MAX = 9223372036854775807n;
 
 export interface ReconciliationTransaction {
   run<T>(
@@ -101,14 +106,27 @@ export class ReconciliationService implements ReconciliationsPort {
 
       // 6. RULING 69: Compute systemBalance as of the end of statementDate (UTC)
       const asOf = `${command.statementDate}T23:59:59.999999Z`;
-      const balance = await this.store.readAccountBalance(
-        client,
-        workspaceId,
-        command.accountId,
-        asOf,
-      );
+      let balance: ReconciliationStoreBalance | undefined;
+      try {
+        balance = await this.store.readAccountBalance(
+          client,
+          workspaceId,
+          command.accountId,
+          asOf,
+        );
+      } catch (error) {
+        if (error instanceof AmountOutOfRangeError) {
+          return { kind: RECONCILIATION_CREATE_OUTCOMES.AMOUNT_OUT_OF_RANGE };
+        }
+        throw error;
+      }
       if (balance === undefined) {
         throw new Error('Account balance query returned no result.');
+      }
+
+      const systemBalanceVal = BigInt(balance.nativeBalance.amountMinor);
+      if (systemBalanceVal < INT64_MIN || systemBalanceVal > INT64_MAX) {
+        return { kind: RECONCILIATION_CREATE_OUTCOMES.AMOUNT_OUT_OF_RANGE };
       }
 
       const systemBalance: Money = {
@@ -118,8 +136,11 @@ export class ReconciliationService implements ReconciliationsPort {
 
       // 7. RULING 69: difference = statementBalance - systemBalance (minor units)
       const diffMinor =
-        BigInt(command.statementBalance.amountMinor) -
-        BigInt(systemBalance.amountMinor);
+        BigInt(command.statementBalance.amountMinor) - systemBalanceVal;
+      if (diffMinor < INT64_MIN || diffMinor > INT64_MAX) {
+        return { kind: RECONCILIATION_CREATE_OUTCOMES.AMOUNT_OUT_OF_RANGE };
+      }
+
       const difference: Money = {
         amountMinor: diffMinor.toString(),
         currency: account.currency,
@@ -150,6 +171,9 @@ export class ReconciliationService implements ReconciliationsPort {
           return {
             kind: RECONCILIATION_CREATE_OUTCOMES.OPEN_RECONCILIATION_EXISTS,
           };
+        }
+        if (error instanceof AmountOutOfRangeError) {
+          return { kind: RECONCILIATION_CREATE_OUTCOMES.AMOUNT_OUT_OF_RANGE };
         }
         throw error;
       }

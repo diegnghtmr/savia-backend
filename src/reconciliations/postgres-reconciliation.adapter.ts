@@ -1,5 +1,6 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
+  AmountOutOfRangeError,
   OpenReconciliationExistsError,
   ReconciliationAccountNotFoundError,
   type Reconciliation,
@@ -125,10 +126,25 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
          and posting.account_id = $2::uuid
          and posting.occurred_at <= coalesce($3::timestamptz, now())
     `;
-    const balanceResult = await client.query<{
-      nativeBalance: string;
-      foreignCurrencyLegs: string;
-    }>(balanceSql, [workspaceId, accountId, asOf ?? null]);
+    let balanceResult: {
+      rows: { nativeBalance: string; foreignCurrencyLegs: string }[];
+    };
+    try {
+      balanceResult = await client.query<{
+        nativeBalance: string;
+        foreignCurrencyLegs: string;
+      }>(balanceSql, [workspaceId, accountId, asOf ?? null]);
+    } catch (error: unknown) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code: string }).code === '22003'
+      ) {
+        throw new AmountOutOfRangeError();
+      }
+      throw error;
+    }
     const balanceRow = balanceResult.rows[0];
     if (!balanceRow) {
       return undefined;
@@ -233,6 +249,9 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
           pgError.constraint === 'reconciliations_account_workspace_fkey'
         ) {
           throw new ReconciliationAccountNotFoundError();
+        }
+        if (pgError.code === '22003') {
+          throw new AmountOutOfRangeError();
         }
       }
       throw error;

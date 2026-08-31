@@ -42,6 +42,9 @@ describe('ReconciliationService createReconciliation database boundary and busin
   const ws1AccountActiveUsd = id(5071);
   const ws1AccountClosedUsd = id(5072);
   const ws2AccountUsd = id(5074);
+  const ws1AccountZeroBalanceUsd = id(5075);
+  const ws1AccountNegBalanceUsd = id(5076);
+  const ws1AccountPosBalanceUsd = id(5077);
   const absentAccountId = id(5099);
 
   beforeAll(async () => {
@@ -124,7 +127,10 @@ describe('ReconciliationService createReconciliation database boundary and busin
       `insert into public.accounts (id, workspace_id, name, type, currency, status, closed_at, created_by)
        values ($1, $2, 'Active USD Account', 'checking', 'USD', 'active', null, $3),
               ($4, $2, 'Closed USD Account', 'checking', 'USD', 'closed', now(), $3),
-              ($5, $6, 'WS2 Account', 'checking', 'USD', 'active', null, $7)`,
+              ($5, $6, 'WS2 Account', 'checking', 'USD', 'active', null, $7),
+              ($8, $2, 'Zero Balance USD Account', 'checking', 'USD', 'active', null, $3),
+              ($9, $2, 'Neg Balance USD Account', 'checking', 'USD', 'active', null, $3),
+              ($10, $2, 'Pos Balance USD Account', 'checking', 'USD', 'active', null, $3)`,
       [
         ws1AccountActiveUsd,
         workspace1Id,
@@ -133,15 +139,19 @@ describe('ReconciliationService createReconciliation database boundary and busin
         ws2AccountUsd,
         workspace2Id,
         subjectWs2Owner,
+        ws1AccountZeroBalanceUsd,
+        ws1AccountNegBalanceUsd,
+        ws1AccountPosBalanceUsd,
       ],
     );
 
-    // 5. Seed real ledger transactions and postings for ws1AccountActiveUsd
+    // 5. Seed real ledger transactions and postings
     const seedPosting = async (
       txnId: string,
       status: 'draft' | 'pending' | 'confirmed' | 'reconciled',
       amountMinor: number,
       occurredAt: string,
+      accId: string = ws1AccountActiveUsd,
     ) => {
       await admin.query(
         `insert into public.transactions (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
@@ -149,7 +159,7 @@ describe('ReconciliationService createReconciliation database boundary and busin
         [
           txnId,
           workspace1Id,
-          ws1AccountActiveUsd,
+          accId,
           status,
           amountMinor,
           occurredAt,
@@ -164,7 +174,7 @@ describe('ReconciliationService createReconciliation database boundary and busin
         [
           workspace1Id,
           txnId,
-          ws1AccountActiveUsd,
+          accId,
           amountMinor,
           status,
           occurredAt,
@@ -184,6 +194,24 @@ describe('ReconciliationService createReconciliation database boundary and busin
 
     // 5d. Confirmed transaction AFTER statementDate (2026-08-31 10:00:00Z) -> +20000 USD (MUST NOT be counted)
     await seedPosting(id(5104), 'confirmed', 20000, '2026-08-31T10:00:00Z');
+
+    // 5e. Negative balance account (-1 USD)
+    await seedPosting(
+      id(5105),
+      'confirmed',
+      -1,
+      '2026-08-15T10:00:00Z',
+      ws1AccountNegBalanceUsd,
+    );
+
+    // 5f. Positive balance account (+1 USD)
+    await seedPosting(
+      id(5106),
+      'confirmed',
+      1,
+      '2026-08-15T10:00:00Z',
+      ws1AccountPosBalanceUsd,
+    );
   });
 
   afterAll(async () => {
@@ -623,5 +651,117 @@ describe('ReconciliationService createReconciliation database boundary and busin
       `update public.accounts set status = 'active', closed_at = null, version = version + 1 where id = $1`,
       [ws1AccountActiveUsd],
     );
+  });
+
+  it('answers 422 AMOUNT_OUT_OF_RANGE when difference exceeds int64 max (max minus negative) (RULING 78)', async () => {
+    // ws1AccountNegBalanceUsd has systemBalance = -1 USD
+    // statementBalance = 9223372036854775807 (int64 max)
+    // difference = 9223372036854775807 - (-1) = 9223372036854775808 (overflows int64)
+    const key = id(5291);
+    const command: CreateReconciliationCommand = {
+      accountId: ws1AccountNegBalanceUsd,
+      statementDate: '2026-08-30',
+      statementBalance: {
+        amountMinor: '9223372036854775807',
+        currency: 'USD',
+      },
+    };
+
+    const outcome = await service.createReconciliation(
+      subjectOwner,
+      workspace1Id,
+      command,
+      key,
+    );
+
+    expect(outcome.kind).toBe(
+      RECONCILIATION_CREATE_OUTCOMES.AMOUNT_OUT_OF_RANGE,
+    );
+
+    const recCheck = await admin.query<{ count: string }>(
+      `select count(*)::text from public.reconciliations where account_id = $1`,
+      [ws1AccountNegBalanceUsd],
+    );
+    expect(recCheck.rows[0]?.count).toBe('0');
+  });
+
+  it('answers 422 AMOUNT_OUT_OF_RANGE when difference underflows int64 min (min minus positive) (RULING 78)', async () => {
+    // ws1AccountPosBalanceUsd has systemBalance = +1 USD
+    // statementBalance = -9223372036854775808 (int64 min)
+    // difference = -9223372036854775808 - 1 = -9223372036854775809 (underflows int64)
+    const key = id(5292);
+    const command: CreateReconciliationCommand = {
+      accountId: ws1AccountPosBalanceUsd,
+      statementDate: '2026-08-30',
+      statementBalance: {
+        amountMinor: '-9223372036854775808',
+        currency: 'USD',
+      },
+    };
+
+    const outcome = await service.createReconciliation(
+      subjectOwner,
+      workspace1Id,
+      command,
+      key,
+    );
+
+    expect(outcome.kind).toBe(
+      RECONCILIATION_CREATE_OUTCOMES.AMOUNT_OUT_OF_RANGE,
+    );
+
+    const recCheck = await admin.query<{ count: string }>(
+      `select count(*)::text from public.reconciliations where account_id = $1`,
+      [ws1AccountPosBalanceUsd],
+    );
+    expect(recCheck.rows[0]?.count).toBe('0');
+  });
+
+  it('succeeds at exactly int64 max statementBalance with systemBalance of 0 (positive boundary) (RULING 78)', async () => {
+    // ws1AccountZeroBalanceUsd has systemBalance = 0 USD
+    // statementBalance = 9223372036854775807 (int64 max)
+    // difference = 9223372036854775807 - 0 = 9223372036854775807 (fits int64)
+    const key = id(5293);
+    const command: CreateReconciliationCommand = {
+      accountId: ws1AccountZeroBalanceUsd,
+      statementDate: '2026-08-30',
+      statementBalance: {
+        amountMinor: '9223372036854775807',
+        currency: 'USD',
+      },
+    };
+
+    const outcome = await service.createReconciliation(
+      subjectOwner,
+      workspace1Id,
+      command,
+      key,
+    );
+
+    expect(outcome.kind).toBe(RECONCILIATION_CREATE_OUTCOMES.CREATED);
+    const rec = (outcome as ReconciliationCreateCreated).reconciliation;
+    expect(rec.statementBalance.amountMinor).toBe('9223372036854775807');
+    expect(rec.systemBalance.amountMinor).toBe('0');
+    expect(rec.difference.amountMinor).toBe('9223372036854775807');
+
+    const dbRow = await admin.query<{
+      statement_balance_minor: string;
+      system_balance_minor: string;
+      difference_minor: string;
+    }>(
+      `select statement_balance_minor::text, system_balance_minor::text, difference_minor::text
+         from public.reconciliations where id = $1`,
+      [rec.id],
+    );
+    expect(dbRow.rows[0]).toEqual({
+      statement_balance_minor: '9223372036854775807',
+      system_balance_minor: '0',
+      difference_minor: '9223372036854775807',
+    });
+
+    // Clean up
+    await admin.query(`delete from public.reconciliations where id = $1`, [
+      rec.id,
+    ]);
   });
 });
