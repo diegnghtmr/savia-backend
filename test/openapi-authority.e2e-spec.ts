@@ -92,4 +92,14 @@ describe('executable OpenAPI authority', () => {
 
     expect(verify).toThrow(/must publish exactly GET \/health/);
   });
+
+  it('publishes the complete reconciliation transport response set', () => {
+    const source = readFileSync(contract, 'utf8');
+    const operation = source.slice(
+      source.indexOf('operationId: completeReconciliation'),
+      source.indexOf('  /v1/reconciliations/{reconciliationId}:', source.indexOf('operationId: completeReconciliation')),
+    );
+    const codes = [...operation.matchAll(/^        '(\d{3})':/gm)].map((match) => match[1]);
+    expect(codes).toEqual(['200', '400', '401', '403', '404', '409', '422', '500']);
+  });
 });
