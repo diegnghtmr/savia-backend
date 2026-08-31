@@ -93,6 +93,15 @@ cleanup() {
   # network only detaches once its containers are gone, so this must follow the
   # container reaping above.
   docker network ls -q --filter "label=com.supabase.cli.project=$project_id" | xargs -r timeout -k 5 30 docker network rm >/dev/null 2>&1 || true
+  # Containers and networks were already reaped above, but `docker rm -f` without
+  # -v keeps the stack's named volumes, and a killed `supabase stop` never removes
+  # them either. Each run therefore leaks its `supabase_db_*` and
+  # `supabase_storage_*` volumes -- observed locally as 740 orphans accumulating to
+  # a 30GB reclaimable footprint. A volume only detaches once its containers are
+  # gone, so this must follow the container reaping, exactly like the network line.
+  # The CLI labels its volumes with the same project label used above, so this is
+  # scoped to this run and cannot touch another project.
+  docker volume ls -q --filter "label=com.supabase.cli.project=$project_id" | xargs -r timeout -k 5 30 docker volume rm >/dev/null 2>&1 || true
   rm -rf "$workdir"
   if [[ -n "$diagnostic_dir" ]]; then
     { ! docker ps -aq --filter "label=com.supabase.cli.project=$project_id" | grep -q . && [[ ! -e "$workdir" ]]; } \
