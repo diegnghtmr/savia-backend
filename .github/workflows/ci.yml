@@ -227,6 +227,9 @@ jobs:
       - name: jobs schema integration
         shell: bash
         run: pnpm test:integration:jobs-schema
+      - name: jobs read integration
+        shell: bash
+        run: pnpm test:integration:jobs-read
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

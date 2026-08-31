@@ -62,6 +62,7 @@
     "test:integration:subscriptions-schema": "bash scripts/run-disposable-database-suite.sh test/identity/subscriptions-schema.integration-spec.ts",
     "test:integration:subscriptions-list": "bash scripts/run-disposable-database-suite.sh test/recurring/subscriptions-list.integration-spec.ts",
     "test:integration:jobs-schema": "bash scripts/run-disposable-database-suite.sh test/identity/jobs-schema.integration-spec.ts",
+    "test:integration:jobs-read": "bash scripts/run-disposable-database-suite.sh test/jobs/jobs-read.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",
     "build": "tsc -p tsconfig.build.json",
