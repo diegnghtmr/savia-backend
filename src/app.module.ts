@@ -10,6 +10,7 @@ import { LedgerModule } from './ledger/ledger.module.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { RecurringModule } from './recurring/recurring.module.js';
 import { ReconciliationsModule } from './reconciliations/reconciliations.module.js';
+import { ExportsModule } from './exports/exports.module.js';
 
 @Module({
   controllers: [HealthController],
@@ -23,6 +24,7 @@ import { ReconciliationsModule } from './reconciliations/reconciliations.module.
     RecurringModule,
     JobsModule,
     ReconciliationsModule,
+    ExportsModule,
   ],
 })
 export class AppModule {}

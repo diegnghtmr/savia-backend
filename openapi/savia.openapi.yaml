@@ -1264,6 +1264,31 @@ components:
             - 'null'
           maxLength: 500
       additionalProperties: false
+    CreateExportJobRequest:
+      type: object
+      required: [format]
+      properties:
+        format: { type: string, enum: [csv, json_backup, xlsx] }
+        resource:
+          {
+            type: string,
+            enum: [all, transactions, accounts, budgets, debts, report],
+          }
+        resourceId: { type: [string, 'null'], format: uuid }
+        from: { type: [string, 'null'], format: date }
+        to: { type: [string, 'null'], format: date }
+      additionalProperties: false
+    ExportJob:
+      type: object
+      required: [id, status, format, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, processing, completed, failed] }
+        format: { type: string, enum: [csv, json_backup, xlsx] }
+        downloadUrl: { type: [string, 'null'], format: uri }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+      additionalProperties: false
     Reconciliation:
       type: object
       required:
@@ -4268,6 +4293,141 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/export-jobs:
+    post:
+      operationId: createExportJob
+      tags: [Exports]
+      summary: Create export job
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          schema: { type: string, format: uuid }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, format: uuid, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateExportJobRequest' }
+      responses:
+        '202':
+          {
+            description: Export accepted.,
+            content:
+              {
+                application/json:
+                  { schema: { $ref: '#/components/schemas/ExportJob' } },
+              },
+          }
+        '401':
+          {
+            description: Unauthorized.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '403':
+          {
+            description: Forbidden.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '409':
+          {
+            description: Conflict.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '422':
+          {
+            description: Validation or unavailable resource.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '500':
+          {
+            description: Internal failure.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+      x-idempotency-required: true
+  /v1/export-jobs/{exportJobId}:
+    get:
+      operationId: getExportJob
+      tags: [Exports]
+      summary: Get export job
+      parameters:
+        - name: exportJobId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          {
+            description: Export job.,
+            content:
+              {
+                application/json:
+                  { schema: { $ref: '#/components/schemas/ExportJob' } },
+              },
+          }
+        '401':
+          {
+            description: Unauthorized.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '403':
+          {
+            description: Forbidden.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '404':
+          {
+            description: Export job not found.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '500':
+          {
+            description: Internal failure.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
   /v1/jobs/{jobId}:
     get:
       operationId: getJob
