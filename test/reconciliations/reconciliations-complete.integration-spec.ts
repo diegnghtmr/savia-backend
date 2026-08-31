@@ -50,13 +50,7 @@ describe('completeReconciliation against a real database', () => {
     if (withPosting)
       await admin.query(
         `insert into public.ledger_postings (workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at) values ($1,$2,$3,'account',100,'USD',$4,$5),($1,$2,null,'external',-100,'USD',$4,$5)`,
-        [
-          ws,
-          txId,
-          acc,
-          status === 'voided' ? 'confirmed' : status,
-          occurredAt,
-        ],
+        [ws, txId, acc, status === 'voided' ? 'confirmed' : status, occurredAt],
       );
   }
   async function seedReconciliation(
@@ -113,7 +107,14 @@ describe('completeReconciliation against a real database', () => {
     );
     await admin.query(
       `insert into public.accounts (id,workspace_id,name,type,currency,status,created_by) values ($1,$3,'Complete Account','checking','USD','active',$4),($2,$5,'Foreign Account','checking','USD','active',$4),($6,$3,'Other Account','checking','USD','active',$4)`,
-      [account, foreignAccount, workspace, owner, foreignWorkspace, otherAccount],
+      [
+        account,
+        foreignAccount,
+        workspace,
+        owner,
+        foreignWorkspace,
+        otherAccount,
+      ],
     );
     await seedTransaction(txConfirmed, 'confirmed', '2026-08-20T10:00:00Z');
     await seedTransaction(txDraft, 'draft', '2026-08-20T10:00:00Z');
@@ -128,9 +129,27 @@ describe('completeReconciliation against a real database', () => {
       false,
     );
     await seedTransaction(txAtomic, 'confirmed', '2026-08-20T10:00:00Z');
-    await seedTransaction(id(6119), 'confirmed', '2026-08-20T10:00:00Z', true, foreignWorkspace, foreignAccount);
-    await seedTransaction(id(6120), 'confirmed', '2026-08-20T10:00:00Z', true, workspace, otherAccount);
-    await seedTransaction(txPendingPosting, 'confirmed', '2026-08-20T10:00:00Z');
+    await seedTransaction(
+      id(6119),
+      'confirmed',
+      '2026-08-20T10:00:00Z',
+      true,
+      foreignWorkspace,
+      foreignAccount,
+    );
+    await seedTransaction(
+      id(6120),
+      'confirmed',
+      '2026-08-20T10:00:00Z',
+      true,
+      workspace,
+      otherAccount,
+    );
+    await seedTransaction(
+      txPendingPosting,
+      'confirmed',
+      '2026-08-20T10:00:00Z',
+    );
     await admin.query(
       `update public.ledger_postings set status='pending' where transaction_id=$1 and account_id=$2`,
       [txPendingPosting, account],
@@ -242,23 +261,44 @@ describe('completeReconciliation against a real database', () => {
     const result = await complete(rec, [txPendingPosting]);
     expect(result.kind).toBe('transactions-invalid');
     expect(
-      (await admin.query('select status from public.transactions where id=$1', [txPendingPosting])).rows[0].status,
+      (
+        await admin.query(
+          'select status from public.transactions where id=$1',
+          [txPendingPosting],
+        )
+      ).rows[0].status,
     ).toBe('confirmed');
     expect(
-      (await admin.query('select status from public.ledger_postings where transaction_id=$1 and account_id=$2', [txPendingPosting, account])).rows[0].status,
+      (
+        await admin.query(
+          'select status from public.ledger_postings where transaction_id=$1 and account_id=$2',
+          [txPendingPosting, account],
+        )
+      ).rows[0].status,
     ).toBe('pending');
   });
 
   it('rejects completion after the account is closed under the completion lock', async () => {
     const rec = id(6461);
     await seedReconciliation(rec);
-    await admin.query('update public.accounts set status=\'closed\' where id=$1', [account]);
+    await admin.query(
+      "update public.accounts set status='closed', closed_at=now() where id=$1",
+      [account],
+    );
     const result = await complete(rec, [], { createAdjustment: true });
     expect(result.kind).toBe('transactions-invalid');
     expect(
-      (await admin.query('select status from public.reconciliations where id=$1', [rec])).rows[0].status,
+      (
+        await admin.query(
+          'select status from public.reconciliations where id=$1',
+          [rec],
+        )
+      ).rows[0].status,
     ).toBe('open');
-    await admin.query('update public.accounts set status=\'active\' where id=$1', [account]);
+    await admin.query(
+      "update public.accounts set status='active', closed_at=null where id=$1",
+      [account],
+    );
   });
 
   it.each(['completed', 'cancelled'] as const)(
@@ -333,17 +373,36 @@ describe('completeReconciliation against a real database', () => {
       "select count(*)::text as count from public.transactions where account_id=$1 and type='adjustment'",
       [account],
     );
+    const beforeReconciled = await admin.query(
+      "select count(*)::text as count from public.transactions where id=$1 and status='reconciled'",
+      [txConfirmed],
+    );
     const result = await complete(rec, [], { createAdjustment: true });
     expect(result.kind).toBe('amount-out-of-range');
     expect(
-      (await admin.query("select status from public.reconciliations where id=$1", [rec])).rows[0].status,
+      (
+        await admin.query(
+          'select status from public.reconciliations where id=$1',
+          [rec],
+        )
+      ).rows[0].status,
     ).toBe('open');
     expect(
-      (await admin.query("select count(*)::text as count from public.transactions where account_id=$1 and type='adjustment'", [account])).rows[0].count,
+      (
+        await admin.query(
+          "select count(*)::text as count from public.transactions where account_id=$1 and type='adjustment'",
+          [account],
+        )
+      ).rows[0].count,
     ).toBe(beforeAdjustments.rows[0].count);
     expect(
-      (await admin.query("select count(*)::text as count from public.transactions where id=$1 and status='reconciled'", [txConfirmed])).rows[0].count,
-    ).toBe('0');
+      (
+        await admin.query(
+          "select count(*)::text as count from public.transactions where id=$1 and status='reconciled'",
+          [txConfirmed],
+        )
+      ).rows[0].count,
+    ).toBe(beforeReconciled.rows[0].count);
   });
 
   it('freezes snapshot values and replay leaves exactly one completion', async () => {

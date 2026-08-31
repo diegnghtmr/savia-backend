@@ -334,7 +334,7 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
     }>(
       `
       with locked_transactions as materialized (
-        select t.id, t.status, t.occurred_at
+        select t.id, t.workspace_id, t.status, t.occurred_at
           from public.transactions t
          where t.workspace_id = $1::uuid and t.id = any($2::uuid[])
          for update
@@ -346,7 +346,7 @@ export class PostgresReconciliationAdapter implements ReconciliationStore {
         from locked_transactions t
         left join public.ledger_postings lp on lp.workspace_id = t.workspace_id and lp.transaction_id = t.id
        where t.workspace_id = $1::uuid and t.id = any($2::uuid[])
-       group by t.id`,
+       group by t.id, t.status, t.occurred_at`,
       [workspaceId, transactionIds, accountId],
     );
     if (result.rows.length !== transactionIds.length) return 'not-found';

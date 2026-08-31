@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { stdout } from 'node:process';
+import { env } from 'node:process';
 
 const packageRoot = resolve(import.meta.dirname, '..');
-const root = process.env.OPENAPI_AUTHORITY_ROOT ?? packageRoot;
+const root = env.OPENAPI_AUTHORITY_ROOT ?? packageRoot;
 const read = (path) => readFileSync(resolve(root, path), 'utf8');
 const fail = (message) => {
   throw new Error(`OpenAPI authority invalid: ${message}`);

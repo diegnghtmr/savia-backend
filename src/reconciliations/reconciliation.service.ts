@@ -277,75 +277,79 @@ export class ReconciliationService implements ReconciliationsPort {
     });
     try {
       return await this.transaction.run(subject, async (client) => {
-      const role = await this.store.readActiveRole(client, workspaceId);
-      if (
-        role === undefined ||
-        !['owner', 'administrator', 'editor'].includes(role)
-      ) {
-        return { kind: RECONCILIATION_COMPLETE_OUTCOMES.FORBIDDEN };
-      }
-      const existing = await this.idempotencyStore.read(
-        client,
-        subject,
-        route,
-        idempotencyKey,
-        workspaceId,
-      );
-      if (existing) {
-        if (existing.requestFingerprint !== fingerprint)
+        const role = await this.store.readActiveRole(client, workspaceId);
+        if (
+          role === undefined ||
+          !['owner', 'administrator', 'editor'].includes(role)
+        ) {
+          return { kind: RECONCILIATION_COMPLETE_OUTCOMES.FORBIDDEN };
+        }
+        const existing = await this.idempotencyStore.read(
+          client,
+          subject,
+          route,
+          idempotencyKey,
+          workspaceId,
+        );
+        if (existing) {
+          if (existing.requestFingerprint !== fingerprint)
+            return {
+              kind: RECONCILIATION_COMPLETE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+            };
           return {
-            kind: RECONCILIATION_COMPLETE_OUTCOMES.IDEMPOTENCY_CONFLICT,
+            kind: RECONCILIATION_COMPLETE_OUTCOMES.REPLAYED,
+            status: existing.responseStatus,
+            etag: existing.responseEtag,
+            body: existing.responseBody,
           };
-        return {
-          kind: RECONCILIATION_COMPLETE_OUTCOMES.REPLAYED,
-          status: existing.responseStatus,
-          etag: existing.responseEtag,
-          body: existing.responseBody,
-        };
-      }
-      const reconciliation = await this.store.lockAndReadCompletion(
-        client,
-        workspaceId,
-        reconciliationId,
-      );
-      if (!reconciliation)
-        return { kind: RECONCILIATION_COMPLETE_OUTCOMES.NOT_FOUND };
-      if (reconciliation.status !== 'open')
-        return { kind: RECONCILIATION_COMPLETE_OUTCOMES.ALREADY_FINAL };
-      if (!command.createAdjustment && 'adjustmentReason' in command) {
-        return { kind: RECONCILIATION_COMPLETE_OUTCOMES.ADJUSTMENT_INVALID };
-      }
-      if (
-        command.createAdjustment &&
-        reconciliation.difference.amountMinor === '0'
-      ) {
-        return { kind: RECONCILIATION_COMPLETE_OUTCOMES.ADJUSTMENT_INVALID };
-      }
-      const adjustmentAmount = BigInt(reconciliation.difference.amountMinor);
-      if (
-        command.createAdjustment &&
-        (adjustmentAmount < INT64_MIN ||
-          adjustmentAmount > INT64_MAX ||
-          adjustmentAmount === INT64_MIN)
-      ) {
-        throw new ReconciliationCompletionRollbackError('amount-out-of-range');
-      }
-      const validation = await this.store.validateCompletionTransactions(
-        client,
-        workspaceId,
-        reconciliation.accountId,
-        command.transactionIds,
-        reconciliation.statementDate,
-      );
-      if (validation !== 'valid')
-        return { kind: RECONCILIATION_COMPLETE_OUTCOMES.TRANSACTIONS_INVALID };
-      await this.store.reconcileTransactions(
-        client,
-        workspaceId,
-        reconciliation.accountId,
-        command.transactionIds,
-      );
-      if (command.createAdjustment) {
+        }
+        const reconciliation = await this.store.lockAndReadCompletion(
+          client,
+          workspaceId,
+          reconciliationId,
+        );
+        if (!reconciliation)
+          return { kind: RECONCILIATION_COMPLETE_OUTCOMES.NOT_FOUND };
+        if (reconciliation.status !== 'open')
+          return { kind: RECONCILIATION_COMPLETE_OUTCOMES.ALREADY_FINAL };
+        if (!command.createAdjustment && 'adjustmentReason' in command) {
+          return { kind: RECONCILIATION_COMPLETE_OUTCOMES.ADJUSTMENT_INVALID };
+        }
+        if (
+          command.createAdjustment &&
+          reconciliation.difference.amountMinor === '0'
+        ) {
+          return { kind: RECONCILIATION_COMPLETE_OUTCOMES.ADJUSTMENT_INVALID };
+        }
+        const adjustmentAmount = BigInt(reconciliation.difference.amountMinor);
+        if (
+          command.createAdjustment &&
+          (adjustmentAmount < INT64_MIN ||
+            adjustmentAmount > INT64_MAX ||
+            adjustmentAmount === INT64_MIN)
+        ) {
+          throw new ReconciliationCompletionRollbackError(
+            'amount-out-of-range',
+          );
+        }
+        const validation = await this.store.validateCompletionTransactions(
+          client,
+          workspaceId,
+          reconciliation.accountId,
+          command.transactionIds,
+          reconciliation.statementDate,
+        );
+        if (validation !== 'valid')
+          return {
+            kind: RECONCILIATION_COMPLETE_OUTCOMES.TRANSACTIONS_INVALID,
+          };
+        await this.store.reconcileTransactions(
+          client,
+          workspaceId,
+          reconciliation.accountId,
+          command.transactionIds,
+        );
+        if (command.createAdjustment) {
           await this.ledgerWriter.createAdjustmentTransaction(
             client,
             workspaceId,
@@ -358,52 +362,57 @@ export class ReconciliationService implements ReconciliationsPort {
               description: command.adjustmentReason ?? null,
             },
           );
-      }
-      const completed = await this.store.completeReconciliation(
-        client,
-        workspaceId,
-        reconciliationId,
-      );
-      if (!completed)
-        return { kind: RECONCILIATION_COMPLETE_OUTCOMES.ALREADY_FINAL };
-      const written = await this.idempotencyStore.write(
-        client,
-        subject,
-        route,
-        idempotencyKey,
-        fingerprint,
-        200,
-        null,
-        completed,
-        workspaceId,
-      );
-      if (!written) {
-        const reread = await this.idempotencyStore.read(
+        }
+        const completed = await this.store.completeReconciliation(
+          client,
+          workspaceId,
+          reconciliationId,
+        );
+        if (!completed)
+          return { kind: RECONCILIATION_COMPLETE_OUTCOMES.ALREADY_FINAL };
+        const written = await this.idempotencyStore.write(
           client,
           subject,
           route,
           idempotencyKey,
+          fingerprint,
+          200,
+          null,
+          completed,
           workspaceId,
         );
-        if (reread && reread.requestFingerprint === fingerprint)
+        if (!written) {
+          const reread = await this.idempotencyStore.read(
+            client,
+            subject,
+            route,
+            idempotencyKey,
+            workspaceId,
+          );
+          if (reread && reread.requestFingerprint === fingerprint)
+            return {
+              kind: RECONCILIATION_COMPLETE_OUTCOMES.REPLAYED,
+              status: reread.responseStatus,
+              etag: reread.responseEtag,
+              body: reread.responseBody,
+            };
           return {
-            kind: RECONCILIATION_COMPLETE_OUTCOMES.REPLAYED,
-            status: reread.responseStatus,
-            etag: reread.responseEtag,
-            body: reread.responseBody,
+            kind: RECONCILIATION_COMPLETE_OUTCOMES.IDEMPOTENCY_CONFLICT,
           };
-        return { kind: RECONCILIATION_COMPLETE_OUTCOMES.IDEMPOTENCY_CONFLICT };
-      }
-      return {
-        kind: RECONCILIATION_COMPLETE_OUTCOMES.COMPLETED,
-        reconciliation: completed,
-      };
+        }
+        return {
+          kind: RECONCILIATION_COMPLETE_OUTCOMES.COMPLETED,
+          reconciliation: completed,
+        };
       });
     } catch (error: unknown) {
       if (error instanceof ReconciliationCompletionRollbackError) {
         return { kind: error.outcome };
       }
-      if (error instanceof RangeError || error instanceof AmountOutOfRangeError) {
+      if (
+        error instanceof RangeError ||
+        error instanceof AmountOutOfRangeError
+      ) {
         return { kind: RECONCILIATION_COMPLETE_OUTCOMES.AMOUNT_OUT_OF_RANGE };
       }
       throw error;

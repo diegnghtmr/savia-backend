@@ -43,7 +43,11 @@ module.exports = {
       },
       to: {
         path: '^src/([^/]+)/',
-        pathNot: ['^src/reconciliations/', '^src/platform/', '^src/ledger/ledger\\.module\\.ts$'],
+        pathNot: [
+          '^src/reconciliations/',
+          '^src/platform/',
+          '^src/ledger/ledger\\.module\\.ts$',
+        ],
       },
     },
     {

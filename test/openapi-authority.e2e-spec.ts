@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,9 +18,14 @@ const contract = resolve(testRoot, 'openapi/savia.openapi.yaml');
 const provenance = resolve(testRoot, 'openapi/provenance.json');
 const manifest = resolve(testRoot, 'openapi/implementation-manifest.json');
 const readme = resolve(testRoot, 'README.md');
-const planningSnapshot = resolve(testRoot, 'openapi/planning-reference.snapshot.yaml');
+const planningSnapshot = resolve(
+  testRoot,
+  'openapi/planning-reference.snapshot.yaml',
+);
 
-cpSync(resolve(root, 'openapi'), resolve(testRoot, 'openapi'), { recursive: true });
+cpSync(resolve(root, 'openapi'), resolve(testRoot, 'openapi'), {
+  recursive: true,
+});
 cpSync(resolve(root, 'README.md'), readme);
 
 const originals = new Map(
@@ -102,9 +114,23 @@ describe('executable OpenAPI authority', () => {
     const source = readFileSync(contract, 'utf8');
     const operation = source.slice(
       source.indexOf('operationId: completeReconciliation'),
-      source.indexOf('  /v1/reconciliations/{reconciliationId}:', source.indexOf('operationId: completeReconciliation')),
+      source.indexOf(
+        '  /v1/reconciliations/{reconciliationId}:',
+        source.indexOf('operationId: completeReconciliation'),
+      ),
     );
-    const codes = [...operation.matchAll(/^        '(\d{3})':/gm)].map((match) => match[1]);
-    expect(codes).toEqual(['200', '400', '401', '403', '404', '409', '422', '500']);
+    const codes = [...operation.matchAll(/^( {8})'(\d{3})':/gm)].map(
+      (match) => match[2],
+    );
+    expect(codes).toEqual([
+      '200',
+      '400',
+      '401',
+      '403',
+      '404',
+      '409',
+      '422',
+      '500',
+    ]);
   });
 });
