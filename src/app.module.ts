@@ -5,6 +5,7 @@ import { CatalogsModule } from './catalogs/catalogs.module.js';
 import { CurrenciesModule } from './currencies/currencies.module.js';
 import { HealthController } from './health/health.controller.js';
 import { IdentityModule } from './identity/identity.module.js';
+import { JobsModule } from './jobs/jobs.module.js';
 import { LedgerModule } from './ledger/ledger.module.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { RecurringModule } from './recurring/recurring.module.js';
@@ -19,6 +20,7 @@ import { RecurringModule } from './recurring/recurring.module.js';
     CurrenciesModule,
     CatalogsModule,
     RecurringModule,
+    JobsModule,
   ],
 })
 export class AppModule {}

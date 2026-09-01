@@ -196,6 +196,11 @@
       "operationId": "listSubscriptions",
       "method": "GET",
       "path": "/v1/subscriptions"
+    },
+    {
+      "operationId": "getJob",
+      "method": "GET",
+      "path": "/v1/jobs/{jobId}"
     }
   ]
 }
