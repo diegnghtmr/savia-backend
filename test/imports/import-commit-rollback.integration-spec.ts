@@ -222,28 +222,29 @@ describe('import commit and rollback against real PostgreSQL', () => {
     ['CR', 100],
     ['Db', -100],
     ['Débito', -100],
+    ['débito', -100],
+    ['DEBITO', -100],
+    ['debito', -100],
     ['Crédito', 100],
+    ['crédito', 100],
+    ['CREDITO', 100],
+    ['credito', 100],
     ['Cargo', -100],
+    ['CARGO', -100],
+    ['cargo', -100],
     ['Abono', 100],
+    ['ABONO', 100],
+    ['abono', 100],
   ] as const)(
     'accepts separate-column indicator %s',
     async (indicator, expected) => {
       const number =
         5720 +
-        (expected < 0 ? 0 : 20) +
-        [
-          'debit',
-          'credit',
-          'D',
-          'C',
-          'DR',
-          'CR',
-          'Db',
-          'Débito',
-          'Crédito',
-          'Cargo',
-          'Abono',
-        ].indexOf(indicator);
+        (expected < 0 ? 0 : 100) +
+        [...indicator].reduce(
+          (sum, character) => sum + character.codePointAt(0)!,
+          0,
+        );
       const importId = await seedImport(
         number,
         'awaiting_mapping',

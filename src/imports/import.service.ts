@@ -37,12 +37,14 @@ export interface ImportTransaction {
 export const IMPORT_COMMIT_CALLBACK_TIMEOUT_MS = 5_000;
 class ImportValidationError extends Error {}
 
-const DEBIT_INDICATORS = new Set(['debit', 'd', 'dr', 'db', 'débito', 'cargo']);
-const CREDIT_INDICATORS = new Set(['credit', 'c', 'cr', 'crédito', 'abono']);
+const DEBIT_INDICATORS = new Set(['debit', 'd', 'dr', 'db', 'debito', 'cargo']);
+const CREDIT_INDICATORS = new Set(['credit', 'c', 'cr', 'credito', 'abono']);
 function separateColumnAmount(value: unknown, amount: number): number {
   const indicator = String(value ?? '')
     .trim()
-    .toLocaleLowerCase();
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
   if (DEBIT_INDICATORS.has(indicator)) return -Math.abs(amount);
   if (CREDIT_INDICATORS.has(indicator)) return Math.abs(amount);
   throw new ImportValidationError(
