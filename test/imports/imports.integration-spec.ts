@@ -1,4 +1,4 @@
-// Migrations under test: 202608310005_import_jobs.sql
+// Migrations under test: 202608310005_import_jobs.sql, 202608310006_import_commit_rollback.sql
 import multipart from '@fastify/multipart';
 import ExcelJS from 'exceljs';
 import { Pool } from 'pg';
