@@ -226,7 +226,7 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
       expect(rlsRes.rows[0].relforcerowsecurity).toBe(true);
     });
 
-    it('3. savia_application holds SELECT on every column, INSERT on exactly (account_id, amount_minor, category_id, created_by, currency, description, notes, occurred_at, payee_id, receipt_id, status, tag_ids, type, workspace_id), UPDATE on exactly (category_id, description, notes, occurred_at, payee_id, status, tag_ids, updated_at, version, voided_at)', async () => {
+    it('3. savia_application holds SELECT on every column, INSERT on exactly (account_id, amount_minor, category_id, created_by, currency, description, import_job_id, notes, occurred_at, payee_id, receipt_id, status, tag_ids, type, workspace_id), UPDATE on exactly (category_id, description, import_job_id, notes, occurred_at, payee_id, status, tag_ids, updated_at, version, voided_at)', async () => {
       const result = await admin.query<{
         column_name: string;
         readable: boolean;
@@ -254,6 +254,7 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
         'currency',
         'description',
         'id',
+        'import_job_id',
         'notes',
         'occurred_at',
         'payee_id',
@@ -279,6 +280,7 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
         'created_by',
         'currency',
         'description',
+        'import_job_id',
         'notes',
         'occurred_at',
         'payee_id',
@@ -302,6 +304,7 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
       expect(updatable).toEqual([
         'category_id',
         'description',
+        'import_job_id',
         'notes',
         'occurred_at',
         'payee_id',
@@ -342,6 +345,7 @@ describe('Workspace transactions schema, constraints, RLS, and grants (202608240
         'currency',
         'description',
         'id',
+        'import_job_id',
         'notes',
         'occurred_at',
         'payee_id',
