@@ -1,4 +1,6 @@
 begin;
+-- RULING 97 / RULING 103: rejected analysis uploads return 422 and create no job;
+-- failed is reserved for post-creation failures in Slice 5.6.
 create table public.import_jobs (
   id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id) on delete cascade,
   file_name text not null, status text not null constraint import_jobs_status_check check (status in ('uploaded','analyzing','awaiting_mapping','awaiting_confirmation','processing','completed','failed','rolled_back')),
@@ -19,7 +21,7 @@ create index import_job_rows_parent_idx on public.import_job_rows(workspace_id,i
 alter table public.import_jobs enable row level security; alter table public.import_jobs force row level security;
 alter table public.import_job_rows enable row level security; alter table public.import_job_rows force row level security;
 grant select on public.import_jobs to savia_application; grant insert (id,workspace_id,file_name,status,account_id,detected_format,total_rows,valid_rows,duplicate_rows,error_rows,error,created_by,created_at,completed_at) on public.import_jobs to savia_application;
-grant select,insert on public.import_job_rows to savia_application;
+grant insert (id,workspace_id,import_job_id,row_number,raw_values,parsed_date,parsed_amount_minor,parsed_description,classification,error) on public.import_job_rows to savia_application;
 create policy application_reads_import_jobs on public.import_jobs for select to savia_application using (public.workspace_actor_active_role(workspace_id) in ('owner','administrator','editor','viewer'));
 create policy application_inserts_import_jobs on public.import_jobs for insert to savia_application with check (public.workspace_actor_active_role(workspace_id) in ('owner','administrator','editor') and created_by = nullif(current_setting('app.subject_id',true),'')::uuid);
 create policy application_reads_import_job_rows on public.import_job_rows for select to savia_application using (public.workspace_actor_active_role(workspace_id) in ('owner','administrator','editor','viewer'));

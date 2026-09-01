@@ -425,15 +425,24 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
     const client = await admin.connect();
     try {
       await client.query('set role savia_application');
-      await expect(
-        client.query(
-          `insert into public.import_job_rows (id,workspace_id,import_job_id,row_number,raw_values,classification,created_at) values ($1,$2,$3,2,'[]','error',now())`,
-          ['00000000-0000-4000-8000-000000005524', workspace, jobId],
-        ),
-      ).rejects.toThrow();
+      await expectForbiddenColumnWrite(client);
     } finally {
       await client.query('reset role');
       client.release();
     }
   });
 });
+
+async function expectForbiddenColumnWrite(client: {
+  query: (sql: string, values?: readonly unknown[]) => Promise<unknown>;
+}): Promise<void> {
+  try {
+    await client.query(
+      `insert into public.import_job_rows (id,workspace_id,import_job_id,row_number,raw_values,classification,created_at) values ($1,$2,$3,2,'[]','error',now())`,
+      ['00000000-0000-4000-8000-000000005524', workspace, jobId],
+    );
+    throw new Error('forbidden column write unexpectedly succeeded');
+  } catch (error) {
+    expect(error).toMatchObject({ code: '42501' });
+  }
+}
