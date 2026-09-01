@@ -14,6 +14,7 @@ create table public.import_jobs (
 create table public.import_job_rows (
   id uuid primary key default gen_random_uuid(), workspace_id uuid not null, import_job_id uuid not null, row_number integer not null check (row_number > 1), raw_values jsonb not null,
   parsed_date date, parsed_amount_minor bigint, parsed_description text, classification text not null constraint import_job_rows_classification_check check (classification in ('valid','duplicate','error')), error jsonb,
+  created_at timestamptz not null default now(),
   constraint import_job_rows_workspace_id_id_key unique (workspace_id,id), constraint import_job_rows_parent_fk foreign key (workspace_id,import_job_id) references public.import_jobs(workspace_id,id) on delete cascade,
   constraint import_job_rows_error_check check ((classification='error' and error is not null) or (classification in ('valid','duplicate') and error is null))
 );
