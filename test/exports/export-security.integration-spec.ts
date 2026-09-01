@@ -64,4 +64,41 @@ describe('storage export object tenant isolation', () => {
     );
     expect(names).toEqual([]);
   });
+
+  it('allows the owning workspace and rejects malformed tenant paths', async () => {
+    const own = await tx.runRead(a, async (client) =>
+      (await client.query(`select name from storage.objects where bucket_id='exports' and name=$1`, [`${wa}/ledger.csv`])).rows,
+    );
+    expect(own).toHaveLength(1);
+    for (const name of [`/${wa}/ledger.csv`, `${wa}`, `x/${wa}/ledger.csv`, `${wa.toUpperCase()}/ledger.csv`, `${wa.replace('0', 'О')}/ledger.csv`]) {
+      const rows = await tx.runRead(a, async (client) =>
+        (await client.query(`select name from storage.objects where bucket_id='exports' and name=$1`, [name])).rows,
+      );
+      expect(rows).toEqual([]);
+    }
+  });
+
+  it('has no application mutation policy or grant on storage.objects', async () => {
+    const policies = await admin.query<{ cmd: string }>(
+      `select cmd from pg_policies where schemaname='storage' and tablename='objects' and roles @> array['savia_application']::name[]`,
+    );
+    expect(policies.rows.map((row) => row.cmd)).not.toContain('INSERT');
+    expect(policies.rows.map((row) => row.cmd)).not.toContain('UPDATE');
+    expect(policies.rows.map((row) => row.cmd)).not.toContain('DELETE');
+    const grants = await admin.query<{ privilege_type: string }>(
+      `select privilege_type from information_schema.role_table_grants where grantee='savia_application' and table_schema='storage' and table_name='objects'`,
+    );
+    expect(grants.rows.map((row) => row.privilege_type)).not.toEqual(expect.arrayContaining(['INSERT', 'UPDATE', 'DELETE']));
+  });
+
+  it('enforces reservation and result fields by terminal status', async () => {
+    await expect(admin.query(
+      `insert into public.export_jobs (workspace_id,format,resource,status,object_path,download_url,expires_at,created_by) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [wa, 'csv', 'accounts', 'queued', `${wa}/queued.csv`, 'https://bad.test', new Date(), a],
+    )).rejects.toThrow();
+    await expect(admin.query(
+      `insert into public.export_jobs (workspace_id,format,resource,status,object_path,created_by,completed_at) values ($1,'csv','accounts','completed',$2,$3,now())`,
+      [wa, `${wa}/complete.csv`, a],
+    )).rejects.toThrow();
+  });
 });

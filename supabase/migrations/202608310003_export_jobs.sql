@@ -8,6 +8,7 @@ begin;
 -- RULING 89: unsupported declared resources are explicit 422 outcomes.
 -- RULING 90: resourceId and date ranges are validated by the command boundary.
 -- RULING 91: source reads reuse the existing account and transaction derivations.
+-- RULING 93: reservation paths may exist before terminal artifact results.
 
 create table public.export_jobs (
   id uuid primary key default gen_random_uuid(),
@@ -29,7 +30,7 @@ create table public.export_jobs (
   constraint export_jobs_terminal_fields_check check (
     (status = 'completed' and completed_at is not null and object_path is not null and download_url is not null and expires_at is not null and error is null)
     or (status = 'failed' and completed_at is not null and error is not null and object_path is null and download_url is null and expires_at is null)
-    or (status in ('queued', 'processing') and completed_at is null and error is null)
+     or (status in ('queued', 'processing') and completed_at is null and error is null and download_url is null and expires_at is null)
   ),
   constraint export_jobs_error_problem_details_shape_check check (
     error is null or (
