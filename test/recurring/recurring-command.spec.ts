@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createRecurringRuleCommand,
   RecurringCommandValidationError,
@@ -24,6 +24,9 @@ const VALID_REQUEST = {
 };
 
 describe('createRecurringRuleCommand validation (RULING 51, 52, 53, 55)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it('accepts a valid monthly recurring rule and COMPUTEs nextOccurrenceAt (RULING 51, 54)', () => {
     const command = createRecurringRuleCommand(VALID_REQUEST);
 
@@ -383,6 +386,8 @@ describe('createRecurringRuleCommand validation (RULING 51, 52, 53, 55)', () => 
     });
 
     it('accepts endsAt when nextOccurrenceAt falls before or on endsAt', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'));
       const command = createRecurringRuleCommand({
         ...VALID_REQUEST,
         frequency: 'monthly',
