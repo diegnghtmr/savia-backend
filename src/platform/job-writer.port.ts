@@ -21,5 +21,5 @@ export interface JobWriter {
     status: 'completed' | 'failed',
     resultResourceId: string | null,
     error: Record<string, unknown> | null,
-  ): Promise<TerminalJob>;
+  ): Promise<Record<string, unknown>>;
 }

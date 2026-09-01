@@ -1,5 +1,5 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
-import type { TerminalJob as Job } from '../platform/job-writer.port.js';
+type Job = Record<string, unknown>;
 
 export const IMPORTS_PORT = Symbol('ImportsPort');
 export const IMPORT_FORMATS = ['csv', 'xlsx', 'qif', 'ofx', 'qfx'] as const;
