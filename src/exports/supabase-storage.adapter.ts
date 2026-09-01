@@ -66,20 +66,44 @@ export class SupabaseStorageAdapter implements ExportStorage {
     );
     if (!response.ok)
       throw new Error(`Storage signing failed with status ${response.status}.`);
-    const body = (await response.json()) as { signedURL?: string };
+    const body = (await response.json()) as {
+      signedURL?: string;
+      expiresAt?: string;
+    };
     if (!body.signedURL) throw new Error('Storage signing returned no URL.');
+    const signedUrl = new URL(body.signedURL, c.url);
+    const token = signedUrl.searchParams.get('token');
+    const tokenExpiry = token ? jwtExpiry(token) : undefined;
+    const authoritativeExpiry = body.expiresAt
+      ? new Date(body.expiresAt)
+      : tokenExpiry;
+    if (!authoritativeExpiry || Number.isNaN(authoritativeExpiry.getTime()))
+      throw new Error('Storage signing returned no authoritative expiry.');
     return {
       url: body.signedURL.startsWith('http')
         ? body.signedURL
         : `${c.url}/storage/v1${body.signedURL}`,
-      expiresAt: new Date(Date.now() + seconds * 1000),
+      expiresAt: authoritativeExpiry,
     };
   }
   public async remove(path: string): Promise<void> {
     const c = this.getConfig();
-    await fetch(
+    const response = await fetch(
       `${c.url}/storage/v1/object/exports/${path.split('/').map(encodeURIComponent).join('/')}`,
       { method: 'DELETE', headers: this.headers() },
     );
+    if (!response.ok)
+      throw new Error(`Storage removal failed with status ${response.status}.`);
+  }
+}
+
+function jwtExpiry(token: string): Date | undefined {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'),
+    ) as { exp?: unknown };
+    return typeof payload.exp === 'number' ? new Date(payload.exp * 1000) : undefined;
+  } catch {
+    return undefined;
   }
 }
