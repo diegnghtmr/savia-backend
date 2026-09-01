@@ -2,15 +2,12 @@ import type { OnApplicationShutdown } from '@nestjs/common';
 
 import type { PgClient, PgPool } from './postgres-pool.js';
 import { UUID_PATTERN } from './uuid.js';
-const TIMEOUTS = {
+export const TIMEOUTS = {
   checkoutTimeoutMs: 1_000,
   lockTimeoutMs: 1_000,
   statementTimeoutMs: 1_000,
   idleTransactionTimeoutMs: 1_000,
-  // Import commits persist the advertised 10,000-row maximum in bounded
-  // set-based statements. Five seconds is the deliberate synchronous budget
-  // for that operation; statement and lock budgets remain one second.
-  callbackTimeoutMs: 5_000,
+  callbackTimeoutMs: 1_000,
 } as const;
 type TransactionTimeoutOptions = Partial<Record<keyof typeof TIMEOUTS, number>>;
 export type TransactionClient = Pick<PgClient, 'query'>;

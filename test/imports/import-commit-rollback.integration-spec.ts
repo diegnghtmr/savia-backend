@@ -7,6 +7,7 @@ import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempote
 import { PostgresJobsAdapter } from '../../src/jobs/postgres-jobs.adapter.js';
 import { PostgresTransactionAdapter } from '../../src/ledger/postgres-transaction.adapter.js';
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import { IMPORT_COMMIT_CALLBACK_TIMEOUT_MS } from '../../src/imports/import.service.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import type { JobWriter } from '../../src/platform/job-writer.port.js';
@@ -35,6 +36,9 @@ describe('import commit and rollback against real PostgreSQL', () => {
       new PostgresIdempotencyAdapter(),
       new PostgresJobsAdapter() as unknown as JobWriter,
       new PostgresTransactionAdapter(),
+      new PgTransaction(pool, {
+        callbackTimeoutMs: IMPORT_COMMIT_CALLBACK_TIMEOUT_MS,
+      }),
     );
     await admin.query(
       'insert into auth.users (id,email) values ($1,$2),($3,$4)',

@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   CommitOutcomeUnknownError,
   PgTransaction,
+  TIMEOUTS,
   TransactionTimeoutError,
   type TransactionClient,
 } from '../../src/platform/pg-transaction.js';
@@ -25,6 +26,9 @@ describe('PgTransaction', () => {
   it('rejects invalid input before acquisition', async () => {
     let acquired = false; const transaction = new PgTransaction({ connect: async () => { acquired = true; throw Error(); }, end: async () => undefined });
     await expect(transaction.run('invalid', async () => undefined)).rejects.toThrow('subject must be a valid UUID.'); expect(acquired).toBe(false);
+  });
+  it('keeps the shared callback timeout at one second', () => {
+    expect(TIMEOUTS.callbackTimeoutMs).toBe(1_000);
   });
   it('uses ordered local setup and rolls back all begun stages', async () => {
     const expected = ['BEGIN', 'SET LOCAL ROLE savia_application', "select set_config('app.subject_id', $1, true)", 'select set_config($1, $2::text, true)', 'select set_config($1, $2::text, true)', 'select set_config($1, $2::text, true)', 'select pg_advisory_xact_lock(hashtextextended($1, 0))'];

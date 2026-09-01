@@ -34,6 +34,7 @@ export interface ImportTransaction {
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T>;
 }
+export const IMPORT_COMMIT_CALLBACK_TIMEOUT_MS = 5_000;
 class ImportValidationError extends Error {}
 
 const DEBIT_INDICATORS = new Set(['debit', 'd', 'dr', 'db', 'débito', 'cargo']);
@@ -85,6 +86,7 @@ export class ImportService implements ImportsPort {
     private readonly idem: IdempotencyStore,
     private readonly jobs: JobWriter,
     private readonly ledger: LedgerWriter,
+    private readonly commitTx: ImportTransaction = tx,
   ) {}
   public async createImportJob(
     subject: string,
@@ -193,7 +195,7 @@ export class ImportService implements ImportsPort {
   ): Promise<ImportMutationOutcome> {
     const route = 'POST /v1/import-jobs/{importJobId}/commit';
     const fingerprint = computeRequestFingerprint({ id, ...command });
-    return this.tx
+    return this.commitTx
       .run(subject, async (client) => {
         await this.store.lockWorkspace(client, workspaceId);
         const account = await this.store.lockAccount(
