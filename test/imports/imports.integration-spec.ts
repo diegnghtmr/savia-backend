@@ -273,6 +273,21 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       payload: duplicateHint,
     });
     expect(response.statusCode).toBe(422);
+    const excessFiles = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="one.csv"\r\n\r\n${csv}\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="two.csv"\r\n\r\n${csv}\r\n--${boundary}--\r\n`,
+    );
+    const filesResponse = await app.inject({
+      method: 'POST',
+      url: '/v1/import-jobs',
+      headers: {
+        authorization: 'Bearer accepted-token',
+        'x-workspace-id': workspace,
+        'idempotency-key': '00000000-0000-4000-8000-000000005525',
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload: excessFiles,
+    });
+    expect(filesResponse.statusCode).toBe(422);
   });
   it('rejects an upload over the row bound', async () => {
     const content = Buffer.from(
