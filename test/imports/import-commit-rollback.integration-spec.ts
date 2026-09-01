@@ -30,7 +30,7 @@ describe('import commit and rollback against real PostgreSQL', () => {
     admin = new Pool({ connectionString: url });
     const pool = new PostgresPool(PostgresConfig.fromUrl(url));
     service = new ImportService(
-      new PgTransaction(pool, { callbackTimeoutMs: 120_000 }),
+      new PgTransaction(pool),
       new PostgresImportAdapter(),
       new PostgresIdempotencyAdapter(),
       new PostgresJobsAdapter() as unknown as JobWriter,
@@ -191,6 +191,102 @@ describe('import commit and rollback against real PostgreSQL', () => {
       );
       expect(result.kind).toBe('ok');
       expect(await amounts(importId)).toEqual([String(expected)]);
+    },
+  );
+
+  it.each([
+    ['debit', -100],
+    ['credit', 100],
+    ['D', -100],
+    ['C', 100],
+    ['DR', -100],
+    ['CR', 100],
+    ['Débito', -100],
+    ['Crédito', 100],
+    ['Cargo', -100],
+    ['Abono', 100],
+  ] as const)(
+    'accepts separate-column indicator %s',
+    async (indicator, expected) => {
+      const number =
+        5720 +
+        (expected < 0 ? 0 : 10) +
+        [
+          'debit',
+          'credit',
+          'D',
+          'C',
+          'DR',
+          'CR',
+          'Débito',
+          'Crédito',
+          'Cargo',
+          'Abono',
+        ].indexOf(indicator);
+      const importId = await seedImport(
+        number,
+        'awaiting_mapping',
+        [['2026-01-01', 100, indicator, indicator]],
+        ['date', 'amount', 'description', 'indicator'],
+      );
+      const result = await service.commitImport(
+        subject,
+        workspace,
+        importId,
+        {
+          accountId: account,
+          columnMapping: {
+            date: 'date',
+            amount: 'amount',
+            description: 'description',
+            indicator: 'debitCreditIndicator',
+          },
+          debitSign: 'separate_column',
+          skipDuplicateCandidates: false,
+        },
+        key(number),
+      );
+      expect(result.kind).toBe('ok');
+      expect(await amounts(importId)).toEqual([String(expected)]);
+    },
+  );
+
+  it.each(['unknown', '  '])(
+    'rejects blank or unknown indicator atomically (%s)',
+    async (indicator) => {
+      const number = indicator === 'unknown' ? 5741 : 5742;
+      const importId = await seedImport(
+        number,
+        'awaiting_mapping',
+        [['2026-01-01', 100, 'Invalid', indicator]],
+        ['date', 'amount', 'description', 'indicator'],
+      );
+      const result = await service.commitImport(
+        subject,
+        workspace,
+        importId,
+        {
+          accountId: account,
+          columnMapping: {
+            date: 'date',
+            amount: 'amount',
+            description: 'description',
+            indicator: 'debitCreditIndicator',
+          },
+          debitSign: 'separate_column',
+          skipDuplicateCandidates: false,
+        },
+        key(number),
+      );
+      expect(result.kind).toBe('invalid');
+      expect(
+        (
+          await admin.query(
+            'select count(*)::int as count from public.transactions where import_job_id=$1',
+            [importId],
+          )
+        ).rows[0].count,
+      ).toBe(0);
     },
   );
 

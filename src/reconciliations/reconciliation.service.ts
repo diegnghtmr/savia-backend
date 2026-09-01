@@ -48,6 +48,9 @@ export class ReconciliationService implements ReconciliationsPort {
       createImportedTransaction: async () => {
         throw new Error('Ledger writer is not configured.');
       },
+      createImportedTransactions: async () => {
+        throw new Error('Ledger writer is not configured.');
+      },
       voidTransaction: async () => undefined,
     },
   ) {}

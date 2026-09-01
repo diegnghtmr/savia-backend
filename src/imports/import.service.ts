@@ -36,6 +36,19 @@ export interface ImportTransaction {
 }
 class ImportValidationError extends Error {}
 
+const DEBIT_INDICATORS = new Set(['debit', 'd', 'dr', 'débito', 'cargo']);
+const CREDIT_INDICATORS = new Set(['credit', 'c', 'cr', 'crédito', 'abono']);
+function separateColumnAmount(value: unknown, amount: number): number {
+  const indicator = String(value ?? '')
+    .trim()
+    .toLocaleLowerCase();
+  if (DEBIT_INDICATORS.has(indicator)) return -Math.abs(amount);
+  if (CREDIT_INDICATORS.has(indicator)) return Math.abs(amount);
+  throw new ImportValidationError(
+    'debitCreditIndicator must be a recognized debit or credit token.',
+  );
+}
+
 function parseImportDate(value: string, format: string): string {
   const match =
     format === 'YYYY-MM-DD'
@@ -182,6 +195,15 @@ export class ImportService implements ImportsPort {
     const fingerprint = computeRequestFingerprint({ id, ...command });
     return this.tx
       .run(subject, async (client) => {
+        await this.store.lockWorkspace(client, workspaceId);
+        const account = await this.store.lockAccount(
+          client,
+          workspaceId,
+          command.accountId,
+        );
+        if (!account) return { kind: IMPORT_MUTATION_OUTCOMES.NOT_FOUND };
+        if (account.status === 'closed')
+          return { kind: IMPORT_MUTATION_OUTCOMES.ACCOUNT_CLOSED };
         const role = await this.store.readActiveRole(client, workspaceId);
         if (!role || !['owner', 'administrator', 'editor'].includes(role))
           return { kind: IMPORT_MUTATION_OUTCOMES.FORBIDDEN };
@@ -207,14 +229,6 @@ export class ImportService implements ImportsPort {
             kind: IMPORT_MUTATION_OUTCOMES.INVALID,
             detail: 'Import job is not awaiting_mapping.',
           };
-        const account = await this.store.lockAccount(
-          client,
-          workspaceId,
-          command.accountId,
-        );
-        if (!account) return { kind: IMPORT_MUTATION_OUTCOMES.NOT_FOUND };
-        if (account.status === 'closed')
-          return { kind: IMPORT_MUTATION_OUTCOMES.ACCOUNT_CLOSED };
         const targets = new Set(Object.values(command.columnMapping));
         for (const required of ['date', 'amount', 'description'])
           if (!targets.has(required))
@@ -268,6 +282,11 @@ export class ImportService implements ImportsPort {
             detail: 'dateFormat is not supported.',
           };
         const rows = await this.store.findRows(client, workspaceId, id);
+        const prepared: Array<{
+          date: string;
+          amountMinor: string;
+          description: string;
+        }> = [];
         for (const row of rows) {
           if (row.classification !== 'valid') continue;
           const date = parseImportDate(
@@ -282,11 +301,10 @@ export class ImportService implements ImportsPort {
           const sign = command.debitSign ?? DEBIT_SIGNS.NEGATIVE;
           if (sign === DEBIT_SIGNS.POSITIVE) amount = -amount;
           if (sign === DEBIT_SIGNS.SEPARATE_COLUMN)
-            amount = /debit/i.test(
-              String(row.rawValues[index('debitCreditIndicator')] ?? ''),
-            )
-              ? -Math.abs(amount)
-              : Math.abs(amount);
+            amount = separateColumnAmount(
+              row.rawValues[index('debitCreditIndicator')],
+              amount,
+            );
           if (!Number.isSafeInteger(amount))
             throw new ImportValidationError(
               'Computed amount cannot be stored.',
@@ -294,32 +312,36 @@ export class ImportService implements ImportsPort {
           const description = String(
             row.rawValues[index('description')] ?? '',
           ).trim();
-          if (
-            command.skipDuplicateCandidates !== false &&
-            (await this.store.findExisting(
-              client,
-              workspaceId,
-              command.accountId,
-              date,
-              String(amount),
-              description,
-            ))
-          )
-            continue;
-          await this.ledger.createImportedTransaction(
-            client,
-            workspaceId,
-            subject,
-            {
-              accountId: command.accountId,
-              amountMinor: String(amount),
-              currency: account.currency,
-              occurredAt: `${date}T00:00:00.000Z`,
-              description,
-              importJobId: id,
-            },
-          );
+          prepared.push({ date, amountMinor: String(amount), description });
         }
+        const duplicateIndexes =
+          command.skipDuplicateCandidates !== false
+            ? await this.store.findExistingBatch(
+                client,
+                workspaceId,
+                command.accountId,
+                prepared,
+              )
+            : new Set<number>();
+        await this.ledger.createImportedTransactions(
+          client,
+          workspaceId,
+          subject,
+          prepared.flatMap((row, index) =>
+            duplicateIndexes.has(index)
+              ? []
+              : [
+                  {
+                    accountId: command.accountId,
+                    amountMinor: row.amountMinor,
+                    currency: account.currency,
+                    occurredAt: `${row.date}T00:00:00.000Z`,
+                    description: row.description,
+                    importJobId: id,
+                  },
+                ],
+          ),
+        );
         const completed = await this.store.complete(
           client,
           workspaceId,
@@ -329,7 +351,7 @@ export class ImportService implements ImportsPort {
         );
         if (!completed)
           return {
-            kind: IMPORT_MUTATION_OUTCOMES.INVALID,
+            kind: IMPORT_MUTATION_OUTCOMES.CONFLICT,
             detail: 'Import job could not be completed.',
           };
         const job = await this.jobs.createTerminalJob(
@@ -376,6 +398,7 @@ export class ImportService implements ImportsPort {
     const fingerprint = computeRequestFingerprint({ id });
     return this.tx
       .run(subject, async (client) => {
+        await this.store.lockWorkspace(client, workspaceId);
         const role = await this.store.readActiveRole(client, workspaceId);
         if (!role || !['owner', 'administrator', 'editor'].includes(role))
           return { kind: IMPORT_MUTATION_OUTCOMES.FORBIDDEN };
@@ -394,14 +417,31 @@ export class ImportService implements ImportsPort {
                 body: existing.responseBody,
               }
             : { kind: IMPORT_MUTATION_OUTCOMES.CONFLICT };
-        const importJob = await this.store.find(client, workspaceId, id);
+        let importJob = await this.store.find(client, workspaceId, id);
         if (!importJob) return { kind: IMPORT_MUTATION_OUTCOMES.NOT_FOUND };
         if (importJob.status !== 'completed' || !importJob.accountId)
           return {
             kind: IMPORT_MUTATION_OUTCOMES.INVALID,
             detail: 'Import job is not completed.',
           };
-        await this.store.lockAccount(client, workspaceId, importJob.accountId);
+        const account = await this.store.lockAccount(
+          client,
+          workspaceId,
+          importJob.accountId,
+        );
+        if (!account) return { kind: IMPORT_MUTATION_OUTCOMES.NOT_FOUND };
+        if (account.status === 'closed')
+          return { kind: IMPORT_MUTATION_OUTCOMES.ACCOUNT_CLOSED };
+        importJob = await this.store.find(client, workspaceId, id);
+        if (
+          !importJob ||
+          importJob.status !== 'completed' ||
+          !importJob.accountId
+        )
+          return {
+            kind: IMPORT_MUTATION_OUTCOMES.CONFLICT,
+            detail: 'Import job state changed while waiting for its locks.',
+          };
         const importedTransactions = await this.store.findImportedTransactions(
           client,
           workspaceId,
@@ -431,13 +471,18 @@ export class ImportService implements ImportsPort {
               'Imported transaction could not be voided.',
             );
         }
-        await this.store.complete(
+        const rolledBack = await this.store.complete(
           client,
           workspaceId,
           id,
           importJob.accountId,
           'rolled_back',
         );
+        if (!rolledBack)
+          return {
+            kind: IMPORT_MUTATION_OUTCOMES.CONFLICT,
+            detail: 'Import job was already transitioned.',
+          };
         const job = await this.jobs.createTerminalJob(
           client,
           workspaceId,

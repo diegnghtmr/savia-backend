@@ -147,6 +147,15 @@ export class PostgresImportAdapter implements ImportStore {
     );
     return result.rows[0];
   }
+  public async lockWorkspace(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<void> {
+    await client.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [`workspace:${workspaceId.toLowerCase()}`],
+    );
+  }
   public async findRows(
     client: TransactionClient,
     workspaceId: string,
@@ -168,8 +177,14 @@ export class PostgresImportAdapter implements ImportStore {
     status: 'completed' | 'rolled_back',
   ): Promise<ImportJob | undefined> {
     const result = await client.query<JobRow>(
-      "update public.import_jobs set status=$3,account_id=$4::uuid,completed_at=now() where workspace_id=$1::uuid and id=$2::uuid and status in ('awaiting_mapping','completed') returning id::text,status,file_name,account_id,detected_format,total_rows,valid_rows,duplicate_rows,error_rows,created_at,source_columns",
-      [workspaceId, importJobId, status, accountId],
+      'update public.import_jobs set status=$3,account_id=$4::uuid,completed_at=now() where workspace_id=$1::uuid and id=$2::uuid and status=$5 returning id::text,status,file_name,account_id,detected_format,total_rows,valid_rows,duplicate_rows,error_rows,created_at,source_columns',
+      [
+        workspaceId,
+        importJobId,
+        status,
+        accountId,
+        status === 'completed' ? 'awaiting_mapping' : 'completed',
+      ],
     );
     return result.rows[0] ? map(result.rows[0]) : undefined;
   }
@@ -191,6 +206,30 @@ export class PostgresImportAdapter implements ImportStore {
         normalizeImportDescription(row.description) ===
           normalizeImportDescription(description),
     );
+  }
+  public async findExistingBatch(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    rows: readonly { date: string; amountMinor: string; description: string }[],
+  ): Promise<ReadonlySet<number>> {
+    if (!rows.length) return new Set();
+    const values: unknown[] = [];
+    const tuples = rows
+      .map((row, index) => {
+        const base = index * 4;
+        values.push(index, row.date, row.amountMinor, row.description);
+        return `($${base + 1}::integer,$${base + 2}::date,$${base + 3},$${base + 4})`;
+      })
+      .join(',');
+    const workspaceParam = values.length + 1;
+    const accountParam = values.length + 2;
+    const result = await client.query<{ row_index: number }>(
+      `select input.row_index from (values ${tuples}) input(row_index,occurred_at,amount_minor,description)
+       where exists (select 1 from public.transactions t where t.workspace_id=$${workspaceParam}::uuid and t.account_id=$${accountParam}::uuid and t.occurred_at::date=input.occurred_at and t.amount_minor=input.amount_minor::bigint and lower(regexp_replace(trim(t.description), '\\s+', ' ', 'g'))=lower(regexp_replace(trim(input.description), '\\s+', ' ', 'g')))`,
+      [...values, workspaceId, accountId],
+    );
+    return new Set(result.rows.map((row) => row.row_index));
   }
   public async findImportedTransactions(
     client: TransactionClient,

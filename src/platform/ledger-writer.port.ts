@@ -31,6 +31,12 @@ export interface LedgerWriter {
     subject: string,
     command: ImportedTransactionCommand,
   ): Promise<unknown>;
+  createImportedTransactions(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    commands: readonly ImportedTransactionCommand[],
+  ): Promise<void>;
   voidTransaction(
     client: TransactionClient,
     workspaceId: string,

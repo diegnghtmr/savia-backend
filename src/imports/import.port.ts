@@ -140,6 +140,7 @@ export interface ImportStore {
     workspaceId: string,
     accountId: string,
   ): Promise<{ status: string; currency: string } | undefined>;
+  lockWorkspace(client: TransactionClient, workspaceId: string): Promise<void>;
   findRows(
     client: TransactionClient,
     workspaceId: string,
@@ -153,6 +154,12 @@ export interface ImportStore {
     amountMinor: string,
     description: string,
   ): Promise<boolean>;
+  findExistingBatch(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    rows: readonly { date: string; amountMinor: string; description: string }[],
+  ): Promise<ReadonlySet<number>>;
   findImportedTransactions(
     client: TransactionClient,
     workspaceId: string,
