@@ -177,9 +177,10 @@ export class ImportsController {
           : outcome.kind === IMPORT_MUTATION_OUTCOMES.CONFLICT ||
               outcome.kind === IMPORT_MUTATION_OUTCOMES.INVALID ||
               outcome.kind === IMPORT_MUTATION_OUTCOMES.ACCOUNT_CLOSED
-            ? outcome.kind === IMPORT_MUTATION_OUTCOMES.INVALID &&
-              (outcome.detail?.includes('not') ||
-                outcome.detail?.includes('reconciled'))
+            ? outcome.kind === IMPORT_MUTATION_OUTCOMES.CONFLICT ||
+              (outcome.kind === IMPORT_MUTATION_OUTCOMES.INVALID &&
+                (outcome.detail?.includes('not') ||
+                  outcome.detail?.includes('reconciled')))
               ? 409
               : 422
             : 500;

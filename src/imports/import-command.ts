@@ -4,6 +4,7 @@ import {
   type ImportCommand,
   type CommitImportCommand,
 } from './import.port.js';
+import { UUID_PATTERN } from '../platform/uuid.js';
 export function validateFormatHint(
   value: unknown,
 ): ImportCommand['formatHint'] {
@@ -18,13 +19,25 @@ export function validateCommitImportCommand(
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Commit request must be an object.');
   const input = value as Record<string, unknown>;
+  const allowed = new Set([
+    'accountId',
+    'columnMapping',
+    'dateFormat',
+    'debitSign',
+    'skipDuplicateCandidates',
+  ]);
+  if (Object.keys(input).some((key) => !allowed.has(key)))
+    throw new Error('Commit request contains unknown properties.');
   if (
     typeof input.accountId !== 'string' ||
+    !UUID_PATTERN.test(input.accountId.trim()) ||
     !input.columnMapping ||
     typeof input.columnMapping !== 'object' ||
     Array.isArray(input.columnMapping)
   )
-    throw new Error('accountId and columnMapping are required.');
+    throw new Error(
+      'accountId must be a valid UUID and columnMapping is required.',
+    );
   const columnMapping: Record<string, string> = {};
   for (const [source, target] of Object.entries(input.columnMapping))
     if (typeof target !== 'string')
