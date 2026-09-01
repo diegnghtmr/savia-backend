@@ -5,7 +5,11 @@ function columns(rows: readonly Record<string, unknown>[]): string[] {
 }
 export function serializeCsv(rows: readonly Record<string, unknown>[]): Buffer {
   const cols = columns(rows);
-  const esc = (v: unknown) => `"${String(v ?? '').replaceAll('"', '""')}"`;
+  const neutralize = (value: string): string => {
+    if (/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value)) return value;
+    return /^[=+\-@]|^[\t\r]/.test(value) ? `'${value}` : value;
+  };
+  const esc = (v: unknown) => `"${neutralize(String(v ?? '')).replaceAll('"', '""')}"`;
   return Buffer.from(
     [
       cols.join(','),
