@@ -82,29 +82,37 @@ export class PostgresImportAdapter implements ImportStore {
     const row = job.rows[0];
     if (!row) throw new Error('Import job was not created.');
     if (rows.length) {
-      const values: unknown[] = [];
-      const placeholders = rows
-        .map((r, i) => {
-          const base = i * 10;
-          values.push(
-            randomUUID(),
-            workspaceId,
-            id,
-            r.rowNumber,
-            JSON.stringify(r.rawValues),
-            r.parsedDate,
-            r.parsedAmountMinor,
-            r.parsedDescription,
-            r.classification,
-            r.error ? JSON.stringify(r.error) : null,
-          );
-          return `($${base + 1}::uuid,$${base + 2}::uuid,$${base + 3}::uuid,$${base + 4},$${base + 5}::jsonb,$${base + 6}::date,$${base + 7},$${base + 8},$${base + 9},$${base + 10}::jsonb)`;
-        })
-        .join(',');
-      await client.query(
-        `insert into public.import_job_rows (id,workspace_id,import_job_id,row_number,raw_values,parsed_date,parsed_amount_minor,parsed_description,classification,error) values ${placeholders}`,
-        values,
-      );
+      const rowsPerBatch = 5_000;
+      for (
+        let batchStart = 0;
+        batchStart < rows.length;
+        batchStart += rowsPerBatch
+      ) {
+        const batch = rows.slice(batchStart, batchStart + rowsPerBatch);
+        const values: unknown[] = [];
+        const placeholders = batch
+          .map((r, i) => {
+            const base = i * 10;
+            values.push(
+              randomUUID(),
+              workspaceId,
+              id,
+              r.rowNumber,
+              JSON.stringify(r.rawValues),
+              r.parsedDate,
+              r.parsedAmountMinor,
+              r.parsedDescription,
+              r.classification,
+              r.error ? JSON.stringify(r.error) : null,
+            );
+            return `($${base + 1}::uuid,$${base + 2}::uuid,$${base + 3}::uuid,$${base + 4},$${base + 5}::jsonb,$${base + 6}::date,$${base + 7},$${base + 8},$${base + 9},$${base + 10}::jsonb)`;
+          })
+          .join(',');
+        await client.query(
+          `insert into public.import_job_rows (id,workspace_id,import_job_id,row_number,raw_values,parsed_date,parsed_amount_minor,parsed_description,classification,error) values ${placeholders}`,
+          values,
+        );
+      }
     }
     return map(row);
   }

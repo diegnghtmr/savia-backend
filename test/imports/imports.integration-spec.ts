@@ -43,6 +43,18 @@ function multipartBody(
   ];
   return Buffer.concat(parts);
 }
+function multipartParts(parts: readonly Buffer[]): Buffer {
+  return Buffer.concat([
+    ...parts.flatMap((part) => [
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="extra"\r\n\r\n`,
+      ),
+      part,
+      Buffer.from('\r\n'),
+    ]),
+    Buffer.from(`--${boundary}--\r\n`),
+  ]);
+}
 function upload(
   app: NestFastifyApplication,
   content: Buffer,
@@ -177,7 +189,7 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       );
     },
   );
-  it('rejects a file over the multipart boundary before buffering it fully', async () => {
+  it('rejects a file over the configured multipart size limit', async () => {
     const response = await upload(
       app,
       Buffer.alloc(5 * 1024 * 1024 + 1),
@@ -193,6 +205,75 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
     );
     expect(count.rows[0].count).toBe(2);
   });
+  it('rejects malformed multipart parts and headers through HTTP', async () => {
+    const cases = [
+      {
+        name: 'excess fields',
+        payload: multipartParts([Buffer.from('a'), Buffer.from('b')]),
+        expected: 422,
+      },
+      {
+        name: 'unknown part',
+        payload: multipartParts([Buffer.from('a')]),
+        expected: 422,
+      },
+      {
+        name: 'missing file',
+        payload: Buffer.from(`--${boundary}--\r\n`),
+        expected: 422,
+      },
+    ];
+    for (const testCase of cases) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/import-jobs',
+        headers: {
+          authorization: 'Bearer accepted-token',
+          'x-workspace-id': workspace,
+          'idempotency-key': `00000000-0000-4000-8000-0000000055${20 + cases.indexOf(testCase)}`,
+          'content-type': `multipart/form-data; boundary=${boundary}`,
+        },
+        payload: testCase.payload,
+      });
+      expect(response.statusCode, testCase.name).toBe(testCase.expected);
+    }
+    const malformedHeaders = await app.inject({
+      method: 'POST',
+      url: '/v1/import-jobs',
+      headers: {
+        authorization: 'Bearer accepted-token',
+        'x-workspace-id': 'not-a-uuid',
+        'idempotency-key': 'not-a-uuid',
+      },
+    });
+    expect(malformedHeaders.statusCode).toBe(400);
+    const malformedGet = await app.inject({
+      method: 'GET',
+      url: '/v1/import-jobs/not-a-uuid',
+      headers: {
+        authorization: 'Bearer accepted-token',
+        'x-workspace-id': workspace,
+      },
+    });
+    expect(malformedGet.statusCode).toBe(400);
+  });
+  it('rejects a duplicate format hint and excess file parts', async () => {
+    const duplicateHint = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="one.csv"\r\n\r\n${csv}\r\n--${boundary}\r\nContent-Disposition: form-data; name="formatHint"\r\n\r\ncsv\r\n--${boundary}\r\nContent-Disposition: form-data; name="formatHint"\r\n\r\ncsv\r\n--${boundary}--\r\n`,
+    );
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/import-jobs',
+      headers: {
+        authorization: 'Bearer accepted-token',
+        'x-workspace-id': workspace,
+        'idempotency-key': '00000000-0000-4000-8000-000000005521',
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload: duplicateHint,
+    });
+    expect(response.statusCode).toBe(422);
+  });
   it('rejects an upload over the row bound', async () => {
     const content = Buffer.from(
       `date,amount,description\n${Array.from({ length: 10_001 }, (_, i) => `2026-01-01,${i},row-${i}`).join('\n')}\n`,
@@ -206,6 +287,43 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
     );
     expect(response.statusCode).toBe(422);
     expect(JSON.parse(response.payload).detail).toContain('10000');
+  });
+  it('persists exactly 10,000 rows in batches', async () => {
+    const content = Buffer.from(
+      `date,amount,description\n${Array.from({ length: 10_000 }, (_, i) => `2026-01-01,${i},row-${i}`).join('\n')}\n`,
+    );
+    const response = await upload(
+      app,
+      content,
+      'exactly-10000.csv',
+      '00000000-0000-4000-8000-000000005522',
+      'csv',
+    );
+    expect(response.statusCode).toBe(202);
+    const count = await admin.query(
+      `select count(*)::int as count from public.import_job_rows where workspace_id=$1 and import_job_id=(select id from public.import_jobs where workspace_id=$1 and file_name='exactly-10000.csv')`,
+      [workspace],
+    );
+    expect(count.rows[0].count).toBe(10_000);
+  });
+  it('rejects an invalid upload without creating a job', async () => {
+    const before = await admin.query(
+      'select count(*)::int as count from public.import_jobs where workspace_id=$1',
+      [workspace],
+    );
+    const response = await upload(
+      app,
+      Buffer.from('not supported'),
+      'rejected.csv',
+      '00000000-0000-4000-8000-000000005523',
+      'qif',
+    );
+    expect(response.statusCode).toBe(422);
+    const after = await admin.query(
+      'select count(*)::int as count from public.import_jobs where workspace_id=$1',
+      [workspace],
+    );
+    expect(after.rows[0].count).toBe(before.rows[0].count);
   });
   it('counts malformed rows without failing the job', async () => {
     const response = await upload(
@@ -294,5 +412,28 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
         [workspace, subject],
       ),
     ).rejects.toThrow();
+  });
+  it('enforces the RULING 99 count identity at the database boundary', async () => {
+    await expect(
+      admin.query(
+        `insert into public.import_jobs (workspace_id,file_name,status,total_rows,valid_rows,duplicate_rows,error_rows,created_by) values ($1,'bad-count.csv','awaiting_mapping',2,2,1,0,$2)`,
+        [workspace, subject],
+      ),
+    ).rejects.toThrow();
+  });
+  it('forbids application writes to columns outside the row insert grant', async () => {
+    const client = await admin.connect();
+    try {
+      await client.query('set role savia_application');
+      await expect(
+        client.query(
+          `insert into public.import_job_rows (id,workspace_id,import_job_id,row_number,raw_values,classification,created_at) values ($1,$2,$3,2,'[]','error',now())`,
+          ['00000000-0000-4000-8000-000000005524', workspace, jobId],
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await client.query('reset role');
+      client.release();
+    }
   });
 });
