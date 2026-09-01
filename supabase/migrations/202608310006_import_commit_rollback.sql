@@ -16,6 +16,8 @@ begin
 end;
 $$;
 
+grant select on public.import_job_rows to savia_application;
+
 alter table public.transactions add constraint transactions_import_job_workspace_fkey
   foreign key (workspace_id, import_job_id)
   references public.import_jobs (workspace_id, id);

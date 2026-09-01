@@ -248,6 +248,9 @@ jobs:
       - name: imports integration
         shell: bash
         run: pnpm test:integration:imports
+      - name: import commit rollback integration
+        shell: bash
+        run: pnpm test:integration:import-commit-rollback
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
