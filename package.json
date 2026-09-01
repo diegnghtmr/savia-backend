@@ -68,6 +68,7 @@
     "test:integration:reconciliations-get": "bash scripts/run-disposable-database-suite.sh test/reconciliations/reconciliations-get.integration-spec.ts",
     "test:integration:reconciliations-complete": "bash scripts/run-disposable-database-suite.sh test/reconciliations/reconciliations-complete.integration-spec.ts",
     "test:integration:exports-security": "bash scripts/run-disposable-database-suite.sh test/exports/export-security.integration-spec.ts",
+    "test:integration:imports": "bash scripts/run-disposable-database-suite.sh test/imports/imports.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",
     "build": "tsc -p tsconfig.build.json",
@@ -77,9 +78,11 @@
     "check": "pnpm format:check && pnpm lint && pnpm architecture:check && pnpm typecheck && pnpm test && pnpm build && pnpm openapi:verify && pnpm openapi:lint"
   },
   "dependencies": {
+    "@fastify/multipart": "9.2.1",
     "@nestjs/common": "11.1.28",
     "@nestjs/core": "11.1.28",
     "@nestjs/platform-fastify": "11.1.28",
+    "@fastify/multipart": "9.2.1",
     "exceljs": "4.4.0",
     "fastify": "5.10.0",
     "jose": "6.2.3",
