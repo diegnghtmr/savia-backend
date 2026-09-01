@@ -10,6 +10,7 @@ import type {
   ExportStore,
   CreateExportJobCommand,
 } from './export.port.js';
+export class ExportUnrepresentableError extends Error {}
 
 interface Row extends Record<string, unknown> {
   id: string;
@@ -104,8 +105,13 @@ export class PostgresExportAdapter implements ExportStore {
       for (;;) {
         const page = await this.accounts.listAccounts(client, workspaceId, cursor, 10000, undefined);
         for (const item of page) {
-          const balance = await this.accounts.readAccountBalance(client, workspaceId, item.account.id);
-          if (!balance) throw new Error(`Account ${item.account.id} disappeared during export.`);
+          let balance;
+          try {
+            balance = await this.accounts.readAccountBalance(client, workspaceId, item.account.id);
+          } catch (error) {
+            throw new ExportUnrepresentableError(error instanceof Error ? error.message : 'Account balance cannot be represented.');
+          }
+          if (!balance) throw new ExportUnrepresentableError(`Account ${item.account.id} disappeared during export.`);
           accounts.push({ ...item.account, balance });
         }
         if (page.length < 10000) break;

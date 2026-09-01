@@ -59,6 +59,7 @@ export const EXPORT_OUTCOMES = {
   NOT_FOUND: 'not-found',
   UNSUPPORTED_RESOURCE: 'unsupported-resource',
   FAILED: 'failed',
+  UNREPRESENTABLE: 'unrepresentable',
 } as const;
 export type ExportCreateOutcome =
   | { readonly kind: typeof EXPORT_OUTCOMES.CREATED; readonly job: ExportJob }
@@ -70,6 +71,7 @@ export type ExportCreateOutcome =
   | { readonly kind: typeof EXPORT_OUTCOMES.FORBIDDEN }
   | { readonly kind: typeof EXPORT_OUTCOMES.IDEMPOTENCY_CONFLICT }
   | { readonly kind: typeof EXPORT_OUTCOMES.UNSUPPORTED_RESOURCE }
+  | { readonly kind: typeof EXPORT_OUTCOMES.UNREPRESENTABLE; readonly detail: string }
   | { readonly kind: typeof EXPORT_OUTCOMES.FAILED; readonly job: ExportJob };
 export type ExportGetOutcome =
   | { readonly kind: 'found'; readonly job: ExportJob }

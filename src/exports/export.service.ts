@@ -12,6 +12,7 @@ import {
   type ExportsPort,
 } from './export.port.js';
 import { serialize } from './export-serializers.js';
+import { ExportUnrepresentableError } from './postgres-export.adapter.js';
 const READ_ROLES = ['owner', 'administrator', 'editor', 'viewer'];
 const WRITE_ROLES = ['owner', 'administrator', 'editor'];
 const TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -93,6 +94,8 @@ export class ExportService implements ExportsPort {
       });
       return { kind: EXPORT_OUTCOMES.CREATED, job };
     } catch (error) {
+      if (error instanceof ExportUnrepresentableError)
+        return { kind: EXPORT_OUTCOMES.UNREPRESENTABLE, detail: error.message };
       if (error instanceof CommitOutcomeUnknownError) {
         const recovered = await this.transaction.runRead(subject, (client) =>
           this.idempotency.read(client, subject, route, key, workspaceId),

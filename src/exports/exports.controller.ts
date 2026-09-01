@@ -91,6 +91,13 @@ export class ExportsController {
           'This resource is declared by the contract but is not yet available.',
         status: 422,
       });
+    if (outcome.kind === EXPORT_OUTCOMES.UNREPRESENTABLE)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Export value cannot be represented',
+        detail: outcome.detail,
+        status: 422,
+      });
     if (outcome.kind === EXPORT_OUTCOMES.REPLAYED)
       return void reply.status(outcome.status).send(outcome.body);
     void reply.status(202).send(outcome.job);
