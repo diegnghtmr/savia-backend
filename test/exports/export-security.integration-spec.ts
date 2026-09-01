@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
+import { PostgresExportAdapter } from '../../src/exports/postgres-export.adapter.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -17,6 +18,7 @@ describe('storage export object tenant isolation', () => {
   const b = id(5402);
   const wa = '00000000-0000-4000-8000-000000005451';
   const wb = '00000000-0000-4000-8000-000000005452';
+  const account = '00000000-0000-4000-8000-000000005453';
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
     pool = new PostgresPool(PostgresConfig.fromUrl(url));
@@ -40,6 +42,10 @@ describe('storage export object tenant isolation', () => {
     await admin.query(
       `insert into storage.objects (bucket_id,name,metadata) values ('exports',$1,'{}')`,
       [`${wa}/ledger.csv`],
+    );
+    await admin.query(
+      `insert into public.accounts (id,workspace_id,name,type,currency,created_by) values ($1,$2,'Export account','checking','USD',$3)`,
+      [account, wa, a],
     );
   });
   afterAll(async () => {
@@ -104,5 +110,22 @@ describe('storage export object tenant isolation', () => {
       `insert into public.export_jobs (workspace_id,format,resource,status,object_path,created_by,completed_at) values ($1,'csv','accounts','completed',$2,$3,now())`,
       [wa, `${wa}/complete.csv`, a],
     )).rejects.toThrow();
+  });
+
+  it('reads every transaction page and derives exported account balances', async () => {
+    await admin.query(
+      `insert into public.transactions (workspace_id,account_id,type,status,amount_minor,currency,occurred_at,created_by) select $1,$2,'income','confirmed',1,'USD',now() - (g || ' seconds')::interval,$3 from generate_series(1,10001) g`,
+      [wa, account, a],
+    );
+    const adapter = new PostgresExportAdapter();
+    const transactions = await tx.runRead(a, (client) => adapter.readRows(client, wa, {
+      format: 'json_backup', resource: 'transactions', resourceId: null, from: null, to: null,
+    }));
+    expect(transactions.transactions).toHaveLength(10001);
+    const accounts = await tx.runRead(a, (client) => adapter.readRows(client, wa, {
+      format: 'json_backup', resource: 'accounts', resourceId: null, from: null, to: null,
+    }));
+    expect(accounts.accounts).toHaveLength(1);
+    expect(accounts.accounts[0]).toHaveProperty('balance.nativeBalance.amountMinor', '0');
   });
 });
