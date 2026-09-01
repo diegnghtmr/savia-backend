@@ -9,7 +9,8 @@ export function serializeCsv(rows: readonly Record<string, unknown>[]): Buffer {
     if (/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value)) return value;
     return /^[=+\-@]|^[\t\r]/.test(value) ? `'${value}` : value;
   };
-  const esc = (v: unknown) => `"${neutralize(String(v ?? '')).replaceAll('"', '""')}"`;
+  const esc = (v: unknown) =>
+    `"${neutralize(String(v ?? '')).replaceAll('"', '""')}"`;
   return Buffer.from(
     [
       cols.join(','),

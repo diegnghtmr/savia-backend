@@ -78,18 +78,51 @@ export class ExportService implements ExportsPort {
         const path = `${workspaceId}/${id}.${command.format === 'json_backup' ? 'json' : command.format}`;
         const rows = await this.store.readRows(client, workspaceId, command);
         const artifact = await serialize(command.format, rows);
-        const job = await this.store.reserve(client, workspaceId, subject, id, command, path);
+        const job = await this.store.reserve(
+          client,
+          workspaceId,
+          subject,
+          id,
+          command,
+          path,
+        );
         reservedId = id;
         return { job, artifact, path };
       });
       if (!('artifact' in prepared)) return prepared;
       uploadedPath = prepared.path!;
-      await this.storage.upload(uploadedPath, prepared.artifact!.content, prepared.artifact!.contentType);
-      const signature = await this.storage.sign(uploadedPath, new Date(Date.now() + TTL_MS));
+      await this.storage.upload(
+        uploadedPath,
+        prepared.artifact!.content,
+        prepared.artifact!.contentType,
+      );
+      const signature = await this.storage.sign(
+        uploadedPath,
+        new Date(Date.now() + TTL_MS),
+      );
       const job = await this.transaction.run(subject, async (client) => {
-        const completed = await this.store.complete(client, workspaceId, reservedId!, signature.url, signature.expiresAt.toISOString());
-        const written = await this.idempotency.write(client, subject, route, key, fingerprint, 202, null, completed, workspaceId);
-        if (!written) throw new Error('Idempotency record was lost after export completion.');
+        const completed = await this.store.complete(
+          client,
+          workspaceId,
+          reservedId!,
+          signature.url,
+          signature.expiresAt.toISOString(),
+        );
+        const written = await this.idempotency.write(
+          client,
+          subject,
+          route,
+          key,
+          fingerprint,
+          202,
+          null,
+          completed,
+          workspaceId,
+        );
+        if (!written)
+          throw new Error(
+            'Idempotency record was lost after export completion.',
+          );
         return completed;
       });
       return { kind: EXPORT_OUTCOMES.CREATED, job };
@@ -101,7 +134,11 @@ export class ExportService implements ExportsPort {
           this.idempotency.read(client, subject, route, key, workspaceId),
         );
         if (recovered?.requestFingerprint === fingerprint)
-          return { kind: EXPORT_OUTCOMES.REPLAYED, status: recovered.responseStatus, body: recovered.responseBody };
+          return {
+            kind: EXPORT_OUTCOMES.REPLAYED,
+            status: recovered.responseStatus,
+            body: recovered.responseBody,
+          };
         throw error;
       }
       if (uploadedPath !== undefined) await this.storage.remove(uploadedPath);
@@ -122,7 +159,17 @@ export class ExportService implements ExportsPort {
       const job = await this.transaction.run(subject, async (client) => {
         const failedJob = reservedId
           ? await this.store.fail(client, workspaceId, reservedId, problem)
-          : await this.store.insert(client, workspaceId, subject, this.store.createId(), command, '', null, null, problem);
+          : await this.store.insert(
+              client,
+              workspaceId,
+              subject,
+              this.store.createId(),
+              command,
+              '',
+              null,
+              null,
+              problem,
+            );
         await this.idempotency.write(
           client,
           subject,

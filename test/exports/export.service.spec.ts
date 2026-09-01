@@ -48,11 +48,27 @@ function harness(
     readActiveRole: async () => 'owner',
     createId: () => `00000000-0000-0000-0000-00000000000${jobs + 3}`,
     reserve: async (_client, _ws, _subject, id, _command, _path) => {
+      void _client;
+      void _ws;
+      void _subject;
+      void _command;
+      void _path;
       jobs += 1;
       return job(id, 'queued');
     },
-    complete: async (_client, _ws, id, _url, _expiry) => job(id),
-    fail: async (_client, _ws, id, _error) => job(id, 'failed'),
+    complete: async (_client, _ws, id, _url, _expiry) => {
+      void _client;
+      void _ws;
+      void _url;
+      void _expiry;
+      return job(id);
+    },
+    fail: async (_client, _ws, id, _error) => {
+      void _client;
+      void _ws;
+      void _error;
+      return job(id, 'failed');
+    },
     readRows: async () => ({ accounts: [{ id: 'a' }], transactions: [] }),
     insert: async (
       _client,
@@ -111,7 +127,10 @@ function harness(
           throw new Error('not used');
         },
       }).then((result) => {
-        if (unknownCommit && transactionRuns === 2) throw new CommitOutcomeUnknownError(new Error('lost commit acknowledgement'));
+        if (unknownCommit && transactionRuns === 2)
+          throw new CommitOutcomeUnknownError(
+            new Error('lost commit acknowledgement'),
+          );
         return result;
       });
     },
@@ -152,7 +171,12 @@ describe('ExportService', () => {
   });
   it('recovers a committed result after an unknown commit without deleting the object', async () => {
     const h = harness(undefined, true);
-    const outcome = await h.service.createExportJob(subject, workspace, command, 'unknown-commit-key');
+    const outcome = await h.service.createExportJob(
+      subject,
+      workspace,
+      command,
+      'unknown-commit-key',
+    );
     expect(outcome.kind).toBe('replayed');
     expect(h.counts()).toMatchObject({ jobs: 1, uploads: 1, removals: 0 });
   });

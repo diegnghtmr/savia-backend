@@ -36,7 +36,8 @@ module.exports = {
     {
       name: 'exports-composition-boundary',
       severity: 'error',
-      comment: 'Exports may use read adapters, but other features may not import them directly',
+      comment:
+        'Exports may use read adapters, but other features may not import them directly',
       from: { path: '^src/exports/' },
       to: {
         path: '^src/([^/]+)/',

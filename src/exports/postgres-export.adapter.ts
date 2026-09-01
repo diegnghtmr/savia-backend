@@ -63,7 +63,18 @@ export class PostgresExportAdapter implements ExportStore {
     command: CreateExportJobCommand,
     path: string,
   ): Promise<ExportJob> {
-    return this.insert(client, workspaceId, subject, id, command, path, null, null, null, 'queued');
+    return this.insert(
+      client,
+      workspaceId,
+      subject,
+      id,
+      command,
+      path,
+      null,
+      null,
+      null,
+      'queued',
+    );
   }
   public async complete(
     client: TransactionClient,
@@ -103,15 +114,32 @@ export class PostgresExportAdapter implements ExportStore {
     if (command.resource !== 'transactions') {
       let cursor: AccountCursor | undefined;
       for (;;) {
-        const page = await this.accounts.listAccounts(client, workspaceId, cursor, 10000, undefined);
+        const page = await this.accounts.listAccounts(
+          client,
+          workspaceId,
+          cursor,
+          10000,
+          undefined,
+        );
         for (const item of page) {
           let balance;
           try {
-            balance = await this.accounts.readAccountBalance(client, workspaceId, item.account.id);
+            balance = await this.accounts.readAccountBalance(
+              client,
+              workspaceId,
+              item.account.id,
+            );
           } catch (error) {
-            throw new ExportUnrepresentableError(error instanceof Error ? error.message : 'Account balance cannot be represented.');
+            throw new ExportUnrepresentableError(
+              error instanceof Error
+                ? error.message
+                : 'Account balance cannot be represented.',
+            );
           }
-          if (!balance) throw new ExportUnrepresentableError(`Account ${item.account.id} disappeared during export.`);
+          if (!balance)
+            throw new ExportUnrepresentableError(
+              `Account ${item.account.id} disappeared during export.`,
+            );
           accounts.push({ ...item.account, balance });
         }
         if (page.length < 10000) break;
@@ -123,8 +151,18 @@ export class PostgresExportAdapter implements ExportStore {
     if (command.resource !== 'accounts') {
       let cursor: TransactionCursor | undefined;
       for (;;) {
-        const page = await this.transactions.listTransactions(client, workspaceId, cursor, 10000, { from: command.from ?? undefined, to: command.to ?? undefined });
-        transactions.push(...page.map((x) => x.transaction as unknown as Record<string, unknown>));
+        const page = await this.transactions.listTransactions(
+          client,
+          workspaceId,
+          cursor,
+          10000,
+          { from: command.from ?? undefined, to: command.to ?? undefined },
+        );
+        transactions.push(
+          ...page.map(
+            (x) => x.transaction as unknown as Record<string, unknown>,
+          ),
+        );
         if (page.length < 10000) break;
         const last = page[page.length - 1];
         cursor = { createdAt: last.cursorAt, id: last.transaction.id };

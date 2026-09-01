@@ -56,7 +56,15 @@ describe('export serializers', () => {
     expect(serializeCsv(rows).toString()).toContain('id,name,amount'));
   it('neutralizes formula-like values without changing numeric negatives', () => {
     const csv = serializeCsv([
-      { formula: '=SUM(A1)', plus: '+cmd', minus: '-cmd', at: '@cmd', tab: '\tcmd', cr: '\rcmd', number: -5000 },
+      {
+        formula: '=SUM(A1)',
+        plus: '+cmd',
+        minus: '-cmd',
+        at: '@cmd',
+        tab: '\tcmd',
+        cr: '\rcmd',
+        number: -5000,
+      },
     ]).toString();
     expect(csv).toContain("'=SUM(A1)");
     expect(csv).toContain("'+cmd");
@@ -78,7 +86,7 @@ describe('export serializers', () => {
     await workbook.xlsx.load(buffer as never);
     const sheet = workbook.getWorksheet('export');
     expect(sheet).toBeDefined();
-    expect(sheet!.getRow(1).values).toEqual([, 'id', 'name', 'amount']);
+    expect(sheet!.getRow(1).values.slice(1)).toEqual(['id', 'name', 'amount']);
     expect(sheet!.rowCount).toBe(2);
     expect(sheet!.getCell('B2').value).toBe('A');
     expect(sheet!.getCell('C2').value).toBe(10);

@@ -72,18 +72,44 @@ describe('storage export object tenant isolation', () => {
   });
 
   it('allows the owning workspace and rejects malformed tenant paths', async () => {
-    const own = await tx.runRead(a, async (client) =>
-      (await client.query(`select name from storage.objects where bucket_id='exports' and name=$1`, [`${wa}/ledger.csv`])).rows,
+    const own = await tx.runRead(
+      a,
+      async (client) =>
+        (
+          await client.query(
+            `select name from storage.objects where bucket_id='exports' and name=$1`,
+            [`${wa}/ledger.csv`],
+          )
+        ).rows,
     );
     expect(own).toHaveLength(1);
-    for (const name of [`/${wa}/ledger.csv`, `${wa}`, `x/${wa}/ledger.csv`, `${wa.replace('0', 'О')}/ledger.csv`]) {
-      const rows = await tx.runRead(a, async (client) =>
-        (await client.query(`select name from storage.objects where bucket_id='exports' and name=$1`, [name])).rows,
+    for (const name of [
+      `/${wa}/ledger.csv`,
+      `${wa}`,
+      `x/${wa}/ledger.csv`,
+      `${wa.replace('0', 'О')}/ledger.csv`,
+    ]) {
+      const rows = await tx.runRead(
+        a,
+        async (client) =>
+          (
+            await client.query(
+              `select name from storage.objects where bucket_id='exports' and name=$1`,
+              [name],
+            )
+          ).rows,
       );
       expect(rows).toEqual([]);
     }
-    const uppercase = await tx.runRead(a, async (client) =>
-      (await client.query(`select name from storage.objects where bucket_id='exports' and name=$1`, [`${wa.toUpperCase()}/ledger.csv`])).rows,
+    const uppercase = await tx.runRead(
+      a,
+      async (client) =>
+        (
+          await client.query(
+            `select name from storage.objects where bucket_id='exports' and name=$1`,
+            [`${wa.toUpperCase()}/ledger.csv`],
+          )
+        ).rows,
     );
     expect(uppercase).toHaveLength(1);
   });
@@ -98,18 +124,33 @@ describe('storage export object tenant isolation', () => {
     const grants = await admin.query<{ privilege_type: string }>(
       `select privilege_type from information_schema.role_table_grants where grantee='savia_application' and table_schema='storage' and table_name='objects'`,
     );
-    expect(grants.rows.map((row) => row.privilege_type)).not.toEqual(expect.arrayContaining(['INSERT', 'UPDATE', 'DELETE']));
+    expect(grants.rows.map((row) => row.privilege_type)).not.toEqual(
+      expect.arrayContaining(['INSERT', 'UPDATE', 'DELETE']),
+    );
   });
 
   it('enforces reservation and result fields by terminal status', async () => {
-    await expect(admin.query(
-      `insert into public.export_jobs (workspace_id,format,resource,status,object_path,download_url,expires_at,created_by) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [wa, 'csv', 'accounts', 'queued', `${wa}/queued.csv`, 'https://bad.test', new Date(), a],
-    )).rejects.toThrow();
-    await expect(admin.query(
-      `insert into public.export_jobs (workspace_id,format,resource,status,object_path,created_by,completed_at) values ($1,'csv','accounts','completed',$2,$3,now())`,
-      [wa, `${wa}/complete.csv`, a],
-    )).rejects.toThrow();
+    await expect(
+      admin.query(
+        `insert into public.export_jobs (workspace_id,format,resource,status,object_path,download_url,expires_at,created_by) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          wa,
+          'csv',
+          'accounts',
+          'queued',
+          `${wa}/queued.csv`,
+          'https://bad.test',
+          new Date(),
+          a,
+        ],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      admin.query(
+        `insert into public.export_jobs (workspace_id,format,resource,status,object_path,created_by,completed_at) values ($1,'csv','accounts','completed',$2,$3,now())`,
+        [wa, `${wa}/complete.csv`, a],
+      ),
+    ).rejects.toThrow();
   });
 
   it('reads every transaction page and derives exported account balances', async () => {
@@ -118,14 +159,29 @@ describe('storage export object tenant isolation', () => {
       [wa, account, a],
     );
     const adapter = new PostgresExportAdapter();
-    const transactions = await tx.runRead(a, (client) => adapter.readRows(client, wa, {
-      format: 'json_backup', resource: 'transactions', resourceId: null, from: null, to: null,
-    }));
+    const transactions = await tx.runRead(a, (client) =>
+      adapter.readRows(client, wa, {
+        format: 'json_backup',
+        resource: 'transactions',
+        resourceId: null,
+        from: null,
+        to: null,
+      }),
+    );
     expect(transactions.transactions).toHaveLength(10001);
-    const accounts = await tx.runRead(a, (client) => adapter.readRows(client, wa, {
-      format: 'json_backup', resource: 'accounts', resourceId: null, from: null, to: null,
-    }));
+    const accounts = await tx.runRead(a, (client) =>
+      adapter.readRows(client, wa, {
+        format: 'json_backup',
+        resource: 'accounts',
+        resourceId: null,
+        from: null,
+        to: null,
+      }),
+    );
     expect(accounts.accounts).toHaveLength(1);
-    expect(accounts.accounts[0]).toHaveProperty('balance.nativeBalance.amountMinor', '0');
+    expect(accounts.accounts[0]).toHaveProperty(
+      'balance.nativeBalance.amountMinor',
+      '0',
+    );
   });
 });

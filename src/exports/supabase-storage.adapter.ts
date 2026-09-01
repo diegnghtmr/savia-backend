@@ -102,7 +102,9 @@ function jwtExpiry(token: string): Date | undefined {
     const payload = JSON.parse(
       Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'),
     ) as { exp?: unknown };
-    return typeof payload.exp === 'number' ? new Date(payload.exp * 1000) : undefined;
+    return typeof payload.exp === 'number'
+      ? new Date(payload.exp * 1000)
+      : undefined;
   } catch {
     return undefined;
   }
