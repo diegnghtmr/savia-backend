@@ -15,8 +15,8 @@ describe('storage export object tenant isolation', () => {
   let tx: PgTransaction;
   const a = id(5401);
   const b = id(5402);
-  const wa = id(5451);
-  const wb = id(5452);
+  const wa = '00000000-0000-4000-8000-000000005451';
+  const wb = '00000000-0000-4000-8000-000000005452';
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
     pool = new PostgresPool(PostgresConfig.fromUrl(url));
@@ -70,12 +70,16 @@ describe('storage export object tenant isolation', () => {
       (await client.query(`select name from storage.objects where bucket_id='exports' and name=$1`, [`${wa}/ledger.csv`])).rows,
     );
     expect(own).toHaveLength(1);
-    for (const name of [`/${wa}/ledger.csv`, `${wa}`, `x/${wa}/ledger.csv`, `${wa.toUpperCase()}/ledger.csv`, `${wa.replace('0', 'О')}/ledger.csv`]) {
+    for (const name of [`/${wa}/ledger.csv`, `${wa}`, `x/${wa}/ledger.csv`, `${wa.replace('0', 'О')}/ledger.csv`]) {
       const rows = await tx.runRead(a, async (client) =>
         (await client.query(`select name from storage.objects where bucket_id='exports' and name=$1`, [name])).rows,
       );
       expect(rows).toEqual([]);
     }
+    const uppercase = await tx.runRead(a, async (client) =>
+      (await client.query(`select name from storage.objects where bucket_id='exports' and name=$1`, [`${wa.toUpperCase()}/ledger.csv`])).rows,
+    );
+    expect(uppercase).toHaveLength(1);
   });
 
   it('has no application mutation policy or grant on storage.objects', async () => {
