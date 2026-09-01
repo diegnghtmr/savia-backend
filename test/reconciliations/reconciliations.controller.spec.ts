@@ -3,6 +3,7 @@ import type { FastifyReply } from 'fastify';
 import {
   RECONCILIATION_CREATE_OUTCOMES,
   RECONCILIATION_GET_OUTCOMES,
+  RECONCILIATION_COMPLETE_OUTCOMES,
   type ReconciliationsPort,
   type Reconciliation,
 } from '../../src/reconciliations/reconciliation.port.js';
@@ -49,6 +50,7 @@ function createMocks() {
   const port: ReconciliationsPort = {
     createReconciliation: vi.fn(),
     getReconciliation: vi.fn(),
+    completeReconciliation: vi.fn(),
   };
 
   const controller = new ReconciliationsController(port);
@@ -461,6 +463,99 @@ describe('ReconciliationsController', () => {
         WORKSPACE_ID,
         RECONCILIATION_ID,
       );
+    });
+  });
+
+  describe('POST /v1/reconciliations/:reconciliationId/complete', () => {
+    const validHeaders = {
+      'x-workspace-id': WORKSPACE_ID,
+      'idempotency-key': IDEMPOTENCY_KEY,
+    };
+    const validBody = { transactionIds: [], createAdjustment: false };
+
+    it.each([
+      ['bad workspace header', {}, validBody],
+      ['bad idempotency header', { 'x-workspace-id': WORKSPACE_ID }, validBody],
+      ['bad reconciliation id', validHeaders, validBody, 'bad-id'],
+      [
+        'bad body',
+        validHeaders,
+        { transactionIds: 'bad', createAdjustment: false },
+      ],
+    ])(
+      'returns the validation status for %s',
+      async (_name, headers, body, reconciliationId = RECONCILIATION_ID) => {
+        const { controller, port, reply, createRequest, getStatus } =
+          createMocks();
+        await controller.completeReconciliation(
+          reconciliationId,
+          createRequest(headers, body),
+          reply,
+        );
+        expect(getStatus()).toBe(_name === 'bad body' ? 422 : 400);
+        expect(port.completeReconciliation).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      [RECONCILIATION_COMPLETE_OUTCOMES.FORBIDDEN, 403],
+      [RECONCILIATION_COMPLETE_OUTCOMES.NOT_FOUND, 404],
+      [RECONCILIATION_COMPLETE_OUTCOMES.ALREADY_FINAL, 409],
+      [RECONCILIATION_COMPLETE_OUTCOMES.IDEMPOTENCY_CONFLICT, 409],
+      [RECONCILIATION_COMPLETE_OUTCOMES.TRANSACTIONS_INVALID, 422],
+      [RECONCILIATION_COMPLETE_OUTCOMES.ADJUSTMENT_INVALID, 422],
+      [RECONCILIATION_COMPLETE_OUTCOMES.AMOUNT_OUT_OF_RANGE, 422],
+    ])('maps %s to HTTP %s', async (kind, status) => {
+      const { controller, port, reply, createRequest, getStatus } =
+        createMocks();
+      vi.mocked(port.completeReconciliation).mockResolvedValue({ kind });
+      await controller.completeReconciliation(
+        RECONCILIATION_ID,
+        createRequest(validHeaders, validBody),
+        reply,
+      );
+      expect(getStatus()).toBe(status);
+    });
+
+    it('passes the validated command to the port and returns 200', async () => {
+      const { controller, port, reply, createRequest, getStatus, getPayload } =
+        createMocks();
+      vi.mocked(port.completeReconciliation).mockResolvedValue({
+        kind: RECONCILIATION_COMPLETE_OUTCOMES.COMPLETED,
+        reconciliation: MOCK_RECONCILIATION,
+      });
+      await controller.completeReconciliation(
+        RECONCILIATION_ID,
+        createRequest(validHeaders, validBody),
+        reply,
+      );
+      expect(getStatus()).toBe(200);
+      expect(getPayload()).toEqual(MOCK_RECONCILIATION);
+      expect(port.completeReconciliation).toHaveBeenCalledWith(
+        SUBJECT,
+        WORKSPACE_ID,
+        RECONCILIATION_ID,
+        { ...validBody, adjustmentReason: null },
+        IDEMPOTENCY_KEY,
+      );
+    });
+
+    it('returns an idempotent replay', async () => {
+      const { controller, port, reply, createRequest, getStatus, getPayload } =
+        createMocks();
+      vi.mocked(port.completeReconciliation).mockResolvedValue({
+        kind: RECONCILIATION_COMPLETE_OUTCOMES.REPLAYED,
+        status: 200,
+        etag: null,
+        body: MOCK_RECONCILIATION,
+      });
+      await controller.completeReconciliation(
+        RECONCILIATION_ID,
+        createRequest(validHeaders, validBody),
+        reply,
+      );
+      expect(getStatus()).toBe(200);
+      expect(getPayload()).toEqual(MOCK_RECONCILIATION);
     });
   });
 });

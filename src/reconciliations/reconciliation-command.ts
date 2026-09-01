@@ -21,6 +21,11 @@ const ALLOWED_FIELDS = [
   'statementBalance',
   'notes',
 ] as const;
+const COMPLETE_ALLOWED_FIELDS = [
+  'transactionIds',
+  'createAdjustment',
+  'adjustmentReason',
+] as const;
 
 const ALLOWED_MONEY_KEYS = ['amountMinor', 'currency'] as const;
 
@@ -220,5 +225,73 @@ export function createReconciliationCommand(
     statementDate,
     statementBalance,
     ...(notes !== null && notes !== undefined ? { notes } : {}),
+  };
+}
+
+export function completeReconciliationCommand(
+  input: unknown,
+): import('./reconciliation.port.js').CompleteReconciliationCommand {
+  const violations: FieldViolation[] = [];
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    add(violations, 'body', 'invalid-type', 'must be an object');
+  }
+  const body = (input ?? {}) as Record<string, unknown>;
+  for (const key of Object.keys(body)) {
+    if (
+      !COMPLETE_ALLOWED_FIELDS.includes(
+        key as (typeof COMPLETE_ALLOWED_FIELDS)[number],
+      )
+    ) {
+      add(violations, key, 'not-allowed', 'is not allowed');
+    }
+  }
+  const ids: string[] = [];
+  if (!Array.isArray(body.transactionIds)) {
+    add(violations, 'transactionIds', 'required', 'must be an array');
+  } else {
+    const seen = new Set<string>();
+    body.transactionIds.forEach((value, index) => {
+      if (typeof value !== 'string' || !UUID_PATTERN.test(value)) {
+        add(
+          violations,
+          `transactionIds.${index}`,
+          'invalid-format',
+          'must be a valid UUID',
+        );
+      } else {
+        const normalized = value.toLowerCase();
+        if (seen.has(normalized))
+          add(
+            violations,
+            `transactionIds.${index}`,
+            'duplicate',
+            'must contain unique UUIDs',
+          );
+        seen.add(normalized);
+        ids.push(normalized);
+      }
+    });
+  }
+  let createAdjustment = false;
+  if (body.createAdjustment !== undefined) {
+    if (typeof body.createAdjustment !== 'boolean')
+      add(violations, 'createAdjustment', 'invalid-type', 'must be a boolean');
+    else createAdjustment = body.createAdjustment;
+  }
+  const adjustmentReason = nullableStringValue(
+    body.adjustmentReason,
+    'adjustmentReason',
+    violations,
+    500,
+  );
+  if (violations.length > 0) {
+    throw new ReconciliationCommandValidationError(
+      Object.freeze(sortViolations(violations)),
+    );
+  }
+  return {
+    transactionIds: ids,
+    createAdjustment,
+    ...(adjustmentReason !== undefined ? { adjustmentReason } : {}),
   };
 }

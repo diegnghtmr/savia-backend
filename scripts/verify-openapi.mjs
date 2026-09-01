@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { stdout } from 'node:process';
+import { env } from 'node:process';
 
-const root = resolve(import.meta.dirname, '..');
+const packageRoot = resolve(import.meta.dirname, '..');
+const root = env.OPENAPI_AUTHORITY_ROOT ?? packageRoot;
 const read = (path) => readFileSync(resolve(root, path), 'utf8');
 const fail = (message) => {
   throw new Error(`OpenAPI authority invalid: ${message}`);
@@ -38,7 +40,7 @@ const parseOpenApi = () => {
 
   try {
     execFileSync(
-      resolve(root, 'node_modules/.bin/redocly'),
+      resolve(packageRoot, 'node_modules/.bin/redocly'),
       [
         'bundle',
         resolve(root, contractPath),

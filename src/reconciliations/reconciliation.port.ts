@@ -33,6 +33,12 @@ export interface CreateReconciliationCommand {
   readonly notes?: string | null;
 }
 
+export interface CompleteReconciliationCommand {
+  readonly transactionIds: readonly string[];
+  readonly createAdjustment: boolean;
+  readonly adjustmentReason?: string | null;
+}
+
 export class ReconciliationAccountNotFoundError extends Error {
   public constructor(message = 'Account not found in workspace.') {
     super(message);
@@ -55,6 +61,15 @@ export class AmountOutOfRangeError extends Error {
   ) {
     super(message);
     this.name = 'AmountOutOfRangeError';
+  }
+}
+
+export class ReconciliationCompletionRollbackError extends Error {
+  public constructor(
+    public readonly outcome: 'transactions-invalid' | 'amount-out-of-range',
+  ) {
+    super('Reconciliation completion must be rolled back.');
+    this.name = 'ReconciliationCompletionRollbackError';
   }
 }
 
@@ -136,6 +151,43 @@ export const RECONCILIATION_GET_OUTCOMES = {
   FORBIDDEN: 'forbidden',
 } as const;
 
+export const RECONCILIATION_COMPLETE_OUTCOMES = {
+  COMPLETED: 'completed',
+  REPLAYED: 'replayed',
+  FORBIDDEN: 'forbidden',
+  IDEMPOTENCY_CONFLICT: 'idempotency-conflict',
+  NOT_FOUND: 'not-found',
+  ALREADY_FINAL: 'already-final',
+  TRANSACTIONS_INVALID: 'transactions-invalid',
+  ADJUSTMENT_INVALID: 'adjustment-invalid',
+  AMOUNT_OUT_OF_RANGE: 'amount-out-of-range',
+} as const;
+
+export type ReconciliationCompleteOutcomeKind =
+  (typeof RECONCILIATION_COMPLETE_OUTCOMES)[keyof typeof RECONCILIATION_COMPLETE_OUTCOMES];
+
+export interface ReconciliationCompleteCompleted {
+  readonly kind: typeof RECONCILIATION_COMPLETE_OUTCOMES.COMPLETED;
+  readonly reconciliation: Reconciliation;
+}
+
+export interface ReconciliationCompleteReplayed {
+  readonly kind: typeof RECONCILIATION_COMPLETE_OUTCOMES.REPLAYED;
+  readonly status: number;
+  readonly etag: string | null;
+  readonly body: unknown;
+}
+
+export type ReconciliationCompleteOutcome =
+  | ReconciliationCompleteCompleted
+  | ReconciliationCompleteReplayed
+  | {
+      readonly kind: Exclude<
+        ReconciliationCompleteOutcomeKind,
+        'completed' | 'replayed'
+      >;
+    };
+
 export type ReconciliationGetOutcomeKind =
   (typeof RECONCILIATION_GET_OUTCOMES)[keyof typeof RECONCILIATION_GET_OUTCOMES];
 
@@ -211,6 +263,36 @@ export interface ReconciliationStore {
     workspaceId: string,
     reconciliationId: string,
   ): Promise<Reconciliation | undefined>;
+  lockAndReadCompletion(
+    client: TransactionClient,
+    workspaceId: string,
+    reconciliationId: string,
+  ): Promise<Reconciliation | undefined>;
+  validateCompletionTransactions(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    transactionIds: readonly string[],
+    statementDate: string,
+  ): Promise<
+    | 'valid'
+    | 'not-found'
+    | 'no-posting'
+    | 'wrong-status'
+    | 'already-reconciled'
+    | 'after-cutoff'
+  >;
+  reconcileTransactions(
+    client: TransactionClient,
+    workspaceId: string,
+    accountId: string,
+    transactionIds: readonly string[],
+  ): Promise<void>;
+  completeReconciliation(
+    client: TransactionClient,
+    workspaceId: string,
+    reconciliationId: string,
+  ): Promise<Reconciliation | undefined>;
 }
 
 export interface ReconciliationsPort {
@@ -226,4 +308,11 @@ export interface ReconciliationsPort {
     workspaceId: string,
     reconciliationId: string,
   ): Promise<ReconciliationGetOutcome>;
+  completeReconciliation(
+    subject: string,
+    workspaceId: string,
+    reconciliationId: string,
+    command: CompleteReconciliationCommand,
+    idempotencyKey: string,
+  ): Promise<ReconciliationCompleteOutcome>;
 }

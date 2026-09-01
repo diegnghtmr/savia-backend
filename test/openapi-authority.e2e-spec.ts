@@ -1,18 +1,32 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const root = process.cwd();
 const verifier = resolve(root, 'scripts/verify-openapi.mjs');
-const contract = resolve(root, 'openapi/savia.openapi.yaml');
-const provenance = resolve(root, 'openapi/provenance.json');
-const manifest = resolve(root, 'openapi/implementation-manifest.json');
-const readme = resolve(root, 'README.md');
+const testRoot = mkdtempSync(resolve(tmpdir(), 'savia-openapi-authority-'));
+const contract = resolve(testRoot, 'openapi/savia.openapi.yaml');
+const provenance = resolve(testRoot, 'openapi/provenance.json');
+const manifest = resolve(testRoot, 'openapi/implementation-manifest.json');
+const readme = resolve(testRoot, 'README.md');
 const planningSnapshot = resolve(
-  root,
+  testRoot,
   'openapi/planning-reference.snapshot.yaml',
 );
+
+cpSync(resolve(root, 'openapi'), resolve(testRoot, 'openapi'), {
+  recursive: true,
+});
+cpSync(resolve(root, 'README.md'), readme);
 
 const originals = new Map(
   [contract, provenance, manifest, readme].map((path) => [
@@ -21,7 +35,10 @@ const originals = new Map(
   ]),
 );
 const verify = () =>
-  execFileSync(process.execPath, [verifier], { cwd: root }).toString();
+  execFileSync(process.execPath, [verifier], {
+    cwd: root,
+    env: { ...process.env, OPENAPI_AUTHORITY_ROOT: testRoot },
+  }).toString();
 
 afterEach(() => {
   for (const [path, content] of originals) writeFileSync(path, content);
@@ -91,5 +108,29 @@ describe('executable OpenAPI authority', () => {
     );
 
     expect(verify).toThrow(/must publish exactly GET \/health/);
+  });
+
+  it('publishes the complete reconciliation transport response set', () => {
+    const source = readFileSync(contract, 'utf8');
+    const operation = source.slice(
+      source.indexOf('operationId: completeReconciliation'),
+      source.indexOf(
+        '  /v1/reconciliations/{reconciliationId}:',
+        source.indexOf('operationId: completeReconciliation'),
+      ),
+    );
+    const codes = [...operation.matchAll(/^( {8})'(\d{3})':/gm)].map(
+      (match) => match[2],
+    );
+    expect(codes).toEqual([
+      '200',
+      '400',
+      '401',
+      '403',
+      '404',
+      '409',
+      '422',
+      '500',
+    ]);
   });
 });

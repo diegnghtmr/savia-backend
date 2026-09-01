@@ -239,6 +239,9 @@ jobs:
       - name: reconciliations get integration
         shell: bash
         run: pnpm test:integration:reconciliations-get
+      - name: reconciliations complete integration
+        shell: bash
+        run: pnpm test:integration:reconciliations-complete
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

@@ -13,12 +13,14 @@ import type { FastifyReply } from 'fastify';
 import {
   RECONCILIATION_CREATE_OUTCOMES,
   RECONCILIATION_GET_OUTCOMES,
+  RECONCILIATION_COMPLETE_OUTCOMES,
   RECONCILIATIONS_PORT,
   type CreateReconciliationCommand,
   type ReconciliationsPort,
 } from './reconciliation.port.js';
 import {
   createReconciliationCommand,
+  completeReconciliationCommand,
   ReconciliationCommandValidationError,
 } from './reconciliation-command.js';
 import {
@@ -240,5 +242,124 @@ export class ReconciliationsController {
     }
 
     void reply.status(200).send(outcome.reconciliation);
+  }
+
+  @Post(':reconciliationId/complete')
+  public async completeReconciliation(
+    @Param('reconciliationId') rawReconciliationId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const header = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    if (header.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+      return;
+    }
+    const keyResult = validateIdempotencyKey(
+      request.headers['idempotency-key'],
+    );
+    if (keyResult.kind !== 'ok') {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid Idempotency-Key header',
+        detail: keyResult.reason,
+        status: 400,
+      });
+      return;
+    }
+    let reconciliationId: string;
+    try {
+      reconciliationId = validateReconciliationId(rawReconciliationId);
+    } catch (error) {
+      if (error instanceof ReconciliationQueryValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid reconciliation identifier',
+          status: 400,
+          errors: error.violations,
+        });
+        return;
+      }
+      throw error;
+    }
+    let command;
+    try {
+      command = completeReconciliationCommand(request.body);
+    } catch (error) {
+      if (error instanceof ReconciliationCommandValidationError) {
+        sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Reconciliation completion validation failed',
+          status: 422,
+          errors: error.violations,
+        });
+        return;
+      }
+      throw error;
+    }
+    const outcome = await this.reconciliationsPort.completeReconciliation(
+      request.identity.subject,
+      header.workspaceId,
+      reconciliationId,
+      command,
+      keyResult.key,
+    );
+    if (outcome.kind === RECONCILIATION_COMPLETE_OUTCOMES.FORBIDDEN) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+      return;
+    }
+    if (outcome.kind === RECONCILIATION_COMPLETE_OUTCOMES.NOT_FOUND) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Reconciliation not found',
+        status: 404,
+      });
+      return;
+    }
+    if (outcome.kind === RECONCILIATION_COMPLETE_OUTCOMES.ALREADY_FINAL) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Reconciliation is already finalized',
+        status: 409,
+      });
+      return;
+    }
+    if (
+      outcome.kind === RECONCILIATION_COMPLETE_OUTCOMES.IDEMPOTENCY_CONFLICT
+    ) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency key reused with different payload',
+        status: 409,
+      });
+      return;
+    }
+    if (outcome.kind === RECONCILIATION_COMPLETE_OUTCOMES.REPLAYED) {
+      void reply.status(outcome.status).send(outcome.body);
+      return;
+    }
+    if (
+      outcome.kind === RECONCILIATION_COMPLETE_OUTCOMES.TRANSACTIONS_INVALID ||
+      outcome.kind === RECONCILIATION_COMPLETE_OUTCOMES.ADJUSTMENT_INVALID ||
+      outcome.kind === RECONCILIATION_COMPLETE_OUTCOMES.AMOUNT_OUT_OF_RANGE
+    ) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Reconciliation completion validation failed',
+        status: 422,
+      });
+      return;
+    }
+    if (outcome.kind === RECONCILIATION_COMPLETE_OUTCOMES.COMPLETED) {
+      void reply.status(200).send(outcome.reconciliation);
+    }
   }
 }

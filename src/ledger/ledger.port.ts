@@ -89,7 +89,7 @@ export interface CreateTransactionCommand {
   readonly accountId: string;
   readonly amount: Money;
   readonly occurredAt: string;
-  readonly status: 'draft' | 'pending' | 'confirmed';
+  readonly status: 'draft' | 'pending' | 'confirmed' | 'reconciled';
   readonly categoryId?: string | null;
   readonly payeeId?: string | null;
   readonly description?: string | null;
