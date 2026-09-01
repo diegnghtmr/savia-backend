@@ -4313,6 +4313,15 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/CreateExportJobRequest' }
       responses:
+        '400':
+          {
+            description: Malformed request headers or body.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
         '202':
           {
             description: Export accepted.,
@@ -4383,6 +4392,15 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        '400':
+          {
+            description: Malformed request headers or export job identifier.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
         '200':
           {
             description: Export job.,
