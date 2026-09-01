@@ -230,6 +230,15 @@ jobs:
       - name: jobs read integration
         shell: bash
         run: pnpm test:integration:jobs-read
+      - name: reconciliations schema integration
+        shell: bash
+        run: pnpm test:integration:reconciliations-schema
+      - name: reconciliations create integration
+        shell: bash
+        run: pnpm test:integration:reconciliations-create
+      - name: reconciliations get integration
+        shell: bash
+        run: pnpm test:integration:reconciliations-get
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
