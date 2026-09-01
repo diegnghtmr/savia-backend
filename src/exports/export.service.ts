@@ -1,6 +1,7 @@
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import { CommitOutcomeUnknownError } from '../platform/pg-transaction.js';
 import {
   EXPORT_OUTCOMES,
   type CreateExportJobCommand,
@@ -50,9 +51,10 @@ export class ExportService implements ExportsPort {
       return { kind: EXPORT_OUTCOMES.UNSUPPORTED_RESOURCE };
     const route = 'POST /v1/export-jobs';
     const fingerprint = computeRequestFingerprint(command);
+    let reservedId: string | undefined;
     let uploadedPath: string | undefined;
     try {
-      return await this.transaction.run(subject, async (client) => {
+      const prepared = await this.transaction.run(subject, async (client) => {
         const role = await this.store.readActiveRole(client, workspaceId);
         if (!role || !WRITE_ROLES.includes(role))
           return { kind: EXPORT_OUTCOMES.FORBIDDEN };
@@ -75,62 +77,31 @@ export class ExportService implements ExportsPort {
         const path = `${workspaceId}/${id}.${command.format === 'json_backup' ? 'json' : command.format}`;
         const rows = await this.store.readRows(client, workspaceId, command);
         const artifact = await serialize(command.format, rows);
-        await this.storage.upload(path, artifact.content, artifact.contentType);
-        uploadedPath = path;
-        try {
-          const signature = await this.storage.sign(
-            path,
-            new Date(Date.now() + TTL_MS),
-          );
-          const job = await this.store.insert(
-            client,
-            workspaceId,
-            subject,
-            id,
-            command,
-            path,
-            signature.url,
-            signature.expiresAt.toISOString(),
-            null,
-          );
-          const written = await this.idempotency.write(
-            client,
-            subject,
-            route,
-            key,
-            fingerprint,
-            202,
-            null,
-            job,
-            workspaceId,
-          );
-          if (!written) {
-            const reread = await this.idempotency.read(
-              client,
-              subject,
-              route,
-              key,
-              workspaceId,
-            );
-            if (reread?.requestFingerprint === fingerprint)
-              return {
-                kind: EXPORT_OUTCOMES.REPLAYED,
-                status: reread.responseStatus,
-                body: reread.responseBody,
-              };
-            throw new Error(
-              'Idempotency record was lost after export creation.',
-            );
-          }
-          return { kind: EXPORT_OUTCOMES.CREATED, job };
-        } catch (error) {
-          await this.storage.remove(path).catch(() => undefined);
-          throw error;
-        }
+        const job = await this.store.reserve(client, workspaceId, subject, id, command, path);
+        reservedId = id;
+        return { job, artifact, path };
       });
+      if (!('artifact' in prepared)) return prepared;
+      uploadedPath = prepared.path!;
+      await this.storage.upload(uploadedPath, prepared.artifact!.content, prepared.artifact!.contentType);
+      const signature = await this.storage.sign(uploadedPath, new Date(Date.now() + TTL_MS));
+      const job = await this.transaction.run(subject, async (client) => {
+        const completed = await this.store.complete(client, workspaceId, reservedId!, signature.url, signature.expiresAt.toISOString());
+        const written = await this.idempotency.write(client, subject, route, key, fingerprint, 202, null, completed, workspaceId);
+        if (!written) throw new Error('Idempotency record was lost after export completion.');
+        return completed;
+      });
+      return { kind: EXPORT_OUTCOMES.CREATED, job };
     } catch (error) {
-      if (uploadedPath !== undefined)
-        await this.storage.remove(uploadedPath).catch(() => undefined);
+      if (error instanceof CommitOutcomeUnknownError) {
+        const recovered = await this.transaction.runRead(subject, (client) =>
+          this.idempotency.read(client, subject, route, key, workspaceId),
+        );
+        if (recovered?.requestFingerprint === fingerprint)
+          return { kind: EXPORT_OUTCOMES.REPLAYED, status: recovered.responseStatus, body: recovered.responseBody };
+        throw error;
+      }
+      if (uploadedPath !== undefined) await this.storage.remove(uploadedPath);
       const problem =
         error instanceof ExportFailure
           ? error.problem
@@ -146,17 +117,9 @@ export class ExportService implements ExportsPort {
                   : 'Export could not be generated.',
             };
       const job = await this.transaction.run(subject, async (client) => {
-        const failedJob = await this.store.insert(
-          client,
-          workspaceId,
-          subject,
-          this.store.createId(),
-          command,
-          '',
-          null,
-          null,
-          problem,
-        );
+        const failedJob = reservedId
+          ? await this.store.fail(client, workspaceId, reservedId, problem)
+          : await this.store.insert(client, workspaceId, subject, this.store.createId(), command, '', null, null, problem);
         await this.idempotency.write(
           client,
           subject,

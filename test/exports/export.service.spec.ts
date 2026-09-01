@@ -43,6 +43,12 @@ function harness(
   const store: ExportStore = {
     readActiveRole: async () => 'owner',
     createId: () => `00000000-0000-0000-0000-00000000000${jobs + 3}`,
+    reserve: async (_client, _ws, _subject, id, _command, _path) => {
+      jobs += 1;
+      return job(id, 'queued');
+    },
+    complete: async (_client, _ws, id, _url, _expiry) => job(id),
+    fail: async (_client, _ws, id, _error) => job(id, 'failed'),
     readRows: async () => ({ accounts: [{ id: 'a' }], transactions: [] }),
     insert: async (
       _client,
@@ -55,7 +61,6 @@ function harness(
       expiry,
       error,
     ) => {
-      jobs += 1;
       return job(id, error ? 'failed' : 'completed');
     },
     find: async () => undefined,

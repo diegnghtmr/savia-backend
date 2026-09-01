@@ -85,6 +85,27 @@ export interface ExportStore {
     workspaceId: string,
   ): Promise<string | undefined>;
   createId(): string;
+  reserve(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    id: string,
+    command: CreateExportJobCommand,
+    path: string,
+  ): Promise<ExportJob>;
+  complete(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    url: string,
+    expiresAt: string,
+  ): Promise<ExportJob>;
+  fail(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    error: Record<string, unknown>,
+  ): Promise<ExportJob>;
   readRows(
     client: TransactionClient,
     workspaceId: string,
