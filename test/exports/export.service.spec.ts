@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ExportService } from '../../src/exports/export.service.js';
+import { CommitOutcomeUnknownError } from '../../src/platform/pg-transaction.js';
 import {
   type ExportJob,
   type ExportStore,
@@ -36,10 +37,13 @@ function harness(
     url: 'https://signed.test/file',
     expiresAt: expiry,
   }),
+  unknownCommit = false,
 ) {
   const records = new Map<string, IdempotencyRecord>();
   let jobs = 0;
   let uploads = 0;
+  let removals = 0;
+  let transactionRuns = 0;
   const store: ExportStore = {
     readActiveRole: async () => 'owner',
     createId: () => `00000000-0000-0000-0000-00000000000${jobs + 3}`,
@@ -92,18 +96,25 @@ function harness(
       uploads += 1;
     },
     sign,
-    remove: async () => undefined,
+    remove: async () => {
+      removals += 1;
+    },
   };
   const transaction = {
     run: async <T>(
       _subject: string,
       callback: (client: { query: () => Promise<never> }) => Promise<T>,
-    ) =>
-      callback({
+    ) => {
+      transactionRuns += 1;
+      return callback({
         query: async () => {
           throw new Error('not used');
         },
-      }),
+      }).then((result) => {
+        if (unknownCommit && transactionRuns === 2) throw new CommitOutcomeUnknownError(new Error('lost commit acknowledgement'));
+        return result;
+      });
+    },
     runRead: async <T>(
       _subject: string,
       callback: (client: { query: () => Promise<never> }) => Promise<T>,
@@ -116,7 +127,7 @@ function harness(
   };
   return {
     service: new ExportService(transaction, store, idempotency, storage),
-    counts: () => ({ jobs, uploads }),
+    counts: () => ({ jobs, uploads, removals }),
   };
 }
 
@@ -137,7 +148,13 @@ describe('ExportService', () => {
     );
     expect(first.kind).toBe('created');
     expect(second.kind).toBe('replayed');
-    expect(h.counts()).toEqual({ jobs: 1, uploads: 1 });
+    expect(h.counts()).toMatchObject({ jobs: 1, uploads: 1 });
+  });
+  it('recovers a committed result after an unknown commit without deleting the object', async () => {
+    const h = harness(undefined, true);
+    const outcome = await h.service.createExportJob(subject, workspace, command, 'unknown-commit-key');
+    expect(outcome.kind).toBe('replayed');
+    expect(h.counts()).toMatchObject({ jobs: 1, uploads: 1, removals: 0 });
   });
   it('persists a terminal failed job outside the failed generation transaction', async () => {
     const h = harness(async () => {
