@@ -4,7 +4,11 @@ import { validateCommitImportCommand } from '../../src/imports/import-command.js
 describe('validateCommitImportCommand', () => {
   const valid = {
     accountId: '00000000-0000-4000-8000-000000000001',
-    columnMapping: { date: 'date', amount: 'amount', description: 'description' },
+    columnMapping: {
+      date: 'date',
+      amount: 'amount',
+      description: 'description',
+    },
   };
 
   it.each([
