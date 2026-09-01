@@ -53,6 +53,10 @@ describe('import commit and rollback against real PostgreSQL', () => {
       [workspace, subject, otherWorkspace, otherSubject],
     );
     await admin.query(
+      "insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$2,'owner','active')",
+      [workspace, otherSubject],
+    );
+    await admin.query(
       "insert into public.accounts (id,workspace_id,name,type,currency,status,created_by) values ($1,$2,'Checking','checking','USD','active',$3)",
       [account, workspace, subject],
     );
@@ -141,6 +145,17 @@ describe('import commit and rollback against real PostgreSQL', () => {
         )
       ).rows,
     ).toHaveLength(0);
+    const job = await admin.query(
+      'select type,status,result_resource_id,progress_percent,completed_at from public.jobs where result_resource_id=$1',
+      [importId],
+    );
+    expect(job.rows[0]).toMatchObject({
+      type: 'import_commit',
+      status: 'completed',
+      result_resource_id: importId,
+      progress_percent: 100,
+    });
+    expect(job.rows[0].completed_at).not.toBeNull();
   });
 
   it.each([
@@ -201,6 +216,7 @@ describe('import commit and rollback against real PostgreSQL', () => {
     ['C', 100],
     ['DR', -100],
     ['CR', 100],
+    ['Db', -100],
     ['Débito', -100],
     ['Crédito', 100],
     ['Cargo', -100],
@@ -210,7 +226,7 @@ describe('import commit and rollback against real PostgreSQL', () => {
     async (indicator, expected) => {
       const number =
         5720 +
-        (expected < 0 ? 0 : 10) +
+        (expected < 0 ? 0 : 20) +
         [
           'debit',
           'credit',
@@ -218,6 +234,7 @@ describe('import commit and rollback against real PostgreSQL', () => {
           'C',
           'DR',
           'CR',
+          'Db',
           'Débito',
           'Crédito',
           'Cargo',
@@ -254,7 +271,7 @@ describe('import commit and rollback against real PostgreSQL', () => {
   it.each(['unknown', '  '])(
     'rejects blank or unknown indicator atomically (%s)',
     async (indicator) => {
-      const number = indicator === 'unknown' ? 5741 : 5742;
+      const number = indicator === 'unknown' ? 5801 : 5802;
       const importId = await seedImport(
         number,
         'awaiting_mapping',
@@ -440,11 +457,15 @@ describe('import commit and rollback against real PostgreSQL', () => {
     expect(
       (await service.rollbackImport(subject, workspace, completed, key(5655)))
         .kind,
-    ).toBe('invalid');
+    ).toBe('conflict');
   });
 
-  it('rolls back by voiding, skips voided, and blocks reconciled transactions', async () => {
-    const importId = await seedImport(5661);
+  it('rolls back by voiding, skips voided, and blocks reconciled transactions atomically', async () => {
+    const importId = await seedImport(5661, 'awaiting_mapping', [
+      ['2026-01-01', 100, 'Coffee'],
+      ['2026-01-02', 200, 'Salary'],
+      ['2026-01-03', 300, 'Rent'],
+    ]);
     await service.commitImport(
       subject,
       workspace,
@@ -456,6 +477,10 @@ describe('import commit and rollback against real PostgreSQL', () => {
       },
       key(5661),
     );
+    const postingsBeforeRollback = await admin.query(
+      'select count(*)::int as count from public.ledger_postings p join public.transactions t on t.id=p.transaction_id where t.import_job_id=$1',
+      [importId],
+    );
     await service.rollbackImport(subject, workspace, importId, key(5662));
     expect(
       (
@@ -465,7 +490,19 @@ describe('import commit and rollback against real PostgreSQL', () => {
         )
       ).rows[0].status,
     ).toBe('voided');
-    const reconciled = await seedImport(5662);
+    expect(
+      (
+        await admin.query(
+          'select count(*)::int as count from public.ledger_postings p join public.transactions t on t.id=p.transaction_id where t.import_job_id=$1',
+          [importId],
+        )
+      ).rows[0].count,
+    ).toBe(postingsBeforeRollback.rows[0].count + 6);
+    const reconciled = await seedImport(5662, 'awaiting_mapping', [
+      ['2026-01-01', 100, 'Reconciled'],
+      ['2026-01-02', 200, 'Not reconciled'],
+      ['2026-01-03', 300, 'Also not reconciled'],
+    ]);
     await service.commitImport(
       subject,
       workspace,
@@ -478,13 +515,150 @@ describe('import commit and rollback against real PostgreSQL', () => {
       key(5663),
     );
     await admin.query(
-      "update public.transactions set status='reconciled' where import_job_id=$1",
+      "update public.transactions set status='reconciled' where import_job_id=$1 and description='Reconciled'",
       [reconciled],
     );
     expect(
       (await service.rollbackImport(subject, workspace, reconciled, key(5664)))
         .kind,
     ).toBe('invalid');
+    expect(
+      (
+        await admin.query(
+          "select count(*)::int as count from public.transactions where import_job_id=$1 and status='voided'",
+          [reconciled],
+        )
+      ).rows[0].count,
+    ).toBe(0);
+    expect(
+      (
+        await admin.query(
+          "select count(*)::int as count from public.ledger_postings p join public.transactions t on t.id=p.transaction_id where t.import_job_id=$1 and p.status='voided'",
+          [reconciled],
+        )
+      ).rows[0].count,
+    ).toBe(0);
+  });
+
+  it('rejects rollback after account closure without any compensating writes', async () => {
+    const importId = await seedImport(5665, 'awaiting_mapping', [
+      ['2026-01-01', 100, 'Closed'],
+    ]);
+    await service.commitImport(
+      subject,
+      workspace,
+      importId,
+      {
+        accountId: account,
+        columnMapping: mapping,
+        skipDuplicateCandidates: false,
+      },
+      key(5665),
+    );
+    const before = await admin.query(
+      'select (select count(*) from public.ledger_postings) as postings, (select count(*) from public.jobs where result_resource_id=$1) as jobs',
+      [importId],
+    );
+    await admin.query(
+      "update public.accounts set status='closed',closed_at=now() where id=$1",
+      [account],
+    );
+    expect(
+      (await service.rollbackImport(subject, workspace, importId, key(5666)))
+        .kind,
+    ).toBe('account-closed');
+    const after = await admin.query(
+      "select (select count(*) from public.ledger_postings) as postings, (select count(*) from public.jobs where result_resource_id=$1) as jobs, (select status from public.import_jobs where id=$1) as status, (select count(*) from public.transactions where import_job_id=$1 and status='voided') as voided",
+      [importId],
+    );
+    expect(after.rows[0]).toMatchObject({
+      postings: before.rows[0].postings,
+      jobs: before.rows[0].jobs,
+      status: 'completed',
+      voided: '0',
+    });
+    await admin.query(
+      "update public.accounts set status='active',closed_at=null where id=$1",
+      [account],
+    );
+  });
+
+  it('serializes different subjects so only one concurrent commit succeeds', async () => {
+    const importId = await seedImport(5667);
+    const command = {
+      accountId: account,
+      columnMapping: mapping,
+      skipDuplicateCandidates: false,
+    };
+    const results = await Promise.all([
+      service.commitImport(subject, workspace, importId, command, key(5667)),
+      service.commitImport(
+        otherSubject,
+        workspace,
+        importId,
+        command,
+        key(5668),
+      ),
+    ]);
+    expect(results.map((result) => result.kind).sort()).toEqual([
+      'conflict',
+      'ok',
+    ]);
+    expect(
+      (
+        await admin.query(
+          'select count(*)::int as count from public.transactions where import_job_id=$1',
+          [importId],
+        )
+      ).rows[0].count,
+    ).toBe(1);
+    expect(
+      (
+        await admin.query(
+          'select count(*)::int as count from public.jobs where result_resource_id=$1',
+          [importId],
+        )
+      ).rows[0].count,
+    ).toBe(1);
+  });
+
+  it('serializes different subjects so only one concurrent rollback succeeds', async () => {
+    const importId = await seedImport(5669, 'awaiting_mapping', [
+      ['2026-01-01', 100, 'Concurrent rollback'],
+      ['2026-01-02', 200, 'Concurrent rollback 2'],
+    ]);
+    const command = {
+      accountId: account,
+      columnMapping: mapping,
+      skipDuplicateCandidates: false,
+    };
+    expect(
+      (
+        await service.commitImport(
+          subject,
+          workspace,
+          importId,
+          command,
+          key(5669),
+        )
+      ).kind,
+    ).toBe('ok');
+    const results = await Promise.all([
+      service.rollbackImport(subject, workspace, importId, key(5670)),
+      service.rollbackImport(otherSubject, workspace, importId, key(5671)),
+    ]);
+    expect(results.map((result) => result.kind).sort()).toEqual([
+      'conflict',
+      'ok',
+    ]);
+    expect(
+      (
+        await admin.query(
+          'select count(*)::int as count from public.jobs where result_resource_id=$1',
+          [importId],
+        )
+      ).rows[0].count,
+    ).toBe(2);
   });
 
   it('replays commit and rollback idempotently with one job and no duplicate import', async () => {
@@ -575,7 +749,7 @@ describe('import commit and rollback against real PostgreSQL', () => {
       { accountId: account, columnMapping: mapping },
       key(5692),
     );
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitForAdvisoryWait(admin);
     await blocker.query(
       "update public.accounts set status='closed',closed_at=now() where id=$1",
       [account],
@@ -607,4 +781,50 @@ describe('import commit and rollback against real PostgreSQL', () => {
       ).kind,
     ).toBe('not-found');
   });
+
+  it('proves rollback waits on the account advisory lock before reading status', async () => {
+    const importId = await seedImport(5682);
+    expect(
+      (
+        await service.commitImport(
+          subject,
+          workspace,
+          importId,
+          {
+            accountId: account,
+            columnMapping: mapping,
+            skipDuplicateCandidates: false,
+          },
+          key(5682),
+        )
+      ).kind,
+    ).toBe('ok');
+    const blocker = await admin.connect();
+    await blocker.query('begin');
+    await blocker.query(
+      'select pg_advisory_xact_lock(hashtextextended($1,0))',
+      [account],
+    );
+    const pending = service.rollbackImport(
+      subject,
+      workspace,
+      importId,
+      key(5683),
+    );
+    await waitForAdvisoryWait(admin);
+    await blocker.query('commit');
+    blocker.release();
+    expect((await pending).kind).toBe('ok');
+  });
 });
+
+async function waitForAdvisoryWait(pool: Pool): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await pool.query(
+      "select 1 from pg_locks where locktype='advisory' and not granted limit 1",
+    );
+    if (result.rowCount === 1) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Timed out waiting for an advisory lock waiter.');
+}

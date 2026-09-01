@@ -23,6 +23,7 @@ const otherSubject = '00000000-0000-0000-0000-000000005502';
 const workspace = '00000000-0000-4000-8000-000000005501';
 const otherWorkspace = '00000000-0000-4000-8000-000000005502';
 const jobId = '00000000-0000-4000-8000-000000005503';
+const accountId = '00000000-0000-4000-8000-000000005504';
 const boundary = 'savia-import-boundary';
 const csv =
   'date,amount,description\n2026-01-01,100,Coffee\n2026-01-02,200,Salary\n';
@@ -95,6 +96,10 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
     await admin.query(
       `insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$3,'owner','active'),($2,$4,'owner','active')`,
       [workspace, otherWorkspace, subject, otherSubject],
+    );
+    await admin.query(
+      "insert into public.accounts (id,workspace_id,name,type,currency,status,created_by) values ($1,$2,'HTTP checking','checking','USD','active',$3)",
+      [accountId, workspace, subject],
     );
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(JoseJwtVerifier)
@@ -390,6 +395,81 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       },
     });
     expect(response.statusCode).toBe(404);
+  });
+
+  it('maps mutation outcomes to the HTTP contract', async () => {
+    const uploaded = await upload(
+      app,
+      Buffer.from('date,amount,description\n2026-02-01,10,HTTP\n'),
+      'http-commit.csv',
+      '00000000-0000-4000-8000-000000005526',
+      'csv',
+    );
+    expect(uploaded.statusCode).toBe(202);
+    const id = JSON.parse(uploaded.payload).id as string;
+    const headers = {
+      authorization: 'Bearer accepted-token',
+      'x-workspace-id': workspace,
+      'idempotency-key': '00000000-0000-4000-8000-000000005527',
+      'content-type': 'application/json',
+    };
+    const command = {
+      accountId,
+      columnMapping: {
+        date: 'date',
+        amount: 'amount',
+        description: 'description',
+      },
+      skipDuplicateCandidates: false,
+    };
+    const committed = await app.inject({
+      method: 'POST',
+      url: `/v1/import-jobs/${id}/commit`,
+      headers,
+      payload: command,
+    });
+    expect(committed.statusCode).toBe(202);
+    const conflict = await app.inject({
+      method: 'POST',
+      url: `/v1/import-jobs/${id}/commit`,
+      headers: {
+        ...headers,
+        'idempotency-key': '00000000-0000-4000-8000-000000005528',
+      },
+      payload: command,
+    });
+    expect(conflict.statusCode).toBe(409);
+    const invalidBody = await app.inject({
+      method: 'POST',
+      url: `/v1/import-jobs/${id}/commit`,
+      headers: {
+        ...headers,
+        'idempotency-key': '00000000-0000-4000-8000-000000005529',
+      },
+      payload: { ...command, extra: true },
+    });
+    expect(invalidBody.statusCode).toBe(422);
+    const badHeaders = await app.inject({
+      method: 'POST',
+      url: `/v1/import-jobs/${id}/commit`,
+      headers: {
+        ...headers,
+        'x-workspace-id': 'not-a-uuid',
+        'idempotency-key': '00000000-0000-4000-8000-000000005530',
+      },
+      payload: command,
+    });
+    expect(badHeaders.statusCode).toBe(400);
+    const missing = await app.inject({
+      method: 'POST',
+      url: `/v1/import-jobs/00000000-0000-4000-8000-000000005531/commit`,
+      headers: {
+        ...headers,
+        'idempotency-key': '00000000-0000-4000-8000-000000005532',
+      },
+      payload: command,
+    });
+    expect(missing.statusCode).toBe(404);
   });
   it('replays idempotently with exactly one job and one row set', async () => {
     const key = '00000000-0000-4000-8000-000000005517';

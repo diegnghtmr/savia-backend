@@ -36,7 +36,7 @@ export interface ImportTransaction {
 }
 class ImportValidationError extends Error {}
 
-const DEBIT_INDICATORS = new Set(['debit', 'd', 'dr', 'débito', 'cargo']);
+const DEBIT_INDICATORS = new Set(['debit', 'd', 'dr', 'db', 'débito', 'cargo']);
 const CREDIT_INDICATORS = new Set(['credit', 'c', 'cr', 'crédito', 'abono']);
 function separateColumnAmount(value: unknown, amount: number): number {
   const indicator = String(value ?? '')
@@ -224,6 +224,11 @@ export class ImportService implements ImportsPort {
             : { kind: IMPORT_MUTATION_OUTCOMES.CONFLICT };
         const importJob = await this.store.find(client, workspaceId, id);
         if (!importJob) return { kind: IMPORT_MUTATION_OUTCOMES.NOT_FOUND };
+        if (importJob.status === 'completed')
+          return {
+            kind: IMPORT_MUTATION_OUTCOMES.CONFLICT,
+            detail: 'Import job has already been completed.',
+          };
         if (importJob.status !== 'awaiting_mapping')
           return {
             kind: IMPORT_MUTATION_OUTCOMES.INVALID,
@@ -419,6 +424,11 @@ export class ImportService implements ImportsPort {
             : { kind: IMPORT_MUTATION_OUTCOMES.CONFLICT };
         let importJob = await this.store.find(client, workspaceId, id);
         if (!importJob) return { kind: IMPORT_MUTATION_OUTCOMES.NOT_FOUND };
+        if (importJob.status === 'rolled_back')
+          return {
+            kind: IMPORT_MUTATION_OUTCOMES.CONFLICT,
+            detail: 'Import job has already been rolled back.',
+          };
         if (importJob.status !== 'completed' || !importJob.accountId)
           return {
             kind: IMPORT_MUTATION_OUTCOMES.INVALID,
