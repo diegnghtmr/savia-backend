@@ -1,6 +1,7 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   AdjustmentTransactionCommand,
+  ImportedTransactionCommand,
   LedgerWriter,
 } from '../platform/ledger-writer.port.js';
 import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
@@ -70,6 +71,22 @@ export function toIso(value: unknown): string {
 }
 
 export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
+  public createImportedTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    command: ImportedTransactionCommand,
+  ): Promise<Transaction> {
+    return this.createTransaction(client, workspaceId, subject, {
+      type: 'adjustment',
+      accountId: command.accountId,
+      amount: { amountMinor: command.amountMinor, currency: command.currency },
+      occurredAt: command.occurredAt,
+      status: 'confirmed',
+      description: command.description,
+      importJobId: command.importJobId,
+    });
+  }
   public async createAdjustmentTransaction(
     client: TransactionClient,
     workspaceId: string,
@@ -140,7 +157,7 @@ insert into public.transactions (
   notes,
   category_id,
   payee_id,
-  receipt_id,
+      receipt_id,
   tag_ids,
   created_by
 )
@@ -157,8 +174,8 @@ values (
   $10::uuid,
   $11::uuid,
   $12::uuid,
-  $13::uuid[],
-  $14::uuid
+      $13::uuid[],
+      $14::uuid
 )
 returning
   id::text,
@@ -220,6 +237,12 @@ returning
     const row = txnResult.rows[0];
     if (!row) {
       throw new Error('Created transaction row could not be read.');
+    }
+    if (command.importJobId) {
+      await client.query(
+        'update public.transactions set import_job_id=$3::uuid where workspace_id=$1::uuid and id=$2::uuid',
+        [workspaceId, row.id, command.importJobId],
+      );
     }
 
     // 2. Insert balanced pair of ledger postings

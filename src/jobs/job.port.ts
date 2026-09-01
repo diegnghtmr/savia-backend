@@ -1,6 +1,7 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 
 export const JOBS_PORT = Symbol('JobsPort');
+export { JOB_WRITER } from '../platform/job-writer.port.js';
 
 export const JOB_STATUSES = [
   'queued',
@@ -63,6 +64,19 @@ export interface JobStore {
     workspaceId: string,
     jobId: string,
   ): Promise<Job | undefined>;
+}
+
+/* JobWriter is defined at the platform boundary. */
+export interface JobWriter {
+  createTerminalJob(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    type: JobType,
+    status: Extract<JobStatus, 'completed' | 'failed'>,
+    resultResourceId: string | null,
+    error: Record<string, unknown> | null,
+  ): Promise<Job>;
 }
 
 export interface JobsPort {

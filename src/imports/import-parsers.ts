@@ -78,6 +78,7 @@ function parseRows(
             detail: errors.join('; '),
           }
         : null,
+      sourceColumns: headers,
     };
   });
 }
