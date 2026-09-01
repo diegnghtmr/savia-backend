@@ -86,7 +86,12 @@ describe('export serializers', () => {
     await workbook.xlsx.load(buffer as never);
     const sheet = workbook.getWorksheet('export');
     expect(sheet).toBeDefined();
-    expect(sheet!.getRow(1).values.slice(1)).toEqual(['id', 'name', 'amount']);
+    const headers = sheet!.getRow(1).values;
+    expect(Array.isArray(headers) ? headers.slice(1) : headers).toEqual([
+      'id',
+      'name',
+      'amount',
+    ]);
     expect(sheet!.rowCount).toBe(2);
     expect(sheet!.getCell('B2').value).toBe('A');
     expect(sheet!.getCell('C2').value).toBe(10);
