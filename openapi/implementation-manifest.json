@@ -3,6 +3,21 @@
   "clientGenerationInput": "openapi/savia.openapi.yaml",
   "implementedOperations": [
     {
+      "operationId": "listBudgets",
+      "method": "GET",
+      "path": "/v1/budgets"
+    },
+    {
+      "operationId": "createBudget",
+      "method": "POST",
+      "path": "/v1/budgets"
+    },
+    {
+      "operationId": "getBudget",
+      "method": "GET",
+      "path": "/v1/budgets/{budgetId}"
+    },
+    {
       "operationId": "getHealth",
       "method": "GET",
       "path": "/health"

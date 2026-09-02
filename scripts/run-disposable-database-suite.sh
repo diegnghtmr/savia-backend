@@ -58,6 +58,10 @@ case "$spec" in
   test/reconciliations/reconciliations-create.integration-spec.ts) ;;
   test/reconciliations/reconciliations-get.integration-spec.ts) ;;
   test/reconciliations/reconciliations-complete.integration-spec.ts) ;;
+  test/identity/budgets-schema.integration-spec.ts) ;;
+  test/budgets/budgets-create.integration-spec.ts) ;;
+  test/budgets/budgets-get.integration-spec.ts) ;;
+  test/budgets/budgets-list.integration-spec.ts) ;;
   test/exports/export-security.integration-spec.ts) ;;
   test/imports/imports.integration-spec.ts) ;;
   test/imports/import-commit-rollback.integration-spec.ts) ;;
