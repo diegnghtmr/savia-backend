@@ -223,9 +223,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       );
       expect(budgetTrigRes.rows).toHaveLength(1);
       const bTrig = budgetTrigRes.rows[0];
-      expect(bTrig.proname).toBe(
-        'enforce_budget_currency_has_exchange_rates',
-      );
+      expect(bTrig.proname).toBe('enforce_budget_currency_has_exchange_rates');
       expect(bTrig.prosecdef).toBe(true);
       expect(bTrig.proowner).toBe('savia_elevated');
       expect(bTrig.proconfig).toEqual(['search_path=pg_catalog, public']);
@@ -278,9 +276,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       );
       expect(accBudgetTrigRes.rows).toHaveLength(1);
       const abTrig = accBudgetTrigRes.rows[0];
-      expect(abTrig.proname).toBe(
-        'enforce_account_currency_has_budget_rates',
-      );
+      expect(abTrig.proname).toBe('enforce_account_currency_has_budget_rates');
       expect(abTrig.prosecdef).toBe(true);
       expect(abTrig.proowner).toBe('savia_elevated');
       expect(abTrig.proconfig).toEqual(['search_path=pg_catalog, public']);
@@ -616,7 +612,9 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       );
 
       expect(blindErr.code).toBe('23514');
-      expect(blindErr.constraint).toBe('accounts_currency_requires_exchange_rate');
+      expect(blindErr.constraint).toBe(
+        'accounts_currency_requires_exchange_rate',
+      );
       expect(blindErr.message ?? '').toContain(
         'exchange rate required for account currency differing from workspace base currency',
       );
@@ -903,9 +901,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
         )
         .catch(() => {});
       await admin
-        .query('delete from public.workspaces where id = $1::uuid', [
-          wsHttpId,
-        ])
+        .query('delete from public.workspaces where id = $1::uuid', [wsHttpId])
         .catch(() => {});
     });
 

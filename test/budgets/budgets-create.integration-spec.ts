@@ -490,18 +490,15 @@ describe('budget creation against disposable PostgreSQL', () => {
         `delete from public.budget_allocations where budget_id = $1::uuid`,
         [budget.budget.id],
       );
-      await f.admin.query(
-        `delete from public.budgets where id = $1::uuid`,
-        [budget.budget.id],
-      );
-      await f.admin.query(
-        `delete from public.categories where id = $1::uuid`,
-        [categoryId],
-      );
-      await f.admin.query(
-        `delete from public.accounts where id = $1::uuid`,
-        [eurAccount],
-      );
+      await f.admin.query(`delete from public.budgets where id = $1::uuid`, [
+        budget.budget.id,
+      ]);
+      await f.admin.query(`delete from public.categories where id = $1::uuid`, [
+        categoryId,
+      ]);
+      await f.admin.query(`delete from public.accounts where id = $1::uuid`, [
+        eurAccount,
+      ]);
       await f.admin.query(
         `delete from public.exchange_rates where workspace_id = $1::uuid and base_currency = 'EUR' and rate = '0.5000'`,
         [IDS.workspace],
@@ -574,18 +571,15 @@ describe('budget creation against disposable PostgreSQL', () => {
         `delete from public.budget_allocations where budget_id = $1::uuid`,
         [budget.budget.id],
       );
-      await f.admin.query(
-        `delete from public.budgets where id = $1::uuid`,
-        [budget.budget.id],
-      );
-      await f.admin.query(
-        `delete from public.categories where id = $1::uuid`,
-        [categoryId],
-      );
-      await f.admin.query(
-        `delete from public.accounts where id = $1::uuid`,
-        [eurAccount],
-      );
+      await f.admin.query(`delete from public.budgets where id = $1::uuid`, [
+        budget.budget.id,
+      ]);
+      await f.admin.query(`delete from public.categories where id = $1::uuid`, [
+        categoryId,
+      ]);
+      await f.admin.query(`delete from public.accounts where id = $1::uuid`, [
+        eurAccount,
+      ]);
       await f.admin.query(
         `delete from public.exchange_rates where workspace_id = $1::uuid and base_currency = 'EUR' and rate = '0.5000'`,
         [IDS.workspace],
@@ -691,8 +685,12 @@ describe('budget creation against disposable PostgreSQL', () => {
         headers: baseHeaders,
       });
       expect(httpRes.statusCode).toBe(200);
-      const httpAllocA = httpRes.json().allocations.find((a: { categoryId: string }) => a.categoryId === catA);
-      const httpAllocB = httpRes.json().allocations.find((a: { categoryId: string }) => a.categoryId === catB);
+      const httpAllocA = httpRes
+        .json()
+        .allocations.find((a: { categoryId: string }) => a.categoryId === catA);
+      const httpAllocB = httpRes
+        .json()
+        .allocations.find((a: { categoryId: string }) => a.categoryId === catB);
       expect(httpAllocA.actual.amountMinor).toBe('21000');
       expect(httpAllocB.actual.amountMinor).toBe('7500');
     } finally {
@@ -708,10 +706,9 @@ describe('budget creation against disposable PostgreSQL', () => {
         `delete from public.budget_allocations where budget_id = $1::uuid`,
         [budget.budget.id],
       );
-      await f.admin.query(
-        `delete from public.budgets where id = $1::uuid`,
-        [budget.budget.id],
-      );
+      await f.admin.query(`delete from public.budgets where id = $1::uuid`, [
+        budget.budget.id,
+      ]);
       await f.admin.query(
         `delete from public.categories where id = any($1::uuid[])`,
         [[catA, catB]],
