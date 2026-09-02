@@ -68,6 +68,7 @@ describe('budget list against disposable PostgreSQL', () => {
   });
   it('18 walks every budget across multiple pages exactly once', async () => {
     const seen = new Set<string>();
+    let totalRows = 0;
     let cursor: string | undefined;
     do {
       const q = createBudgetListQuery({
@@ -77,10 +78,12 @@ describe('budget list against disposable PostgreSQL', () => {
       });
       const page = await f.service.listBudgets(IDS.user, q);
       if (page.kind !== 'ok') throw new Error('list failed');
+      totalRows += page.page.items.length;
       page.page.items.forEach((x) => seen.add(x.id));
       cursor = page.page.pageInfo.nextCursor ?? undefined;
     } while (cursor);
     expect(seen.size).toBe(5);
+    expect(totalRows).toBe(5);
   });
   it('19 maps malformed list inputs to HTTP 400', async () => {
     const c = new BudgetsController(f.service);

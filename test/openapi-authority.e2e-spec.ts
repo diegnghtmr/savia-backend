@@ -133,4 +133,54 @@ describe('executable OpenAPI authority', () => {
       '500',
     ]);
   });
+
+  it('mirrors budget response schemas and MCP OAuth scopes semantically', () => {
+    const bundle = (path: string) => {
+      const directory = mkdtempSync(
+        resolve(tmpdir(), 'savia-openapi-semantic-'),
+      );
+      const output = resolve(directory, 'contract.json');
+      try {
+        execFileSync(
+          resolve(root, 'node_modules/.bin/redocly'),
+          ['bundle', path, '--ext', 'json', '--output', output],
+          { cwd: root, stdio: 'pipe' },
+        );
+        return JSON.parse(readFileSync(output, 'utf8')) as Record<
+          string,
+          unknown
+        >;
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    };
+    const authority = bundle(resolve(root, '../../docs/savia-openapi.yaml'));
+    const mirror = bundle(resolve(root, 'openapi/savia.openapi.yaml'));
+    const pick = (document: Record<string, unknown>) => {
+      const paths = document.paths as Record<
+        string,
+        Record<string, Record<string, unknown>>
+      >;
+      const schemas = document.components as Record<
+        string,
+        Record<string, unknown>
+      >;
+      const responseContent = (responses: unknown) =>
+        Object.fromEntries(
+          Object.entries(
+            (responses ?? {}) as Record<string, Record<string, unknown>>,
+          )
+            .filter(([, response]) => response.content !== undefined)
+            .map(([status, response]) => [status, response.content]),
+        );
+      return {
+        list: responseContent(paths['/v1/budgets']?.get?.responses),
+        create: responseContent(paths['/v1/budgets']?.post?.responses),
+        get: responseContent(paths['/v1/budgets/{budgetId}']?.get?.responses),
+        oauth: (schemas.securitySchemes?.mcpOAuth as Record<string, unknown>)
+          ?.flows,
+      };
+    };
+    expect(pick(mirror)).toEqual(pick(authority));
+  });
 });

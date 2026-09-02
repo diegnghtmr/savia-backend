@@ -14,6 +14,8 @@ export const IDS = {
   otherWorkspace: '00000000-0000-0000-0000-000000006112',
   category: '00000000-0000-0000-0000-000000006121',
   otherCategory: '00000000-0000-0000-0000-000000006122',
+  account: '00000000-0000-0000-0000-000000006123',
+  statusCategory: '00000000-0000-0000-0000-000000006124',
 } as const;
 export const command = (
   name = 'Budget',
@@ -53,7 +55,7 @@ export async function fixture(url: string) {
     [IDS.workspace, IDS.user, IDS.otherWorkspace, IDS.otherUser],
   );
   await admin.query(
-    `insert into public.categories (id,workspace_id,parent_id,name,kind,created_by) values ($1,$2,null,'Food','expense',$3),($4,$5,null,'Other Food','expense',$6)`,
+    `insert into public.categories (id,workspace_id,parent_id,name,kind,created_by) values ($1,$2,null,'Food','expense',$3),($4,$5,null,'Other Food','expense',$6),($7,$2,null,'Status Food','expense',$3)`,
     [
       IDS.category,
       IDS.workspace,
@@ -61,10 +63,15 @@ export async function fixture(url: string) {
       IDS.otherCategory,
       IDS.otherWorkspace,
       IDS.otherUser,
+      IDS.statusCategory,
     ],
   );
+  await admin.query(
+    `insert into public.accounts (id,workspace_id,name,type,currency,status,created_by) values ($1,$2,'Budget Cash','cash','USD','active',$3)`,
+    [IDS.account, IDS.workspace, IDS.user],
+  );
   const pool = new PostgresPool(PostgresConfig.fromUrl(url));
-  const tx = new PgTransaction(pool, { callbackTimeoutMs: 5000 });
+  const tx = new PgTransaction(pool);
   const service = new BudgetService(
     tx,
     new PostgresBudgetAdapter(),
@@ -83,6 +90,51 @@ export async function fixture(url: string) {
       await admin.query(
         'delete from public.budgets where workspace_id in ($1,$2)',
         [IDS.workspace, IDS.otherWorkspace],
+      );
+    },
+    async insertPosting(options: {
+      readonly id: string;
+      readonly transactionId: string;
+      readonly amountMinor: number;
+      readonly currency: string;
+      readonly status: string;
+      readonly occurredAt: string;
+      readonly categoryId?: string;
+    }) {
+      const transactionSuffix = options.transactionId.slice(-12);
+      const externalId = `${options.transactionId.slice(0, -12)}${(
+        BigInt(`0x${transactionSuffix}`) + 0x1000n
+      )
+        .toString(16)
+        .padStart(12, '0')}`;
+      await admin.query(
+        `insert into public.transactions (id,workspace_id,account_id,type,status,amount_minor,currency,occurred_at,category_id,created_by) values ($1,$2,$3,'expense',$4,$5,$6,$7,$8,$9)`,
+        [
+          options.transactionId,
+          IDS.workspace,
+          IDS.account,
+          options.status,
+          options.amountMinor,
+          options.currency,
+          options.occurredAt,
+          options.categoryId ?? IDS.category,
+          IDS.user,
+        ],
+      );
+      await admin.query(
+        `insert into public.ledger_postings (id,workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at) values ($1,$2,$3,$4,'account',$5,$6,$7,$8),($9,$2,$3,null,'external',$10,$6,$7,$8)`,
+        [
+          options.id,
+          IDS.workspace,
+          options.transactionId,
+          IDS.account,
+          options.amountMinor,
+          options.currency,
+          options.status,
+          options.occurredAt,
+          externalId,
+          -options.amountMinor,
+        ],
       );
     },
   };
