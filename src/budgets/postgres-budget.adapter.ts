@@ -145,6 +145,27 @@ export class PostgresBudgetAdapter implements BudgetStore {
       };
     });
   }
+
+  /**
+   * Architecture Decision (Slice 6.1 - Rounding Granularity):
+   *
+   * Conversions from posting currencies to budget currency are rounded
+   * per-posting to integer minor units via `multiplyMinorByRate` (which implements
+   * half-away-from-zero rounding) prior to aggregation into the allocation's actual total.
+   *
+   * Rationale for per-posting rounding:
+   * 1. Line-item auditability: each posting can be converted and audited individually;
+   *    its converted amount is identical whether viewed in isolation or as part of a budget.
+   * 2. Consistency: individual converted amounts match line-item ledger records.
+   * 3. Deterministic integer arithmetic: sums are computed over integer minor units without
+   *    intermediate floating point or arbitrary-precision fraction state in the accumulator.
+   *
+   * Tradeoff:
+   * Per-posting rounding can accumulate small half-unit rounding discrepancies across many
+   * postings compared to summing infinite-precision fractional amounts and rounding once
+   * per allocation. For Slice 6.1, line-item auditability and ledger reconciliation consistency
+   * are intentionally prioritized over aggregate fractional smoothing.
+   */
   private async convertPosting(
     c: TransactionClient,
     workspaceId: string,

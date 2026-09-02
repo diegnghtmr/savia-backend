@@ -1,4 +1,5 @@
 // Migrations under test: 202609020001_budgets.sql
+import { randomUUID } from 'node:crypto';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
@@ -421,6 +422,309 @@ describe('budget creation against disposable PostgreSQL', () => {
       `delete from public.accounts where id = any($1::uuid[])`,
       [[eurAccount, gbpAccount]],
     );
+  });
+  it('pins per-posting half-away-from-zero conversion rounding granularity for positive half-units (N1)', async () => {
+    // Decision: conversions round per-posting to integer minor units via half-away-from-zero
+    // prior to summation into allocation actuals.
+    // Two postings of 1 EUR @ 0.5000 USD: each rounds 0.5 -> 1 USD, resulting in sum = 2 USD.
+    // (Per-allocation rounding would sum 0.5 + 0.5 = 1.0 -> 1 USD).
+    const categoryId = randomUUID();
+    await f.admin.query(
+      `insert into public.categories (id,workspace_id,parent_id,name,kind,created_by) values ($1,$2,null,'Rounding Pos Cat','expense',$3)`,
+      [categoryId, IDS.workspace, IDS.user],
+    );
+    const budget = await create('00000000-0000-0000-0000-000000006231');
+    if (budget.kind !== 'created') throw new Error('create failed');
+    await f.admin.query(
+      `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor) values ($1,$2,$3,10000)`,
+      [IDS.workspace, budget.budget.id, categoryId],
+    );
+    await f.insertExchangeRate({
+      baseCurrency: 'EUR',
+      quoteCurrency: 'USD',
+      rate: '0.5000',
+      effectiveAt: '2026-01-10T00:00:00Z',
+    });
+    const eurAccount = await f.insertAccount({ currency: 'EUR' });
+    const tx1 = '00000000-0000-0000-0000-000000006731';
+    const tx2 = '00000000-0000-0000-0000-000000006732';
+    try {
+      await f.insertPosting({
+        id: '00000000-0000-0000-0000-000000006733',
+        transactionId: tx1,
+        amountMinor: 1,
+        currency: 'EUR',
+        status: 'confirmed',
+        occurredAt: '2026-01-15T12:00:00Z',
+        categoryId,
+        accountId: eurAccount,
+      });
+      await f.insertPosting({
+        id: '00000000-0000-0000-0000-000000006734',
+        transactionId: tx2,
+        amountMinor: 1,
+        currency: 'EUR',
+        status: 'confirmed',
+        occurredAt: '2026-01-16T12:00:00Z',
+        categoryId,
+        accountId: eurAccount,
+      });
+      const read = await f.service.getBudget(
+        IDS.user,
+        IDS.workspace,
+        budget.budget.id,
+      );
+      if (read.kind !== 'found') throw new Error('read failed');
+      expect(read.budget.allocations[0]?.actual.amountMinor).toBe('2');
+      expect(read.budget.allocations[0]?.available.amountMinor).toBe('9998');
+    } finally {
+      await f.admin.query(
+        `delete from public.ledger_postings where transaction_id = any($1::uuid[])`,
+        [[tx1, tx2]],
+      );
+      await f.admin.query(
+        `delete from public.transactions where id = any($1::uuid[])`,
+        [[tx1, tx2]],
+      );
+      await f.admin.query(
+        `delete from public.budget_allocations where budget_id = $1::uuid`,
+        [budget.budget.id],
+      );
+      await f.admin.query(
+        `delete from public.budgets where id = $1::uuid`,
+        [budget.budget.id],
+      );
+      await f.admin.query(
+        `delete from public.categories where id = $1::uuid`,
+        [categoryId],
+      );
+      await f.admin.query(
+        `delete from public.accounts where id = $1::uuid`,
+        [eurAccount],
+      );
+      await f.admin.query(
+        `delete from public.exchange_rates where workspace_id = $1::uuid and base_currency = 'EUR' and rate = '0.5000'`,
+        [IDS.workspace],
+      );
+    }
+  });
+  it('pins per-posting half-away-from-zero conversion rounding granularity for negative half-units (N1)', async () => {
+    // Symmetric rounding behavior: two negative postings of -1 EUR @ 0.5000 USD.
+    // Each rounds -0.5 -> -1 USD, resulting in sum = -2 USD.
+    // (Per-allocation rounding would sum -0.5 + -0.5 = -1.0 -> -1 USD).
+    const categoryId = randomUUID();
+    await f.admin.query(
+      `insert into public.categories (id,workspace_id,parent_id,name,kind,created_by) values ($1,$2,null,'Rounding Neg Cat','expense',$3)`,
+      [categoryId, IDS.workspace, IDS.user],
+    );
+    const budget = await create('00000000-0000-0000-0000-000000006232');
+    if (budget.kind !== 'created') throw new Error('create failed');
+    await f.admin.query(
+      `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor) values ($1,$2,$3,10000)`,
+      [IDS.workspace, budget.budget.id, categoryId],
+    );
+    await f.insertExchangeRate({
+      baseCurrency: 'EUR',
+      quoteCurrency: 'USD',
+      rate: '0.5000',
+      effectiveAt: '2026-01-10T00:00:00Z',
+    });
+    const eurAccount = await f.insertAccount({ currency: 'EUR' });
+    const tx1 = '00000000-0000-0000-0000-000000006735';
+    const tx2 = '00000000-0000-0000-0000-000000006736';
+    try {
+      await f.insertPosting({
+        id: '00000000-0000-0000-0000-000000006737',
+        transactionId: tx1,
+        amountMinor: -1,
+        currency: 'EUR',
+        status: 'confirmed',
+        occurredAt: '2026-01-15T12:00:00Z',
+        categoryId,
+        accountId: eurAccount,
+      });
+      await f.insertPosting({
+        id: '00000000-0000-0000-0000-000000006738',
+        transactionId: tx2,
+        amountMinor: -1,
+        currency: 'EUR',
+        status: 'confirmed',
+        occurredAt: '2026-01-16T12:00:00Z',
+        categoryId,
+        accountId: eurAccount,
+      });
+      const read = await f.service.getBudget(
+        IDS.user,
+        IDS.workspace,
+        budget.budget.id,
+      );
+      if (read.kind !== 'found') throw new Error('read failed');
+      expect(read.budget.allocations[0]?.actual.amountMinor).toBe('-2');
+      expect(read.budget.allocations[0]?.available.amountMinor).toBe('10002');
+    } finally {
+      await f.admin.query(
+        `delete from public.ledger_postings where transaction_id = any($1::uuid[])`,
+        [[tx1, tx2]],
+      );
+      await f.admin.query(
+        `delete from public.transactions where id = any($1::uuid[])`,
+        [[tx1, tx2]],
+      );
+      await f.admin.query(
+        `delete from public.budget_allocations where budget_id = $1::uuid`,
+        [budget.budget.id],
+      );
+      await f.admin.query(
+        `delete from public.budgets where id = $1::uuid`,
+        [budget.budget.id],
+      );
+      await f.admin.query(
+        `delete from public.categories where id = $1::uuid`,
+        [categoryId],
+      );
+      await f.admin.query(
+        `delete from public.accounts where id = $1::uuid`,
+        [eurAccount],
+      );
+      await f.admin.query(
+        `delete from public.exchange_rates where workspace_id = $1::uuid and base_currency = 'EUR' and rate = '0.5000'`,
+        [IDS.workspace],
+      );
+    }
+  });
+  it('isolates per-category totals for multiple allocations with different currency mixes (N1)', async () => {
+    // Proves that two allocations within the same budget with different currency mixes
+    // compute their converted spend independently without bleeding across categories.
+    // Category A (catA): planned 50000
+    //   - 10000 USD (native)
+    //   - 10000 EUR @ 1.1000 USD -> 11000 USD
+    //   -> total actual: 21000 USD
+    // Category B (catB): planned 50000
+    //   - 4000 GBP @ 1.2500 USD -> 5000 USD
+    //   - 2500 USD (native)
+    //   -> total actual: 7500 USD
+    const catA = randomUUID();
+    const catB = randomUUID();
+    await f.admin.query(
+      `insert into public.categories (id,workspace_id,parent_id,name,kind,created_by) values ($1,$2,null,'Cat Mix A','expense',$3),($4,$2,null,'Cat Mix B','expense',$3)`,
+      [catA, IDS.workspace, IDS.user, catB],
+    );
+    const budget = await create('00000000-0000-0000-0000-000000006233');
+    if (budget.kind !== 'created') throw new Error('create failed');
+    await f.admin.query(
+      `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor) values ($1,$2,$3,50000),($1,$2,$4,50000)`,
+      [IDS.workspace, budget.budget.id, catA, catB],
+    );
+    await f.insertExchangeRate({
+      baseCurrency: 'EUR',
+      quoteCurrency: 'USD',
+      rate: '1.1000',
+      effectiveAt: '2026-01-10T00:00:00Z',
+    });
+    await f.insertExchangeRate({
+      baseCurrency: 'GBP',
+      quoteCurrency: 'USD',
+      rate: '1.2500',
+      effectiveAt: '2026-01-10T00:00:00Z',
+    });
+    const eurAccount = await f.insertAccount({ currency: 'EUR' });
+    const gbpAccount = await f.insertAccount({ currency: 'GBP' });
+    const tx1 = '00000000-0000-0000-0000-000000006741';
+    const tx2 = '00000000-0000-0000-0000-000000006742';
+    const tx3 = '00000000-0000-0000-0000-000000006743';
+    const tx4 = '00000000-0000-0000-0000-000000006744';
+    try {
+      await f.insertPosting({
+        id: '00000000-0000-0000-0000-000000006745',
+        transactionId: tx1,
+        amountMinor: 10000,
+        currency: 'USD',
+        status: 'confirmed',
+        occurredAt: '2026-01-15T12:00:00Z',
+        categoryId: catA,
+      });
+      await f.insertPosting({
+        id: '00000000-0000-0000-0000-000000006746',
+        transactionId: tx2,
+        amountMinor: 10000,
+        currency: 'EUR',
+        status: 'confirmed',
+        occurredAt: '2026-01-15T12:00:00Z',
+        categoryId: catA,
+        accountId: eurAccount,
+      });
+      await f.insertPosting({
+        id: '00000000-0000-0000-0000-000000006747',
+        transactionId: tx3,
+        amountMinor: 4000,
+        currency: 'GBP',
+        status: 'reconciled',
+        occurredAt: '2026-01-15T12:00:00Z',
+        categoryId: catB,
+        accountId: gbpAccount,
+      });
+      await f.insertPosting({
+        id: '00000000-0000-0000-0000-000000006748',
+        transactionId: tx4,
+        amountMinor: 2500,
+        currency: 'USD',
+        status: 'confirmed',
+        occurredAt: '2026-01-15T12:00:00Z',
+        categoryId: catB,
+      });
+      const read = await f.service.getBudget(
+        IDS.user,
+        IDS.workspace,
+        budget.budget.id,
+      );
+      if (read.kind !== 'found') throw new Error('read failed');
+      const allocA = read.budget.allocations.find((a) => a.categoryId === catA);
+      const allocB = read.budget.allocations.find((a) => a.categoryId === catB);
+      expect(allocA?.actual.amountMinor).toBe('21000');
+      expect(allocA?.available.amountMinor).toBe('29000');
+      expect(allocB?.actual.amountMinor).toBe('7500');
+      expect(allocB?.available.amountMinor).toBe('42500');
+
+      const httpRes = await inject({
+        method: 'GET',
+        url: `/v1/budgets/${budget.budget.id}`,
+        headers: baseHeaders,
+      });
+      expect(httpRes.statusCode).toBe(200);
+      const httpAllocA = httpRes.json().allocations.find((a: { categoryId: string }) => a.categoryId === catA);
+      const httpAllocB = httpRes.json().allocations.find((a: { categoryId: string }) => a.categoryId === catB);
+      expect(httpAllocA.actual.amountMinor).toBe('21000');
+      expect(httpAllocB.actual.amountMinor).toBe('7500');
+    } finally {
+      await f.admin.query(
+        `delete from public.ledger_postings where transaction_id = any($1::uuid[])`,
+        [[tx1, tx2, tx3, tx4]],
+      );
+      await f.admin.query(
+        `delete from public.transactions where id = any($1::uuid[])`,
+        [[tx1, tx2, tx3, tx4]],
+      );
+      await f.admin.query(
+        `delete from public.budget_allocations where budget_id = $1::uuid`,
+        [budget.budget.id],
+      );
+      await f.admin.query(
+        `delete from public.budgets where id = $1::uuid`,
+        [budget.budget.id],
+      );
+      await f.admin.query(
+        `delete from public.categories where id = any($1::uuid[])`,
+        [[catA, catB]],
+      );
+      await f.admin.query(
+        `delete from public.accounts where id = any($1::uuid[])`,
+        [[eurAccount, gbpAccount]],
+      );
+      await f.admin.query(
+        `delete from public.exchange_rates where workspace_id = $1::uuid and effective_at = '2026-01-10T00:00:00Z'`,
+        [IDS.workspace],
+      );
+    }
   });
   it('24 uses posting status when it diverges from transaction status', async () => {
     const budget = await create('00000000-0000-0000-0000-000000006221');
