@@ -20,6 +20,8 @@ import {
   type ImportsPort,
 } from './import.port.js';
 import { validateFormatHint } from './import-command.js';
+import { validateCommitImportCommand } from './import-command.js';
+import { IMPORT_MUTATION_OUTCOMES } from './import.port.js';
 import { validateImportJobId } from './import-query.js';
 @Controller('v1/import-jobs')
 @UseGuards(JwtAuthGuard)
@@ -97,6 +99,104 @@ export class ImportsController {
     if (outcome.kind === IMPORT_OUTCOMES.REPLAYED)
       return void reply.status(outcome.status).send(outcome.body);
     void reply.status(202).send(outcome.job);
+  }
+  @Post(':importJobId/commit') public async commit(
+    @Param('importJobId') raw: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    await this.mutate(request, reply, raw, false);
+  }
+  @Post(':importJobId/rollback') public async rollback(
+    @Param('importJobId') raw: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    await this.mutate(request, reply, raw, true);
+  }
+  private async mutate(
+    request: AuthenticatedRequest,
+    reply: FastifyReply,
+    raw: string,
+    rollback: boolean,
+  ): Promise<void> {
+    const h = parseWorkspaceHeader(request.headers['x-workspace-id']);
+    const k = validateIdempotencyKey(request.headers['idempotency-key']);
+    if (h.kind !== 'ok' || k.kind !== 'ok')
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid import headers',
+        status: 400,
+      });
+    let id: string;
+    try {
+      id = validateImportJobId(raw);
+    } catch {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid import job identifier',
+        status: 400,
+      });
+    }
+    let command;
+    try {
+      command = rollback
+        ? undefined
+        : validateCommitImportCommand(request.body);
+    } catch (error) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Import commit validation failed',
+        status: 422,
+        detail: error instanceof Error ? error.message : undefined,
+      });
+    }
+    const outcome = rollback
+      ? await this.port.rollbackImport(
+          request.identity.subject,
+          h.workspaceId,
+          id,
+          k.key,
+        )
+      : await this.port.commitImport(
+          request.identity.subject,
+          h.workspaceId,
+          id,
+          command!,
+          k.key,
+        );
+    if (outcome.kind === IMPORT_MUTATION_OUTCOMES.OK)
+      return void reply.status(202).send(outcome.job);
+    if (outcome.kind === IMPORT_MUTATION_OUTCOMES.REPLAYED)
+      return void reply.status(outcome.status).send(outcome.body);
+    const status =
+      outcome.kind === IMPORT_MUTATION_OUTCOMES.FORBIDDEN
+        ? 403
+        : outcome.kind === IMPORT_MUTATION_OUTCOMES.NOT_FOUND
+          ? 404
+          : outcome.kind === IMPORT_MUTATION_OUTCOMES.CONFLICT ||
+              outcome.kind === IMPORT_MUTATION_OUTCOMES.INVALID ||
+              outcome.kind === IMPORT_MUTATION_OUTCOMES.ACCOUNT_CLOSED
+            ? outcome.kind === IMPORT_MUTATION_OUTCOMES.CONFLICT ||
+              (outcome.kind === IMPORT_MUTATION_OUTCOMES.INVALID &&
+                (outcome.detail?.includes('not') ||
+                  outcome.detail?.includes('reconciled')))
+              ? 409
+              : 422
+            : 500;
+    return sendProblem(reply, {
+      type:
+        status === 409
+          ? PROBLEM_TYPES.CONFLICT
+          : status === 404
+            ? PROBLEM_TYPES.NOT_FOUND
+            : status === 403
+              ? PROBLEM_TYPES.FORBIDDEN
+              : PROBLEM_TYPES.UNPROCESSABLE,
+      title: 'Import mutation rejected',
+      status,
+      detail: outcome.detail,
+    });
   }
   @Get(':importJobId') public async get(
     @Param('importJobId') raw: string,

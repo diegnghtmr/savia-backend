@@ -223,6 +223,16 @@
       "path": "/v1/import-jobs/{importJobId}"
     },
     {
+      "operationId": "commitImportJob",
+      "method": "POST",
+      "path": "/v1/import-jobs/{importJobId}/commit"
+    },
+    {
+      "operationId": "rollbackImportJob",
+      "method": "POST",
+      "path": "/v1/import-jobs/{importJobId}/rollback"
+    },
+    {
       "operationId": "createReconciliation",
       "method": "POST",
       "path": "/v1/reconciliations"

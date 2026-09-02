@@ -96,6 +96,7 @@ export interface CreateTransactionCommand {
   readonly notes?: string | null;
   readonly tagIds?: readonly string[];
   readonly receiptId?: string | null;
+  readonly importJobId?: string | null;
 }
 
 export const TRANSACTION_CREATE_OUTCOMES = {

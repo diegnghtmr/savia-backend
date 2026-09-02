@@ -1,6 +1,7 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   AdjustmentTransactionCommand,
+  ImportedTransactionCommand,
   LedgerWriter,
 } from '../platform/ledger-writer.port.js';
 import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
@@ -70,6 +71,73 @@ export function toIso(value: unknown): string {
 }
 
 export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
+  public async createImportedTransactions(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    commands: readonly ImportedTransactionCommand[],
+  ): Promise<void> {
+    if (!commands.length) return;
+    const result = await client.query<{
+      id: string;
+      account_id: string;
+      amount_minor: string;
+      currency: string;
+      occurred_at: Date;
+    }>(
+      `insert into public.transactions (workspace_id,account_id,type,status,amount_minor,currency,occurred_at,description,import_job_id,created_by)
+         select * from unnest($1::uuid[],$2::uuid[],$3::text[],$4::text[],$5::bigint[],$6::text[],$7::timestamptz[],$8::text[],$9::uuid[],$10::uuid[])
+         returning id,account_id,amount_minor,currency,occurred_at`,
+      [
+        commands.map(() => workspaceId),
+        commands.map((command) => command.accountId),
+        commands.map(() => 'adjustment'),
+        commands.map(() => 'confirmed'),
+        commands.map((command) => command.amountMinor),
+        commands.map((command) => command.currency),
+        commands.map((command) => command.occurredAt),
+        commands.map((command) => command.description),
+        commands.map((command) => command.importJobId),
+        commands.map(() => subject),
+      ],
+    );
+    await client.query(
+      `insert into public.ledger_postings (workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at)
+       select workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at
+       from unnest($1::uuid[],$2::uuid[],$3::uuid[],$4::text[],$5::bigint[],$6::text[],$7::text[],$8::timestamptz[])
+       as input(workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at)`,
+      [
+        result.rows.flatMap(() => [workspaceId, workspaceId]),
+        result.rows.flatMap((row) => [row.id, row.id]),
+        result.rows.flatMap((row) => [row.account_id, null]),
+        result.rows.flatMap(() => ['account', 'external']),
+        result.rows.flatMap((row) => [
+          row.amount_minor,
+          negateAmountMinor(row.amount_minor),
+        ]),
+        result.rows.flatMap((row) => [row.currency, row.currency]),
+        result.rows.flatMap(() => ['confirmed', 'confirmed']),
+        result.rows.flatMap((row) => [row.occurred_at, row.occurred_at]),
+      ],
+    );
+  }
+
+  public createImportedTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    command: ImportedTransactionCommand,
+  ): Promise<Transaction> {
+    return this.createTransaction(client, workspaceId, subject, {
+      type: 'adjustment',
+      accountId: command.accountId,
+      amount: { amountMinor: command.amountMinor, currency: command.currency },
+      occurredAt: command.occurredAt,
+      status: 'confirmed',
+      description: command.description,
+      importJobId: command.importJobId,
+    });
+  }
   public async createAdjustmentTransaction(
     client: TransactionClient,
     workspaceId: string,
@@ -140,7 +208,7 @@ insert into public.transactions (
   notes,
   category_id,
   payee_id,
-  receipt_id,
+      receipt_id,
   tag_ids,
   created_by
 )
@@ -157,8 +225,8 @@ values (
   $10::uuid,
   $11::uuid,
   $12::uuid,
-  $13::uuid[],
-  $14::uuid
+      $13::uuid[],
+      $14::uuid
 )
 returning
   id::text,
@@ -220,6 +288,12 @@ returning
     const row = txnResult.rows[0];
     if (!row) {
       throw new Error('Created transaction row could not be read.');
+    }
+    if (command.importJobId) {
+      await client.query(
+        'update public.transactions set import_job_id=$3::uuid where workspace_id=$1::uuid and id=$2::uuid',
+        [workspaceId, row.id, command.importJobId],
+      );
     }
 
     // 2. Insert balanced pair of ledger postings

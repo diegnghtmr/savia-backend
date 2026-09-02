@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 
 import { TransactionController } from './transaction.controller.js';
 import { TransferController } from './transfer.controller.js';
@@ -17,6 +17,7 @@ import { PgTransaction } from '../platform/pg-transaction.js';
 import { PlatformModule } from '../platform/platform.module.js';
 import { LEDGER_WRITER } from '../platform/ledger-writer.port.js';
 
+@Global()
 @Module({
   imports: [PlatformModule],
   controllers: [

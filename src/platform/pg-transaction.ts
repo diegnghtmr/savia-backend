@@ -2,7 +2,7 @@ import type { OnApplicationShutdown } from '@nestjs/common';
 
 import type { PgClient, PgPool } from './postgres-pool.js';
 import { UUID_PATTERN } from './uuid.js';
-const TIMEOUTS = {
+export const TIMEOUTS = {
   checkoutTimeoutMs: 1_000,
   lockTimeoutMs: 1_000,
   statementTimeoutMs: 1_000,

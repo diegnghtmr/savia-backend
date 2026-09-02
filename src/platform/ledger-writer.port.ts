@@ -9,6 +9,14 @@ export interface AdjustmentTransactionCommand {
   readonly occurredAt: string;
   readonly description: string | null;
 }
+export interface ImportedTransactionCommand {
+  readonly accountId: string;
+  readonly amountMinor: string;
+  readonly currency: string;
+  readonly occurredAt: string;
+  readonly description: string;
+  readonly importJobId: string;
+}
 
 export interface LedgerWriter {
   createAdjustmentTransaction(
@@ -17,4 +25,24 @@ export interface LedgerWriter {
     subject: string,
     command: AdjustmentTransactionCommand,
   ): Promise<void>;
+  createImportedTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    command: ImportedTransactionCommand,
+  ): Promise<unknown>;
+  createImportedTransactions(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    commands: readonly ImportedTransactionCommand[],
+  ): Promise<void>;
+  voidTransaction(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+    accountId: string,
+    postingStatus: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<unknown>;
 }
