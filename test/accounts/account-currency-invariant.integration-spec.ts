@@ -8,7 +8,11 @@ if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 const subject = (number: number) =>
   `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
 
-type CapturedPgError = { code?: string; message?: string };
+type CapturedPgError = {
+  code?: string;
+  message?: string;
+  constraint?: string;
+};
 
 async function capturePgError(
   run: () => Promise<unknown>,
@@ -186,16 +190,114 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
   });
 
   describe('Structure and Catalog metadata', () => {
-    it('budget currency invariant trigger exists with the concrete refuser name', async () => {
-      const result = await admin.query<{ tgname: string; proname: string }>(
-        `select t.tgname,p.proname::text as proname from pg_trigger t join pg_proc p on p.oid=t.tgfoid where t.tgrelid='public.budgets'::regclass and t.tgname='enforce_budget_currency_has_exchange_rates_trigger'`,
+    it('enforce_budget_currency_has_exchange_rates_trigger exists on public.budgets with full catalog definition', async () => {
+      const budgetTrigRes = await admin.query<{
+        tgname: string;
+        tgtype: number;
+        proname: string;
+        prosecdef: boolean;
+        proowner: string;
+        proconfig: string[] | null;
+      }>(
+        `select t.tgname,
+                t.tgtype,
+                p.proname::text as proname,
+                p.prosecdef,
+                p.proowner::regrole::text as proowner,
+                p.proconfig
+           from pg_trigger t
+           join pg_proc p on p.oid = t.tgfoid
+          where t.tgrelid = 'public.budgets'::regclass
+            and t.tgname = 'enforce_budget_currency_has_exchange_rates_trigger'`,
       );
-      expect(result.rows).toEqual([
-        {
-          tgname: 'enforce_budget_currency_has_exchange_rates_trigger',
-          proname: 'enforce_budget_currency_has_exchange_rates',
-        },
+      expect(budgetTrigRes.rows).toHaveLength(1);
+      const bTrig = budgetTrigRes.rows[0];
+      expect(bTrig.proname).toBe(
+        'enforce_budget_currency_has_exchange_rates',
+      );
+      expect(bTrig.prosecdef).toBe(true);
+      expect(bTrig.proowner).toBe('savia_elevated');
+      expect(bTrig.proconfig).toEqual(['search_path=pg_catalog, public']);
+      // BEFORE (1) + ROW (2) + INSERT (4) + UPDATE (16) = 23
+      expect(bTrig.tgtype & 1).toBe(1); // BEFORE
+      expect(bTrig.tgtype & 2).toBe(2); // ROW
+      expect(bTrig.tgtype & 4).toBe(4); // INSERT
+      expect(bTrig.tgtype & 16).toBe(16); // UPDATE
+
+      const budgetColsRes = await admin.query<{ col_name: string }>(
+        `select a.attname::text as col_name
+           from pg_trigger t
+           join pg_attribute a
+             on a.attrelid = t.tgrelid
+            and a.attnum = any(string_to_array(t.tgattr::text, ' ')::int2[])
+          where t.tgrelid = 'public.budgets'::regclass
+            and t.tgname = 'enforce_budget_currency_has_exchange_rates_trigger'
+          order by a.attname`,
+      );
+      expect(budgetColsRes.rows.map((r) => r.col_name)).toEqual([
+        'currency',
+        'workspace_id',
       ]);
+
+      const privRes = await admin.query<{ public_exec_fn: boolean }>(
+        `select has_function_privilege('public', 'public.enforce_budget_currency_has_exchange_rates()', 'execute') as public_exec_fn`,
+      );
+      expect(privRes.rows[0].public_exec_fn).toBe(false);
+    });
+
+    it('enforce_account_currency_has_budget_rates_trigger exists on public.accounts with full catalog definition', async () => {
+      const accBudgetTrigRes = await admin.query<{
+        tgname: string;
+        tgtype: number;
+        proname: string;
+        prosecdef: boolean;
+        proowner: string;
+        proconfig: string[] | null;
+      }>(
+        `select t.tgname,
+                t.tgtype,
+                p.proname::text as proname,
+                p.prosecdef,
+                p.proowner::regrole::text as proowner,
+                p.proconfig
+           from pg_trigger t
+           join pg_proc p on p.oid = t.tgfoid
+          where t.tgrelid = 'public.accounts'::regclass
+            and t.tgname = 'enforce_account_currency_has_budget_rates_trigger'`,
+      );
+      expect(accBudgetTrigRes.rows).toHaveLength(1);
+      const abTrig = accBudgetTrigRes.rows[0];
+      expect(abTrig.proname).toBe(
+        'enforce_account_currency_has_budget_rates',
+      );
+      expect(abTrig.prosecdef).toBe(true);
+      expect(abTrig.proowner).toBe('savia_elevated');
+      expect(abTrig.proconfig).toEqual(['search_path=pg_catalog, public']);
+      // BEFORE (1) + ROW (2) + INSERT (4) + UPDATE (16) = 23
+      expect(abTrig.tgtype & 1).toBe(1); // BEFORE
+      expect(abTrig.tgtype & 2).toBe(2); // ROW
+      expect(abTrig.tgtype & 4).toBe(4); // INSERT
+      expect(abTrig.tgtype & 16).toBe(16); // UPDATE
+
+      const accBudgetColsRes = await admin.query<{ col_name: string }>(
+        `select a.attname::text as col_name
+           from pg_trigger t
+           join pg_attribute a
+             on a.attrelid = t.tgrelid
+            and a.attnum = any(string_to_array(t.tgattr::text, ' ')::int2[])
+          where t.tgrelid = 'public.accounts'::regclass
+            and t.tgname = 'enforce_account_currency_has_budget_rates_trigger'
+          order by a.attname`,
+      );
+      expect(accBudgetColsRes.rows.map((r) => r.col_name)).toEqual([
+        'currency',
+        'workspace_id',
+      ]);
+
+      const privRes = await admin.query<{ public_exec_fn: boolean }>(
+        `select has_function_privilege('public', 'public.enforce_account_currency_has_budget_rates()', 'execute') as public_exec_fn`,
+      );
+      expect(privRes.rows[0].public_exec_fn).toBe(false);
     });
     it('1. Trigger exists on public.accounts, fires row-level BEFORE insert or update, executes security definer function owned by savia_elevated with search_path pg_catalog, public', async () => {
       const accountsTrigRes = await admin.query<{
@@ -284,6 +386,9 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
         ),
       );
       expect(err.code).toBe('23514');
+      expect(err.constraint).toBe(
+        'budgets_currency_requires_account_exchange_rates',
+      );
       expect(err.message ?? '').toContain(
         'budget currency requires exchange rates for all account currencies',
       );
@@ -309,6 +414,9 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
           ),
         );
         expect(err.code).toBe('23514');
+        expect(err.constraint).toBe(
+          'accounts_currency_requires_budget_exchange_rates',
+        );
         expect(err.message ?? '').toContain(
           'account currency requires exchange rates for all budget currencies',
         );
@@ -325,6 +433,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
         ),
       );
       expect(err.code).toBe('23514');
+      expect(err.constraint).toBe('accounts_currency_requires_exchange_rate');
       expect(err.message ?? '').toContain(
         'exchange rate required for account currency differing from workspace base currency',
       );
@@ -397,6 +506,9 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
           ),
         );
         expect(err.code).toBe('23514');
+        expect(err.constraint).toBe(
+          'workspace_base_currency_keeps_accounts_convertible',
+        );
         expect(err.message ?? '').toContain(
           'workspace base currency cannot change while accounts would be left without an exchange rate',
         );
@@ -460,6 +572,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
           ),
         );
         expect(err.code).toBe('23514');
+        expect(err.constraint).toBe('accounts_currency_requires_exchange_rate');
         expect(err.message ?? '').toContain(
           'exchange rate required for account currency differing from workspace base currency',
         );
@@ -492,6 +605,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       );
 
       expect(blindErr.code).toBe('23514');
+      expect(blindErr.constraint).toBe('accounts_currency_requires_exchange_rate');
       expect(blindErr.message ?? '').toContain(
         'exchange rate required for account currency differing from workspace base currency',
       );
@@ -538,6 +652,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
           ),
         );
         expect(err.code).toBe('23514');
+        expect(err.constraint).toBe('accounts_currency_requires_exchange_rate');
         expect(err.message ?? '').toContain(
           'exchange rate required for account currency differing from workspace base currency',
         );
