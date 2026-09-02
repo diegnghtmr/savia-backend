@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { fixture, IDS, command } from '../budgets/budget-fixtures.js';
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
+const normalizeSql = (value: string | null): string | null =>
+  value?.replace(/\s+/g, ' ').trim().toLowerCase() ?? null;
 describe('budgets schema', () => {
   let pool: Pool;
   beforeAll(() => {
@@ -33,6 +35,7 @@ describe('budgets schema', () => {
   });
   it('pins columns, every constraint, foreign-key actions, grants, and policies', async () => {
     const columns = await pool.query<{
+      table_name: string;
       column_name: string;
       data_type: string;
       is_nullable: string;
@@ -156,6 +159,34 @@ describe('budgets schema', () => {
         is_nullable: 'NO',
       }),
     ]);
+    expect(
+      Object.fromEntries(
+        columns.rows.map((x) => [
+          `${x.table_name}.${x.column_name}`,
+          x.column_default,
+        ]),
+      ),
+    ).toEqual({
+      'budget_allocations.id': 'gen_random_uuid()',
+      'budget_allocations.workspace_id': null,
+      'budget_allocations.budget_id': null,
+      'budget_allocations.category_id': null,
+      'budget_allocations.planned_minor': null,
+      'budget_allocations.rollover_policy': "'none'::text",
+      'budget_allocations.rollover_target_id': null,
+      'budget_allocations.created_at': 'now()',
+      'budgets.id': 'gen_random_uuid()',
+      'budgets.workspace_id': null,
+      'budgets.name': null,
+      'budgets.method': null,
+      'budgets.period_start': null,
+      'budgets.period_end': null,
+      'budgets.currency': null,
+      'budgets.version': '1',
+      'budgets.created_by': null,
+      'budgets.created_at': 'now()',
+      'budgets.updated_at': 'now()',
+    });
     const constraints = await pool.query<{
       table_name: string;
       conname: string;
@@ -183,20 +214,34 @@ describe('budgets schema', () => {
         'budgets.budgets_workspace_id_fkey',
       ].sort(),
     );
-    expect(
-      constraints.rows.find((x) => x.conname === 'budgets_period_span_check')
-        ?.definition,
-    ).toMatch(/period_end\s*-\s*period_start\)\s*<=\s*366/);
-    expect(
-      constraints.rows.find(
-        (x) => x.conname === 'budget_allocations_budget_workspace_fkey',
-      )?.definition,
-    ).toContain('ON DELETE CASCADE');
-    expect(
-      constraints.rows.find(
-        (x) => x.conname === 'budget_allocations_category_workspace_fkey',
-      )?.definition,
-    ).toContain('ON DELETE RESTRICT');
+    const definitions = new Map(
+      constraints.rows.map((x) => [x.conname, normalizeSql(x.definition)]),
+    );
+    expect(Object.fromEntries(definitions)).toEqual({
+      budget_allocations_budget_workspace_fkey:
+        'foreign key (workspace_id, budget_id) references budgets(workspace_id, id) on delete cascade',
+      budget_allocations_category_workspace_fkey:
+        'foreign key (workspace_id, category_id) references categories(workspace_id, id) on delete restrict',
+      budget_allocations_pkey: 'primary key (id)',
+      budget_allocations_rollover_policy_check:
+        "check ((rollover_policy = any (array['none'::text, 'surplus'::text, 'deficit'::text, 'both'::text, 'to_savings'::text, 'to_fund'::text, 'to_category'::text])))",
+      budget_allocations_workspace_budget_category_key:
+        'unique (workspace_id, budget_id, category_id)',
+      budgets_currency_check: "check ((currency ~ '^[a-z]{3}$'::text))",
+      budgets_method_check:
+        "check ((method = any (array['cash_flow'::text, 'zero_based'::text, 'envelope'::text, 'hybrid'::text])))",
+      budgets_name_length_check:
+        'check (((char_length(name) >= 1) and (char_length(name) <= 120)))',
+      budgets_period_order_check: 'check ((period_end > period_start))',
+      budgets_period_span_check: 'check (((period_end - period_start) <= 366))',
+      budgets_pkey: 'primary key (id)',
+      budgets_version_check: 'check ((version >= 1))',
+      budgets_workspace_id_id_key: 'unique (workspace_id, id)',
+      budgets_created_by_fkey:
+        'foreign key (created_by) references profiles(id) on delete restrict',
+      budgets_workspace_id_fkey:
+        'foreign key (workspace_id) references workspaces(id) on delete cascade',
+    });
     expect(
       constraints.rows.some(
         (x) =>
@@ -252,17 +297,54 @@ describe('budgets schema', () => {
       'budgets.application_reads_workspace_budgets.SELECT',
     ]);
     expect(
-      policies.rows.every((x) =>
-        (x.qual ?? x.with_check ?? '').includes('workspace_actor_active_role'),
-      ),
-    ).toBe(true);
+      policies.rows.map((x) => ({
+        tablename: x.tablename,
+        policyname: x.policyname,
+        cmd: x.cmd,
+        qual: normalizeSql(x.qual),
+        with_check: normalizeSql(x.with_check),
+      })),
+    ).toEqual([
+      {
+        tablename: 'budget_allocations',
+        policyname: 'application_inserts_workspace_budget_allocations',
+        cmd: 'INSERT',
+        qual: null,
+        with_check:
+          "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text]))",
+      },
+      {
+        tablename: 'budget_allocations',
+        policyname: 'application_reads_workspace_budget_allocations',
+        cmd: 'SELECT',
+        qual: "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text, 'viewer'::text]))",
+        with_check: null,
+      },
+      {
+        tablename: 'budgets',
+        policyname: 'application_inserts_workspace_budgets',
+        cmd: 'INSERT',
+        qual: null,
+        with_check:
+          "((workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text])) and (created_by = (nullif(current_setting('app.subject_id'::text, true), ''::text))::uuid))",
+      },
+      {
+        tablename: 'budgets',
+        policyname: 'application_reads_workspace_budgets',
+        cmd: 'SELECT',
+        qual: "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text, 'viewer'::text]))",
+        with_check: null,
+      },
+    ]);
     const grants = await pool.query<{
       table_name: string;
       column_name: string;
       selectable: boolean;
       insertable: boolean;
+      updatable: boolean;
+      referenceable: boolean;
     }>(
-      `select c.table_name,c.column_name,has_column_privilege('savia_application',format('%I.%I',c.table_schema,c.table_name),c.column_name,'select') selectable,has_column_privilege('savia_application',format('%I.%I',c.table_schema,c.table_name),c.column_name,'insert') insertable from information_schema.columns c where c.table_schema='public' and c.table_name in ('budgets','budget_allocations') order by c.table_name,c.ordinal_position`,
+      `select c.table_name,c.column_name,has_column_privilege('savia_application',format('%I.%I',c.table_schema,c.table_name),c.column_name,'select') selectable,has_column_privilege('savia_application',format('%I.%I',c.table_schema,c.table_name),c.column_name,'insert') insertable,has_column_privilege('savia_application',format('%I.%I',c.table_schema,c.table_name),c.column_name,'update') updatable,has_column_privilege('savia_application',format('%I.%I',c.table_schema,c.table_name),c.column_name,'references') referenceable from information_schema.columns c where c.table_schema='public' and c.table_name in ('budgets','budget_allocations') order by c.table_name,c.ordinal_position`,
     );
     const expectedInsertable = new Set([
       'budget_allocations.workspace_id',
@@ -281,12 +363,49 @@ describe('budgets schema', () => {
       'budgets.created_by',
     ]);
     expect(grants.rows.every((x) => x.selectable)).toBe(true);
+    expect(grants.rows.every((x) => !x.updatable && !x.referenceable)).toBe(
+      true,
+    );
     expect(
       grants.rows
         .filter((x) => x.insertable)
         .map((x) => `${x.table_name}.${x.column_name}`)
         .sort(),
     ).toEqual([...expectedInsertable].sort());
+    const tablePrivileges = await pool.query<{
+      table_name: string;
+      selectable: boolean;
+      insertable: boolean;
+      updatable: boolean;
+      deletable: boolean;
+      truncatable: boolean;
+      referenceable: boolean;
+      triggerable: boolean;
+    }>(
+      `select t.table_name,has_table_privilege('savia_application',format('%I.%I',t.table_schema,t.table_name),'select') selectable,has_table_privilege('savia_application',format('%I.%I',t.table_schema,t.table_name),'insert') insertable,has_table_privilege('savia_application',format('%I.%I',t.table_schema,t.table_name),'update') updatable,has_table_privilege('savia_application',format('%I.%I',t.table_schema,t.table_name),'delete') deletable,has_table_privilege('savia_application',format('%I.%I',t.table_schema,t.table_name),'truncate') truncatable,has_table_privilege('savia_application',format('%I.%I',t.table_schema,t.table_name),'references') referenceable,has_table_privilege('savia_application',format('%I.%I',t.table_schema,t.table_name),'trigger') triggerable from information_schema.tables t where t.table_schema='public' and t.table_name in ('budgets','budget_allocations') order by t.table_name`,
+    );
+    expect(tablePrivileges.rows).toEqual([
+      {
+        table_name: 'budget_allocations',
+        selectable: true,
+        insertable: false,
+        updatable: false,
+        deletable: false,
+        truncatable: false,
+        referenceable: false,
+        triggerable: false,
+      },
+      {
+        table_name: 'budgets',
+        selectable: true,
+        insertable: false,
+        updatable: false,
+        deletable: false,
+        truncatable: false,
+        referenceable: false,
+        triggerable: false,
+      },
+    ]);
   });
   it('pins the list keyset index to the implemented created_at,id ordering', async () => {
     const result = await pool.query<{ indexdef: string }>(

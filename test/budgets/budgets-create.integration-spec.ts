@@ -10,6 +10,7 @@ import {
   BUDGET_OUTCOMES,
   type BudgetsPort,
 } from '../../src/budgets/budget.port.js';
+import { MAX_BUDGET_ALLOCATION_COUNT } from '../../src/budgets/budget-limits.js';
 import { BudgetsModule } from '../../src/budgets/budgets.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
@@ -394,7 +395,7 @@ describe('budget creation against disposable PostgreSQL', () => {
     const source = await create('00000000-0000-0000-0000-000000006224');
     if (source.kind !== 'created') throw new Error('source failed');
     const categories = Array.from(
-      { length: 200 },
+      { length: MAX_BUDGET_ALLOCATION_COUNT },
       (_, i) => `00000000-0000-0000-0000-${String(7300 + i).padStart(12, '0')}`,
     );
     await f.admin.query(
@@ -412,6 +413,28 @@ describe('budget creation against disposable PostgreSQL', () => {
     });
     expect(performance.now() - started).toBeLessThan(1000);
     expect(copied.kind).toBe('created');
+  });
+  it('27a rejects a source with more than the maximum supported allocation count', async () => {
+    const source = await create('00000000-0000-0000-0000-000000006227');
+    if (source.kind !== 'created') throw new Error('source failed');
+    const categories = Array.from(
+      { length: MAX_BUDGET_ALLOCATION_COUNT + 1 },
+      (_, i) =>
+        `00000000-0000-0000-0000-${String(17300 + i).padStart(12, '0')}`,
+    );
+    await f.admin.query(
+      `insert into public.categories (id,workspace_id,parent_id,name,kind,created_by) select x, $1, null, 'Overflow ' || row_number() over (), 'expense', $2 from unnest($3::uuid[]) x`,
+      [IDS.workspace, IDS.user, categories],
+    );
+    await f.admin.query(
+      `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor) select $1,$2,x,1 from unnest($3::uuid[]) x`,
+      [IDS.workspace, source.budget.id, categories],
+    );
+    const copied = await create('00000000-0000-0000-0000-000000006228', {
+      ...command('Overflow copy'),
+      copyFromBudgetId: source.budget.id,
+    });
+    expect(copied.kind).toBe('too-many-allocations');
   });
   it('19a rejects malformed JSON over HTTP with 400', async () => {
     const response = await inject({

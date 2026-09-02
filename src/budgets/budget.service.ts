@@ -12,6 +12,7 @@ import {
   type BudgetsPort,
   type CreateBudgetRequest,
 } from './budget.port.js';
+import { MAX_BUDGET_ALLOCATION_COUNT } from './budget-limits.js';
 export interface BudgetTransaction {
   run<T>(
     subject: string,
@@ -87,6 +88,8 @@ export class BudgetService implements BudgetsPort {
             command.copyFromBudgetId,
           );
           if (!sourceBudget) return { kind: BUDGET_OUTCOMES.INVALID_SOURCE };
+          if (source.length > MAX_BUDGET_ALLOCATION_COUNT)
+            return { kind: BUDGET_OUTCOMES.TOO_MANY_ALLOCATIONS };
         }
         const budget = await this.store.createBudget(
           client,

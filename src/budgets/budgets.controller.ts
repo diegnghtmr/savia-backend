@@ -91,6 +91,12 @@ export class BudgetsController {
         title: 'Budget source not found',
         status: 422,
       });
+    if (o.kind === BUDGET_OUTCOMES.TOO_MANY_ALLOCATIONS)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Budget allocation limit exceeded',
+        status: 422,
+      });
     if (o.kind === BUDGET_OUTCOMES.REPLAYED) {
       let r = reply.status(o.status);
       if (o.etag) r = r.header('ETag', o.etag);
