@@ -5,6 +5,27 @@ begin;
 -- exchange_rates is append-only; this makes the guarantee monotonic and keeps
 -- every BudgetAllocation.actual answerable without an error field.
 
+-- 1. Validate existing data before installing triggers: refuse to apply against dirty data.
+do $$
+begin
+  if exists (
+    select 1
+    from public.accounts account
+    join public.budgets budget on budget.workspace_id = account.workspace_id
+    where account.currency <> budget.currency
+      and not exists (
+        select 1
+        from public.exchange_rates rate
+        where rate.workspace_id = account.workspace_id
+          and rate.base_currency = account.currency
+          and rate.quote_currency = budget.currency
+      )
+  ) then
+    raise exception 'existing account currency violates budget exchange rate invariant';
+  end if;
+end;
+$$;
+
 grant usage, create on schema public to savia_elevated;
 grant select on public.budgets, public.budget_allocations to savia_elevated;
 create policy elevated_reads_budgets

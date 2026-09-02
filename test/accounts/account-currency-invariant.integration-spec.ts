@@ -1,4 +1,6 @@
 // Migrations under test: 202608240006_account_currency_invariant.sql, 202608290001_relax_account_currency_invariant.sql, 202609020003_budget_currency_invariant.sql
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -665,6 +667,146 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       } finally {
         if (accId) await deleteAccount(accId);
       }
+    });
+  });
+
+  describe('Migration 202609020003 Upgrade Path (pre-migration validation)', () => {
+    const wsUpgradeId = subject(655);
+    const memWsUpgradeOwnerAId = subject(618);
+    const upgradeAccountId = subject(695);
+    const upgradeBudgetId = subject(694);
+
+    beforeAll(async () => {
+      await admin.query(
+        `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+         values ($1, 'Upgrade Path Workspace', 'shared', 'COP', null, $2)`,
+        [wsUpgradeId, ownerA],
+      );
+      await admin.query(
+        `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'owner', 'active')`,
+        [memWsUpgradeOwnerAId, wsUpgradeId, ownerA],
+      );
+      // EUR -> COP rate satisfies 202608290001
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+         values ($1, 'EUR', 'COP', 4500.0, '2026-01-01T00:00:00.000Z', 'manual', $2)`,
+        [wsUpgradeId, ownerA],
+      );
+    });
+
+    afterAll(async () => {
+      const migrationSql = readFileSync(
+        resolve(
+          process.cwd(),
+          'supabase/migrations/202609020003_budget_currency_invariant.sql',
+        ),
+        'utf-8',
+      );
+      await admin.query(
+        `drop trigger if exists enforce_account_currency_has_budget_rates_trigger on public.accounts;
+         drop trigger if exists enforce_budget_currency_has_exchange_rates_trigger on public.budgets;
+         drop function if exists public.enforce_account_currency_has_budget_rates();
+         drop function if exists public.enforce_budget_currency_has_exchange_rates();
+         drop policy if exists elevated_reads_budgets on public.budgets;`,
+      );
+      await admin
+        .query(
+          'delete from public.budget_allocations where workspace_id = $1::uuid',
+          [wsUpgradeId],
+        )
+        .catch(() => {});
+      await admin
+        .query('delete from public.budgets where workspace_id = $1::uuid', [
+          wsUpgradeId,
+        ])
+        .catch(() => {});
+      await admin
+        .query('delete from public.accounts where workspace_id = $1::uuid', [
+          wsUpgradeId,
+        ])
+        .catch(() => {});
+      await admin
+        .query(
+          'delete from public.exchange_rates where workspace_id = $1::uuid',
+          [wsUpgradeId],
+        )
+        .catch(() => {});
+      await admin
+        .query(
+          'delete from public.workspace_memberships where workspace_id = $1::uuid',
+          [wsUpgradeId],
+        )
+        .catch(() => {});
+      await admin
+        .query('delete from public.workspaces where id = $1::uuid', [
+          wsUpgradeId,
+        ])
+        .catch(() => {});
+      await admin.query(migrationSql);
+    });
+
+    it('refuses to apply migration 202609020003 against dirty pre-migration data and accepts clean data', async () => {
+      // 1. Revert schema to pre-202609020003 state (i.e. post-202609020002)
+      await admin.query(
+        `drop trigger if exists enforce_account_currency_has_budget_rates_trigger on public.accounts;
+         drop trigger if exists enforce_budget_currency_has_exchange_rates_trigger on public.budgets;
+         drop function if exists public.enforce_account_currency_has_budget_rates();
+         drop function if exists public.enforce_budget_currency_has_exchange_rates();
+         drop policy if exists elevated_reads_budgets on public.budgets;`,
+      );
+
+      // 2. Build the dirty pre-migration state:
+      // Workspace base_currency: COP
+      // Account currency: EUR (has EUR->COP rate)
+      // Budget currency: USD (frozen)
+      // EUR->USD rate: ABSENT
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, created_by)
+         values ($1, $2, 'Pre-migration EUR Account', 'cash', 'EUR', $3)`,
+        [upgradeAccountId, wsUpgradeId, ownerA],
+      );
+      await admin.query(
+        `insert into public.budgets (id, workspace_id, name, method, period_start, period_end, currency, created_by)
+         values ($1, $2, 'Pre-migration USD Budget', 'envelope', '2026-01-01', '2026-02-01', 'USD', $3)`,
+        [upgradeBudgetId, wsUpgradeId, ownerA],
+      );
+
+      const migrationSql = readFileSync(
+        resolve(
+          process.cwd(),
+          'supabase/migrations/202609020003_budget_currency_invariant.sql',
+        ),
+        'utf-8',
+      );
+
+      // 3. Applying the migration over dirty data must throw the named diagnostic
+      const err = await capturePgError(() => admin.query(migrationSql));
+      expect(err.message ?? '').toContain(
+        'existing account currency violates budget exchange rate invariant',
+      );
+
+      // Verify that no triggers were installed (transaction rolled back)
+      const trigCheck = await admin.query<{ count: number }>(
+        `select count(*)::int as count from pg_trigger where tgname in ('enforce_account_currency_has_budget_rates_trigger', 'enforce_budget_currency_has_exchange_rates_trigger')`,
+      );
+      expect(trigCheck.rows[0].count).toBe(0);
+
+      // 4. Clean path: provide the missing EUR -> USD exchange rate
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+         values ($1, 'EUR', 'USD', 1.08, '2026-01-01T00:00:00.000Z', 'manual', $2)`,
+        [wsUpgradeId, ownerA],
+      );
+
+      // 5. Applying migration over clean data now succeeds
+      await expect(admin.query(migrationSql)).resolves.toBeDefined();
+
+      // Verify triggers are now installed
+      const trigCheckClean = await admin.query<{ count: number }>(
+        `select count(*)::int as count from pg_trigger where tgname in ('enforce_account_currency_has_budget_rates_trigger', 'enforce_budget_currency_has_exchange_rates_trigger')`,
+      );
+      expect(trigCheckClean.rows[0].count).toBe(2);
     });
   });
 });
