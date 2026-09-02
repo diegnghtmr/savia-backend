@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { randomUUID } from 'node:crypto';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
@@ -100,6 +101,7 @@ export async function fixture(url: string) {
       readonly status: string;
       readonly occurredAt: string;
       readonly categoryId?: string;
+      readonly accountId?: string;
     }) {
       const transactionSuffix = options.transactionId.slice(-12);
       const externalId = `${options.transactionId.slice(0, -12)}${(
@@ -112,7 +114,7 @@ export async function fixture(url: string) {
         [
           options.transactionId,
           IDS.workspace,
-          IDS.account,
+          options.accountId ?? IDS.account,
           options.status,
           options.amountMinor,
           options.currency,
@@ -127,7 +129,7 @@ export async function fixture(url: string) {
           options.id,
           IDS.workspace,
           options.transactionId,
-          IDS.account,
+          options.accountId ?? IDS.account,
           options.amountMinor,
           options.currency,
           options.status,
@@ -136,6 +138,41 @@ export async function fixture(url: string) {
           -options.amountMinor,
         ],
       );
+    },
+    async insertExchangeRate(options: {
+      readonly baseCurrency: string;
+      readonly quoteCurrency: string;
+      readonly rate: string;
+      readonly effectiveAt: string;
+    }) {
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id,base_currency,quote_currency,rate,effective_at,source,created_by) values ($1,$2,$3,$4,$5,'test',$6)`,
+        [
+          IDS.workspace,
+          options.baseCurrency,
+          options.quoteCurrency,
+          options.rate,
+          options.effectiveAt,
+          IDS.user,
+        ],
+      );
+    },
+    async insertAccount(options: {
+      readonly id?: string;
+      readonly currency: string;
+    }) {
+      const id = options.id ?? randomUUID();
+      await admin.query(
+        `insert into public.accounts (id,workspace_id,name,type,currency,status,created_by) values ($1,$2,$3,'cash',$4,'active',$5)`,
+        [
+          id,
+          IDS.workspace,
+          `${options.currency} Budget Account`,
+          options.currency,
+          IDS.user,
+        ],
+      );
+      return id;
     },
   };
 }

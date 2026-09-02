@@ -1,5 +1,9 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { buildCategorySpendSql } from '../platform/category-spend-query.js';
+import {
+  CURRENCY_RATE_SELECTION_SQL,
+  multiplyMinorByRate,
+} from '../platform/currency-conversion.js';
 import type {
   Budget,
   BudgetAllocation,
@@ -10,8 +14,6 @@ import type {
   RolloverPolicy,
 } from './budget.port.js';
 export const BUDGET_ALLOCATION_PARAMETERS_PER_ROW = 6;
-export const BUDGET_ALLOCATION_BATCH_SIZE =
-  Math.floor(65535 / BUDGET_ALLOCATION_PARAMETERS_PER_ROW) - 1;
 interface Row extends Record<string, unknown> {
   id: string;
   name: string;
@@ -93,28 +95,74 @@ export class PostgresBudgetAdapter implements BudgetStore {
       planned: string;
       rolloverPolicy: RolloverPolicy;
       rolloverTargetId: string | null;
-      actual: string;
-      foreignCurrencyLegs: string;
       currency: string;
+      amountMinor: string | null;
+      postingCurrency: string | null;
+      occurredAt: Date | null;
     }>(
-      `select allocation.category_id::text as "categoryId",allocation.planned_minor::text as planned,allocation.rollover_policy as "rolloverPolicy",allocation.rollover_target_id::text as "rolloverTargetId",budget.currency,spend.actual,spend."foreignCurrencyLegs" from public.budget_allocations allocation join public.budgets budget on budget.workspace_id=allocation.workspace_id and budget.id=allocation.budget_id cross join lateral (${buildCategorySpendSql()}) spend where allocation.workspace_id=$1::uuid and allocation.budget_id=$2::uuid`,
+      `select allocation.category_id::text as "categoryId",allocation.planned_minor::text as planned,allocation.rollover_policy as "rolloverPolicy",allocation.rollover_target_id::text as "rolloverTargetId",budget.currency,spend."amountMinor",spend.currency as "postingCurrency",spend."occurredAt" from public.budget_allocations allocation join public.budgets budget on budget.workspace_id=allocation.workspace_id and budget.id=allocation.budget_id left join lateral (${buildCategorySpendSql()}) spend on true where allocation.workspace_id=$1::uuid and allocation.budget_id=$2::uuid`,
       [w, id],
     );
-    if (r.rows.some((x) => x.foreignCurrencyLegs !== '0'))
-      throw new Error(
-        'Cannot report single-currency budget spend for an allocation holding postings in another currency.',
+    const actualByCategory = new Map<string, bigint>();
+    for (const row of r.rows) {
+      if (row.amountMinor === null || row.occurredAt === null) {
+        actualByCategory.set(
+          row.categoryId,
+          actualByCategory.get(row.categoryId) ?? 0n,
+        );
+        continue;
+      }
+      const amount =
+        row.postingCurrency === row.currency
+          ? row.amountMinor
+          : await this.convertPosting(
+              c,
+              w,
+              row.postingCurrency ?? row.currency,
+              row.currency,
+              row.amountMinor,
+              row.occurredAt,
+            );
+      actualByCategory.set(
+        row.categoryId,
+        (actualByCategory.get(row.categoryId) ?? 0n) + BigInt(amount),
       );
-    return r.rows.map((x) => ({
-      categoryId: x.categoryId,
-      planned: { amountMinor: x.planned, currency: x.currency },
-      actual: { amountMinor: x.actual, currency: x.currency },
-      available: {
-        amountMinor: (BigInt(x.planned) - BigInt(x.actual)).toString(),
-        currency: x.currency,
-      },
-      rolloverPolicy: x.rolloverPolicy,
-      rolloverTargetId: x.rolloverTargetId,
-    }));
+    }
+    return [
+      ...new Map(r.rows.map((row) => [row.categoryId, row])).values(),
+    ].map((x) => {
+      const actual = actualByCategory.get(x.categoryId) ?? 0n;
+      return {
+        categoryId: x.categoryId,
+        planned: { amountMinor: x.planned, currency: x.currency },
+        actual: { amountMinor: actual.toString(), currency: x.currency },
+        available: {
+          amountMinor: (BigInt(x.planned) - actual).toString(),
+          currency: x.currency,
+        },
+        rolloverPolicy: x.rolloverPolicy,
+        rolloverTargetId: x.rolloverTargetId,
+      };
+    });
+  }
+  private async convertPosting(
+    c: TransactionClient,
+    workspaceId: string,
+    baseCurrency: string,
+    quoteCurrency: string,
+    amountMinor: string,
+    occurredAt: Date,
+  ): Promise<string> {
+    const result = await c.query<{ rate: string }>(
+      CURRENCY_RATE_SELECTION_SQL,
+      [workspaceId, baseCurrency, quoteCurrency, occurredAt],
+    );
+    const rate = result.rows[0]?.rate;
+    if (!rate)
+      throw new Error(
+        `No exchange rate found for converting posting currency ${baseCurrency} to budget currency ${quoteCurrency}.`,
+      );
+    return multiplyMinorByRate(amountMinor, rate);
   }
   public async findSourceAllocations(
     c: TransactionClient,
@@ -130,30 +178,25 @@ export class PostgresBudgetAdapter implements BudgetStore {
     id: string,
     as: readonly BudgetAllocation[],
   ): Promise<void> {
-    for (
-      let offset = 0;
-      offset < as.length;
-      offset += BUDGET_ALLOCATION_BATCH_SIZE
-    ) {
-      const batch = as.slice(offset, offset + BUDGET_ALLOCATION_BATCH_SIZE);
-      const values: unknown[] = [];
-      const rows = batch.map((a, row) => {
-        const base = row * BUDGET_ALLOCATION_PARAMETERS_PER_ROW;
-        values.push(
-          w,
-          id,
-          a.categoryId,
-          a.planned.amountMinor,
-          a.rolloverPolicy,
-          a.rolloverTargetId ?? null,
-        );
-        return `($${base + 1}::uuid,$${base + 2}::uuid,$${base + 3}::uuid,$${base + 4}::bigint,$${base + 5},$${base + 6}::uuid)`;
-      });
-      await c.query(
-        `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor,rollover_policy,rollover_target_id) values ${rows.join(',')}`,
-        values,
+    // MAX_BUDGET_ALLOCATION_COUNT is 1000; each row uses 6 parameters and PostgreSQL permits 65535, so one statement is sufficient.
+    if (as.length === 0) return;
+    const values: unknown[] = [];
+    const rows = as.map((a, row) => {
+      const base = row * BUDGET_ALLOCATION_PARAMETERS_PER_ROW;
+      values.push(
+        w,
+        id,
+        a.categoryId,
+        a.planned.amountMinor,
+        a.rolloverPolicy,
+        a.rolloverTargetId ?? null,
       );
-    }
+      return `($${base + 1}::uuid,$${base + 2}::uuid,$${base + 3}::uuid,$${base + 4}::bigint,$${base + 5},$${base + 6}::uuid)`;
+    });
+    await c.query(
+      `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor,rollover_policy,rollover_target_id) values ${rows.join(',')}`,
+      values,
+    );
   }
   public async listBudgets(
     c: TransactionClient,

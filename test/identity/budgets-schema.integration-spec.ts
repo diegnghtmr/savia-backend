@@ -295,6 +295,7 @@ describe('budgets schema', () => {
       'budget_allocations.application_reads_workspace_budget_allocations.SELECT',
       'budgets.application_inserts_workspace_budgets.INSERT',
       'budgets.application_reads_workspace_budgets.SELECT',
+      'budgets.elevated_reads_budgets.SELECT',
     ]);
     expect(
       policies.rows.map((x) => ({
@@ -333,6 +334,13 @@ describe('budgets schema', () => {
         policyname: 'application_reads_workspace_budgets',
         cmd: 'SELECT',
         qual: "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text, 'viewer'::text]))",
+        with_check: null,
+      },
+      {
+        tablename: 'budgets',
+        policyname: 'elevated_reads_budgets',
+        cmd: 'SELECT',
+        qual: 'true',
         with_check: null,
       },
     ]);

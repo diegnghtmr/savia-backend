@@ -1,4 +1,4 @@
-// Migrations under test: 202608240006_account_currency_invariant.sql, 202608290001_relax_account_currency_invariant.sql
+// Migrations under test: 202608240006_account_currency_invariant.sql, 202608290001_relax_account_currency_invariant.sql, 202609020003_budget_currency_invariant.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -186,6 +186,17 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
   });
 
   describe('Structure and Catalog metadata', () => {
+    it('budget currency invariant trigger exists with the concrete refuser name', async () => {
+      const result = await admin.query<{ tgname: string; proname: string }>(
+        `select t.tgname,p.proname::text as proname from pg_trigger t join pg_proc p on p.oid=t.tgfoid where t.tgrelid='public.budgets'::regclass and t.tgname='enforce_budget_currency_has_exchange_rates_trigger'`,
+      );
+      expect(result.rows).toEqual([
+        {
+          tgname: 'enforce_budget_currency_has_exchange_rates_trigger',
+          proname: 'enforce_budget_currency_has_exchange_rates',
+        },
+      ]);
+    });
     it('1. Trigger exists on public.accounts, fires row-level BEFORE insert or update, executes security definer function owned by savia_elevated with search_path pg_catalog, public', async () => {
       const accountsTrigRes = await admin.query<{
         tgname: string;
@@ -259,6 +270,52 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
   });
 
   describe('Invariant Enforcement (behavioral live proofs)', () => {
+    it('budget creation refuses when an existing account lacks a rate to the frozen budget currency', async () => {
+      const budgetId = subject(699);
+      const accountId = subject(698);
+      await admin.query(
+        `insert into public.accounts (id,workspace_id,name,type,currency,created_by) values ($1,$2,'GBP Budget Account','cash','GBP',$3)`,
+        [accountId, ws1Id, ownerA],
+      );
+      const err = await capturePgError(() =>
+        admin.query(
+          `insert into public.budgets (id,workspace_id,name,method,period_start,period_end,currency,created_by) values ($1,$2,'Unrated Budget','envelope','2026-01-01','2026-02-01','EUR',$3)`,
+          [budgetId, ws1Id, ownerA],
+        ),
+      );
+      expect(err.code).toBe('23514');
+      expect(err.message ?? '').toContain(
+        'budget currency requires exchange rates for all account currencies',
+      );
+      await admin.query('delete from public.accounts where id=$1', [accountId]);
+    });
+
+    it('account introduction refuses when an existing frozen budget lacks a rate to its currency', async () => {
+      const budgetId = subject(697);
+      const accountId = subject(696);
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id,base_currency,quote_currency,rate,effective_at,source,created_by) values ($1,'EUR','USD',1.1,'2026-01-01','test',$2)`,
+        [emptyWsId, ownerA],
+      );
+      await admin.query(
+        `insert into public.budgets (id,workspace_id,name,method,period_start,period_end,currency,created_by) values ($1,$2,'COP Budget','envelope','2026-01-01','2026-02-01','COP',$3)`,
+        [budgetId, emptyWsId, ownerA],
+      );
+      try {
+        const err = await capturePgError(() =>
+          admin.query(
+            `insert into public.accounts (id,workspace_id,name,type,currency,created_by) values ($1,$2,'EUR Account','cash','EUR',$3)`,
+            [accountId, emptyWsId, ownerA],
+          ),
+        );
+        expect(err.code).toBe('23514');
+        expect(err.message ?? '').toContain(
+          'account currency requires exchange rates for all budget currencies',
+        );
+      } finally {
+        await admin.query('delete from public.budgets where id=$1', [budgetId]);
+      }
+    });
     it('a. A direct privileged insert of an account whose currency differs from workspace base currency with NO exchange rate raises SQLSTATE 23514 (check_violation)', async () => {
       const err = await capturePgError(() =>
         admin.query(

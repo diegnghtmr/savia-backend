@@ -315,32 +315,112 @@ describe('budget creation against disposable PostgreSQL', () => {
     ).rows[0].count;
     expect(after - before).toBe(1);
   });
-  it('23 excludes a foreign-currency posting from actual and surfaces the foreign leg', async () => {
+  it('23 converts two foreign-currency postings and keeps get/list HTTP at 200', async () => {
     const budget = await create('00000000-0000-0000-0000-000000006220');
     if (budget.kind !== 'created') throw new Error('create failed');
     await f.admin.query(
-      `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor) values ($1,$2,$3,10000)`,
+      `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor) values ($1,$2,$3,30000)`,
       [IDS.workspace, budget.budget.id, IDS.statusCategory],
     );
+    await f.insertExchangeRate({
+      baseCurrency: 'EUR',
+      quoteCurrency: 'USD',
+      rate: '1.0800',
+      effectiveAt: '2026-01-01T00:00:00Z',
+    });
+    await f.insertExchangeRate({
+      baseCurrency: 'EUR',
+      quoteCurrency: 'USD',
+      rate: '1.1000',
+      effectiveAt: '2026-03-01T00:00:00Z',
+    });
+    await f.insertExchangeRate({
+      baseCurrency: 'GBP',
+      quoteCurrency: 'USD',
+      rate: '1.2500',
+      effectiveAt: '2026-03-01T00:00:00Z',
+    });
+    const eurAccount = await f.insertAccount({ currency: 'EUR' });
+    const gbpAccount = await f.insertAccount({ currency: 'GBP' });
     await f.insertPosting({
       id: '00000000-0000-0000-0000-000000006715',
       transactionId: '00000000-0000-0000-0000-000000006716',
-      amountMinor: 2500,
+      amountMinor: 10000,
       currency: 'EUR',
       status: 'confirmed',
       occurredAt: '2026-01-15T12:00:00Z',
       categoryId: IDS.statusCategory,
+      accountId: eurAccount,
     });
-    await expect(
-      f.service.getBudget(IDS.user, IDS.workspace, budget.budget.id),
-    ).rejects.toThrow(/another currency/);
-    await f.admin.query(
-      `delete from public.ledger_postings where transaction_id=$1`,
-      ['00000000-0000-0000-0000-000000006716'],
+    await f.insertPosting({
+      id: '00000000-0000-0000-0000-000000006725',
+      transactionId: '00000000-0000-0000-0000-000000006726',
+      amountMinor: 5000,
+      currency: 'GBP',
+      status: 'reconciled',
+      occurredAt: '2026-01-15T12:00:00Z',
+      categoryId: IDS.statusCategory,
+      accountId: gbpAccount,
+    });
+    await f.insertPosting({
+      id: '00000000-0000-0000-0000-000000006719',
+      transactionId: '00000000-0000-0000-0000-000000006720',
+      amountMinor: 7000,
+      currency: 'USD',
+      status: 'confirmed',
+      occurredAt: '2026-01-20T12:00:00Z',
+      categoryId: IDS.statusCategory,
+    });
+    const read = await f.service.getBudget(
+      IDS.user,
+      IDS.workspace,
+      budget.budget.id,
     );
-    await f.admin.query(`delete from public.transactions where id=$1`, [
-      '00000000-0000-0000-0000-000000006716',
-    ]);
+    if (read.kind !== 'found') throw new Error('read failed');
+    expect(read.budget.allocations[0]?.actual.amountMinor).toBe('24050');
+    expect(read.budget.allocations[0]?.available.amountMinor).toBe('5950');
+    const getResponse = await inject({
+      method: 'GET',
+      url: `/v1/budgets/${budget.budget.id}`,
+      headers: baseHeaders,
+    });
+    expect(getResponse.statusCode).toBe(200);
+    expect(getResponse.json().allocations[0].actual.amountMinor).toBe('24050');
+    const listResponse = await inject({
+      method: 'GET',
+      url: '/v1/budgets?limit=100',
+      headers: baseHeaders,
+    });
+    expect(listResponse.statusCode).toBe(200);
+    expect(
+      listResponse
+        .json()
+        .items.some((item: { id: string }) => item.id === budget.budget.id),
+    ).toBe(true);
+    await f.admin.query(
+      `delete from public.ledger_postings where transaction_id = any($1::uuid[])`,
+      [
+        [
+          '00000000-0000-0000-0000-000000006716',
+          '00000000-0000-0000-0000-000000006726',
+          '00000000-0000-0000-0000-000000006720',
+        ],
+      ],
+    );
+    await f.admin.query(
+      `delete from public.transactions where id = any($1::uuid[])`,
+      [
+        [
+          '00000000-0000-0000-0000-000000006716',
+          '00000000-0000-0000-0000-000000006726',
+          '00000000-0000-0000-0000-000000006720',
+        ],
+      ],
+    );
+    await f.admin.query(
+      `delete from public.accounts where id = any($1::uuid[])`,
+      [[eurAccount, gbpAccount]],
+    );
   });
   it('24 uses posting status when it diverges from transaction status', async () => {
     const budget = await create('00000000-0000-0000-0000-000000006221');
@@ -350,8 +430,8 @@ describe('budget creation against disposable PostgreSQL', () => {
       [IDS.workspace, budget.budget.id, IDS.statusCategory],
     );
     await f.insertPosting({
-      id: '00000000-0000-0000-0000-000000006717',
-      transactionId: '00000000-0000-0000-0000-000000006718',
+      id: '00000000-0000-0000-0000-000000006727',
+      transactionId: '00000000-0000-0000-0000-000000006728',
       amountMinor: 2500,
       currency: 'USD',
       status: 'pending',
@@ -360,7 +440,7 @@ describe('budget creation against disposable PostgreSQL', () => {
     });
     await f.admin.query(
       `update public.transactions set status='confirmed' where id=$1`,
-      ['00000000-0000-0000-0000-000000006718'],
+      ['00000000-0000-0000-0000-000000006728'],
     );
     const read = await f.service.getBudget(
       IDS.user,

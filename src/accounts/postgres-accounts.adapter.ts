@@ -1,4 +1,8 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import {
+  CURRENCY_RATE_SELECTION_SQL,
+  multiplyMinorByRate,
+} from '../platform/currency-conversion.js';
 import { buildNativeBalanceSql } from '../platform/native-balance-query.js';
 import type {
   Account,
@@ -59,68 +63,7 @@ export function toIso(value: unknown): string {
   );
 }
 
-/**
- * Multiplies an amount in minor units (integer string) by an exchange rate (decimal string)
- * without using JavaScript floating-point arithmetic.
- *
- * Rate semantics (D1):
- * `rate` means how many units of `quoteCurrency` equal ONE unit of `baseCurrency`.
- * Standard convention: EUR/USD = 1.08 means 1 EUR = 1.08 USD.
- * So converting an EUR account into a USD-based workspace needs a row with
- * `base_currency = 'EUR'` and `quote_currency = 'USD'`.
- *
- * Rounding convention:
- * Round half away from zero (standard commercial / financial rounding).
- * When converting minor units via exchange rate, fractional minor units (sub-cents) with
- * magnitude >= 0.5 round away from zero to ensure deterministic, standard financial rounding
- * without floating-point inaccuracy or cumulative downward bias.
- */
-export function multiplyMinorByRate(
-  amountMinorStr: string,
-  rateStr: string,
-): string {
-  const isNegativeRate = rateStr.startsWith('-');
-  const cleanRate = isNegativeRate ? rateStr.slice(1) : rateStr;
-  const dotIndex = cleanRate.indexOf('.');
-
-  let unscaledRateStr: string;
-  let scale = 0;
-  if (dotIndex === -1) {
-    unscaledRateStr = cleanRate;
-  } else {
-    const intPart = cleanRate.slice(0, dotIndex);
-    const fracPart = cleanRate.slice(dotIndex + 1);
-    scale = fracPart.length;
-    unscaledRateStr = intPart + fracPart;
-  }
-
-  const unscaledRate = BigInt(unscaledRateStr);
-  const rateNumerator = isNegativeRate ? -unscaledRate : unscaledRate;
-  const rateDenominator = 10n ** BigInt(scale);
-  const amountMinor = BigInt(amountMinorStr);
-
-  const product = amountMinor * rateNumerator;
-  if (rateDenominator === 1n) {
-    return product.toString();
-  }
-
-  if (product >= 0n) {
-    let quotient = product / rateDenominator;
-    const remainder = product % rateDenominator;
-    if (remainder * 2n >= rateDenominator) {
-      quotient += 1n;
-    }
-    return quotient.toString();
-  } else {
-    const absProduct = -product;
-    let quotient = absProduct / rateDenominator;
-    const remainder = absProduct % rateDenominator;
-    if (remainder * 2n >= rateDenominator) {
-      quotient += 1n;
-    }
-    return (-quotient).toString();
-  }
-}
+export { multiplyMinorByRate } from '../platform/currency-conversion.js';
 
 export class PostgresAccountsAdapter implements AccountsStore {
   public async readActiveRole(
@@ -595,27 +538,11 @@ select a.currency as "accountCurrency",
       // returned rateDate always reports the effective date of the rate actually
       // applied, so a caller can see when the fallback happened -- the answer is
       // approximate in that case, but it is never silently mislabelled.
-      const rateSql = `
-select rate::text as rate,
-       to_char(effective_at at time zone 'utc', 'YYYY-MM-DD') as "rateDate",
-       source as "rateSource"
-  from public.exchange_rates
- where workspace_id = $1::uuid
-   and base_currency = $2
-   and quote_currency = $3
- order by (effective_at <= coalesce($4::timestamptz, now())) desc,
-          case
-            when effective_at <= coalesce($4::timestamptz, now()) then effective_at
-          end desc,
-          effective_at asc,
-          id desc
- limit 1`;
-
       const rateResult = await client.query<{
         rate: string;
         rateDate: string;
         rateSource: string;
-      }>(rateSql, [
+      }>(CURRENCY_RATE_SELECTION_SQL, [
         workspaceId,
         accountCurrency,
         workspaceBaseCurrency,
