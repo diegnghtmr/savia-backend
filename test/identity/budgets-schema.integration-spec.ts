@@ -1,6 +1,7 @@
 // Migrations under test: 202609020001_budgets.sql
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { fixture, IDS, command } from '../budgets/budget-fixtures.js';
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 describe('budgets schema', () => {
@@ -29,5 +30,50 @@ describe('budgets schema', () => {
         'budget_allocations_category_workspace_fkey',
       ]),
     );
+  });
+});
+describe('budgets RLS', () => {
+  it('21 hides both tables from a non-member SQL role', async () => {
+    const f = await fixture(url);
+    const created = await f.service.createBudget(
+      IDS.user,
+      IDS.workspace,
+      command('RLS'),
+      '00000000-0000-0000-0000-000000006501',
+    );
+    if (created.kind !== 'created') throw new Error('create failed');
+    await f.admin.query(
+      'insert into public.budget_allocations(workspace_id,budget_id,category_id,planned_minor) values($1,$2,$3,1)',
+      [IDS.workspace, created.budget.id, IDS.category],
+    );
+    const client = await f.admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query(`select set_config('app.subject_id',$1,true)`, [
+        IDS.otherUser,
+      ]);
+      expect(
+        (
+          await client.query(
+            'select id from public.budgets where workspace_id=$1',
+            [IDS.workspace],
+          )
+        ).rows,
+      ).toHaveLength(0);
+      expect(
+        (
+          await client.query(
+            'select id from public.budget_allocations where workspace_id=$1',
+            [IDS.workspace],
+          )
+        ).rows,
+      ).toHaveLength(0);
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+    await f.cleanup();
+    await f.close();
   });
 });

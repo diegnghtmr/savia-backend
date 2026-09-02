@@ -92,7 +92,7 @@ export class PostgresBudgetAdapter implements BudgetStore {
       actual: string;
       currency: string;
     }>(
-      `select a.category_id::text as "categoryId",a.planned_minor::text as planned,a.rollover_policy as "rolloverPolicy",a.rollover_target_id::text as "rolloverTargetId",b.currency,coalesce((select sum(lp.amount_minor)::text from public.ledger_postings lp join public.transactions t on t.workspace_id=lp.workspace_id and t.id=lp.transaction_id where lp.workspace_id=a.workspace_id and lp.category_id=a.category_id and t.occurred_at::date between b.period_start and b.period_end and t.status in ('confirmed','reconciled')), '0') as actual from public.budget_allocations a join public.budgets b on b.workspace_id=a.workspace_id and b.id=a.budget_id where a.workspace_id=$1::uuid and a.budget_id=$2::uuid`,
+      `select a.category_id::text as "categoryId",a.planned_minor::text as planned,a.rollover_policy as "rolloverPolicy",a.rollover_target_id::text as "rolloverTargetId",b.currency,coalesce((select sum(lp.amount_minor)::text from public.ledger_postings lp join public.transactions t on t.workspace_id=lp.workspace_id and t.id=lp.transaction_id where lp.workspace_id=a.workspace_id and t.category_id=a.category_id and lp.account_id is not null and t.occurred_at::date between b.period_start and b.period_end and t.status in ('confirmed','reconciled')), '0') as actual from public.budget_allocations a join public.budgets b on b.workspace_id=a.workspace_id and b.id=a.budget_id where a.workspace_id=$1::uuid and a.budget_id=$2::uuid`,
       [w, id],
     );
     return r.rows.map((x) => ({

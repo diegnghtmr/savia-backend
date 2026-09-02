@@ -22,6 +22,17 @@ export interface BudgetTransaction {
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T>;
 }
+export class BudgetCreateRollbackError extends Error {
+  public constructor(
+    public readonly outcome: 'replayed' | 'conflict',
+    public readonly status?: number,
+    public readonly etag?: string | null,
+    public readonly body?: unknown,
+  ) {
+    super('Budget create transaction must be rolled back.');
+    this.name = 'BudgetCreateRollbackError';
+  }
+}
 export class BudgetService implements BudgetsPort {
   public constructor(
     private readonly tx: BudgetTransaction,
@@ -36,95 +47,112 @@ export class BudgetService implements BudgetsPort {
   ): Promise<BudgetCreateOutcome> {
     const route = 'POST /v1/budgets';
     const fingerprint = computeRequestFingerprint(command);
-    return this.tx.run(subject, async (client) => {
-      const role = await this.store.readActiveRole(client, workspaceId);
-      if (!['owner', 'administrator', 'editor'].includes(role ?? ''))
-        return { kind: BUDGET_OUTCOMES.FORBIDDEN };
-      const existing = await this.idempotency.read(
-        client,
-        subject,
-        route,
-        key,
-        workspaceId,
-      );
-      if (existing)
-        return existing.requestFingerprint === fingerprint
-          ? {
-              kind: BUDGET_OUTCOMES.REPLAYED,
-              status: existing.responseStatus,
-              etag: existing.responseEtag,
-              body: existing.responseBody,
-            }
-          : { kind: BUDGET_OUTCOMES.CONFLICT };
-      const currency = await this.store.readWorkspaceCurrency(
-        client,
-        workspaceId,
-      );
-      if (!currency) return { kind: BUDGET_OUTCOMES.INVALID_SOURCE };
-      let source = [] as readonly import('./budget.port.js').BudgetAllocation[];
-      if (command.copyFromBudgetId) {
-        source = await this.store.findSourceAllocations(
-          client,
-          workspaceId,
-          command.copyFromBudgetId,
-        );
-        const sourceBudget = await this.store.findBudget(
-          client,
-          workspaceId,
-          command.copyFromBudgetId,
-        );
-        if (!sourceBudget) return { kind: BUDGET_OUTCOMES.INVALID_SOURCE };
-      }
-      const budget = await this.store.createBudget(
-        client,
-        workspaceId,
-        subject,
-        command,
-        currency,
-      );
-      if (source.length)
-        await this.store.insertCopiedAllocations(
-          client,
-          workspaceId,
-          budget.id,
-          source,
-        );
-      const written = await this.idempotency.write(
-        client,
-        subject,
-        route,
-        key,
-        fingerprint,
-        201,
-        null,
-        budget,
-        workspaceId,
-      );
-      if (!written) {
-        const reread = await this.idempotency.read(
+    try {
+      return await this.tx.run(subject, async (client) => {
+        const role = await this.store.readActiveRole(client, workspaceId);
+        if (!['owner', 'administrator', 'editor'].includes(role ?? ''))
+          return { kind: BUDGET_OUTCOMES.FORBIDDEN };
+        const existing = await this.idempotency.read(
           client,
           subject,
           route,
           key,
           workspaceId,
         );
-        if (reread)
-          return reread.requestFingerprint === fingerprint
+        if (existing)
+          return existing.requestFingerprint === fingerprint
             ? {
                 kind: BUDGET_OUTCOMES.REPLAYED,
-                status: reread.responseStatus,
-                etag: reread.responseEtag,
-                body: reread.responseBody,
+                status: existing.responseStatus,
+                etag: existing.responseEtag,
+                body: existing.responseBody,
               }
             : { kind: BUDGET_OUTCOMES.CONFLICT };
-      }
-      return {
-        kind: BUDGET_OUTCOMES.CREATED,
-        budget:
-          (await this.store.findBudget(client, workspaceId, budget.id)) ??
+        const currency = await this.store.readWorkspaceCurrency(
+          client,
+          workspaceId,
+        );
+        if (!currency) return { kind: BUDGET_OUTCOMES.INVALID_SOURCE };
+        let source =
+          [] as readonly import('./budget.port.js').BudgetAllocation[];
+        if (command.copyFromBudgetId) {
+          source = await this.store.findSourceAllocations(
+            client,
+            workspaceId,
+            command.copyFromBudgetId,
+          );
+          const sourceBudget = await this.store.findBudget(
+            client,
+            workspaceId,
+            command.copyFromBudgetId,
+          );
+          if (!sourceBudget) return { kind: BUDGET_OUTCOMES.INVALID_SOURCE };
+        }
+        const budget = await this.store.createBudget(
+          client,
+          workspaceId,
+          subject,
+          command,
+          currency,
+        );
+        if (source.length)
+          await this.store.insertCopiedAllocations(
+            client,
+            workspaceId,
+            budget.id,
+            source,
+          );
+        const written = await this.idempotency.write(
+          client,
+          subject,
+          route,
+          key,
+          fingerprint,
+          201,
+          null,
           budget,
-      };
-    });
+          workspaceId,
+        );
+        if (!written) {
+          const reread = await this.idempotency.read(
+            client,
+            subject,
+            route,
+            key,
+            workspaceId,
+          );
+          if (reread) {
+            if (reread.requestFingerprint === fingerprint)
+              throw new BudgetCreateRollbackError(
+                'replayed',
+                reread.responseStatus,
+                reread.responseEtag,
+                reread.responseBody,
+              );
+            throw new BudgetCreateRollbackError('conflict');
+          }
+          throw new Error('Budget idempotency record could not be reread.');
+        }
+        return {
+          kind: BUDGET_OUTCOMES.CREATED,
+          budget:
+            (await this.store.findBudget(client, workspaceId, budget.id)) ??
+            budget,
+        };
+      });
+    } catch (error) {
+      if (error instanceof BudgetCreateRollbackError) {
+        return error.outcome === 'replayed'
+          ? {
+              kind: BUDGET_OUTCOMES.REPLAYED,
+              status: error.status ?? 201,
+              etag: error.etag ?? null,
+              body: error.body,
+            }
+          : { kind: BUDGET_OUTCOMES.CONFLICT };
+      }
+      throw error;
+    }
   }
   public getBudget(
     subject: string,
