@@ -1,8 +1,17 @@
 // Migrations under test: 202608240006_account_currency_invariant.sql, 202608290001_relax_account_currency_invariant.sql, 202609020003_budget_currency_invariant.sql
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import {
+  FastifyAdapter,
+  type NestFastifyApplication,
+} from '@nestjs/platform-fastify';
+import { Test } from '@nestjs/testing';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { AccountsModule } from '../../src/accounts/accounts.module.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
+import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { PROBLEM_TYPES } from '../../src/platform/problem-details.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -807,6 +816,126 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
         `select count(*)::int as count from pg_trigger where tgname in ('enforce_account_currency_has_budget_rates_trigger', 'enforce_budget_currency_has_exchange_rates_trigger')`,
       );
       expect(trigCheckClean.rows[0].count).toBe(2);
+    });
+  });
+
+  describe('HTTP Account Creation Constraint Translation (H2)', () => {
+    let httpApp: NestFastifyApplication | undefined;
+    const wsHttpId = subject(656);
+    const memWsHttpOwnerAId = subject(619);
+    const httpBudgetId = subject(693);
+
+    beforeAll(async () => {
+      Object.assign(process.env, {
+        JWT_ISSUER: 'https://issuer.example.test',
+        JWT_AUDIENCE: 'savia-api',
+        JWT_JWKS_URI: 'https://issuer.example.test/jwks',
+        JWT_ALGORITHMS: 'RS256',
+      });
+
+      await admin.query(
+        `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+         values ($1, 'HTTP Test Workspace', 'shared', 'COP', null, $2)`,
+        [wsHttpId, ownerA],
+      );
+      await admin.query(
+        `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'owner', 'active')`,
+        [memWsHttpOwnerAId, wsHttpId, ownerA],
+      );
+      // EUR -> COP rate satisfies accounts_currency_requires_exchange_rate
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+         values ($1, 'EUR', 'COP', 4500.0, '2026-01-01T00:00:00.000Z', 'manual', $2)`,
+        [wsHttpId, ownerA],
+      );
+      // Frozen USD budget exists in this workspace
+      await admin.query(
+        `insert into public.budgets (id, workspace_id, name, method, period_start, period_end, currency, created_by)
+         values ($1, $2, 'HTTP Test Budget', 'envelope', '2026-01-01', '2026-02-01', 'USD', $3)`,
+        [httpBudgetId, wsHttpId, ownerA],
+      );
+
+      const moduleRef = await Test.createTestingModule({
+        imports: [AccountsModule],
+      })
+        .overrideProvider(JoseJwtVerifier)
+        .useValue({
+          verify: async (token: string) => {
+            if (token === 'owner-token') return { subject: ownerA };
+            throw new Error('token rejected');
+          },
+        })
+        .compile();
+
+      httpApp = moduleRef.createNestApplication<NestFastifyApplication>(
+        new FastifyAdapter({ exposeHeadRoutes: false }),
+      );
+      registerProblemFilter(httpApp);
+      await httpApp.init();
+      await httpApp.getHttpAdapter().getInstance().ready();
+    });
+
+    afterAll(async () => {
+      if (httpApp) {
+        await httpApp.close();
+      }
+      await admin
+        .query('delete from public.budgets where workspace_id = $1::uuid', [
+          wsHttpId,
+        ])
+        .catch(() => {});
+      await admin
+        .query('delete from public.accounts where workspace_id = $1::uuid', [
+          wsHttpId,
+        ])
+        .catch(() => {});
+      await admin
+        .query(
+          'delete from public.exchange_rates where workspace_id = $1::uuid',
+          [wsHttpId],
+        )
+        .catch(() => {});
+      await admin
+        .query(
+          'delete from public.workspace_memberships where workspace_id = $1::uuid',
+          [wsHttpId],
+        )
+        .catch(() => {});
+      await admin
+        .query('delete from public.workspaces where id = $1::uuid', [
+          wsHttpId,
+        ])
+        .catch(() => {});
+    });
+
+    it('POST /v1/accounts returns 422 (not 500) when account currency lacks exchange rate to existing budget currency', async () => {
+      if (!httpApp) throw new Error('HTTP app not initialized');
+
+      const response = await httpApp.inject({
+        method: 'POST',
+        url: '/v1/accounts',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': wsHttpId,
+          'idempotency-key': '00000000-0000-0000-0000-000000000888',
+          'content-type': 'application/json',
+        },
+        payload: {
+          name: 'Unrated EUR Account',
+          type: 'checking',
+          currency: 'EUR',
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(response.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      const body = JSON.parse(response.payload);
+      expect(body.type).toBe(PROBLEM_TYPES.ACCOUNT_CURRENCY_UNSUPPORTED);
+      expect(body.status).toBe(422);
+      expect(body.title).toBe('Account currency unsupported');
     });
   });
 });

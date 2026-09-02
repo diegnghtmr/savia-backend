@@ -564,6 +564,38 @@ describe('AccountsService.create', () => {
     expect(outcome.kind).toBe('currency_unsupported');
   });
 
+  it('answers currency_unsupported when the database refuses an account whose currency has no recorded rate to an existing budget', async () => {
+    const store = fakeStore('owner');
+    const triggerViolation = Object.assign(
+      new Error(
+        'account currency requires exchange rates for all budget currencies',
+      ),
+      {
+        code: '23514',
+        constraint: 'accounts_currency_requires_budget_exchange_rates',
+      },
+    );
+    const storeWithCreate = {
+      ...store,
+      createAccount: vi.fn().mockRejectedValue(triggerViolation),
+    };
+    const idempStore = fakeIdempotencyStore();
+    const service = new AccountsService(
+      new FakeTransaction(),
+      storeWithCreate,
+      idempStore,
+    );
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      VALID_COMMAND,
+      IDEMPOTENCY_KEY,
+    );
+
+    expect(outcome.kind).toBe('currency_unsupported');
+  });
+
   it('rethrows an unrelated check violation instead of mislabelling it as a currency problem', async () => {
     // Matching on SQLSTATE 23514 alone would swallow every other check constraint on
     // public.accounts and report it as a currency error. Pin that the constraint name
