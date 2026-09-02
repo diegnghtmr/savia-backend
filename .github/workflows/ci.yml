@@ -242,6 +242,9 @@ jobs:
       - name: reconciliations complete integration
         shell: bash
         run: pnpm test:integration:reconciliations-complete
+      - name: exports security integration
+        shell: bash
+        run: pnpm test:integration:exports-security
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

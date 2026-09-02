@@ -21,7 +21,7 @@ module.exports = {
       comment:
         'Feature modules must not import from each other; shared code belongs in src/platform',
       from: {
-        path: '^src/(?!reconciliations/)([^/]+)/',
+        path: '^src/(?!reconciliations/|exports/)([^/]+)/',
         pathNot: '^src/platform/',
       },
       to: {
@@ -30,6 +30,24 @@ module.exports = {
           '^src/$1/',
           '^src/platform/',
           '^src/ledger/transaction-command\\.ts$',
+        ],
+      },
+    },
+    {
+      name: 'exports-composition-boundary',
+      severity: 'error',
+      comment:
+        'Exports may use read adapters, but other features may not import them directly',
+      from: { path: '^src/exports/' },
+      to: {
+        path: '^src/([^/]+)/',
+        pathNot: [
+          '^src/exports/',
+          '^src/platform/',
+          '^src/accounts/accounts\\.port\\.ts$',
+          '^src/ledger/ledger\\.port\\.ts$',
+          '^src/accounts/postgres-accounts\\.adapter\\.ts$',
+          '^src/ledger/postgres-transaction\\.adapter\\.ts$',
         ],
       },
     },
@@ -47,6 +65,8 @@ module.exports = {
           '^src/reconciliations/',
           '^src/platform/',
           '^src/ledger/ledger\\.module\\.ts$',
+          '^src/accounts/postgres-accounts\\.adapter\\.ts$',
+          '^src/ledger/postgres-transaction\\.adapter\\.ts$',
         ],
       },
     },

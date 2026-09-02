@@ -2,3 +2,6 @@ project_id = "savia-backend"
 
 [db]
 major_version = 17
+
+[storage]
+enabled = true
