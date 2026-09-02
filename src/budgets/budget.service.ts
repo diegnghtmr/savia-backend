@@ -102,6 +102,9 @@ export class BudgetService implements BudgetsPort {
             budget.id,
             source,
           );
+        const materialized =
+          (await this.store.findBudget(client, workspaceId, budget.id)) ??
+          budget;
         const written = await this.idempotency.write(
           client,
           subject,
@@ -110,7 +113,7 @@ export class BudgetService implements BudgetsPort {
           fingerprint,
           201,
           null,
-          budget,
+          materialized,
           workspaceId,
         );
         if (!written) {
@@ -135,9 +138,7 @@ export class BudgetService implements BudgetsPort {
         }
         return {
           kind: BUDGET_OUTCOMES.CREATED,
-          budget:
-            (await this.store.findBudget(client, workspaceId, budget.id)) ??
-            budget,
+          budget: materialized,
         };
       });
     } catch (error) {

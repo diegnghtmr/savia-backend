@@ -13,6 +13,22 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: JWT verified against the configured issuer, audience, and JWKS.
+    mcpOAuth:
+      type: oauth2
+      description: OAuth 2.1 authorization used by remote MCP clients. The MCP transport itself is not described by this OpenAPI document.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.savia.app/oauth/authorize
+          tokenUrl: https://api.savia.app/oauth/token
+          scopes:
+            accounts:read: Read accounts and balances.
+            transactions:read: Read financial transactions.
+            transactions:write: Create and modify financial transactions.
+            budgets:read: Read budgets.
+            budgets:write: Modify budgets.
+            reports:read: Run and read reports.
+            reports:write: Create report definitions.
+            workspace:admin: Administer workspace integrations.
   schemas:
     OnboardingRequest:
       type: object
@@ -4826,7 +4842,18 @@ paths:
           }
         - { name: to, in: query, schema: { $ref: '#/components/schemas/Date' } }
       responses:
-        '200': { description: Budget page. }
+        '200':
+          description: Budget page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pageInfo]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Budget' }
+                  pageInfo: { $ref: '#/components/schemas/PageInfo' }
         '400': { description: Malformed request. }
         '401': { description: Unauthorized. }
         '403': { description: Forbidden. }
@@ -4860,7 +4887,11 @@ paths:
             },
         }
       responses:
-        '201': { description: Budget created. }
+        '201':
+          description: Budget created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Budget' }
         '400': { description: Malformed request. }
         '401': { description: Unauthorized. }
         '403': { description: Forbidden. }
@@ -4896,6 +4927,11 @@ paths:
         '200':
           {
             description: Budget.,
+            content:
+              {
+                application/json:
+                  { schema: { $ref: '#/components/schemas/Budget' } },
+              },
             headers:
               {
                 ETag: { description: Entity version, schema: { type: string } },

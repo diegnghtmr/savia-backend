@@ -1,4 +1,5 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import { buildCategorySpendSql } from '../platform/category-spend-query.js';
 import type {
   Budget,
   BudgetAllocation,
@@ -8,6 +9,9 @@ import type {
   CreateBudgetRequest,
   RolloverPolicy,
 } from './budget.port.js';
+export const BUDGET_ALLOCATION_PARAMETERS_PER_ROW = 6;
+export const BUDGET_ALLOCATION_BATCH_SIZE =
+  Math.floor(65535 / BUDGET_ALLOCATION_PARAMETERS_PER_ROW) - 1;
 interface Row extends Record<string, unknown> {
   id: string;
   name: string;
@@ -90,11 +94,16 @@ export class PostgresBudgetAdapter implements BudgetStore {
       rolloverPolicy: RolloverPolicy;
       rolloverTargetId: string | null;
       actual: string;
+      foreignCurrencyLegs: string;
       currency: string;
     }>(
-      `select a.category_id::text as "categoryId",a.planned_minor::text as planned,a.rollover_policy as "rolloverPolicy",a.rollover_target_id::text as "rolloverTargetId",b.currency,coalesce((select sum(lp.amount_minor)::text from public.ledger_postings lp join public.transactions t on t.workspace_id=lp.workspace_id and t.id=lp.transaction_id where lp.workspace_id=a.workspace_id and t.category_id=a.category_id and lp.account_id is not null and t.occurred_at::date between b.period_start and b.period_end and t.status in ('confirmed','reconciled')), '0') as actual from public.budget_allocations a join public.budgets b on b.workspace_id=a.workspace_id and b.id=a.budget_id where a.workspace_id=$1::uuid and a.budget_id=$2::uuid`,
+      `select allocation.category_id::text as "categoryId",allocation.planned_minor::text as planned,allocation.rollover_policy as "rolloverPolicy",allocation.rollover_target_id::text as "rolloverTargetId",budget.currency,spend.actual,spend."foreignCurrencyLegs" from public.budget_allocations allocation join public.budgets budget on budget.workspace_id=allocation.workspace_id and budget.id=allocation.budget_id cross join lateral (${buildCategorySpendSql()}) spend where allocation.workspace_id=$1::uuid and allocation.budget_id=$2::uuid`,
       [w, id],
     );
+    if (r.rows.some((x) => x.foreignCurrencyLegs !== '0'))
+      throw new Error(
+        'Cannot report single-currency budget spend for an allocation holding postings in another currency.',
+      );
     return r.rows.map((x) => ({
       categoryId: x.categoryId,
       planned: { amountMinor: x.planned, currency: x.currency },
@@ -121,18 +130,30 @@ export class PostgresBudgetAdapter implements BudgetStore {
     id: string,
     as: readonly BudgetAllocation[],
   ): Promise<void> {
-    for (const a of as)
-      await c.query(
-        'insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor,rollover_policy,rollover_target_id) values ($1::uuid,$2::uuid,$3::uuid,$4::bigint,$5,$6::uuid)',
-        [
+    for (
+      let offset = 0;
+      offset < as.length;
+      offset += BUDGET_ALLOCATION_BATCH_SIZE
+    ) {
+      const batch = as.slice(offset, offset + BUDGET_ALLOCATION_BATCH_SIZE);
+      const values: unknown[] = [];
+      const rows = batch.map((a, row) => {
+        const base = row * BUDGET_ALLOCATION_PARAMETERS_PER_ROW;
+        values.push(
           w,
           id,
           a.categoryId,
           a.planned.amountMinor,
           a.rolloverPolicy,
           a.rolloverTargetId ?? null,
-        ],
+        );
+        return `($${base + 1}::uuid,$${base + 2}::uuid,$${base + 3}::uuid,$${base + 4}::bigint,$${base + 5},$${base + 6}::uuid)`;
+      });
+      await c.query(
+        `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor,rollover_policy,rollover_target_id) values ${rows.join(',')}`,
+        values,
       );
+    }
   }
   public async listBudgets(
     c: TransactionClient,
