@@ -1289,6 +1289,36 @@ components:
         expiresAt: { type: [string, 'null'], format: date-time }
         createdAt: { type: string, format: date-time }
       additionalProperties: false
+    ImportJob:
+      type: object
+      required: [id, status, fileName, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          {
+            type: string,
+            enum:
+              [
+                uploaded,
+                analyzing,
+                awaiting_mapping,
+                awaiting_confirmation,
+                processing,
+                completed,
+                failed,
+                rolled_back,
+              ],
+          }
+        fileName: { type: string }
+        accountId: { type: [string, 'null'], format: uuid }
+        detectedFormat:
+          { type: [string, 'null'], enum: [csv, xlsx, qif, ofx, qfx, null] }
+        totalRows: { type: [integer, 'null'] }
+        validRows: { type: [integer, 'null'] }
+        duplicateRows: { type: [integer, 'null'] }
+        errorRows: { type: [integer, 'null'] }
+        createdAt: { type: string, format: date-time }
+      additionalProperties: false
     Reconciliation:
       type: object
       required:
@@ -4431,6 +4461,177 @@ paths:
         '404':
           {
             description: Export job not found.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '500':
+          {
+            description: Internal failure.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+  /v1/import-jobs:
+    post:
+      operationId: createImportJob
+      tags: [Imports]
+      summary: Analyze an imported statement
+      parameters:
+        - {
+            name: X-Workspace-Id,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+        - {
+            name: Idempotency-Key,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid, maxLength: 255 },
+          }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                formatHint:
+                  {
+                    type: [string, 'null'],
+                    enum: [csv, xlsx, qif, ofx, qfx, null],
+                  }
+              additionalProperties: false
+      responses:
+        '400':
+          {
+            description: Malformed request.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '202':
+          {
+            description: Import analyzed.,
+            content:
+              {
+                application/json:
+                  { schema: { $ref: '#/components/schemas/ImportJob' } },
+              },
+          }
+        '401':
+          {
+            description: Unauthorized.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '403':
+          {
+            description: Forbidden.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '409':
+          {
+            description: Conflict.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '422':
+          {
+            description: Invalid or unsupported import.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '500':
+          {
+            description: Internal failure.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+      x-idempotency-required: true
+  /v1/import-jobs/{importJobId}:
+    get:
+      operationId: getImportJob
+      tags: [Imports]
+      summary: Get an import analysis
+      parameters:
+        - {
+            name: importJobId,
+            in: path,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+        - {
+            name: X-Workspace-Id,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+      responses:
+        '400':
+          {
+            description: Malformed request.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '200':
+          {
+            description: Import job.,
+            content:
+              {
+                application/json:
+                  { schema: { $ref: '#/components/schemas/ImportJob' } },
+              },
+          }
+        '401':
+          {
+            description: Unauthorized.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '403':
+          {
+            description: Forbidden.,
+            content:
+              {
+                application/problem+json:
+                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+              },
+          }
+        '404':
+          {
+            description: Import job not found.,
             content:
               {
                 application/problem+json:
