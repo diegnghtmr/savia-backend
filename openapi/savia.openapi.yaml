@@ -1449,6 +1449,94 @@ components:
             - 'null'
           format: date-time
       additionalProperties: false
+    Fund:
+      type: object
+      required:
+        - id
+        - name
+        - currency
+        - targetAmount
+        - currentAmount
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        targetAmount:
+          $ref: '#/components/schemas/Money'
+        currentAmount:
+          $ref: '#/components/schemas/Money'
+        targetDate:
+          type:
+            - string
+            - 'null'
+          format: date
+        linkedAccountId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        recommendedMonthlyContribution:
+          $ref: '#/components/schemas/Money'
+        status:
+          type: string
+          enum:
+            - active
+            - completed
+            - paused
+            - archived
+      additionalProperties: false
+    CreateFundRequest:
+      type: object
+      required:
+        - name
+        - currency
+        - targetAmount
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        targetAmount:
+          $ref: '#/components/schemas/Money'
+        targetDate:
+          type:
+            - string
+            - 'null'
+          format: date
+        linkedAccountId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+      additionalProperties: false
+    CreateFundContributionRequest:
+      type: object
+      required:
+        - accountId
+        - amount
+        - occurredAt
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        amount:
+          $ref: '#/components/schemas/Money'
+        occurredAt:
+          type: string
+          format: date-time
+        notes:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+      additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -5083,6 +5171,185 @@ paths:
           requiresApproval: true,
           requiredScopes: [budgets:write],
         }
+  /v1/funds:
+    get:
+      operationId: listFunds
+      summary: List sinking funds
+      tags: [Funds]
+      parameters:
+        - {
+            name: X-Workspace-Id,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 200 },
+          }
+      responses:
+        '200':
+          description: Fund page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pageInfo]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Fund' }
+                  pageInfo: { $ref: '#/components/schemas/PageInfo' }
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+    post:
+      operationId: createFund
+      summary: Create sinking fund
+      tags: [Funds]
+      parameters:
+        - {
+            name: X-Workspace-Id,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+        - {
+            name: Idempotency-Key,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+      requestBody:
+        {
+          required: true,
+          content:
+            {
+              application/json:
+                { schema: { $ref: '#/components/schemas/CreateFundRequest' } },
+            },
+        }
+      responses:
+        '201':
+          description: Fund created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Fund' }
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '422':
+          description: Unprocessable entity.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+      x-savia-mcp-tool:
+        {
+          name: create_sinking_fund,
+          riskClass: low_risk_write,
+          requiresApproval: true,
+          requiredScopes: [budgets:write],
+        }
+      x-idempotency-required: true
+  /v1/funds/{fundId}/contributions:
+    parameters:
+      - {
+          name: fundId,
+          in: path,
+          required: true,
+          schema: { type: string, format: uuid },
+        }
+      - {
+          name: X-Workspace-Id,
+          in: header,
+          required: true,
+          schema: { type: string, format: uuid },
+        }
+    post:
+      operationId: contributeToFund
+      summary: Contribute to sinking fund
+      tags: [Funds]
+      parameters:
+        - {
+            name: Idempotency-Key,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+      requestBody:
+        {
+          required: true,
+          content:
+            {
+              application/json:
+                {
+                  schema:
+                    {
+                      $ref: '#/components/schemas/CreateFundContributionRequest',
+                    },
+                },
+            },
+        }
+      responses:
+        '201':
+          description: Contribution recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '404':
+          description: Not found.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '422':
+          description: Unprocessable entity.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+      x-savia-mcp-tool:
+        {
+          name: contribute_to_fund,
+          riskClass: financial_write,
+          requiresApproval: true,
+          requiredScopes: [transactions:write, budgets:write],
+        }
+      x-idempotency-required: true
   /v1/jobs/{jobId}:
     get:
       operationId: getJob
