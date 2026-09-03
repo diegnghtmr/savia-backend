@@ -205,6 +205,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       const budgetTrigRes = await admin.query<{
         tgname: string;
         tgtype: number;
+        tgenabled: string;
         proname: string;
         prosecdef: boolean;
         proowner: string;
@@ -212,6 +213,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       }>(
         `select t.tgname,
                 t.tgtype,
+                t.tgenabled,
                 p.proname::text as proname,
                 p.prosecdef,
                 p.proowner::regrole::text as proowner,
@@ -227,11 +229,12 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       expect(bTrig.prosecdef).toBe(true);
       expect(bTrig.proowner).toBe('savia_elevated');
       expect(bTrig.proconfig).toEqual(['search_path=pg_catalog, public']);
-      // BEFORE (1) + ROW (2) + INSERT (4) + UPDATE (16) = 23
-      expect(bTrig.tgtype & 1).toBe(1); // BEFORE
-      expect(bTrig.tgtype & 2).toBe(2); // ROW
-      expect(bTrig.tgtype & 4).toBe(4); // INSERT
-      expect(bTrig.tgtype & 16).toBe(16); // UPDATE
+      // tgenabled: 'O' = origin/local (enabled). Ensures the trigger is active and not disabled ('D').
+      expect(bTrig.tgenabled).toBe('O');
+      // Exact tgtype mask: ROW (1) + BEFORE (2) + INSERT (4) + UPDATE (16) = 23
+      // Explicitly verifies absence of DELETE (8) and TRUNCATE (32).
+      // A bitwise AND check (& 1, & 2, & 4, & 16) would silently pass an expanded mask (e.g. tgtype = 31 with OR DELETE).
+      expect(bTrig.tgtype).toBe(23);
 
       const budgetColsRes = await admin.query<{ col_name: string }>(
         `select a.attname::text as col_name
@@ -258,6 +261,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       const accBudgetTrigRes = await admin.query<{
         tgname: string;
         tgtype: number;
+        tgenabled: string;
         proname: string;
         prosecdef: boolean;
         proowner: string;
@@ -265,6 +269,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       }>(
         `select t.tgname,
                 t.tgtype,
+                t.tgenabled,
                 p.proname::text as proname,
                 p.prosecdef,
                 p.proowner::regrole::text as proowner,
@@ -280,11 +285,12 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       expect(abTrig.prosecdef).toBe(true);
       expect(abTrig.proowner).toBe('savia_elevated');
       expect(abTrig.proconfig).toEqual(['search_path=pg_catalog, public']);
-      // BEFORE (1) + ROW (2) + INSERT (4) + UPDATE (16) = 23
-      expect(abTrig.tgtype & 1).toBe(1); // BEFORE
-      expect(abTrig.tgtype & 2).toBe(2); // ROW
-      expect(abTrig.tgtype & 4).toBe(4); // INSERT
-      expect(abTrig.tgtype & 16).toBe(16); // UPDATE
+      // tgenabled: 'O' = origin/local (enabled). Ensures the trigger is active and not disabled ('D').
+      expect(abTrig.tgenabled).toBe('O');
+      // Exact tgtype mask: ROW (1) + BEFORE (2) + INSERT (4) + UPDATE (16) = 23
+      // Explicitly verifies absence of DELETE (8) and TRUNCATE (32).
+      // A bitwise AND check (& 1, & 2, & 4, & 16) would silently pass an expanded mask (e.g. tgtype = 31 with OR DELETE).
+      expect(abTrig.tgtype).toBe(23);
 
       const accBudgetColsRes = await admin.query<{ col_name: string }>(
         `select a.attname::text as col_name
