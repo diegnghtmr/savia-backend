@@ -186,7 +186,9 @@ describe('budget allocations against disposable PostgreSQL', () => {
   });
   it('5 increments version exactly once', async () => {
     const budget = await create();
-    expect((await put(budget.id, { allocations: [] })).json().version).toBe(2);
+    const response = await put(budget.id, { allocations: [] });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().version).toBe(2);
     expect(
       (
         await f.admin.query('select version from public.budgets where id=$1', [
@@ -258,10 +260,18 @@ describe('budget allocations against disposable PostgreSQL', () => {
   });
   it('9 rejects duplicate categories', async () => {
     const budget = await create();
+    const response = await put(budget.id, {
+      allocations: [allocation(), allocation()],
+    });
+    expect(response.statusCode).toBe(422);
     expect(
-      (await put(budget.id, { allocations: [allocation(), allocation()] }))
-        .statusCode,
-    ).toBe(422);
+      (
+        await f.admin.query(
+          'select 1 from public.budget_allocations where budget_id=$1',
+          [budget.id],
+        )
+      ).rows,
+    ).toHaveLength(0);
   });
   it('10 rejects unknown and real foreign categories', async () => {
     const budget = await create();
@@ -342,6 +352,14 @@ describe('budget allocations against disposable PostgreSQL', () => {
     expect(response.json().allocations[0].rolloverTargetId).toBe(
       IDS.statusCategory,
     );
+    expect(
+      (
+        await f.admin.query(
+          'select rollover_target_id::text from public.budget_allocations where budget_id=$1',
+          [budget.id],
+        )
+      ).rows,
+    ).toEqual([{ rollover_target_id: IDS.statusCategory }]);
   });
   it('15 enforces the allocation count limit and accepts exactly the limit', async () => {
     const budget = await create();
@@ -386,14 +404,31 @@ describe('budget allocations against disposable PostgreSQL', () => {
   });
   it('18 honors If-Match semantics', async () => {
     const budget = await create();
+    const initial = await put(budget.id, {
+      allocations: [allocation()],
+    });
+    expect(initial.statusCode).toBe(200);
+    const stale = await put(
+      budget.id,
+      { allocations: [] },
+      { 'if-match': '"1"' },
+    );
+    expect(stale.statusCode).toBe(412);
     expect(
-      (await put(budget.id, { allocations: [] }, { 'if-match': '"1"' }))
-        .statusCode,
-    ).toBe(200);
+      (
+        await f.admin.query(
+          'select planned_minor::text from public.budget_allocations where budget_id=$1',
+          [budget.id],
+        )
+      ).rows,
+    ).toEqual([{ planned_minor: '1000' }]);
     expect(
-      (await put(budget.id, { allocations: [] }, { 'if-match': '"1"' }))
-        .statusCode,
-    ).toBe(412);
+      (
+        await f.admin.query('select version from public.budgets where id=$1', [
+          budget.id,
+        ])
+      ).rows[0].version,
+    ).toBe(2);
     expect(
       (await put(budget.id, { allocations: [] }, { 'if-match': 'bad' }))
         .statusCode,
@@ -439,6 +474,14 @@ describe('budget allocations against disposable PostgreSQL', () => {
         ])
       ).rows[0].version,
     ).toBe(2);
+    expect(
+      (
+        await f.admin.query(
+          'select category_id::text, planned_minor::text from public.budget_allocations where budget_id=$1',
+          [budget.id],
+        )
+      ).rows,
+    ).toEqual([{ category_id: IDS.category, planned_minor: '1000' }]);
   });
   it('22 conflicts on a changed body or precondition', async () => {
     const budget = await create();
@@ -615,5 +658,106 @@ describe('budget allocations against disposable PostgreSQL', () => {
     } finally {
       client.release();
     }
+  });
+
+  it('27 rejects an empty planned currency without deleting stored allocations', async () => {
+    const budget = await create();
+    await f.admin.query(
+      'insert into public.budget_allocations(workspace_id,budget_id,category_id,planned_minor) values($1,$2,$3,77)',
+      [IDS.workspace, budget.id, IDS.category],
+    );
+    const response = await put(budget.id, {
+      allocations: [
+        { ...allocation(), planned: { amountMinor: '1', currency: '' } },
+      ],
+    });
+    expect(response.statusCode).toBe(422);
+    expect(
+      (
+        await f.admin.query(
+          'select category_id::text, planned_minor::text from public.budget_allocations where budget_id=$1',
+          [budget.id],
+        )
+      ).rows,
+    ).toEqual([{ category_id: IDS.category, planned_minor: '77' }]);
+  });
+
+  it('28 rejects an empty planned amount without deleting stored allocations', async () => {
+    const budget = await create();
+    await f.admin.query(
+      'insert into public.budget_allocations(workspace_id,budget_id,category_id,planned_minor) values($1,$2,$3,77)',
+      [IDS.workspace, budget.id, IDS.category],
+    );
+    const response = await put(budget.id, {
+      allocations: [
+        { ...allocation(), planned: { amountMinor: '', currency: 'USD' } },
+      ],
+    });
+    expect(response.statusCode).toBe(422);
+    expect(
+      (
+        await f.admin.query(
+          'select planned_minor::text from public.budget_allocations where budget_id=$1',
+          [budget.id],
+        )
+      ).rows,
+    ).toEqual([{ planned_minor: '77' }]);
+  });
+
+  it.each([
+    ['unsupported currency', 'XYZ'],
+    ['non-string currency', 123],
+    ['fractional amount', '1.5'],
+    ['non-numeric amount', 'abc'],
+  ])(
+    '29 rejects %s without deleting stored allocations',
+    async (_name, value) => {
+      const budget = await create();
+      await f.admin.query(
+        'insert into public.budget_allocations(workspace_id,budget_id,category_id,planned_minor) values($1,$2,$3,77)',
+        [IDS.workspace, budget.id, IDS.category],
+      );
+      const planned =
+        typeof value === 'number'
+          ? { amountMinor: '1', currency: value }
+          : value === '1.5' || value === 'abc'
+            ? { amountMinor: value, currency: 'USD' }
+            : { amountMinor: '1', currency: value };
+      const response = await put(budget.id, {
+        allocations: [{ ...allocation(), planned }],
+      });
+      expect(response.statusCode).toBe(422);
+      expect(
+        (
+          await f.admin.query(
+            'select planned_minor::text from public.budget_allocations where budget_id=$1',
+            [budget.id],
+          )
+        ).rows,
+      ).toEqual([{ planned_minor: '77' }]);
+    },
+  );
+
+  it('30 emits all allocations in a valid multi-allocation request', async () => {
+    const budget = await create();
+    const response = await put(budget.id, {
+      allocations: [
+        allocation(IDS.category, '1000'),
+        allocation(IDS.statusCategory, '2000'),
+      ],
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().allocations).toHaveLength(2);
+    expect(
+      (
+        await f.admin.query(
+          'select category_id::text, planned_minor::text from public.budget_allocations where budget_id=$1 order by category_id',
+          [budget.id],
+        )
+      ).rows,
+    ).toEqual([
+      { category_id: IDS.category, planned_minor: '1000' },
+      { category_id: IDS.statusCategory, planned_minor: '2000' },
+    ]);
   });
 });

@@ -1,5 +1,6 @@
 import {
   add,
+  currencyValue,
   sortViolations,
   type FieldViolation,
 } from '../platform/field-validation.js';
@@ -256,35 +257,60 @@ export function updateBudgetAllocationsCommand(
               'not-allowed',
               'is not allowed',
             );
-        if (
-          typeof m.amountMinor !== 'string' ||
-          !INTEGER.test(m.amountMinor.trim())
-        )
+        if (m.amountMinor === undefined)
           add(
             violations,
             `${field}.planned.amountMinor`,
-            'invalid-format',
-            'must be an integer minor-unit amount string',
-          );
-        else if (
-          BigInt(m.amountMinor.trim()) < INT64_MIN ||
-          BigInt(m.amountMinor.trim()) > INT64_MAX
-        )
-          add(
-            violations,
-            `${field}.planned.amountMinor`,
-            'out-of-range',
-            'must fit within signed 64-bit integer range',
-          );
-        else amountMinor = m.amountMinor.trim();
-        if (typeof m.currency !== 'string')
-          add(
-            violations,
-            `${field}.planned.currency`,
             'required',
-            'must be a currency',
+            'must be a non-empty string',
           );
-        else currency = m.currency.toUpperCase();
+        else if (typeof m.amountMinor !== 'string')
+          add(
+            violations,
+            `${field}.planned.amountMinor`,
+            'invalid-type',
+            'must be a string',
+          );
+        else if (m.amountMinor.includes('\0'))
+          add(
+            violations,
+            `${field}.planned.amountMinor`,
+            'invalid-characters',
+            'must not contain null characters',
+          );
+        else {
+          const trimmed = m.amountMinor.trim();
+          if (!trimmed)
+            add(
+              violations,
+              `${field}.planned.amountMinor`,
+              'required',
+              'must be a non-empty string',
+            );
+          else if (!INTEGER.test(trimmed))
+            add(
+              violations,
+              `${field}.planned.amountMinor`,
+              'invalid-format',
+              'must be an integer minor-unit amount string',
+            );
+          else {
+            const value = BigInt(trimmed);
+            if (value < INT64_MIN || value > INT64_MAX)
+              add(
+                violations,
+                `${field}.planned.amountMinor`,
+                'invalid-range',
+                'must be within 64-bit signed integer range',
+              );
+            else amountMinor = trimmed;
+          }
+        }
+        currency = currencyValue(
+          m.currency,
+          `${field}.planned.currency`,
+          violations,
+        );
       }
       const policy = item.rolloverPolicy;
       const policies = Object.values(ROLLOVER_POLICIES);
@@ -340,9 +366,7 @@ export function updateBudgetAllocationsCommand(
         typeof policy === 'string' &&
         policies.includes(policy as never) &&
         typeof money === 'object' &&
-        money !== null &&
-        amountMinor &&
-        currency
+        money !== null
       )
         allocations.push({
           categoryId,
