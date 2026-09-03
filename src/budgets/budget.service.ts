@@ -16,6 +16,15 @@ import {
 } from './budget.port.js';
 import type { IfMatchParse } from '../platform/if-match.js';
 import { MAX_BUDGET_ALLOCATION_COUNT } from './budget-limits.js';
+
+function canonicalIfMatch(ifMatch: IfMatchParse): unknown {
+  if (ifMatch.kind !== 'versions') return { kind: ifMatch.kind };
+  return {
+    kind: ifMatch.kind,
+    versions: [...new Set(ifMatch.versions)].sort((a, b) => a - b),
+  };
+}
+
 export interface BudgetTransaction {
   run<T>(
     subject: string,
@@ -199,7 +208,11 @@ export class BudgetService implements BudgetsPort {
     ifMatch: IfMatchParse,
   ): Promise<BudgetUpdateOutcome> {
     const route = 'PATCH /v1/budgets/{budgetId}';
-    const fingerprint = computeRequestFingerprint({ budgetId: id, ...command });
+    const fingerprint = computeRequestFingerprint({
+      budgetId: id,
+      ...command,
+      ifMatch: canonicalIfMatch(ifMatch),
+    });
     try {
       return await this.tx.run(subject, async (client) => {
         const role = await this.store.readActiveRole(client, workspaceId);

@@ -154,7 +154,7 @@ describe('budget update against disposable PostgreSQL', () => {
       )
     ).rows[0];
     expect(row.version).toBe(2);
-    expect(new Date(row.updated_at).getTime()).toBeGreaterThanOrEqual(
+    expect(new Date(row.updated_at).getTime()).toBeGreaterThan(
       before.getTime(),
     );
   });
@@ -359,6 +359,119 @@ describe('budget update against disposable PostgreSQL', () => {
         })
       ).statusCode,
     ).toBe(409);
+  });
+
+  it('25 rejects the same idempotency key with a different If-Match', async () => {
+    const budget = await create();
+    const key = nextKey();
+    const first = await app.inject({
+      method: 'PATCH',
+      url: `/v1/budgets/${budget.id}`,
+      headers: { ...headers(key), 'if-match': '"1"' },
+      payload: JSON.stringify({ name: 'Stored' }),
+    });
+    const second = await app.inject({
+      method: 'PATCH',
+      url: `/v1/budgets/${budget.id}`,
+      headers: { ...headers(key), 'if-match': '"999"' },
+      payload: JSON.stringify({ name: 'Stored' }),
+    });
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(409);
+  });
+
+  it('26 replays the same If-Match response and increments only once', async () => {
+    const budget = await create();
+    const key = nextKey();
+    const first = await app.inject({
+      method: 'PATCH',
+      url: `/v1/budgets/${budget.id}`,
+      headers: { ...headers(key), 'if-match': '"1"' },
+      payload: JSON.stringify({ name: 'Stored' }),
+    });
+    const second = await app.inject({
+      method: 'PATCH',
+      url: `/v1/budgets/${budget.id}`,
+      headers: { ...headers(key), 'if-match': '"1"' },
+      payload: JSON.stringify({ name: 'Stored' }),
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(
+      (
+        await f.admin.query('select version from public.budgets where id=$1', [
+          budget.id,
+        ])
+      ).rows[0].version,
+    ).toBe(2);
+  });
+
+  it('27 replays the original response after an unrelated update', async () => {
+    const budget = await create();
+    const key = nextKey();
+    const first = await app.inject({
+      method: 'PATCH',
+      url: `/v1/budgets/${budget.id}`,
+      headers: { ...headers(key), 'if-match': '"1"' },
+      payload: JSON.stringify({ name: 'Stored' }),
+    });
+    await update(budget.id, { name: 'Current' });
+    const replay = await app.inject({
+      method: 'PATCH',
+      url: `/v1/budgets/${budget.id}`,
+      headers: { ...headers(key), 'if-match': '"1"' },
+      payload: JSON.stringify({ name: 'Stored' }),
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toEqual(first.json());
+    expect(replay.json().name).toBe('Stored');
+    expect(replay.json().version).toBe(2);
+  });
+
+  it('28 treats absent and star If-Match as different conditions', async () => {
+    const budget = await create();
+    const key = nextKey();
+    const first = await app.inject({
+      method: 'PATCH',
+      url: `/v1/budgets/${budget.id}`,
+      headers: headers(key),
+      payload: JSON.stringify({ name: 'Absent' }),
+    });
+    const second = await app.inject({
+      method: 'PATCH',
+      url: `/v1/budgets/${budget.id}`,
+      headers: { ...headers(key), 'if-match': '*' },
+      payload: JSON.stringify({ name: 'Absent' }),
+    });
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(409);
+  });
+
+  it('29 canonicalizes version-list order and duplicates', async () => {
+    const budget = await create();
+    const key = nextKey();
+    const first = await app.inject({
+      method: 'PATCH',
+      url: `/v1/budgets/${budget.id}`,
+      headers: { ...headers(key), 'if-match': '"1", "2"' },
+      payload: JSON.stringify({ name: 'Canonical' }),
+    });
+    const second = await app.inject({
+      method: 'PATCH',
+      url: `/v1/budgets/${budget.id}`,
+      headers: { ...headers(key), 'if-match': '"2", "1", "1"' },
+      payload: JSON.stringify({ name: 'Canonical' }),
+    });
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(
+      (
+        await f.admin.query('select version from public.budgets where id=$1', [
+          budget.id,
+        ])
+      ).rows[0].version,
+    ).toBe(2);
   });
 
   it('20 allows exactly one of two concurrent matching If-Match updates', async () => {
