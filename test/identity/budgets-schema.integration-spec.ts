@@ -1,4 +1,4 @@
-// Migrations under test: 202609020001_budgets.sql, 202609020002_budgets_created_at_index.sql
+// Migrations under test: 202609020001_budgets.sql, 202609020002_budgets_created_at_index.sql, 202609020004_budgets_update.sql
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { fixture, IDS, command } from '../budgets/budget-fixtures.js';
@@ -295,6 +295,7 @@ describe('budgets schema', () => {
       'budget_allocations.application_reads_workspace_budget_allocations.SELECT',
       'budgets.application_inserts_workspace_budgets.INSERT',
       'budgets.application_reads_workspace_budgets.SELECT',
+      'budgets.application_updates_workspace_budgets.UPDATE',
       'budgets.elevated_reads_budgets.SELECT',
     ]);
     expect(
@@ -338,6 +339,14 @@ describe('budgets schema', () => {
       },
       {
         tablename: 'budgets',
+        policyname: 'application_updates_workspace_budgets',
+        cmd: 'UPDATE',
+        qual: "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text]))",
+        with_check:
+          "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text]))",
+      },
+      {
+        tablename: 'budgets',
         policyname: 'elevated_reads_budgets',
         cmd: 'SELECT',
         qual: 'true',
@@ -370,16 +379,26 @@ describe('budgets schema', () => {
       'budgets.version',
       'budgets.created_by',
     ]);
+    const expectedUpdatable = new Set([
+      'budgets.name',
+      'budgets.method',
+      'budgets.version',
+      'budgets.updated_at',
+    ]);
     expect(grants.rows.every((x) => x.selectable)).toBe(true);
-    expect(grants.rows.every((x) => !x.updatable && !x.referenceable)).toBe(
-      true,
-    );
+    expect(grants.rows.every((x) => !x.referenceable)).toBe(true);
     expect(
       grants.rows
         .filter((x) => x.insertable)
         .map((x) => `${x.table_name}.${x.column_name}`)
         .sort(),
     ).toEqual([...expectedInsertable].sort());
+    expect(
+      grants.rows
+        .filter((x) => x.updatable)
+        .map((x) => `${x.table_name}.${x.column_name}`)
+        .sort(),
+    ).toEqual([...expectedUpdatable].sort());
     const tablePrivileges = await pool.query<{
       table_name: string;
       selectable: boolean;

@@ -9,9 +9,12 @@ import {
   type BudgetListOutcome,
   type BudgetListQuery,
   type BudgetStore,
+  type BudgetUpdateOutcome,
   type BudgetsPort,
   type CreateBudgetRequest,
+  type UpdateBudgetRequest,
 } from './budget.port.js';
+import type { IfMatchParse } from '../platform/if-match.js';
 import { MAX_BUDGET_ALLOCATION_COUNT } from './budget-limits.js';
 export interface BudgetTransaction {
   run<T>(
@@ -32,6 +35,17 @@ export class BudgetCreateRollbackError extends Error {
   ) {
     super('Budget create transaction must be rolled back.');
     this.name = 'BudgetCreateRollbackError';
+  }
+}
+export class BudgetUpdateRollbackError extends Error {
+  public constructor(
+    public readonly outcome: 'replayed' | 'conflict',
+    public readonly status?: number,
+    public readonly etag?: string | null,
+    public readonly body?: unknown,
+  ) {
+    super('Budget update transaction must be rolled back.');
+    this.name = 'BudgetUpdateRollbackError';
   }
 }
 export class BudgetService implements BudgetsPort {
@@ -175,6 +189,119 @@ export class BudgetService implements BudgetsPort {
         ? { kind: BUDGET_OUTCOMES.FOUND, budget }
         : { kind: BUDGET_OUTCOMES.NOT_FOUND };
     });
+  }
+  public async updateBudget(
+    subject: string,
+    workspaceId: string,
+    id: string,
+    command: UpdateBudgetRequest,
+    key: string,
+    ifMatch: IfMatchParse,
+  ): Promise<BudgetUpdateOutcome> {
+    const route = 'PATCH /v1/budgets/{budgetId}';
+    const fingerprint = computeRequestFingerprint({ budgetId: id, ...command });
+    try {
+      return await this.tx.run(subject, async (client) => {
+        const role = await this.store.readActiveRole(client, workspaceId);
+        if (!['owner', 'administrator', 'editor'].includes(role ?? ''))
+          return { kind: BUDGET_OUTCOMES.FORBIDDEN };
+
+        const existing = await this.idempotency.read(
+          client,
+          subject,
+          route,
+          key,
+          workspaceId,
+        );
+        if (existing)
+          return existing.requestFingerprint === fingerprint
+            ? {
+                kind: BUDGET_OUTCOMES.REPLAYED,
+                status: existing.responseStatus,
+                etag: existing.responseEtag,
+                body: existing.responseBody,
+              }
+            : { kind: BUDGET_OUTCOMES.CONFLICT };
+
+        // Existence and workspace containment resolved FIRST (RULING 125)
+        const existingBudget = await this.store.findBudget(
+          client,
+          workspaceId,
+          id,
+        );
+        if (!existingBudget) return { kind: BUDGET_OUTCOMES.NOT_FOUND };
+
+        // Precondition check (RULING 124)
+        if (ifMatch.kind === 'versions') {
+          if (!ifMatch.versions.includes(existingBudget.version)) {
+            return { kind: BUDGET_OUTCOMES.PRECONDITION_FAILED };
+          }
+        }
+
+        const expectedVersion =
+          ifMatch.kind === 'versions' ? existingBudget.version : undefined;
+
+        const updated = await this.store.updateBudget(
+          client,
+          workspaceId,
+          id,
+          command,
+          expectedVersion,
+        );
+        if (!updated) {
+          return { kind: BUDGET_OUTCOMES.PRECONDITION_FAILED };
+        }
+
+        const written = await this.idempotency.write(
+          client,
+          subject,
+          route,
+          key,
+          fingerprint,
+          200,
+          null,
+          updated,
+          workspaceId,
+        );
+        if (!written) {
+          const reread = await this.idempotency.read(
+            client,
+            subject,
+            route,
+            key,
+            workspaceId,
+          );
+          if (reread) {
+            if (reread.requestFingerprint === fingerprint)
+              throw new BudgetUpdateRollbackError(
+                'replayed',
+                reread.responseStatus,
+                reread.responseEtag,
+                reread.responseBody,
+              );
+            throw new BudgetUpdateRollbackError('conflict');
+          }
+          throw new Error('Budget idempotency record could not be reread.');
+        }
+
+        return {
+          kind: BUDGET_OUTCOMES.UPDATED,
+          budget: updated,
+        };
+      });
+    } catch (error) {
+      if (error instanceof BudgetUpdateRollbackError) {
+        return error.outcome === 'replayed'
+          ? {
+              kind: BUDGET_OUTCOMES.REPLAYED,
+              status: error.status ?? 200,
+              etag: error.etag ?? null,
+              body: error.body,
+            }
+          : { kind: BUDGET_OUTCOMES.CONFLICT };
+      }
+      throw error;
+    }
   }
   public listBudgets(
     subject: string,

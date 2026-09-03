@@ -11,6 +11,7 @@ import type {
   BudgetListQuery,
   BudgetStore,
   CreateBudgetRequest,
+  UpdateBudgetRequest,
   RolloverPolicy,
 } from './budget.port.js';
 export const BUDGET_ALLOCATION_PARAMETERS_PER_ROW = 6;
@@ -83,6 +84,45 @@ export class PostgresBudgetAdapter implements BudgetStore {
     );
     const row = r.rows[0];
     if (!row) return undefined;
+    return map(row, await this.readAllocations(c, w, id));
+  }
+  public async updateBudget(
+    c: TransactionClient,
+    w: string,
+    id: string,
+    x: UpdateBudgetRequest,
+    expectedVersion?: number,
+  ): Promise<Budget | undefined> {
+    const sets: string[] = [];
+    const params: unknown[] = [w, id];
+    if (x.name !== undefined) {
+      params.push(x.name);
+      sets.push(`name = $${params.length}`);
+    }
+    if (x.method !== undefined) {
+      params.push(x.method);
+      sets.push(`method = $${params.length}`);
+    }
+    sets.push('version = version + 1', 'updated_at = now()');
+
+    let sql = `update public.budgets set ${sets.join(', ')} where workspace_id = $1::uuid and id = $2::uuid`;
+    if (expectedVersion !== undefined) {
+      params.push(expectedVersion);
+      sql += ` and version = $${params.length}::integer`;
+    }
+    sql += ` returning id::text,name,method,to_char(period_start,'YYYY-MM-DD') as "periodStart",to_char(period_end,'YYYY-MM-DD') as "periodEnd",currency,version`;
+
+    const r = await c.query<Row>(sql, params);
+    if (r.rowCount !== 1) {
+      if (r.rowCount === 0 && expectedVersion !== undefined) {
+        return undefined;
+      }
+      throw new Error(
+        `Budget update affected ${r.rowCount ?? 'an unknown number of'} rows`,
+      );
+    }
+    const row = r.rows[0];
+    if (!row) throw new Error('Budget update returned no row.');
     return map(row, await this.readAllocations(c, w, id));
   }
   private async readAllocations(
