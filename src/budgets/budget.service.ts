@@ -155,6 +155,9 @@ export class BudgetService implements BudgetsPort {
             }
           : { kind: BUDGET_OUTCOMES.CONFLICT };
       }
+      if (isMissingExchangeRateViolation(error)) {
+        return { kind: BUDGET_OUTCOMES.CURRENCY_UNSUPPORTED };
+      }
       throw error;
     }
   }
@@ -208,4 +211,25 @@ export class BudgetService implements BudgetsPort {
       };
     });
   }
+}
+
+/**
+ * The budget currency invariant lives in the database:
+ * - 202609020003_budget_currency_invariant.sql: budgets_currency_requires_account_exchange_rates
+ * The trigger raises check_violation carrying this explicit constraint name.
+ * Matching on this exact name ensures unrelated check violations on public.budgets
+ * are not mislabeled as currency problems.
+ */
+function isMissingExchangeRateViolation(error: unknown): boolean {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    !('code' in error) ||
+    String((error as { code: unknown }).code) !== '23514' ||
+    !('constraint' in error)
+  ) {
+    return false;
+  }
+  const constraint = String((error as { constraint: unknown }).constraint);
+  return constraint === 'budgets_currency_requires_account_exchange_rates';
 }

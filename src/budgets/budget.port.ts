@@ -107,6 +107,7 @@ export const BUDGET_OUTCOMES = {
   TOO_MANY_ALLOCATIONS: 'too-many-allocations',
   FOUND: 'found',
   NOT_FOUND: 'not-found',
+  CURRENCY_UNSUPPORTED: 'currency_unsupported',
 } as const;
 export type BudgetCreateOutcome =
   | { readonly kind: typeof BUDGET_OUTCOMES.CREATED; readonly budget: Budget }
@@ -121,7 +122,8 @@ export type BudgetCreateOutcome =
         | typeof BUDGET_OUTCOMES.FORBIDDEN
         | typeof BUDGET_OUTCOMES.CONFLICT
         | typeof BUDGET_OUTCOMES.INVALID_SOURCE
-        | typeof BUDGET_OUTCOMES.TOO_MANY_ALLOCATIONS;
+        | typeof BUDGET_OUTCOMES.TOO_MANY_ALLOCATIONS
+        | typeof BUDGET_OUTCOMES.CURRENCY_UNSUPPORTED;
     };
 export type BudgetGetOutcome =
   | { readonly kind: typeof BUDGET_OUTCOMES.FOUND; readonly budget: Budget }

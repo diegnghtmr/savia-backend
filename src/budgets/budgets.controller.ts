@@ -97,6 +97,12 @@ export class BudgetsController {
         title: 'Budget allocation limit exceeded',
         status: 422,
       });
+    if (o.kind === BUDGET_OUTCOMES.CURRENCY_UNSUPPORTED)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.ACCOUNT_CURRENCY_UNSUPPORTED,
+        title: 'Account currency unsupported',
+        status: 422,
+      });
     if (o.kind === BUDGET_OUTCOMES.REPLAYED) {
       let r = reply.status(o.status);
       if (o.etag) r = r.header('ETag', o.etag);

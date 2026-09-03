@@ -15,6 +15,7 @@ import { MAX_BUDGET_ALLOCATION_COUNT } from '../../src/budgets/budget-limits.js'
 import { BudgetsModule } from '../../src/budgets/budgets.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { PROBLEM_TYPES } from '../../src/platform/problem-details.js';
 import { fixture, IDS, command } from './budget-fixtures.js';
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -922,5 +923,82 @@ describe('budget creation against disposable PostgreSQL', () => {
       headers: { ...baseHeaders, authorization: 'Bearer other-token' },
     });
     expect(response.statusCode).toBe(403);
+  });
+  it('21 answers 422 with account-currency-unsupported when budget currency lacks rate to existing account', async () => {
+    const wsId = '00000000-0000-0000-0000-000000006980';
+    const accId = '00000000-0000-0000-0000-000000006981';
+    await f.admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency, created_by) values ($1, 'H2 Mirror WS', 'shared', 'USD', $2)`,
+      [wsId, IDS.user],
+    );
+    await f.admin.query(
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status) values ($1, $2, 'owner', 'active')`,
+      [wsId, IDS.user],
+    );
+    await f.admin.query(
+      `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by) values ($1, 'EUR', 'USD', 1.1, '2026-01-01', 'test', $2)`,
+      [wsId, IDS.user],
+    );
+    await f.admin.query(
+      `insert into public.accounts (id, workspace_id, name, type, currency, created_by) values ($1, $2, 'EUR Acc', 'checking', 'EUR', $3)`,
+      [accId, wsId, IDS.user],
+    );
+    // Bypassing intermediate workspace guard to simulate out-of-band base currency transition
+    await f.admin.query("set session_replication_role = 'replica'");
+    await f.admin.query(
+      `update public.workspaces set base_currency = 'COP' where id = $1`,
+      [wsId],
+    );
+    await f.admin.query("set session_replication_role = 'origin'");
+
+    try {
+      const response = await inject({
+        method: 'POST',
+        url: '/v1/budgets',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': wsId,
+          'idempotency-key': '00000000-0000-0000-0000-000000006982',
+          'content-type': 'application/json',
+        },
+        payload: JSON.stringify(command('Unrated EUR Budget')),
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(response.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      const body = JSON.parse(response.payload);
+      expect(body.type).toBe(PROBLEM_TYPES.ACCOUNT_CURRENCY_UNSUPPORTED);
+      expect(body.status).toBe(422);
+      expect(body.code).toBe('account-currency-unsupported');
+      expect(body.title).toBe('Account currency unsupported');
+    } finally {
+      await f.admin
+        .query('delete from public.budgets where workspace_id = $1::uuid', [
+          wsId,
+        ])
+        .catch(() => {});
+      await f.admin
+        .query('delete from public.accounts where workspace_id = $1::uuid', [
+          wsId,
+        ])
+        .catch(() => {});
+      await f.admin
+        .query(
+          'delete from public.exchange_rates where workspace_id = $1::uuid',
+          [wsId],
+        )
+        .catch(() => {});
+      await f.admin
+        .query(
+          'delete from public.workspace_memberships where workspace_id = $1::uuid',
+          [wsId],
+        )
+        .catch(() => {});
+      await f.admin
+        .query('delete from public.workspaces where id = $1::uuid', [wsId])
+        .catch(() => {});
+    }
   });
 });
