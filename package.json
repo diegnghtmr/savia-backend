@@ -72,6 +72,7 @@
     "test:integration:budgets-get": "bash scripts/run-disposable-database-suite.sh test/budgets/budgets-get.integration-spec.ts",
     "test:integration:budgets-list": "bash scripts/run-disposable-database-suite.sh test/budgets/budgets-list.integration-spec.ts",
     "test:integration:budgets-update": "bash scripts/run-disposable-database-suite.sh test/budgets/budgets-update.integration-spec.ts",
+    "test:integration:budgets-allocations": "bash scripts/run-disposable-database-suite.sh test/budgets/budgets-allocations.integration-spec.ts",
     "test:integration:exports-security": "bash scripts/run-disposable-database-suite.sh test/exports/export-security.integration-spec.ts",
     "test:integration:imports": "bash scripts/run-disposable-database-suite.sh test/imports/imports.integration-spec.ts",
     "test:integration:import-commit-rollback": "bash scripts/run-disposable-database-suite.sh test/imports/import-commit-rollback.integration-spec.ts",

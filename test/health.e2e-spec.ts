@@ -133,6 +133,7 @@ describe('health endpoint', () => {
       'GET /v1/budgets',
       'GET /v1/budgets/:budgetId',
       'PATCH /v1/budgets/:budgetId',
+      'PUT /v1/budgets/:budgetId/allocations',
     ]);
 
     await app.close();

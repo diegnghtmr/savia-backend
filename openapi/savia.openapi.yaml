@@ -1396,6 +1396,22 @@ components:
         method: { $ref: '#/components/schemas/BudgetMethod' }
       additionalProperties: false
       minProperties: 1
+    UpsertBudgetAllocationsRequest:
+      type: object
+      required: [allocations]
+      properties:
+        allocations:
+          type: array
+          items:
+            type: object
+            required: [categoryId, planned, rolloverPolicy]
+            properties:
+              categoryId: { type: string, format: uuid }
+              planned: { $ref: '#/components/schemas/Money' }
+              rolloverPolicy: { $ref: '#/components/schemas/RolloverPolicy' }
+              rolloverTargetId: { type: [string, 'null'], format: uuid }
+            additionalProperties: false
+      additionalProperties: false
     Reconciliation:
       type: object
       required:
@@ -5005,6 +5021,64 @@ paths:
       x-savia-mcp-tool:
         {
           name: update_budget,
+          riskClass: low_risk_write,
+          requiresApproval: true,
+          requiredScopes: [budgets:write],
+        }
+  /v1/budgets/{budgetId}/allocations:
+    parameters:
+      - {
+          name: budgetId,
+          in: path,
+          required: true,
+          schema: { type: string, format: uuid },
+        }
+      - {
+          name: X-Workspace-Id,
+          in: header,
+          required: true,
+          schema: { type: string, format: uuid },
+        }
+    put:
+      operationId: upsertBudgetAllocations
+      summary: Replace budget allocations
+      tags: [Budgets]
+      parameters:
+        - {
+            name: Idempotency-Key,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+        - {
+            name: If-Match,
+            in: header,
+            required: false,
+            schema: { type: string },
+          }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              { $ref: '#/components/schemas/UpsertBudgetAllocationsRequest' }
+      responses:
+        '200':
+          description: Budget with replaced allocations.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Budget' }
+        '400': { description: Malformed request. }
+        '401': { description: Unauthorized. }
+        '403': { description: Forbidden. }
+        '404': { description: Not found. }
+        '409': { description: Conflict. }
+        '412': { description: Precondition failed. }
+        '422': { description: Unprocessable entity. }
+        '500': { description: Internal failure. }
+      x-savia-mcp-tool:
+        {
+          name: update_budget_allocations,
           riskClass: low_risk_write,
           requiresApproval: true,
           requiredScopes: [budgets:write],
