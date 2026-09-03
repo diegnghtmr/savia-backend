@@ -415,7 +415,16 @@ describe('budget update against disposable PostgreSQL', () => {
       headers: { ...headers(key), 'if-match': '"1"' },
       payload: JSON.stringify({ name: 'Stored' }),
     });
-    await update(budget.id, { name: 'Current' });
+    const intervening = await update(budget.id, { name: 'Current' });
+    expect(intervening.statusCode).toBe(200);
+    expect(intervening.json()).toMatchObject({ name: 'Current', version: 3 });
+    const beforeReplay = (
+      await f.admin.query(
+        'select name,version from public.budgets where id=$1',
+        [budget.id],
+      )
+    ).rows[0];
+    expect(beforeReplay).toEqual({ name: 'Current', version: 3 });
     const replay = await app.inject({
       method: 'PATCH',
       url: `/v1/budgets/${budget.id}`,
@@ -426,6 +435,13 @@ describe('budget update against disposable PostgreSQL', () => {
     expect(replay.json()).toEqual(first.json());
     expect(replay.json().name).toBe('Stored');
     expect(replay.json().version).toBe(2);
+    const afterReplay = (
+      await f.admin.query(
+        'select name,version from public.budgets where id=$1',
+        [budget.id],
+      )
+    ).rows[0];
+    expect(afterReplay).toEqual({ name: 'Current', version: 3 });
   });
 
   it('28 treats absent and star If-Match as different conditions', async () => {
