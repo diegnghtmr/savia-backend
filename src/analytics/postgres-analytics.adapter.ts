@@ -108,7 +108,11 @@ where d.workspace_id = $1::uuid
    * Transaction type classification: income, expense, refund.
    * EXCLUDED from both: adjustment, debt_payment, fund_contribution.
    * EXCLUDED entirely: transfers (transfer postings carry a non-null transfer_id; postings checked for transfer_id is null).
-   * Pending or voided postings do NOT contribute to any aggregate.
+   * Posting status enforcement: at least one posting confirmed or reconciled,
+   * and no posting outside that set (not exists non-confirmed/non-reconciled).
+   * Note: mixed posting statuses are currently unreachable through any application write path
+   * because both legs are created and updated atomically; this pair of predicates is defence
+   * in depth, not a live bug fix.
    * expenses is reported as a POSITIVE magnitude even though underlying postings are negative.
    */
   public async readTransactionsInPeriod(
@@ -139,6 +143,13 @@ where t.workspace_id = $1::uuid
       and p.transaction_id = t.id
       and p.status in ('confirmed', 'reconciled')
       and p.transfer_id is null
+  )
+  and not exists (
+    select 1
+    from public.ledger_postings p2
+    where p2.workspace_id = t.workspace_id
+      and p2.transaction_id = t.id
+      and p2.status not in ('confirmed', 'reconciled')
   )
   and (t.occurred_at at time zone 'utc')::date >= $2::date
   and (t.occurred_at at time zone 'utc')::date <= $3::date
@@ -211,9 +222,11 @@ where workspace_id = $1::uuid
    * Reads debt payment costs (interest and fees) within the period.
    *
    * Predicate invariants:
-   * Both the transaction status AND the posting-status predicate are required.
-   * A pending or voided posting must not contribute. Omitting either has
-   * already caused a money defect in this repository.
+   * Both the transaction status AND the posting-status predicates are required:
+   * at least one posting confirmed or reconciled, and no posting outside that set.
+   * Note: mixed posting statuses are currently unreachable through any application write path
+   * because both legs are created and updated atomically; this pair of predicates is defence
+   * in depth, not a live bug fix.
    */
   public async readDebtPaymentCostsInPeriod(
     client: TransactionClient,
@@ -239,6 +252,12 @@ where dp.workspace_id = $1::uuid
     where p.workspace_id = dp.workspace_id
       and p.transaction_id = dp.transaction_id
       and p.status in ('confirmed', 'reconciled')
+  )
+  and not exists (
+    select 1 from public.ledger_postings p2
+    where p2.workspace_id = dp.workspace_id
+      and p2.transaction_id = dp.transaction_id
+      and p2.status not in ('confirmed', 'reconciled')
   )
   and (t.occurred_at at time zone 'utc')::date >= $2::date
   and (t.occurred_at at time zone 'utc')::date <= $3::date`;
