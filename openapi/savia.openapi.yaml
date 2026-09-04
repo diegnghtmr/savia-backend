@@ -1634,6 +1634,86 @@ components:
           type: string
           format: date-time
       additionalProperties: false
+    Uuid:
+      type: string
+      format: uuid
+    AnalyticsSummary:
+      type: object
+      required:
+        - periodStart
+        - periodEnd
+        - baseCurrency
+        - netWorth
+        - income
+        - expenses
+        - savingsCapacity
+      properties:
+        periodStart:
+          $ref: '#/components/schemas/Date'
+        periodEnd:
+          $ref: '#/components/schemas/Date'
+        baseCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        netWorth:
+          $ref: '#/components/schemas/Money'
+        assets:
+          $ref: '#/components/schemas/Money'
+        debts:
+          $ref: '#/components/schemas/Money'
+        income:
+          $ref: '#/components/schemas/Money'
+        expenses:
+          $ref: '#/components/schemas/Money'
+        savingsCapacity:
+          $ref: '#/components/schemas/Money'
+        budgetUtilizationPercent:
+          type: number
+      additionalProperties: false
+    TimeSeriesPoint:
+      type: object
+      required:
+        - period
+        - value
+      properties:
+        period:
+          type: string
+        value:
+          $ref: '#/components/schemas/Money'
+        secondaryValue:
+          $ref: '#/components/schemas/Money'
+      additionalProperties: false
+    CategoryBreakdownItem:
+      type: object
+      required:
+        - categoryId
+        - categoryName
+        - amount
+        - percentage
+      properties:
+        categoryId:
+          $ref: '#/components/schemas/Uuid'
+        categoryName:
+          type: string
+        amount:
+          $ref: '#/components/schemas/Money'
+        percentage:
+          type: number
+      additionalProperties: false
+    CashFlowAnalytics:
+      type: object
+      required:
+        - series
+        - categories
+      properties:
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeSeriesPoint'
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/CategoryBreakdownItem'
+      additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -5885,3 +5965,109 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/analytics/summary:
+    get:
+      operationId: getAnalyticsSummary
+      summary: Get financial summary
+      tags:
+        - Analytics
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: to
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: presentationCurrency
+          in: query
+          schema:
+            $ref: '#/components/schemas/CurrencyCode'
+      responses:
+        '200':
+          description: Financial summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsSummary'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: get_financial_summary
+        riskClass: read
+        requiresApproval: false
+        requiredScopes:
+          - reports:read
+  /v1/analytics/cash-flow:
+    get:
+      operationId: getCashFlowAnalytics
+      summary: Get cash flow analytics
+      tags:
+        - Analytics
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: to
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum:
+              - day
+              - week
+              - month
+              - quarter
+      responses:
+        '200':
+          description: Cash flow analytics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashFlowAnalytics'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
