@@ -4,11 +4,13 @@ import type {
   ConvertedFlowRow,
   ConvertedSubscriptionRow,
   MonthlyCapacityPoint,
+  ScheduledOutflowRow,
   SubscriptionPriceRow,
 } from '../../src/analytics/analytics.port.js';
 import {
   bigintSqrt,
   buildDebtCostEvolution,
+  buildFinancialCalendar,
   buildIncomeStability,
   buildMonthlySavingsCapacity,
   buildQuarterlyAverageComparison,
@@ -1396,5 +1398,379 @@ describe('buildDebtCostEvolution', () => {
     expect(result.totalInterestMinor).toBe(0n);
     expect(result.totalFeeMinor).toBe(0n);
     expect(result.totalCostMinor).toBe(0n);
+  });
+});
+
+describe('buildFinancialCalendar', () => {
+  it('returns exactly three days for a 365-day period with three scheduled items instead of 365 days', () => {
+    const from = '2026-01-01';
+    const to = '2026-12-31';
+    const rows: readonly ScheduledOutflowRow[] = [
+      {
+        kind: 'subscription',
+        refId: 'sub-1',
+        label: 'Streaming',
+        amountMinor: 1000n,
+        scheduledDate: '2026-02-15',
+      },
+      {
+        kind: 'debt_payment',
+        refId: 'debt-1',
+        label: 'Car Loan',
+        amountMinor: 2500n,
+        scheduledDate: '2026-05-20',
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-1',
+        label: 'Internet',
+        amountMinor: 4000n,
+        scheduledDate: '2026-10-10',
+        template: {
+          type: 'expense',
+          amount: { amountMinor: '4000', currency: 'USD' },
+        },
+      },
+    ];
+
+    const result = buildFinancialCalendar(from, to, rows);
+
+    // M1 test: must return exactly 3 days, not 365
+    expect(result.days).toHaveLength(3);
+    expect(result.days.map((d) => d.date)).toEqual([
+      '2026-02-15',
+      '2026-05-20',
+      '2026-10-10',
+    ]);
+    expect(result.periodStart).toBe(from);
+    expect(result.periodEnd).toBe(to);
+  });
+
+  it('asserts directly that totalExpectedOutflowMinor equals the sum of every day', () => {
+    const from = '2026-01-01';
+    const to = '2026-03-31';
+    const rows: readonly ScheduledOutflowRow[] = [
+      {
+        kind: 'subscription',
+        refId: 'sub-1',
+        label: 'Music',
+        amountMinor: 1500n,
+        scheduledDate: '2026-01-10',
+      },
+      {
+        kind: 'subscription',
+        refId: 'sub-2',
+        label: 'Cloud Storage',
+        amountMinor: 3000n,
+        scheduledDate: '2026-01-10',
+      },
+      {
+        kind: 'debt_payment',
+        refId: 'debt-1',
+        label: 'Mortgage',
+        amountMinor: 50000n,
+        scheduledDate: '2026-02-01',
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-1',
+        label: 'Insurance',
+        amountMinor: 12000n,
+        scheduledDate: '2026-03-15',
+        template: {
+          type: 'expense',
+          amount: { amountMinor: '12000', currency: 'USD' },
+        },
+      },
+    ];
+
+    const result = buildFinancialCalendar(from, to, rows);
+
+    const sumFromDays = result.days.reduce(
+      (sum, day) => sum + day.expectedOutflowMinor,
+      0n,
+    );
+    expect(result.totalExpectedOutflowMinor).toBe(sumFromDays);
+    expect(result.totalExpectedOutflowMinor).toBe(66500n);
+    expect(result.days[0].expectedOutflowMinor).toBe(4500n);
+    expect(result.days[1].expectedOutflowMinor).toBe(50000n);
+    expect(result.days[2].expectedOutflowMinor).toBe(12000n);
+  });
+
+  it('collapses two items on the same date into one day with items ordered by kind then refId', () => {
+    const from = '2026-03-01';
+    const to = '2026-03-31';
+    const rows: readonly ScheduledOutflowRow[] = [
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-b',
+        label: 'Gym Membership',
+        amountMinor: 3000n,
+        scheduledDate: '2026-03-15',
+        template: {
+          type: 'expense',
+          amount: { amountMinor: '3000', currency: 'USD' },
+        },
+      },
+      {
+        kind: 'debt_payment',
+        refId: 'debt-a',
+        label: 'Personal Loan',
+        amountMinor: 2000n,
+        scheduledDate: '2026-03-15',
+      },
+      {
+        kind: 'subscription',
+        refId: 'sub-z',
+        label: 'Software License',
+        amountMinor: 1500n,
+        scheduledDate: '2026-03-15',
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-a',
+        label: 'Phone Bill',
+        amountMinor: 1000n,
+        scheduledDate: '2026-03-15',
+        template: {
+          type: 'expense',
+          amount: { amountMinor: '1000', currency: 'USD' },
+        },
+      },
+    ];
+
+    const result = buildFinancialCalendar(from, to, rows);
+
+    expect(result.days).toHaveLength(1);
+    expect(result.days[0].date).toBe('2026-03-15');
+    expect(result.days[0].expectedOutflowMinor).toBe(7500n);
+    // Ordered by kind ('debt_payment' < 'recurring_rule' < 'subscription'), then refId ('rule-a' < 'rule-b')
+    expect(result.days[0].items).toEqual([
+      {
+        kind: 'debt_payment',
+        refId: 'debt-a',
+        label: 'Personal Loan',
+        amountMinor: 2000n,
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-a',
+        label: 'Phone Bill',
+        amountMinor: 1000n,
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-b',
+        label: 'Gym Membership',
+        amountMinor: 3000n,
+      },
+      {
+        kind: 'subscription',
+        refId: 'sub-z',
+        label: 'Software License',
+        amountMinor: 1500n,
+      },
+    ]);
+  });
+
+  it('excludes recurring templates with unreadable amounts and counts them in recurringRulesWithUnreadableTemplate', () => {
+    const from = '2026-04-01';
+    const to = '2026-04-30';
+    const rows: readonly ScheduledOutflowRow[] = [
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-unreadable-string',
+        label: 'Corrupted Amount',
+        amountMinor: 'abc',
+        scheduledDate: '2026-04-05',
+        template: {
+          type: 'expense',
+          amount: { amountMinor: 'abc', currency: 'USD' },
+        },
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-missing-amount-obj',
+        label: 'Missing Amount Object',
+        scheduledDate: '2026-04-10',
+        template: {
+          type: 'expense',
+        },
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-valid',
+        label: 'Valid Recurring Expense',
+        amountMinor: 5000n,
+        scheduledDate: '2026-04-15',
+        template: {
+          type: 'expense',
+          amount: { amountMinor: '5000', currency: 'USD' },
+        },
+      },
+    ];
+
+    const result = buildFinancialCalendar(from, to, rows);
+
+    // M3 test: unreadable amounts are excluded and counted, never treated as 0n in calendar
+    expect(result.recurringRulesWithUnreadableTemplate).toBe(2);
+    expect(result.days).toHaveLength(1);
+    expect(result.days[0].date).toBe('2026-04-15');
+    expect(result.days[0].items).toHaveLength(1);
+    expect(result.days[0].items[0].refId).toBe('rule-valid');
+    expect(result.totalExpectedOutflowMinor).toBe(5000n);
+  });
+
+  it('excludes income-typed recurring templates entirely and retains only outflow types', () => {
+    const from = '2026-05-01';
+    const to = '2026-05-31';
+    const rows: readonly ScheduledOutflowRow[] = [
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-income',
+        label: 'Salary Automation',
+        amountMinor: 100000n,
+        scheduledDate: '2026-05-01',
+        template: {
+          type: 'income',
+          amount: { amountMinor: '100000', currency: 'USD' },
+        },
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-refund',
+        label: 'Scheduled Refund',
+        amountMinor: 2000n,
+        scheduledDate: '2026-05-05',
+        template: {
+          type: 'refund',
+          amount: { amountMinor: '2000', currency: 'USD' },
+        },
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-transfer',
+        label: 'Scheduled Transfer',
+        amountMinor: 5000n,
+        scheduledDate: '2026-05-10',
+        template: {
+          type: 'transfer',
+          amount: { amountMinor: '5000', currency: 'USD' },
+        },
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-adjustment',
+        label: 'Scheduled Adjustment',
+        amountMinor: 3000n,
+        scheduledDate: '2026-05-12',
+        template: {
+          type: 'adjustment',
+          amount: { amountMinor: '3000', currency: 'USD' },
+        },
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-expense',
+        label: 'Office Supplies',
+        amountMinor: 1500n,
+        scheduledDate: '2026-05-15',
+        template: {
+          type: 'expense',
+          amount: { amountMinor: '1500', currency: 'USD' },
+        },
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-debt-pmt',
+        label: 'Recurring Debt Payment',
+        amountMinor: 2500n,
+        scheduledDate: '2026-05-20',
+        template: {
+          type: 'debt_payment',
+          amount: { amountMinor: '2500', currency: 'USD' },
+        },
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-fund-contrib',
+        label: 'Emergency Fund Contribution',
+        amountMinor: 3500n,
+        scheduledDate: '2026-05-25',
+        template: {
+          type: 'fund_contribution',
+          amount: { amountMinor: '3500', currency: 'USD' },
+        },
+      },
+    ];
+
+    const result = buildFinancialCalendar(from, to, rows);
+
+    // M2 test: income-typed recurring templates excluded entirely
+    expect(result.days).toHaveLength(3);
+    expect(
+      result.days.some((d) => d.items.some((i) => i.refId === 'rule-income')),
+    ).toBe(false);
+    expect(
+      result.days.some((d) => d.items.some((i) => i.refId === 'rule-refund')),
+    ).toBe(false);
+    expect(
+      result.days.some((d) => d.items.some((i) => i.refId === 'rule-transfer')),
+    ).toBe(false);
+    expect(
+      result.days.some((d) =>
+        d.items.some((i) => i.refId === 'rule-adjustment'),
+      ),
+    ).toBe(false);
+    expect(result.totalExpectedOutflowMinor).toBe(7500n); // 1500 + 2500 + 3500
+  });
+
+  it('counts an active debt with null minimum_payment_minor in debtsWithoutScheduledAmount and produces no calendar item', () => {
+    const from = '2026-06-01';
+    const to = '2026-06-30';
+    const rows: readonly ScheduledOutflowRow[] = [
+      {
+        kind: 'debt_payment',
+        refId: 'debt-no-min',
+        label: 'Informal Family Debt',
+        amountMinor: null,
+        scheduledDate: '2026-06-15',
+      },
+    ];
+
+    const result = buildFinancialCalendar(from, to, rows, 2);
+
+    expect(result.debtsWithoutScheduledAmount).toBe(3); // 2 passed in + 1 from rows
+    expect(result.days).toHaveLength(0);
+    expect(result.totalExpectedOutflowMinor).toBe(0n);
+  });
+
+  it('correctly assigns items to UTC dates across midnight boundaries', () => {
+    const from = '2026-03-31';
+    const to = '2026-04-01';
+    const rows: readonly ScheduledOutflowRow[] = [
+      {
+        kind: 'subscription',
+        refId: 'utc-item-1',
+        label: 'End of March Sub',
+        amountMinor: 2000n,
+        scheduledDate: '2026-03-31T23:59:59.999Z',
+      },
+      {
+        kind: 'subscription',
+        refId: 'utc-item-2',
+        label: 'Start of April Sub',
+        amountMinor: 3000n,
+        scheduledDate: '2026-04-01T00:00:00.000Z',
+      },
+    ];
+
+    const result = buildFinancialCalendar(from, to, rows);
+
+    expect(result.days).toHaveLength(2);
+    expect(result.days[0].date).toBe('2026-03-31');
+    expect(result.days[0].items[0].refId).toBe('utc-item-1');
+    expect(result.days[1].date).toBe('2026-04-01');
+    expect(result.days[1].items[0].refId).toBe('utc-item-2');
   });
 });

@@ -143,6 +143,28 @@ export interface DebtCostEvolution {
   readonly totalCostMinor: bigint;
 }
 
+export interface ScheduledOutflowItem {
+  readonly kind: 'subscription' | 'debt_payment' | 'recurring_rule';
+  readonly refId: string;
+  readonly label: string;
+  readonly amountMinor: bigint;
+}
+
+export interface FinancialCalendarDay {
+  readonly date: string;
+  readonly expectedOutflowMinor: bigint;
+  readonly items: readonly ScheduledOutflowItem[];
+}
+
+export interface FinancialCalendar {
+  readonly periodStart: string;
+  readonly periodEnd: string;
+  readonly days: readonly FinancialCalendarDay[];
+  readonly totalExpectedOutflowMinor: bigint;
+  readonly debtsWithoutScheduledAmount: number;
+  readonly recurringRulesWithUnreadableTemplate: number;
+}
+
 export interface AnalyticsSummaryQuery {
   readonly workspaceId: string;
   readonly from: string;
@@ -254,6 +276,23 @@ export interface DebtPaymentCostRow extends Record<string, unknown> {
   readonly occurredAt: Date;
 }
 
+export interface ScheduledOutflowRow extends Record<string, unknown> {
+  readonly kind: 'subscription' | 'debt_payment' | 'recurring_rule';
+  readonly refId: string;
+  readonly label: string;
+  readonly amountMinor?: string | bigint | null;
+  readonly currency?: string | null;
+  readonly scheduledDate?: string | null;
+  readonly scheduledAt?: Date | null;
+  readonly template?: {
+    readonly type?: string;
+    readonly amount?: {
+      readonly amountMinor?: string;
+      readonly currency?: string;
+    } | null;
+  } | null;
+}
+
 export interface AnalyticsStore {
   readActiveRole(
     client: TransactionClient,
@@ -320,4 +359,16 @@ export interface AnalyticsStore {
     quoteCurrency: string,
     asOf?: Date | null,
   ): Promise<string | undefined>;
+
+  readScheduledOutflows(
+    client: TransactionClient,
+    workspaceId: string,
+    from: string,
+    to: string,
+  ): Promise<readonly ScheduledOutflowRow[]>;
+
+  readActiveDebtsWithoutScheduledAmount(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<number>;
 }
