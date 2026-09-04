@@ -279,6 +279,20 @@ export class FundsController {
         ],
       });
     }
+    if (o.kind === FUND_OUTCOMES.ACCOUNT_CURRENCY_MISMATCH) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Account currency mismatch',
+        status: 422,
+        errors: [
+          {
+            field: 'accountId',
+            code: 'currency-mismatch',
+            message: 'Contribution currency must match account currency',
+          },
+        ],
+      });
+    }
     if (o.kind === FUND_OUTCOMES.CONFLICT) {
       return sendProblem(reply, {
         type: PROBLEM_TYPES.CONFLICT,

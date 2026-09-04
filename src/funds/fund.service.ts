@@ -255,6 +255,10 @@ export class FundService implements FundsPort {
           return { kind: FUND_OUTCOMES.ACCOUNT_CLOSED };
         }
 
+        if (account.currency !== command.amount.currency) {
+          return { kind: FUND_OUTCOMES.ACCOUNT_CURRENCY_MISMATCH };
+        }
+
         const transaction = await this.store.contributeToFund(
           client,
           workspaceId,

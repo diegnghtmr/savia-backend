@@ -198,6 +198,34 @@ describe('FundsController', () => {
       expect(reply.status).toHaveBeenCalledWith(404);
     });
 
+    it('returns 422 if account currency mismatches contribution currency', async () => {
+      const port = createMockPort();
+      vi.mocked(port.contributeToFund).mockResolvedValue({
+        kind: FUND_OUTCOMES.ACCOUNT_CURRENCY_MISMATCH,
+      });
+      const controller = new FundsController(port);
+      const req = {
+        headers: {
+          'x-workspace-id': 'a0000000-0000-4000-8000-000000000001',
+          'idempotency-key': 'b0000000-0000-4000-8000-000000000001',
+        },
+        body: {
+          accountId: 'c0000000-0000-4000-8000-000000000001',
+          amount: { amountMinor: '5000', currency: 'USD' },
+          occurredAt: '2026-09-03T12:00:00Z',
+        },
+        identity: { subject: 'sub1' },
+      } as unknown as AuthenticatedRequest;
+      const reply = createMockReply();
+
+      await controller.contribute(
+        'f0000000-0000-4000-8000-000000000001',
+        req,
+        reply,
+      );
+      expect(reply.status).toHaveBeenCalledWith(422);
+    });
+
     it('returns 201 with transaction on success', async () => {
       const port = createMockPort();
       const controller = new FundsController(port);

@@ -720,6 +720,107 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
         beforeLinksCount.rows[0].count,
       );
     });
+
+    it('rejects contribution when account currency differs from contribution currency and preserves account', async () => {
+      // Workspace 2 has base_currency EUR, accountWs2Id with currency EUR
+      // Create a USD fund in Workspace 2
+      const fundRes = await application.inject({
+        method: 'POST',
+        url: '/v1/funds',
+        headers: {
+          authorization: 'Bearer other-owner-token',
+          'x-workspace-id': workspace2Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          name: 'USD Fund in WS2',
+          currency: 'USD',
+          targetAmount: { amountMinor: '50000', currency: 'USD' },
+        },
+      });
+      expect(fundRes.statusCode).toBe(201);
+      const fund = JSON.parse(fundRes.payload);
+
+      // Verify EUR account's balance endpoint returns 200 before contribution
+      const initialBalanceRes = await application.inject({
+        method: 'GET',
+        url: `/v1/accounts/${accountWs2Id}/balance`,
+        headers: {
+          authorization: 'Bearer other-owner-token',
+          'x-workspace-id': workspace2Id,
+        },
+      });
+      expect(initialBalanceRes.statusCode).toBe(200);
+
+      // Snapshot exact table counts before the invalid contribution
+      const beforeTxnCount = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.transactions',
+      );
+      const beforePostingsCount = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.ledger_postings',
+      );
+      const beforeLinksCount = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.fund_contributions',
+      );
+      const beforeIdempotencyCount = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.command_idempotency_records',
+      );
+
+      // POST a USD contribution naming the EUR account (accountWs2Id)
+      const contribRes = await application.inject({
+        method: 'POST',
+        url: `/v1/funds/${fund.id}/contributions`,
+        headers: {
+          authorization: 'Bearer other-owner-token',
+          'x-workspace-id': workspace2Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          accountId: accountWs2Id,
+          amount: { amountMinor: '1000', currency: 'USD' },
+          occurredAt: '2026-09-03T12:00:00Z',
+        },
+      });
+
+      // Assert HTTP 422
+      expect(contribRes.statusCode).toBe(422);
+
+      // Assert EXACT unchanged counts
+      const afterTxnCount = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.transactions',
+      );
+      const afterPostingsCount = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.ledger_postings',
+      );
+      const afterLinksCount = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.fund_contributions',
+      );
+      const afterIdempotencyCount = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.command_idempotency_records',
+      );
+
+      expect(afterTxnCount.rows[0].count).toBe(beforeTxnCount.rows[0].count);
+      expect(afterPostingsCount.rows[0].count).toBe(
+        beforePostingsCount.rows[0].count,
+      );
+      expect(afterLinksCount.rows[0].count).toBe(
+        beforeLinksCount.rows[0].count,
+      );
+      expect(afterIdempotencyCount.rows[0].count).toBe(
+        beforeIdempotencyCount.rows[0].count,
+      );
+
+      // Assert the EUR account's balance endpoint still returns 200 afterwards, proving the account was not corrupted
+      const balanceRes = await application.inject({
+        method: 'GET',
+        url: `/v1/accounts/${accountWs2Id}/balance`,
+        headers: {
+          authorization: 'Bearer other-owner-token',
+          'x-workspace-id': workspace2Id,
+        },
+      });
+      expect(balanceRes.statusCode).toBe(200);
+    });
   });
 
   // 5. A pending/voided contribution does NOT count toward currentAmount.

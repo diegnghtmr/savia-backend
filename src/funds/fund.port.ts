@@ -124,6 +124,7 @@ export const FUND_OUTCOMES = {
   ACCOUNT_NOT_FOUND: 'account-not-found',
   ACCOUNT_CLOSED: 'account-closed',
   CURRENCY_MISMATCH: 'currency-mismatch',
+  ACCOUNT_CURRENCY_MISMATCH: 'account-currency-mismatch',
   LINKED_ACCOUNT_NOT_FOUND: 'linked-account-not-found',
 } as const;
 
@@ -170,7 +171,8 @@ export type FundContributeOutcome =
         | typeof FUND_OUTCOMES.NOT_FOUND
         | typeof FUND_OUTCOMES.ACCOUNT_NOT_FOUND
         | typeof FUND_OUTCOMES.ACCOUNT_CLOSED
-        | typeof FUND_OUTCOMES.CURRENCY_MISMATCH;
+        | typeof FUND_OUTCOMES.CURRENCY_MISMATCH
+        | typeof FUND_OUTCOMES.ACCOUNT_CURRENCY_MISMATCH;
     };
 
 export interface FundsPort {

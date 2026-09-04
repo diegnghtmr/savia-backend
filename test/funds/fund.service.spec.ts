@@ -288,6 +288,27 @@ describe('FundService', () => {
       expect(result.kind).toBe(FUND_OUTCOMES.ACCOUNT_CLOSED);
     });
 
+    it('returns ACCOUNT_CURRENCY_MISMATCH if account currency differs from contribution currency', async () => {
+      const store = createMockStore();
+      vi.mocked(store.lockAndReadAccount).mockResolvedValue({
+        status: 'active',
+        currency: 'EUR',
+      });
+      const idempotency = createMockIdempotency();
+      const service = new FundService(mockTx, store, idempotency);
+
+      const result = await service.contributeToFund(
+        'sub1',
+        'ws1',
+        dummyFund.id,
+        contributionCommand,
+        'key1',
+      );
+      expect(result.kind).toBe(FUND_OUTCOMES.ACCOUNT_CURRENCY_MISMATCH);
+      expect(store.contributeToFund).not.toHaveBeenCalled();
+      expect(idempotency.write).not.toHaveBeenCalled();
+    });
+
     it('records contribution and returns CREATED', async () => {
       const store = createMockStore();
       const idempotency = createMockIdempotency();
