@@ -41,6 +41,8 @@ describe('AnalyticsService', () => {
     readOverlappingBudgetAllocations: async () => [],
     readOverlappingBudgetSpend: async () => [],
     findExchangeRate: async () => '1.0',
+    readScheduledOutflows: async () => [],
+    readActiveDebtsWithoutScheduledAmount: async () => 0,
     ...overrides,
   });
 
