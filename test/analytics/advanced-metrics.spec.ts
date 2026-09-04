@@ -976,6 +976,27 @@ describe('buildSubscriptionPriceIncreases', () => {
     ]);
     expect(result.items.map((i) => i.increasePercent)).toEqual([50, 25, 10]);
   });
+
+  it('counts a row with malformed current amount in consideredCount but in no partition', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-malformed',
+        payeeName: 'Service Malformed',
+        currentAmountMinor: 'abc',
+        currentCurrency: 'USD',
+        previousAmountMinor: '100',
+        previousCurrency: 'USD',
+      },
+    ];
+
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result.consideredCount).toBe(1);
+    expect(result.decreasedOrUnchangedCount).toBe(0);
+    expect(result.excludedForCurrencyMismatch).toBe(0);
+    expect(result.excludedForZeroPrevious).toBe(0);
+    expect(result.items).toHaveLength(0);
+  });
 });
 
 describe('buildRecurringVsVariable', () => {
