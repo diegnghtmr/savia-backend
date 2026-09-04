@@ -77,6 +77,7 @@
     "test:integration:imports": "bash scripts/run-disposable-database-suite.sh test/imports/imports.integration-spec.ts",
     "test:integration:import-commit-rollback": "bash scripts/run-disposable-database-suite.sh test/imports/import-commit-rollback.integration-spec.ts",
     "test:integration:funds": "bash scripts/run-disposable-database-suite.sh test/funds/funds.integration-spec.ts",
+    "test:integration:debts": "bash scripts/run-disposable-database-suite.sh test/debts/debts.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",
     "build": "tsc -p tsconfig.build.json",
