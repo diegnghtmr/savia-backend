@@ -67,6 +67,7 @@ case "$spec" in
   test/exports/export-security.integration-spec.ts) ;;
   test/imports/imports.integration-spec.ts) ;;
   test/imports/import-commit-rollback.integration-spec.ts) ;;
+  test/funds/funds.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 

@@ -269,6 +269,9 @@ jobs:
       - name: budgets allocations integration
         shell: bash
         run: pnpm test:integration:budgets-allocations
+      - name: funds integration
+        shell: bash
+        run: pnpm test:integration:funds
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
