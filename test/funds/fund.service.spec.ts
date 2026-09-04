@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { computeRequestFingerprint } from '../../src/platform/idempotency.service.js';
 import type { IdempotencyStore } from '../../src/platform/idempotency.port.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
@@ -95,19 +96,26 @@ describe('FundService', () => {
       const store = createMockStore();
       const idempotency = createMockIdempotency();
       vi.mocked(idempotency.read).mockResolvedValue({
-        requestFingerprint:
-          '942fa6ddb1c97047ff575293444439c20d740c06a8f152d005f573429810bb9e',
+        requestFingerprint: computeRequestFingerprint(command),
         responseStatus: 201,
         responseEtag: null,
         responseBody: dummyFund,
       } as never);
       const service = new FundService(mockTx, store, idempotency);
 
-      // Spy computeRequestFingerprint
       const result = await service.createFund('sub1', 'ws1', command, 'key1');
-      expect([FUND_OUTCOMES.REPLAYED, FUND_OUTCOMES.CONFLICT]).toContain(
-        result.kind,
-      );
+      expect(result.kind).toBe(FUND_OUTCOMES.REPLAYED);
+      if (result.kind === FUND_OUTCOMES.REPLAYED) {
+        expect(result.status).toBe(201);
+        expect(result.etag).toBeNull();
+        expect(result.body).toEqual(dummyFund);
+      }
+      expect(store.createFund).not.toHaveBeenCalled();
+      expect(store.lockAndReadAccount).not.toHaveBeenCalled();
+      expect(store.findFund).not.toHaveBeenCalled();
+      expect(store.listFunds).not.toHaveBeenCalled();
+      expect(store.contributeToFund).not.toHaveBeenCalled();
+      expect(idempotency.write).not.toHaveBeenCalled();
     });
 
     it('returns LINKED_ACCOUNT_NOT_FOUND when linkedAccountId does not exist in workspace', async () => {
