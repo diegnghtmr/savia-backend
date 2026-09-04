@@ -1537,6 +1537,103 @@ components:
             - 'null'
           maxLength: 500
       additionalProperties: false
+    Debt:
+      type: object
+      required:
+        - id
+        - name
+        - currency
+        - principal
+        - outstandingBalance
+        - annualRate
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        principal:
+          $ref: '#/components/schemas/Money'
+        outstandingBalance:
+          $ref: '#/components/schemas/Money'
+        annualRate:
+          $ref: '#/components/schemas/DecimalString'
+        rateType:
+          type: string
+          enum:
+            - fixed
+            - variable
+        minimumPayment:
+          $ref: '#/components/schemas/Money'
+        nextPaymentAt:
+          type:
+            - string
+            - 'null'
+          format: date
+        status:
+          type: string
+          enum:
+            - active
+            - paid
+            - defaulted
+            - archived
+      additionalProperties: false
+    CreateDebtRequest:
+      type: object
+      required:
+        - name
+        - principal
+        - annualRate
+        - rateType
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        principal:
+          $ref: '#/components/schemas/Money'
+        annualRate:
+          $ref: '#/components/schemas/DecimalString'
+        rateType:
+          type: string
+          enum:
+            - fixed
+            - variable
+        minimumPayment:
+          $ref: '#/components/schemas/Money'
+        startDate:
+          $ref: '#/components/schemas/Date'
+        termMonths:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+      additionalProperties: false
+    CreateDebtPaymentRequest:
+      type: object
+      required:
+        - accountId
+        - totalAmount
+        - occurredAt
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        totalAmount:
+          $ref: '#/components/schemas/Money'
+        principalAmount:
+          $ref: '#/components/schemas/Money'
+        interestAmount:
+          $ref: '#/components/schemas/Money'
+        feeAmount:
+          $ref: '#/components/schemas/Money'
+        occurredAt:
+          type: string
+          format: date-time
+      additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -5349,6 +5446,171 @@ paths:
           requiresApproval: true,
           requiredScopes: [transactions:write, budgets:write],
         }
+      x-idempotency-required: true
+  /v1/debts:
+    get:
+      operationId: listDebts
+      summary: List debts
+      tags: [Debts]
+      parameters:
+        - {
+            name: X-Workspace-Id,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 200 },
+          }
+      responses:
+        '200':
+          description: Debt page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pageInfo]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Debt' }
+                  pageInfo: { $ref: '#/components/schemas/PageInfo' }
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+    post:
+      operationId: createDebt
+      summary: Create debt
+      tags: [Debts]
+      parameters:
+        - {
+            name: X-Workspace-Id,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+        - {
+            name: Idempotency-Key,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+      requestBody:
+        {
+          required: true,
+          content:
+            {
+              application/json:
+                { schema: { $ref: '#/components/schemas/CreateDebtRequest' } },
+            },
+        }
+      responses:
+        '201':
+          description: Debt created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Debt' }
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '422':
+          description: Unprocessable entity.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+      x-idempotency-required: true
+  /v1/debts/{debtId}/payments:
+    parameters:
+      - {
+          name: debtId,
+          in: path,
+          required: true,
+          schema: { type: string, format: uuid },
+        }
+      - {
+          name: X-Workspace-Id,
+          in: header,
+          required: true,
+          schema: { type: string, format: uuid },
+        }
+    post:
+      operationId: createDebtPayment
+      summary: Record debt payment
+      tags: [Debts]
+      parameters:
+        - {
+            name: Idempotency-Key,
+            in: header,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+      requestBody:
+        {
+          required: true,
+          content:
+            {
+              application/json:
+                {
+                  schema:
+                    {
+                      $ref: '#/components/schemas/CreateDebtPaymentRequest',
+                    },
+                },
+            },
+        }
+      responses:
+        '201':
+          description: Debt payment recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '404':
+          description: Not found.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '422':
+          description: Unprocessable entity.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
       x-idempotency-required: true
   /v1/jobs/{jobId}:
     get:

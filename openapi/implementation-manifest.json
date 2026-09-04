@@ -43,6 +43,21 @@
       "path": "/v1/funds/{fundId}/contributions"
     },
     {
+      "operationId": "listDebts",
+      "method": "GET",
+      "path": "/v1/debts"
+    },
+    {
+      "operationId": "createDebt",
+      "method": "POST",
+      "path": "/v1/debts"
+    },
+    {
+      "operationId": "createDebtPayment",
+      "method": "POST",
+      "path": "/v1/debts/{debtId}/payments"
+    },
+    {
       "operationId": "getHealth",
       "method": "GET",
       "path": "/health"
