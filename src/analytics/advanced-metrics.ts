@@ -4,6 +4,7 @@ import {
   type IncomeStability,
   type MonthlyCapacityPoint,
   type QuarterlyAveragePoint,
+  type WeekdayHeatmapPoint,
 } from './analytics.port.js';
 import {
   generateBucketPeriods,
@@ -336,4 +337,54 @@ export function buildQuarterlyAverageComparison(
   }
 
   return results;
+}
+
+interface MutableWeekdayHeatmapPoint {
+  readonly weekday: number;
+  transactionCount: number;
+  totalMinor: bigint;
+}
+
+/**
+ * §3.6 buildWeekdayHeatmap
+ * Pure builder for expense-side weekday heatmap.
+ * - Exactly 7 entries, always, ascending 1..7, zero-filled.
+ * - Scope: expense-side flow only (expense adds, refund subtracts). Income rows are excluded entirely.
+ * - transactionCount: counts the rows that contributed (both expense and refund), not net sign.
+ * - weekday: ISO-8601 (1 = Monday ... 7 = Sunday) evaluated in UTC:
+ *   ((date.getUTCDay() + 6) % 7) + 1
+ */
+export function buildWeekdayHeatmap(
+  rows: readonly ConvertedFlowRow[],
+): readonly WeekdayHeatmapPoint[] {
+  // Always exactly 7 entries, ascending 1..7, zero-filled (§3.6)
+  const heatmap: MutableWeekdayHeatmapPoint[] = [1, 2, 3, 4, 5, 6, 7].map(
+    (weekday) => ({
+      weekday,
+      transactionCount: 0,
+      totalMinor: 0n,
+    }),
+  );
+
+  for (const row of rows) {
+    // §3.6: Scope: expense-side flow only. Income rows are excluded entirely.
+    if (row.type !== 'expense' && row.type !== 'refund') {
+      continue;
+    }
+
+    // ISO-8601 weekday in UTC: 1 = Monday ... 7 = Sunday
+    const weekday = ((row.occurredAt.getUTCDay() + 6) % 7) + 1;
+    const point = heatmap[weekday - 1];
+
+    // §3.6: transactionCount counts the rows that contributed (both expense and refund)
+    point.transactionCount += 1;
+
+    if (row.type === 'expense') {
+      point.totalMinor += row.amountMinor;
+    } else if (row.type === 'refund') {
+      point.totalMinor -= row.amountMinor;
+    }
+  }
+
+  return heatmap;
 }

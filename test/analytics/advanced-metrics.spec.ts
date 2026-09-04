@@ -7,6 +7,7 @@ import {
   buildIncomeStability,
   buildMonthlySavingsCapacity,
   buildQuarterlyAverageComparison,
+  buildWeekdayHeatmap,
 } from '../../src/analytics/advanced-metrics.js';
 
 describe('buildMonthlySavingsCapacity', () => {
@@ -438,5 +439,143 @@ describe('buildQuarterlyAverageComparison', () => {
     expect(result[0].averageMonthlyExpensesMinor).toBe(5n);
     // savings: (-1 + -4) / 2 = -2.5 -> -3n (away from zero / down)
     expect(result[0].averageMonthlySavingsCapacityMinor).toBe(-3n);
+  });
+});
+
+describe('buildWeekdayHeatmap', () => {
+  it('returns all 7 weekdays present and zero-filled when only one weekday has data', () => {
+    // 2026-01-07 is Wednesday (weekday 3 in ISO-8601: Mon=1, Tue=2, Wed=3...)
+    const rows: readonly ConvertedFlowRow[] = [
+      {
+        type: 'expense',
+        amountMinor: 5000n,
+        occurredAt: new Date('2026-01-07T12:00:00Z'),
+      },
+    ];
+
+    const result = buildWeekdayHeatmap(rows);
+
+    expect(result).toHaveLength(7);
+    expect(result.map((r) => r.weekday)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(result[0]).toEqual({
+      weekday: 1,
+      transactionCount: 0,
+      totalMinor: 0n,
+    });
+    expect(result[1]).toEqual({
+      weekday: 2,
+      transactionCount: 0,
+      totalMinor: 0n,
+    });
+    expect(result[2]).toEqual({
+      weekday: 3,
+      transactionCount: 1,
+      totalMinor: 5000n,
+    });
+    expect(result[3]).toEqual({
+      weekday: 4,
+      transactionCount: 0,
+      totalMinor: 0n,
+    });
+    expect(result[4]).toEqual({
+      weekday: 5,
+      transactionCount: 0,
+      totalMinor: 0n,
+    });
+    expect(result[5]).toEqual({
+      weekday: 6,
+      transactionCount: 0,
+      totalMinor: 0n,
+    });
+    expect(result[6]).toEqual({
+      weekday: 7,
+      transactionCount: 0,
+      totalMinor: 0n,
+    });
+  });
+
+  it('adds expenses, subtracts refunds, and completely excludes income', () => {
+    // 2026-01-05 is Monday (weekday 1)
+    const rows: readonly ConvertedFlowRow[] = [
+      {
+        type: 'expense',
+        amountMinor: 10000n,
+        occurredAt: new Date('2026-01-05T09:00:00Z'),
+      },
+      {
+        type: 'refund',
+        amountMinor: 3000n,
+        occurredAt: new Date('2026-01-05T14:00:00Z'),
+      },
+      {
+        type: 'income',
+        amountMinor: 50000n,
+        occurredAt: new Date('2026-01-05T18:00:00Z'),
+      },
+    ];
+
+    const result = buildWeekdayHeatmap(rows);
+
+    // Monday should have 2 transactions (expense + refund), income excluded
+    // totalMinor = 10000 - 3000 = 7000n
+    expect(result[0]).toEqual({
+      weekday: 1,
+      transactionCount: 2,
+      totalMinor: 7000n,
+    });
+  });
+
+  it('reports real transaction count when expense and refund cancel to zero', () => {
+    // 2026-01-06 is Tuesday (weekday 2)
+    const rows: readonly ConvertedFlowRow[] = [
+      {
+        type: 'expense',
+        amountMinor: 5000n,
+        occurredAt: new Date('2026-01-06T10:00:00Z'),
+      },
+      {
+        type: 'refund',
+        amountMinor: 5000n,
+        occurredAt: new Date('2026-01-06T15:00:00Z'),
+      },
+    ];
+
+    const result = buildWeekdayHeatmap(rows);
+
+    expect(result[1]).toEqual({
+      weekday: 2,
+      transactionCount: 2,
+      totalMinor: 0n,
+    });
+  });
+
+  it('correctly assigns weekday across UTC boundary', () => {
+    // 2026-01-04 is Sunday (weekday 7)
+    // 2026-01-04T23:59:59.999Z is Sunday -> weekday 7
+    // 2026-01-05T00:00:00.000Z is Monday -> weekday 1
+    const rows: readonly ConvertedFlowRow[] = [
+      {
+        type: 'expense',
+        amountMinor: 1000n,
+        occurredAt: new Date('2026-01-04T23:59:59.999Z'),
+      },
+      {
+        type: 'expense',
+        amountMinor: 2000n,
+        occurredAt: new Date('2026-01-05T00:00:00.000Z'),
+      },
+    ];
+
+    const result = buildWeekdayHeatmap(rows);
+
+    // Monday (index 0)
+    expect(result[0].weekday).toBe(1);
+    expect(result[0].transactionCount).toBe(1);
+    expect(result[0].totalMinor).toBe(2000n);
+
+    // Sunday (index 6)
+    expect(result[6].weekday).toBe(7);
+    expect(result[6].transactionCount).toBe(1);
+    expect(result[6].totalMinor).toBe(1000n);
   });
 });
