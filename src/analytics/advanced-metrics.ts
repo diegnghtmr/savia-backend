@@ -1,15 +1,27 @@
 import {
   GRANULARITY,
+  type ConvertedDebtCostRow,
   type ConvertedFlowRow,
+  type ConvertedSubscriptionRow,
+  type DebtCostEvolution,
+  type DebtCostEvolutionPoint,
   type IncomeStability,
   type MonthlyCapacityPoint,
   type QuarterlyAveragePoint,
+  type RecurringVsVariable,
+  type SubscriptionPriceIncreaseItem,
+  type SubscriptionPriceIncreases,
+  type SubscriptionPriceRow,
   type WeekdayHeatmapPoint,
 } from './analytics.port.js';
 import {
   generateBucketPeriods,
   truncateToBucketStart,
 } from './analytics.service.js';
+import {
+  computeIncreasePercent,
+  roundDivHalfAwayFromZero,
+} from '../platform/percentage-change.js';
 
 interface BucketAccumulator {
   incomeMinor: bigint;
@@ -72,36 +84,6 @@ export function buildMonthlySavingsCapacity(
       savingsCapacityMinor: bucket.incomeMinor - bucket.expensesMinor,
     };
   });
-}
-
-/**
- * Integer division with half-away-from-zero (symmetric half-up) rounding.
- * Reuses the same tie-breaking logic as computeIncreasePercent in src/recurring/subscription-calculation.ts.
- */
-export function roundDivHalfAwayFromZero(num: bigint, den: bigint): bigint {
-  if (den === 0n) {
-    throw new Error('Division by zero in roundDivHalfAwayFromZero');
-  }
-  let n = num;
-  let d = den;
-  if (d < 0n) {
-    n = -n;
-    d = -d;
-  }
-  const q = n / d;
-  const r = n % d;
-  if (n >= 0n) {
-    if (2n * r >= d) {
-      return q + 1n;
-    }
-    return q;
-  } else {
-    const absR = -r;
-    if (2n * absR >= d) {
-      return q - 1n;
-    }
-    return q;
-  }
 }
 
 /**
@@ -412,4 +394,272 @@ export function buildWeekdayHeatmap(
   }
 
   return heatmap;
+}
+
+/**
+ * §3.1 buildSubscriptionPriceIncreases
+ * Pure builder that calculates detected subscription price increases.
+ *
+ * Currency conversion note:
+ * Amounts stay in their own currency. Do NOT convert. A percentage increase is
+ * currency-independent, and converting would invite a missing-rate failure on a
+ * metric that does not need one.
+ *
+ * Rules:
+ * - increasePercent computed with computeIncreasePercent from src/platform/percentage-change.ts.
+ * - Items included only when increasePercent !== null && increasePercent > 0 (increases only).
+ * - Decreases and unchanged amounts counted in decreasedOrUnchangedCount.
+ * - Currency mismatches counted in excludedForCurrencyMismatch.
+ * - Zero previous amounts counted in excludedForZeroPrevious.
+ * - Deterministic order: increasePercent descending, then payeeName ascending, then subscriptionId ascending.
+ */
+export function buildSubscriptionPriceIncreases(
+  rows: readonly SubscriptionPriceRow[],
+): SubscriptionPriceIncreases {
+  let decreasedOrUnchangedCount = 0;
+  let excludedForCurrencyMismatch = 0;
+  let excludedForZeroPrevious = 0;
+  const items: SubscriptionPriceIncreaseItem[] = [];
+
+  for (const row of rows) {
+    const currentAmount = {
+      amountMinor: row.currentAmountMinor,
+      currency: row.currentCurrency,
+    };
+    const previousAmount = {
+      amountMinor: row.previousAmountMinor,
+      currency: row.previousCurrency,
+    };
+
+    if (row.currentCurrency !== row.previousCurrency) {
+      excludedForCurrencyMismatch += 1;
+      continue;
+    }
+
+    if (BigInt(row.previousAmountMinor) === 0n) {
+      excludedForZeroPrevious += 1;
+      continue;
+    }
+
+    const increasePercent = computeIncreasePercent(
+      currentAmount,
+      previousAmount,
+    );
+
+    if (increasePercent === null) {
+      continue;
+    }
+
+    if (increasePercent <= 0) {
+      decreasedOrUnchangedCount += 1;
+      continue;
+    }
+
+    items.push({
+      subscriptionId: row.id,
+      payeeName: row.payeeName,
+      previousAmount,
+      currentAmount,
+      increasePercent,
+    });
+  }
+
+  items.sort((a, b) => {
+    if (b.increasePercent !== a.increasePercent) {
+      return b.increasePercent - a.increasePercent;
+    }
+    const payeeComparison = a.payeeName.localeCompare(b.payeeName);
+    if (payeeComparison !== 0) {
+      return payeeComparison;
+    }
+    return a.subscriptionId.localeCompare(b.subscriptionId);
+  });
+
+  return {
+    items,
+    consideredCount: rows.length,
+    decreasedOrUnchangedCount,
+    excludedForCurrencyMismatch,
+    excludedForZeroPrevious,
+  };
+}
+
+const FREQUENCY_PER_YEAR: Readonly<Record<string, bigint>> = {
+  daily: 365n,
+  weekly: 52n,
+  biweekly: 26n,
+  fortnightly: 26n,
+  monthly: 12n,
+  bimonthly: 6n,
+  quarterly: 4n,
+  semiannual: 2n,
+  semiannually: 2n,
+  biannual: 2n,
+  yearly: 1n,
+  annual: 1n,
+  annually: 1n,
+};
+
+/**
+ * §3.2 buildRecurringVsVariable
+ * Pure builder that calculates committed recurring spend vs variable expenses.
+ *
+ * Design constraints:
+ * - Matching on payee_name is FORBIDDEN; transactions carry no subscription link,
+ *   so recurring spend is computed from active subscriptions.
+ * - Currency conversion: Currency conversion of subscription amounts is the caller's job
+ *   in the final slice; this builder receives minor units already in the base currency.
+ * - Frequency normalisation: exact match only after trim() and toLowerCase() against
+ *   pinned table. Unmatched frequencies are excluded from committed total and counted
+ *   in unclassifiedSubscriptionCount. Never guess, never drop silently.
+ * - Identity invariant: variableMinor is NOT floored at zero. Reports exactly
+ *   variableMinor = totalExpensesMinor - committedMinor, negative included, so that
+ *   committed + variable === totalExpenses holds as an identity.
+ * - committedPercent is null when totalExpensesMinor === 0n, else computed to 2 decimals
+ *   using BigInt half-away-from-zero rounding.
+ */
+export function buildRecurringVsVariable(
+  from: string,
+  to: string,
+  subscriptions: readonly ConvertedSubscriptionRow[],
+  totalExpensesMinor: bigint,
+): RecurringVsVariable {
+  const fromDate = new Date(`${from}T00:00:00.000Z`);
+  const toDate = new Date(`${to}T00:00:00.000Z`);
+  const msDiff = toDate.getTime() - fromDate.getTime();
+  const days = BigInt(Math.round(msDiff / 86400000) + 1);
+
+  let committedMinor = 0n;
+  let unclassifiedSubscriptionCount = 0;
+
+  for (const sub of subscriptions) {
+    const key = sub.frequency.trim().toLowerCase();
+    const perYear = FREQUENCY_PER_YEAR[key];
+
+    if (perYear === undefined) {
+      unclassifiedSubscriptionCount += 1;
+      continue;
+    }
+
+    // Committed amount over period: roundDivHalfAwayFromZero(amountMinor * perYear * days, 365n)
+    const subCommitted = roundDivHalfAwayFromZero(
+      sub.amountMinor * perYear * days,
+      365n,
+    );
+    committedMinor += subCommitted;
+  }
+
+  // §3.2: variableMinor is NOT floored at zero; preserves identity committed + variable === totalExpenses
+  const variableMinor = totalExpensesMinor - committedMinor;
+
+  let committedPercent: number | null = null;
+  if (totalExpensesMinor !== 0n) {
+    let num = committedMinor * 10000n;
+    let den = totalExpensesMinor;
+    if (den < 0n) {
+      num = -num;
+      den = -den;
+    }
+    const q = num / den;
+    const r = num % den;
+
+    let roundedHundredths = q;
+    if (num >= 0n) {
+      if (2n * r >= den) {
+        roundedHundredths = q + 1n;
+      }
+    } else {
+      const absR = -r;
+      if (2n * absR >= den) {
+        roundedHundredths = q - 1n;
+      }
+    }
+
+    const pct = Number(roundedHundredths) / 100;
+    const normalizedPct = Object.is(pct, -0) ? 0 : pct;
+
+    // null here means "not representable" (e.g. non-finite when input magnitude overflows IEEE-754).
+    // It shares a value with the zero-expense case. A real database value can
+    // never reach it because the column is bigint (int64) — this is a guard on a
+    // public exported function, not a live defect.
+    committedPercent = Number.isFinite(normalizedPct) ? normalizedPct : null;
+  }
+
+  return {
+    periodStart: from,
+    periodEnd: to,
+    committedMinor,
+    variableMinor,
+    totalExpensesMinor,
+    committedPercent,
+    consideredSubscriptionCount: subscriptions.length,
+    unclassifiedSubscriptionCount,
+  };
+}
+
+interface DebtCostAccumulator {
+  interestMinor: bigint;
+  feeMinor: bigint;
+}
+
+/**
+ * §3.3 buildDebtCostEvolution
+ * Pure builder that calculates monthly debt payment costs (interest and fees).
+ *
+ * Design constraints:
+ * - Buckets: monthly, gap-free and zero-filled via generateBucketPeriods(from, to, GRANULARITY.MONTH).
+ * - A month with no payments is present with real zeros.
+ * - Buckets by occurredAt evaluated in UTC.
+ * - Per month: interestMinor, feeMinor, totalCostMinor = interestMinor + feeMinor.
+ * - Across the whole period: totalInterestMinor, totalFeeMinor, totalCostMinor.
+ * - Currency conversion note: rows arrive already converted to base currency by the caller.
+ */
+export function buildDebtCostEvolution(
+  from: string,
+  to: string,
+  rows: readonly ConvertedDebtCostRow[],
+): DebtCostEvolution {
+  const bucketPeriods = generateBucketPeriods(from, to, GRANULARITY.MONTH);
+
+  const bucketMap = new Map<string, DebtCostAccumulator>();
+  for (const period of bucketPeriods) {
+    bucketMap.set(period, { interestMinor: 0n, feeMinor: 0n });
+  }
+
+  for (const row of rows) {
+    const bucketPeriod = truncateToBucketStart(
+      row.occurredAt,
+      GRANULARITY.MONTH,
+    );
+    const bucket = bucketMap.get(bucketPeriod);
+    if (!bucket) {
+      continue;
+    }
+
+    bucket.interestMinor += row.interestMinor;
+    bucket.feeMinor += row.feeMinor;
+  }
+
+  let totalInterestMinor = 0n;
+  let totalFeeMinor = 0n;
+
+  const series: DebtCostEvolutionPoint[] = bucketPeriods.map((month) => {
+    const bucket = bucketMap.get(month)!;
+    totalInterestMinor += bucket.interestMinor;
+    totalFeeMinor += bucket.feeMinor;
+
+    return {
+      month,
+      interestMinor: bucket.interestMinor,
+      feeMinor: bucket.feeMinor,
+      totalCostMinor: bucket.interestMinor + bucket.feeMinor,
+    };
+  });
+
+  return {
+    series,
+    totalInterestMinor,
+    totalFeeMinor,
+    totalCostMinor: totalInterestMinor + totalFeeMinor,
+  };
 }

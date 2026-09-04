@@ -12,7 +12,7 @@ import {
   type RecurringStore,
   type SubscriptionItem,
 } from './recurring.service.js';
-import { computeIncreasePercent } from './subscription-calculation.js';
+import { computeIncreasePercent } from '../platform/percentage-change.js';
 
 interface RecurringRuleRow extends Record<string, unknown> {
   readonly id: string;
