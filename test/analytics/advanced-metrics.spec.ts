@@ -236,6 +236,33 @@ describe('buildIncomeStability', () => {
     });
   });
 
+  it('reports a non-negative CV when mean monthly income is negative', () => {
+    // A coefficient of variation is a dispersion RATIO: stdDev / |mean|. Standard
+    // deviation is never negative, so the CV must never be negative either. Monthly
+    // income can go negative because AmountMinor is a signed integer in the contract
+    // and an income correction is recorded as a negative income transaction.
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: -10000n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: -10000n,
+      },
+      {
+        month: '2026-02-01',
+        incomeMinor: -30000n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: -30000n,
+      },
+    ];
+
+    const result = buildIncomeStability(series);
+
+    // mean = -20000, population stdDev = 10000, so the spread is 50% of the magnitude.
+    expect(result.meanMonthlyIncomeMinor).toBe(-20000n);
+    expect(result.coefficientOfVariationPercent).toBe(50);
+  });
+
   it('calculates mean, min, max and CV% with population std dev rounded to 2 decimals', () => {
     const series: readonly MonthlyCapacityPoint[] = [
       {

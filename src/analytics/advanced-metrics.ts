@@ -190,7 +190,11 @@ export function buildIncomeStability(
   const variance = sumSquaredDiffs / monthsCounted;
   const populationStdDev = Math.sqrt(variance);
 
-  const cvPercent = (populationStdDev / meanNumber) * 100;
+  // A coefficient of variation is a dispersion RATIO, so it is never negative: standard
+  // deviation is non-negative and the magnitude of the mean is what it is measured against.
+  // Monthly income can be negative because AmountMinor is a signed integer in the contract,
+  // so dividing by the signed mean would emit a meaningless negative percentage.
+  const cvPercent = (populationStdDev / Math.abs(meanNumber)) * 100;
   const coefficientOfVariationPercent =
     roundNumberToTwoDecimalsHalfAwayFromZero(cvPercent);
 
