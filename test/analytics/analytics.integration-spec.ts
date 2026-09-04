@@ -631,6 +631,51 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
     });
   });
 
+  it('3a. refunds exceeding expenses remain negative and preserve exact savings capacity', async () => {
+    await seedTransaction({
+      workspaceId: ws1Id,
+      accountId: acctCheckingId,
+      type: 'income',
+      amountMinor: 30000,
+      currency: 'USD',
+      occurredAt: '2027-04-05T10:00:00Z',
+    });
+    await seedTransaction({
+      workspaceId: ws1Id,
+      accountId: acctCheckingId,
+      type: 'expense',
+      amountMinor: 10000,
+      currency: 'USD',
+      occurredAt: '2027-04-10T10:00:00Z',
+    });
+    await seedTransaction({
+      workspaceId: ws1Id,
+      accountId: acctCheckingId,
+      type: 'refund',
+      amountMinor: 20000,
+      currency: 'USD',
+      occurredAt: '2027-04-15T10:00:00Z',
+    });
+
+    const res = await application.inject({
+      method: 'GET',
+      url: '/v1/analytics/summary?from=2027-04-01&to=2027-04-30',
+      headers: {
+        authorization: 'Bearer owner-token',
+        'x-workspace-id': ws1Id,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.expenses).toEqual({ amountMinor: '-10000', currency: 'USD' });
+    expect(body.savingsCapacity.amountMinor).toBe(
+      (
+        BigInt(body.income.amountMinor) - BigInt(body.expenses.amountMinor)
+      ).toString(),
+    );
+  });
+
   it('4. pending or voided posting does not contribute to any aggregate', async () => {
     await seedTransaction({
       workspaceId: ws1Id,
@@ -844,6 +889,116 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
     ]);
   });
 
+  it('9a. week buckets align to UTC Mondays for a period starting mid-week', async () => {
+    await seedTransaction({
+      workspaceId: ws1Id,
+      accountId: acctCheckingId,
+      type: 'income',
+      amountMinor: 100,
+      occurredAt: '2026-04-08T12:00:00Z',
+    });
+    await seedTransaction({
+      workspaceId: ws1Id,
+      accountId: acctCheckingId,
+      type: 'expense',
+      amountMinor: 30,
+      occurredAt: '2026-04-15T12:00:00Z',
+    });
+    await seedTransaction({
+      workspaceId: ws1Id,
+      accountId: acctCheckingId,
+      type: 'refund',
+      amountMinor: 20,
+      occurredAt: '2026-04-29T12:00:00Z',
+    });
+
+    const res = await application.inject({
+      method: 'GET',
+      url: '/v1/analytics/cash-flow?from=2026-04-08&to=2026-04-29&granularity=week',
+      headers: {
+        authorization: 'Bearer owner-token',
+        'x-workspace-id': ws1Id,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.series).toEqual([
+      {
+        period: '2026-04-06',
+        value: { amountMinor: '100', currency: 'USD' },
+        secondaryValue: { amountMinor: '100', currency: 'USD' },
+      },
+      {
+        period: '2026-04-13',
+        value: { amountMinor: '-30', currency: 'USD' },
+        secondaryValue: { amountMinor: '70', currency: 'USD' },
+      },
+      {
+        period: '2026-04-20',
+        value: { amountMinor: '0', currency: 'USD' },
+        secondaryValue: { amountMinor: '70', currency: 'USD' },
+      },
+      {
+        period: '2026-04-27',
+        value: { amountMinor: '20', currency: 'USD' },
+        secondaryValue: { amountMinor: '90', currency: 'USD' },
+      },
+    ]);
+    expect(body.series).toHaveLength(4);
+    expect(body.series[0].period).toBe('2026-04-06');
+    expect(body.series[3].period).toBe('2026-04-27');
+  });
+
+  it('9b. quarter buckets align to UTC quarter starts for a period starting mid-quarter', async () => {
+    await seedTransaction({
+      workspaceId: ws1Id,
+      accountId: acctCheckingId,
+      type: 'income',
+      amountMinor: 100,
+      occurredAt: '2028-02-15T12:00:00Z',
+    });
+    await seedTransaction({
+      workspaceId: ws1Id,
+      accountId: acctCheckingId,
+      type: 'expense',
+      amountMinor: 40,
+      occurredAt: '2028-05-10T12:00:00Z',
+    });
+
+    const res = await application.inject({
+      method: 'GET',
+      url: '/v1/analytics/cash-flow?from=2028-02-10&to=2028-08-20&granularity=quarter',
+      headers: {
+        authorization: 'Bearer owner-token',
+        'x-workspace-id': ws1Id,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.series).toEqual([
+      {
+        period: '2028-01-01',
+        value: { amountMinor: '100', currency: 'USD' },
+        secondaryValue: { amountMinor: '100', currency: 'USD' },
+      },
+      {
+        period: '2028-04-01',
+        value: { amountMinor: '-40', currency: 'USD' },
+        secondaryValue: { amountMinor: '60', currency: 'USD' },
+      },
+      {
+        period: '2028-07-01',
+        value: { amountMinor: '0', currency: 'USD' },
+        secondaryValue: { amountMinor: '60', currency: 'USD' },
+      },
+    ]);
+    expect(body.series).toHaveLength(3);
+    expect(body.series[0].period).toBe('2028-01-01');
+    expect(body.series[2].period).toBe('2028-07-01');
+  });
+
   it('10. empty buckets appear with zero values (gap-free series)', async () => {
     await seedTransaction({
       workspaceId: ws1Id,
@@ -908,7 +1063,7 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
     expect(body.series[2].secondaryValue.amountMinor).toBe('150000');
   });
 
-  it('12. categories percentages sum to 100 for non-trivial seed; empty array when no expenses', async () => {
+  it('12. category percentages use total expenses including uncategorised spending; empty array when no expenses', async () => {
     await seedTransaction({
       workspaceId: ws1Id,
       accountId: acctCheckingId,
@@ -970,6 +1125,11 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
 
     expect(groceries.percentage).toBe(50);
     expect(entertainment.percentage).toBeCloseTo(33.333333, 4);
+    const uncategorisedRemainder =
+      100 - groceries.percentage - entertainment.percentage;
+    expect(
+      groceries.percentage + entertainment.percentage + uncategorisedRemainder,
+    ).toBeCloseTo(100, 4);
 
     await seedTransaction({
       workspaceId: ws1Id,

@@ -202,7 +202,9 @@ export class AnalyticsService implements AnalyticsPort {
       // expenses = sum of transactions with type = 'expense' MINUS those with type = 'refund'
       // EXCLUDED from both: adjustment, debt_payment, fund_contribution
       // EXCLUDED entirely: transfers (transfer postings carry a non-null transfer_id)
-      // expenses is reported as a POSITIVE magnitude even though the underlying postings are negative.
+      // expenses is the NET of expense minus refund, expressed with money-out positive.
+      // It is legitimately NEGATIVE when refunds exceed expenses in the period. Do NOT
+      // "fix" this by clamping: savingsCapacity = income - expenses depends on the true net.
       const txnRows = await this.store.readTransactionsInPeriod(
         client,
         query.workspaceId,
@@ -451,7 +453,9 @@ export class AnalyticsService implements AnalyticsPort {
 
       // 4.7 categories breakdown:
       // CategoryBreakdownItem per category over period: amount is expense magnitude,
-      // percentage is 100 * amount / total expenses as a number.
+      // percentage is 100 * amount / total expenses as a number. The denominator is
+      // total expenses INCLUDING uncategorised spending because uncategorised spending
+      // is real spending even though it has no category row to appear in the response.
       // If total expenses is zero, return an EMPTY array — do not emit items with percentage 0/0.
       // Uncategorised transactions are grouped under no category and therefore excluded from this array.
       let totalWorkspaceExpenses = 0n;
