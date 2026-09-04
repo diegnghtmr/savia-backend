@@ -49,6 +49,10 @@ export interface CreateBudgetRequest {
   readonly periodEnd: string;
   readonly copyFromBudgetId?: string | null;
 }
+export interface UpdateBudgetRequest {
+  readonly name?: string;
+  readonly method?: BudgetMethod;
+}
 export interface BudgetListQuery {
   readonly workspaceId: string;
   readonly cursor?: Cursor;
@@ -92,6 +96,13 @@ export interface BudgetStore {
     budgetId: string,
     allocations: readonly BudgetAllocation[],
   ): Promise<void>;
+  updateBudget(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    command: UpdateBudgetRequest,
+    expectedVersion?: number,
+  ): Promise<Budget | undefined>;
   listBudgets(
     client: TransactionClient,
     query: BudgetListQuery,
@@ -100,6 +111,7 @@ export interface BudgetStore {
 }
 export const BUDGET_OUTCOMES = {
   CREATED: 'created',
+  UPDATED: 'updated',
   REPLAYED: 'replayed',
   FORBIDDEN: 'forbidden',
   CONFLICT: 'conflict',
@@ -107,6 +119,7 @@ export const BUDGET_OUTCOMES = {
   TOO_MANY_ALLOCATIONS: 'too-many-allocations',
   FOUND: 'found',
   NOT_FOUND: 'not-found',
+  PRECONDITION_FAILED: 'precondition-failed',
   CURRENCY_UNSUPPORTED: 'currency_unsupported',
 } as const;
 export type BudgetCreateOutcome =
@@ -132,6 +145,21 @@ export type BudgetGetOutcome =
         | typeof BUDGET_OUTCOMES.NOT_FOUND
         | typeof BUDGET_OUTCOMES.FORBIDDEN;
     };
+export type BudgetUpdateOutcome =
+  | { readonly kind: typeof BUDGET_OUTCOMES.UPDATED; readonly budget: Budget }
+  | {
+      readonly kind: typeof BUDGET_OUTCOMES.REPLAYED;
+      readonly status: number;
+      readonly etag: string | null;
+      readonly body: unknown;
+    }
+  | {
+      readonly kind:
+        | typeof BUDGET_OUTCOMES.FORBIDDEN
+        | typeof BUDGET_OUTCOMES.NOT_FOUND
+        | typeof BUDGET_OUTCOMES.PRECONDITION_FAILED
+        | typeof BUDGET_OUTCOMES.CONFLICT;
+    };
 export type BudgetListOutcome =
   | {
       readonly kind: 'ok';
@@ -153,6 +181,14 @@ export interface BudgetsPort {
     workspaceId: string,
     id: string,
   ): Promise<BudgetGetOutcome>;
+  updateBudget(
+    subject: string,
+    workspaceId: string,
+    id: string,
+    command: UpdateBudgetRequest,
+    key: string,
+    ifMatch: import('../platform/if-match.js').IfMatchParse,
+  ): Promise<BudgetUpdateOutcome>;
   listBudgets(
     subject: string,
     query: BudgetListQuery,
