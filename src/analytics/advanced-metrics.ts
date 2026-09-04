@@ -1,7 +1,9 @@
 import {
   GRANULARITY,
   type ConvertedFlowRow,
+  type IncomeStability,
   type MonthlyCapacityPoint,
+  type QuarterlyAveragePoint,
 } from './analytics.port.js';
 import {
   generateBucketPeriods,
@@ -69,4 +71,269 @@ export function buildMonthlySavingsCapacity(
       savingsCapacityMinor: bucket.incomeMinor - bucket.expensesMinor,
     };
   });
+}
+
+/**
+ * Integer division with half-away-from-zero (symmetric half-up) rounding.
+ * Reuses the same tie-breaking logic as computeIncreasePercent in src/recurring/subscription-calculation.ts.
+ */
+export function roundDivHalfAwayFromZero(num: bigint, den: bigint): bigint {
+  if (den === 0n) {
+    throw new Error('Division by zero in roundDivHalfAwayFromZero');
+  }
+  let n = num;
+  let d = den;
+  if (d < 0n) {
+    n = -n;
+    d = -d;
+  }
+  const q = n / d;
+  const r = n % d;
+  if (n >= 0n) {
+    if (2n * r >= d) {
+      return q + 1n;
+    }
+    return q;
+  } else {
+    const absR = -r;
+    if (2n * absR >= d) {
+      return q - 1n;
+    }
+    return q;
+  }
+}
+
+/**
+ * Rounds a floating-point value to 2 decimals using half-away-from-zero tie-breaking.
+ */
+export function roundNumberToTwoDecimalsHalfAwayFromZero(val: number): number {
+  const sign = val < 0 ? -1 : 1;
+  const abs = Math.abs(val);
+  const roundedHundredths = Math.round(abs * 100 + 1e-12);
+  const result = (sign * roundedHundredths) / 100;
+  return Object.is(result, -0) ? 0 : result;
+}
+
+/**
+ * §3.4 buildIncomeStability
+ * Derived from the monthly series (§3.3), zero months included.
+ * - meanMonthlyIncomeMinor: integer mean, half-away-from-zero rounding using BigInt.
+ * - coefficientOfVariationPercent: (populationStdDev / mean) * 100, 2 decimals, half-away-from-zero.
+ *   - If meanMonthlyIncomeMinor is 0 -> null.
+ *   - If monthsCounted is 0 -> all money fields 0n and CV is null.
+ *   - Population std dev: divide by N, not N - 1. With N = 1, stddev is 0 and CV is 0.
+ */
+export function buildIncomeStability(
+  monthlySeries: readonly MonthlyCapacityPoint[],
+): IncomeStability {
+  const monthsCounted = monthlySeries.length;
+  if (monthsCounted === 0) {
+    return {
+      monthsCounted: 0,
+      meanMonthlyIncomeMinor: 0n,
+      minMonthlyIncomeMinor: 0n,
+      maxMonthlyIncomeMinor: 0n,
+      coefficientOfVariationPercent: null,
+    };
+  }
+
+  let minMonthlyIncomeMinor = monthlySeries[0].incomeMinor;
+  let maxMonthlyIncomeMinor = monthlySeries[0].incomeMinor;
+  let totalIncomeMinor = 0n;
+
+  for (const point of monthlySeries) {
+    if (point.incomeMinor < minMonthlyIncomeMinor) {
+      minMonthlyIncomeMinor = point.incomeMinor;
+    }
+    if (point.incomeMinor > maxMonthlyIncomeMinor) {
+      maxMonthlyIncomeMinor = point.incomeMinor;
+    }
+    totalIncomeMinor += point.incomeMinor;
+  }
+
+  const meanMonthlyIncomeMinor = roundDivHalfAwayFromZero(
+    totalIncomeMinor,
+    BigInt(monthsCounted),
+  );
+
+  // §3.4: If meanMonthlyIncomeMinor is 0 -> null. Never NaN, never Infinity, never a fabricated 0.
+  if (meanMonthlyIncomeMinor === 0n) {
+    return {
+      monthsCounted,
+      meanMonthlyIncomeMinor,
+      minMonthlyIncomeMinor,
+      maxMonthlyIncomeMinor,
+      coefficientOfVariationPercent: null,
+    };
+  }
+
+  // §3.4: With a single month, population stddev is 0 and CV is 0.
+  if (monthsCounted === 1) {
+    return {
+      monthsCounted,
+      meanMonthlyIncomeMinor,
+      minMonthlyIncomeMinor,
+      maxMonthlyIncomeMinor,
+      coefficientOfVariationPercent: 0,
+    };
+  }
+
+  // §3.4: Use population standard deviation (divide by N, not N - 1).
+  // Population stddev reflects the entire observed period rather than an inferred sample.
+  const meanNumber = Number(totalIncomeMinor) / monthsCounted;
+  let sumSquaredDiffs = 0;
+  for (const point of monthlySeries) {
+    const diff = Number(point.incomeMinor) - meanNumber;
+    sumSquaredDiffs += diff * diff;
+  }
+  const variance = sumSquaredDiffs / monthsCounted;
+  const populationStdDev = Math.sqrt(variance);
+
+  const cvPercent = (populationStdDev / meanNumber) * 100;
+  const coefficientOfVariationPercent =
+    roundNumberToTwoDecimalsHalfAwayFromZero(cvPercent);
+
+  return {
+    monthsCounted,
+    meanMonthlyIncomeMinor,
+    minMonthlyIncomeMinor,
+    maxMonthlyIncomeMinor,
+    coefficientOfVariationPercent,
+  };
+}
+
+/**
+ * Computes percentage delta between current and previous quarterly savings capacity:
+ * ((current - previous) / |previous|) * 100
+ * - 2 decimals, half-away-from-zero rounding using BigInt scaled integer arithmetic.
+ * - Uses |previous| in the denominator so that moving from -100 to -50 reads as +50% improvement.
+ */
+function computeQuarterlyDeltaPercent(
+  current: bigint,
+  previous: bigint,
+): number | null {
+  if (previous === 0n) {
+    return null;
+  }
+  if (current === previous) {
+    return 0;
+  }
+
+  // §3.5: Absolute value of previous in denominator so negative-to-less-negative reads as improvement
+  const den = previous < 0n ? -previous : previous;
+  const num = (current - previous) * 10000n;
+
+  const q = num / den;
+  const r = num % den;
+
+  let roundedHundredths = q;
+  if (num >= 0n) {
+    if (2n * r >= den) {
+      roundedHundredths = q + 1n;
+    }
+  } else {
+    const absR = -r;
+    if (2n * absR >= den) {
+      roundedHundredths = q - 1n;
+    }
+  }
+
+  const result = Number(roundedHundredths) / 100;
+  return Object.is(result, -0) ? 0 : result;
+}
+
+/**
+ * §3.5 buildQuarterlyAverageComparison
+ * Groups the §3.3 monthly points by calendar quarter (Q1 = Jan-Mar, UTC).
+ * - monthsCounted: how many monthly buckets actually fall in [from, to] (1, 2, or 3).
+ *   Never extrapolate a partial quarter to a full one.
+ * - Averages: integer, half-away-from-zero, divided by monthsCounted.
+ * - savingsCapacityDeltaPercentVsPreviousQuarter:
+ *   ((current - previous) / |previous|) * 100, 2 decimals, half-away-from-zero.
+ *   - null for first quarter in series
+ *   - null when previous quarter average is 0
+ *   - uses |previous| in denominator
+ * - Order: ascending by quarter. Deterministic.
+ */
+export function buildQuarterlyAverageComparison(
+  monthlySeries: readonly MonthlyCapacityPoint[],
+): readonly QuarterlyAveragePoint[] {
+  if (monthlySeries.length === 0) {
+    return [];
+  }
+
+  // Group monthly points by calendar quarter (YYYY-Qn)
+  const quarterGroups = new Map<string, MonthlyCapacityPoint[]>();
+  for (const point of monthlySeries) {
+    const year = point.month.slice(0, 4);
+    const monthNum = parseInt(point.month.slice(5, 7), 10);
+    const quarterNum = Math.floor((monthNum - 1) / 3) + 1;
+    const quarterKey = `${year}-Q${quarterNum}`;
+
+    let group = quarterGroups.get(quarterKey);
+    if (!group) {
+      group = [];
+      quarterGroups.set(quarterKey, group);
+    }
+    group.push(point);
+  }
+
+  // Deterministic ascending quarter ordering
+  const sortedQuarters = [...quarterGroups.keys()].sort((a, b) =>
+    a.localeCompare(b),
+  );
+
+  const results: QuarterlyAveragePoint[] = [];
+
+  for (let i = 0; i < sortedQuarters.length; i += 1) {
+    const quarter = sortedQuarters[i];
+    const points = quarterGroups.get(quarter)!;
+    const monthsCounted = points.length;
+    const monthsCountedBigInt = BigInt(monthsCounted);
+
+    let totalIncome = 0n;
+    let totalExpenses = 0n;
+    let totalSavings = 0n;
+
+    for (const p of points) {
+      totalIncome += p.incomeMinor;
+      totalExpenses += p.expensesMinor;
+      totalSavings += p.savingsCapacityMinor;
+    }
+
+    const averageMonthlyIncomeMinor = roundDivHalfAwayFromZero(
+      totalIncome,
+      monthsCountedBigInt,
+    );
+    const averageMonthlyExpensesMinor = roundDivHalfAwayFromZero(
+      totalExpenses,
+      monthsCountedBigInt,
+    );
+    const averageMonthlySavingsCapacityMinor = roundDivHalfAwayFromZero(
+      totalSavings,
+      monthsCountedBigInt,
+    );
+
+    let savingsCapacityDeltaPercentVsPreviousQuarter: number | null = null;
+    if (i > 0) {
+      const previousQuarterSavings =
+        results[i - 1].averageMonthlySavingsCapacityMinor;
+      savingsCapacityDeltaPercentVsPreviousQuarter =
+        computeQuarterlyDeltaPercent(
+          averageMonthlySavingsCapacityMinor,
+          previousQuarterSavings,
+        );
+    }
+
+    results.push({
+      quarter,
+      monthsCounted,
+      averageMonthlyIncomeMinor,
+      averageMonthlyExpensesMinor,
+      averageMonthlySavingsCapacityMinor,
+      savingsCapacityDeltaPercentVsPreviousQuarter,
+    });
+  }
+
+  return results;
 }

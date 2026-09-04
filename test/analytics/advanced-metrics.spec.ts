@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { ConvertedFlowRow } from '../../src/analytics/analytics.port.js';
-import { buildMonthlySavingsCapacity } from '../../src/analytics/advanced-metrics.js';
+import type {
+  ConvertedFlowRow,
+  MonthlyCapacityPoint,
+} from '../../src/analytics/analytics.port.js';
+import {
+  buildIncomeStability,
+  buildMonthlySavingsCapacity,
+  buildQuarterlyAverageComparison,
+} from '../../src/analytics/advanced-metrics.js';
 
 describe('buildMonthlySavingsCapacity', () => {
   it('returns zero-filled buckets over a real period when input is empty', () => {
@@ -162,5 +169,274 @@ describe('buildMonthlySavingsCapacity', () => {
         savingsCapacityMinor: 2000n,
       },
     ]);
+  });
+});
+
+describe('buildIncomeStability', () => {
+  it('returns zeroed metrics and null CV when monthly series is empty', () => {
+    const series: readonly MonthlyCapacityPoint[] = [];
+
+    const result = buildIncomeStability(series);
+
+    expect(result).toEqual({
+      monthsCounted: 0,
+      meanMonthlyIncomeMinor: 0n,
+      minMonthlyIncomeMinor: 0n,
+      maxMonthlyIncomeMinor: 0n,
+      coefficientOfVariationPercent: null,
+    });
+  });
+
+  it('returns CV of 0 for a single-month period', () => {
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: 50000n,
+        expensesMinor: 20000n,
+        savingsCapacityMinor: 30000n,
+      },
+    ];
+
+    const result = buildIncomeStability(series);
+
+    expect(result).toEqual({
+      monthsCounted: 1,
+      meanMonthlyIncomeMinor: 50000n,
+      minMonthlyIncomeMinor: 50000n,
+      maxMonthlyIncomeMinor: 50000n,
+      coefficientOfVariationPercent: 0,
+    });
+  });
+
+  it('returns null CV when mean monthly income is exactly zero', () => {
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: 0n,
+        expensesMinor: 10000n,
+        savingsCapacityMinor: -10000n,
+      },
+      {
+        month: '2026-02-01',
+        incomeMinor: 0n,
+        expensesMinor: 15000n,
+        savingsCapacityMinor: -15000n,
+      },
+    ];
+
+    const result = buildIncomeStability(series);
+
+    expect(result).toEqual({
+      monthsCounted: 2,
+      meanMonthlyIncomeMinor: 0n,
+      minMonthlyIncomeMinor: 0n,
+      maxMonthlyIncomeMinor: 0n,
+      coefficientOfVariationPercent: null,
+    });
+  });
+
+  it('calculates mean, min, max and CV% with population std dev rounded to 2 decimals', () => {
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: 100000n,
+        expensesMinor: 50000n,
+        savingsCapacityMinor: 50000n,
+      },
+      {
+        month: '2026-02-01',
+        incomeMinor: 200000n,
+        expensesMinor: 80000n,
+        savingsCapacityMinor: 120000n,
+      },
+      {
+        month: '2026-03-01',
+        incomeMinor: 150000n,
+        expensesMinor: 60000n,
+        savingsCapacityMinor: 90000n,
+      },
+    ];
+
+    const result = buildIncomeStability(series);
+
+    expect(result).toEqual({
+      monthsCounted: 3,
+      meanMonthlyIncomeMinor: 150000n,
+      minMonthlyIncomeMinor: 100000n,
+      maxMonthlyIncomeMinor: 200000n,
+      coefficientOfVariationPercent: 27.22,
+    });
+  });
+
+  it('applies half-away-from-zero rounding to mean monthly income', () => {
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: 10000n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 10000n,
+      },
+      {
+        month: '2026-02-01',
+        incomeMinor: 10001n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 10001n,
+      },
+    ];
+
+    const result = buildIncomeStability(series);
+
+    // Sum is 20001n / 2n = 10000.5n -> rounds away from zero to 10001n
+    expect(result.meanMonthlyIncomeMinor).toBe(10001n);
+  });
+});
+
+describe('buildQuarterlyAverageComparison', () => {
+  it('correctly reports monthsCounted for clipped partial quarters', () => {
+    // Period starting mid-quarter (Feb) and ending mid-quarter (Jul)
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-02-01',
+        incomeMinor: 20000n,
+        expensesMinor: 10000n,
+        savingsCapacityMinor: 10000n,
+      },
+      {
+        month: '2026-03-01',
+        incomeMinor: 30000n,
+        expensesMinor: 10000n,
+        savingsCapacityMinor: 20000n,
+      },
+      {
+        month: '2026-04-01',
+        incomeMinor: 10000n,
+        expensesMinor: 5000n,
+        savingsCapacityMinor: 5000n,
+      },
+      {
+        month: '2026-05-01',
+        incomeMinor: 10000n,
+        expensesMinor: 5000n,
+        savingsCapacityMinor: 5000n,
+      },
+      {
+        month: '2026-06-01',
+        incomeMinor: 10000n,
+        expensesMinor: 5000n,
+        savingsCapacityMinor: 5000n,
+      },
+      {
+        month: '2026-07-01',
+        incomeMinor: 40000n,
+        expensesMinor: 20000n,
+        savingsCapacityMinor: 20000n,
+      },
+    ];
+
+    const result = buildQuarterlyAverageComparison(series);
+
+    expect(result).toHaveLength(3);
+    // Q1 has 2 months counted (Feb, Mar)
+    expect(result[0].quarter).toBe('2026-Q1');
+    expect(result[0].monthsCounted).toBe(2);
+    expect(result[0].averageMonthlyIncomeMinor).toBe(25000n); // (20000 + 30000) / 2
+    expect(result[0].averageMonthlyExpensesMinor).toBe(10000n);
+    expect(result[0].averageMonthlySavingsCapacityMinor).toBe(15000n);
+    expect(result[0].savingsCapacityDeltaPercentVsPreviousQuarter).toBeNull();
+
+    // Q2 has 3 months counted (Apr, May, Jun)
+    expect(result[1].quarter).toBe('2026-Q2');
+    expect(result[1].monthsCounted).toBe(3);
+    expect(result[1].averageMonthlyIncomeMinor).toBe(10000n);
+    expect(result[1].averageMonthlyExpensesMinor).toBe(5000n);
+    expect(result[1].averageMonthlySavingsCapacityMinor).toBe(5000n);
+    // Delta vs Q1: ((5000 - 15000) / 15000) * 100 = -66.67%
+    expect(result[1].savingsCapacityDeltaPercentVsPreviousQuarter).toBe(-66.67);
+
+    // Q3 has 1 month counted (Jul)
+    expect(result[2].quarter).toBe('2026-Q3');
+    expect(result[2].monthsCounted).toBe(1);
+    expect(result[2].averageMonthlyIncomeMinor).toBe(40000n);
+    expect(result[2].averageMonthlyExpensesMinor).toBe(20000n);
+    expect(result[2].averageMonthlySavingsCapacityMinor).toBe(20000n);
+    // Delta vs Q2: ((20000 - 5000) / 5000) * 100 = +300%
+    expect(result[2].savingsCapacityDeltaPercentVsPreviousQuarter).toBe(300);
+  });
+
+  it('returns null delta when previous quarter average savings capacity is exactly 0', () => {
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: 10000n,
+        expensesMinor: 10000n,
+        savingsCapacityMinor: 0n,
+      },
+      {
+        month: '2026-04-01',
+        incomeMinor: 20000n,
+        expensesMinor: 10000n,
+        savingsCapacityMinor: 10000n,
+      },
+    ];
+
+    const result = buildQuarterlyAverageComparison(series);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].savingsCapacityDeltaPercentVsPreviousQuarter).toBeNull();
+    expect(result[1].savingsCapacityDeltaPercentVsPreviousQuarter).toBeNull();
+  });
+
+  it('produces positive delta when transitioning from negative to less-negative quarter', () => {
+    // §3.5: Move from -100 to -50 reads as improvement (+50%), not decline
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: 0n,
+        expensesMinor: 100n,
+        savingsCapacityMinor: -100n,
+      },
+      {
+        month: '2026-04-01',
+        incomeMinor: 0n,
+        expensesMinor: 50n,
+        savingsCapacityMinor: -50n,
+      },
+    ];
+
+    const result = buildQuarterlyAverageComparison(series);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].averageMonthlySavingsCapacityMinor).toBe(-100n);
+    expect(result[1].averageMonthlySavingsCapacityMinor).toBe(-50n);
+    expect(result[1].savingsCapacityDeltaPercentVsPreviousQuarter).toBe(50);
+  });
+
+  it('applies half-away-from-zero rounding to both positive (up) and negative (away from zero) cases', () => {
+    // Positive round up: 5n / 2n = 2.5n -> 3n
+    // Negative round away from zero (down): -5n / 2n = -2.5n -> -3n
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: 3n,
+        expensesMinor: 4n,
+        savingsCapacityMinor: -1n,
+      },
+      {
+        month: '2026-02-01',
+        incomeMinor: 2n,
+        expensesMinor: 6n,
+        savingsCapacityMinor: -4n,
+      },
+    ];
+
+    const result = buildQuarterlyAverageComparison(series);
+
+    expect(result).toHaveLength(1);
+    // income: (3 + 2) / 2 = 2.5 -> 3n
+    expect(result[0].averageMonthlyIncomeMinor).toBe(3n);
+    // expenses: (4 + 6) / 2 = 5n
+    expect(result[0].averageMonthlyExpensesMinor).toBe(5n);
+    // savings: (-1 + -4) / 2 = -2.5 -> -3n (away from zero / down)
+    expect(result[0].averageMonthlySavingsCapacityMinor).toBe(-3n);
   });
 });
