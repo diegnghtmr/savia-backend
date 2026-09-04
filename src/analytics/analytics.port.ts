@@ -107,6 +107,22 @@ export interface SubscriptionPriceIncreases {
   readonly excludedForZeroPrevious: number;
 }
 
+export interface ConvertedSubscriptionRow {
+  readonly amountMinor: bigint;
+  readonly frequency: string;
+}
+
+export interface RecurringVsVariable {
+  readonly periodStart: string;
+  readonly periodEnd: string;
+  readonly committedMinor: bigint;
+  readonly variableMinor: bigint;
+  readonly totalExpensesMinor: bigint;
+  readonly committedPercent: number | null;
+  readonly consideredSubscriptionCount: number;
+  readonly unclassifiedSubscriptionCount: number;
+}
+
 export interface AnalyticsSummaryQuery {
   readonly workspaceId: string;
   readonly from: string;
@@ -205,6 +221,12 @@ export interface SubscriptionPriceRow extends Record<string, unknown> {
   readonly previousCurrency: string;
 }
 
+export interface ActiveSubscriptionRow extends Record<string, unknown> {
+  readonly currentAmountMinor: string;
+  readonly currentCurrency: string;
+  readonly frequency: string;
+}
+
 export interface AnalyticsStore {
   readActiveRole(
     client: TransactionClient,
@@ -237,6 +259,11 @@ export interface AnalyticsStore {
     client: TransactionClient,
     workspaceId: string,
   ): Promise<readonly SubscriptionPriceRow[]>;
+
+  readActiveSubscriptions?(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<readonly ActiveSubscriptionRow[]>;
 
   readOverlappingBudgetAllocations(
     client: TransactionClient,

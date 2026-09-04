@@ -4,6 +4,7 @@ import { DEBT_OUTSTANDING_BALANCE_EXPRESSION } from '../platform/debt-balance-qu
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   AccountNativeBalanceRow,
+  ActiveSubscriptionRow,
   AnalyticsStore,
   BudgetAllocationRow,
   BudgetSpendRow,
@@ -175,6 +176,32 @@ where workspace_id = $1::uuid
   and previous_amount_minor is not null`;
 
     const result = await client.query<SubscriptionPriceRow>(sql, [workspaceId]);
+    return result.rows;
+  }
+
+  /**
+   * §3.2 recurring_vs_variable:
+   * Reads active workspace subscriptions.
+   * Filtered by status in ('detected', 'confirmed').
+   * 'ignored' means the user rejected the detection and 'cancelled' means
+   * the subscription ended; neither is a live recurring charge.
+   */
+  public async readActiveSubscriptions(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<readonly ActiveSubscriptionRow[]> {
+    const sql = `
+select
+  current_amount_minor::text as "currentAmountMinor",
+  current_currency as "currentCurrency",
+  frequency
+from public.subscriptions
+where workspace_id = $1::uuid
+  and status in ('detected', 'confirmed')`;
+
+    const result = await client.query<ActiveSubscriptionRow>(sql, [
+      workspaceId,
+    ]);
     return result.rows;
   }
 

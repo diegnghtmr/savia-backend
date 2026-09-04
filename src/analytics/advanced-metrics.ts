@@ -1,9 +1,11 @@
 import {
   GRANULARITY,
   type ConvertedFlowRow,
+  type ConvertedSubscriptionRow,
   type IncomeStability,
   type MonthlyCapacityPoint,
   type QuarterlyAveragePoint,
+  type RecurringVsVariable,
   type SubscriptionPriceIncreaseItem,
   type SubscriptionPriceIncreases,
   type SubscriptionPriceRow,
@@ -503,5 +505,112 @@ export function buildSubscriptionPriceIncreases(
     decreasedOrUnchangedCount,
     excludedForCurrencyMismatch,
     excludedForZeroPrevious,
+  };
+}
+
+const FREQUENCY_PER_YEAR: Readonly<Record<string, bigint>> = {
+  daily: 365n,
+  weekly: 52n,
+  biweekly: 26n,
+  fortnightly: 26n,
+  monthly: 12n,
+  bimonthly: 6n,
+  quarterly: 4n,
+  semiannual: 2n,
+  semiannually: 2n,
+  biannual: 2n,
+  yearly: 1n,
+  annual: 1n,
+  annually: 1n,
+};
+
+/**
+ * §3.2 buildRecurringVsVariable
+ * Pure builder that calculates committed recurring spend vs variable expenses.
+ *
+ * Design constraints:
+ * - Matching on payee_name is FORBIDDEN; transactions carry no subscription link,
+ *   so recurring spend is computed from active subscriptions.
+ * - Currency conversion: Currency conversion of subscription amounts is the caller's job
+ *   in the final slice; this builder receives minor units already in the base currency.
+ * - Frequency normalisation: exact match only after trim() and toLowerCase() against
+ *   pinned table. Unmatched frequencies are excluded from committed total and counted
+ *   in unclassifiedSubscriptionCount. Never guess, never drop silently.
+ * - Identity invariant: variableMinor is NOT floored at zero. Reports exactly
+ *   variableMinor = totalExpensesMinor - committedMinor, negative included, so that
+ *   committed + variable === totalExpenses holds as an identity.
+ * - committedPercent is null when totalExpensesMinor === 0n, else computed to 2 decimals
+ *   using BigInt half-away-from-zero rounding.
+ */
+export function buildRecurringVsVariable(
+  from: string,
+  to: string,
+  subscriptions: readonly ConvertedSubscriptionRow[],
+  totalExpensesMinor: bigint,
+): RecurringVsVariable {
+  const fromDate = new Date(`${from}T00:00:00.000Z`);
+  const toDate = new Date(`${to}T00:00:00.000Z`);
+  const msDiff = toDate.getTime() - fromDate.getTime();
+  const days = BigInt(Math.round(msDiff / 86400000) + 1);
+
+  let committedMinor = 0n;
+  let unclassifiedSubscriptionCount = 0;
+
+  for (const sub of subscriptions) {
+    const key = sub.frequency.trim().toLowerCase();
+    const perYear = FREQUENCY_PER_YEAR[key];
+
+    if (perYear === undefined) {
+      unclassifiedSubscriptionCount += 1;
+      continue;
+    }
+
+    // Committed amount over period: roundDivHalfAwayFromZero(amountMinor * perYear * days, 365n)
+    const subCommitted = roundDivHalfAwayFromZero(
+      sub.amountMinor * perYear * days,
+      365n,
+    );
+    committedMinor += subCommitted;
+  }
+
+  // §3.2: variableMinor is NOT floored at zero; preserves identity committed + variable === totalExpenses
+  const variableMinor = totalExpensesMinor - committedMinor;
+
+  let committedPercent: number | null = null;
+  if (totalExpensesMinor !== 0n) {
+    let num = committedMinor * 10000n;
+    let den = totalExpensesMinor;
+    if (den < 0n) {
+      num = -num;
+      den = -den;
+    }
+    const q = num / den;
+    const r = num % den;
+
+    let roundedHundredths = q;
+    if (num >= 0n) {
+      if (2n * r >= den) {
+        roundedHundredths = q + 1n;
+      }
+    } else {
+      const absR = -r;
+      if (2n * absR >= den) {
+        roundedHundredths = q - 1n;
+      }
+    }
+
+    const pct = Number(roundedHundredths) / 100;
+    committedPercent = Object.is(pct, -0) ? 0 : pct;
+  }
+
+  return {
+    periodStart: from,
+    periodEnd: to,
+    committedMinor,
+    variableMinor,
+    totalExpensesMinor,
+    committedPercent,
+    consideredSubscriptionCount: subscriptions.length,
+    unclassifiedSubscriptionCount,
   };
 }

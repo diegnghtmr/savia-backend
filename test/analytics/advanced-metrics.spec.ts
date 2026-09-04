@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type {
   ConvertedFlowRow,
+  ConvertedSubscriptionRow,
   MonthlyCapacityPoint,
   SubscriptionPriceRow,
 } from '../../src/analytics/analytics.port.js';
@@ -9,6 +10,7 @@ import {
   buildIncomeStability,
   buildMonthlySavingsCapacity,
   buildQuarterlyAverageComparison,
+  buildRecurringVsVariable,
   buildSubscriptionPriceIncreases,
   buildWeekdayHeatmap,
 } from '../../src/analytics/advanced-metrics.js';
@@ -971,5 +973,148 @@ describe('buildSubscriptionPriceIncreases', () => {
       'sub-10',
     ]);
     expect(result.items.map((i) => i.increasePercent)).toEqual([50, 25, 10]);
+  });
+});
+
+describe('buildRecurringVsVariable', () => {
+  it('normalises and classifies frequencies Monthly, weekly, MONTHLY after trim and lowercase', () => {
+    // 30 inclusive days: 2026-06-01 to 2026-06-30
+    const from = '2026-06-01';
+    const to = '2026-06-30';
+    const subscriptions: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10000n, frequency: 'Monthly' },
+      { amountMinor: 5000n, frequency: ' weekly ' },
+      { amountMinor: 20000n, frequency: 'MONTHLY' },
+    ];
+    const totalExpensesMinor = 100000n;
+
+    const result = buildRecurringVsVariable(
+      from,
+      to,
+      subscriptions,
+      totalExpensesMinor,
+    );
+
+    expect(result.consideredSubscriptionCount).toBe(3);
+    expect(result.unclassifiedSubscriptionCount).toBe(0);
+    expect(result.committedMinor).toBeGreaterThan(0n);
+    expect(result.committedMinor + result.variableMinor).toBe(
+      totalExpensesMinor,
+    );
+  });
+
+  it('marks unmatched frequencies every other Tuesday, empty, mensual as unclassified and counts them', () => {
+    const from = '2026-01-01';
+    const to = '2026-01-31';
+    const subscriptions: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10000n, frequency: 'every other Tuesday' },
+      { amountMinor: 5000n, frequency: '' },
+      { amountMinor: 8000n, frequency: 'mensual' },
+      { amountMinor: 12000n, frequency: 'monthly' }, // 1 classified
+    ];
+    const totalExpensesMinor = 50000n;
+
+    const result = buildRecurringVsVariable(
+      from,
+      to,
+      subscriptions,
+      totalExpensesMinor,
+    );
+
+    expect(result.consideredSubscriptionCount).toBe(4);
+    expect(result.unclassifiedSubscriptionCount).toBe(3);
+    // Only the 'monthly' subscription contributes to committedMinor:
+    // roundDivHalfAwayFromZero(12000n * 12n * 31n, 365n) = roundDiv(4464000n, 365n)
+    // 4464000 / 365 = 12230.13698... -> 12230n (remainder 50, 2*50=100 < 365)
+    expect(result.committedMinor).toBe(12230n);
+  });
+
+  it('preserves committed + variable === totalExpenses as an exact identity when variable is negative', () => {
+    const from = '2026-01-01';
+    const to = '2026-01-31'; // 31 days
+    // Monthly 10000n committed for 31 days = 10192n
+    const subscriptions: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10000n, frequency: 'monthly' },
+    ];
+    // Observed spend totalExpensesMinor is only 6000n (less than committed 10192n)
+    const totalExpensesMinor = 6000n;
+
+    const result = buildRecurringVsVariable(
+      from,
+      to,
+      subscriptions,
+      totalExpensesMinor,
+    );
+
+    expect(result.committedMinor).toBe(10192n);
+    expect(result.variableMinor).toBe(-4192n);
+    expect(result.totalExpensesMinor).toBe(6000n);
+    // Identity must hold: committed + variable === totalExpenses
+    expect(result.committedMinor + result.variableMinor).toBe(
+      result.totalExpensesMinor,
+    );
+    // committedPercent = (10192 / 6000) * 100 = 169.8666... -> 169.87%
+    expect(result.committedPercent).toBe(169.87);
+  });
+
+  it('returns committedPercent as null when totalExpensesMinor is 0n', () => {
+    const from = '2026-01-01';
+    const to = '2026-01-31';
+    const subscriptions: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10000n, frequency: 'monthly' },
+    ];
+    const totalExpensesMinor = 0n;
+
+    const result = buildRecurringVsVariable(
+      from,
+      to,
+      subscriptions,
+      totalExpensesMinor,
+    );
+
+    expect(result.committedMinor).toBe(10192n);
+    expect(result.variableMinor).toBe(-10192n);
+    expect(result.committedMinor + result.variableMinor).toBe(0n);
+    expect(result.committedPercent).toBeNull();
+  });
+
+  it('computes different committed amounts for 31-day vs 28-day periods for the same monthly subscription', () => {
+    /**
+     * Hand derivation:
+     * amountMinor = 10000n, frequency = 'monthly' -> perYear = 12n
+     * Formula: roundDivHalfAwayFromZero(amountMinor * perYear * days, 365n)
+     *
+     * 1) 31-day period (2026-01-01 to 2026-01-31, inclusive days = 31):
+     *    num = 10000n * 12n * 31n = 3720000n
+     *    3720000 / 365 = 10191 with remainder 285
+     *    2 * 285 = 570 >= 365 -> rounds up to 10192n
+     *
+     * 2) 28-day period (2026-02-01 to 2026-02-28, inclusive days = 28):
+     *    num = 10000n * 12n * 28n = 3360000n
+     *    3360000 / 365 = 9205 with remainder 175
+     *    2 * 175 = 350 < 365 -> rounds down to 9205n
+     *
+     * 10192n !== 9205n (difference = 987n)
+     */
+    const sub: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10000n, frequency: 'monthly' },
+    ];
+
+    const result31 = buildRecurringVsVariable(
+      '2026-01-01',
+      '2026-01-31',
+      sub,
+      20000n,
+    );
+    const result28 = buildRecurringVsVariable(
+      '2026-02-01',
+      '2026-02-28',
+      sub,
+      20000n,
+    );
+
+    expect(result31.committedMinor).toBe(10192n);
+    expect(result28.committedMinor).toBe(9205n);
+    expect(result31.committedMinor).not.toBe(result28.committedMinor);
   });
 });
