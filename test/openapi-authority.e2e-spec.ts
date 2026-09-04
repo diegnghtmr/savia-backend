@@ -208,4 +208,18 @@ describe('executable OpenAPI authority', () => {
       expect(pick(mirror)).toEqual(pick(authority));
     },
   );
+
+  it('rejects shared parameter schema drift across operations', () => {
+    writeFileSync(
+      contract,
+      readFileSync(contract, 'utf8').replace(
+        'schema: { type: integer, minimum: 1, maximum: 200, default: 50 }',
+        'schema: { type: integer, minimum: 1, maximum: 200 }',
+      ),
+    );
+
+    expect(verify).toThrow(
+      /shared parameter "limit" in query has schema mismatch in operation "listBudgets": differing field "default"/,
+    );
+  });
 });

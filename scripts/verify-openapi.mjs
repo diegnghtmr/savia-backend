@@ -94,6 +94,102 @@ const health = operations.find(
   (entry) => entry.path === '/health' && entry.method === 'GET',
 );
 
+const sortKeys = (val) => {
+  if (val === null || typeof val !== 'object') return val;
+  if (Array.isArray(val)) return val.map(sortKeys);
+  const sorted = {};
+  for (const key of Object.keys(val).sort()) {
+    sorted[key] = sortKeys(val[key]);
+  }
+  return sorted;
+};
+
+const findDifferingField = (actual, expected, path = '') => {
+  if (actual === expected) return null;
+  if (
+    typeof actual !== 'object' ||
+    actual === null ||
+    typeof expected !== 'object' ||
+    expected === null ||
+    Array.isArray(actual) !== Array.isArray(expected)
+  ) {
+    return path || '(root)';
+  }
+  const allKeys = Array.from(
+    new Set([...Object.keys(actual), ...Object.keys(expected)]),
+  ).sort();
+  for (const key of allKeys) {
+    const fieldPath = path ? `${path}.${key}` : key;
+    if (!(key in actual) || !(key in expected)) {
+      return fieldPath;
+    }
+    const diff = findDifferingField(actual[key], expected[key], fieldPath);
+    if (diff) return diff;
+  }
+  return null;
+};
+
+const sharedParameterTargets = [
+  { name: 'limit', in: 'query' },
+  { name: 'Idempotency-Key', in: 'header' },
+  { name: 'cursor', in: 'query' },
+  { name: 'X-Workspace-Id', in: 'header' },
+];
+
+for (const target of sharedParameterTargets) {
+  const occurrences = [];
+  for (const [path, item] of Object.entries(document.paths ?? {})) {
+    for (const [method, operation] of Object.entries(item ?? {})) {
+      if (!httpMethods.has(method.toLowerCase())) continue;
+      const effective = new Map();
+      for (const p of item.parameters ?? []) {
+        if (p?.name && p?.in) effective.set(`${p.name}:${p.in}`, p);
+      }
+      for (const p of operation?.parameters ?? []) {
+        if (p?.name && p?.in) effective.set(`${p.name}:${p.in}`, p);
+      }
+      const matched = effective.get(`${target.name}:${target.in}`);
+      if (matched) {
+        occurrences.push({
+          operationId:
+            operation.operationId ?? `${method.toUpperCase()} ${path}`,
+          schema: matched.schema ?? {},
+        });
+      }
+    }
+  }
+
+  if (occurrences.length <= 1) continue;
+
+  const frequencies = new Map();
+  for (const occ of occurrences) {
+    const ser = JSON.stringify(sortKeys(occ.schema));
+    frequencies.set(ser, (frequencies.get(ser) ?? 0) + 1);
+  }
+
+  let baselineSer = null;
+  let maxCount = -1;
+  for (const [ser, count] of frequencies) {
+    if (count > maxCount) {
+      maxCount = count;
+      baselineSer = ser;
+    }
+  }
+
+  const baseline = occurrences.find(
+    (occ) => JSON.stringify(sortKeys(occ.schema)) === baselineSer,
+  );
+
+  for (const occ of occurrences) {
+    if (JSON.stringify(sortKeys(occ.schema)) !== baselineSer) {
+      const differingField = findDifferingField(occ.schema, baseline.schema);
+      fail(
+        `shared parameter "${target.name}" in ${target.in} has schema mismatch in operation "${occ.operationId}": differing field "${differingField}"`,
+      );
+    }
+  }
+}
+
 // Health stays pinned by name and must stay unauthenticated. The operationId
 // requirement on every other operation is what keeps an undocumented path from
 // being appended to the contract: with no id it cannot appear in the manifest,
