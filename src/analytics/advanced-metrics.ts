@@ -18,49 +18,10 @@ import {
   generateBucketPeriods,
   truncateToBucketStart,
 } from './analytics.service.js';
-interface AmountMoney {
-  readonly amountMinor: string;
-  readonly currency: string;
-}
-
-const INTEGER_PATTERN = /^-?\d+$/;
-
-/**
- * Computes increase percentage between currentAmount and previousAmount.
- * Follows RULING 59 and RULING 60 tie-breaking rules, matching computeIncreasePercent
- * in src/recurring/subscription-calculation.ts using roundDivHalfAwayFromZero.
- */
-function computeIncreasePercent(
-  currentAmount: AmountMoney,
-  previousAmount?: AmountMoney | null,
-): number | null {
-  if (!previousAmount) {
-    return null;
-  }
-  if (currentAmount.currency !== previousAmount.currency) {
-    return null;
-  }
-  if (
-    !INTEGER_PATTERN.test(previousAmount.amountMinor) ||
-    !INTEGER_PATTERN.test(currentAmount.amountMinor)
-  ) {
-    return null;
-  }
-  const previous = BigInt(previousAmount.amountMinor);
-  if (previous === 0n) {
-    return null;
-  }
-  const current = BigInt(currentAmount.amountMinor);
-  if (current === previous) {
-    return 0;
-  }
-  const roundedHundredths = roundDivHalfAwayFromZero(
-    (current - previous) * 10000n,
-    previous,
-  );
-  const result = Number(roundedHundredths) / 100;
-  return Object.is(result, -0) ? 0 : result;
-}
+import {
+  computeIncreasePercent,
+  roundDivHalfAwayFromZero,
+} from '../platform/percentage-change.js';
 
 interface BucketAccumulator {
   incomeMinor: bigint;
@@ -123,36 +84,6 @@ export function buildMonthlySavingsCapacity(
       savingsCapacityMinor: bucket.incomeMinor - bucket.expensesMinor,
     };
   });
-}
-
-/**
- * Integer division with half-away-from-zero (symmetric half-up) rounding.
- * Reuses the same tie-breaking logic as computeIncreasePercent in src/recurring/subscription-calculation.ts.
- */
-export function roundDivHalfAwayFromZero(num: bigint, den: bigint): bigint {
-  if (den === 0n) {
-    throw new Error('Division by zero in roundDivHalfAwayFromZero');
-  }
-  let n = num;
-  let d = den;
-  if (d < 0n) {
-    n = -n;
-    d = -d;
-  }
-  const q = n / d;
-  const r = n % d;
-  if (n >= 0n) {
-    if (2n * r >= d) {
-      return q + 1n;
-    }
-    return q;
-  } else {
-    const absR = -r;
-    if (2n * absR >= d) {
-      return q - 1n;
-    }
-    return q;
-  }
 }
 
 /**
@@ -475,7 +406,7 @@ export function buildWeekdayHeatmap(
  * metric that does not need one.
  *
  * Rules:
- * - increasePercent computed with computeIncreasePercent from src/recurring/subscription-calculation.ts.
+ * - increasePercent computed with computeIncreasePercent from src/platform/percentage-change.ts.
  * - Items included only when increasePercent !== null && increasePercent > 0 (increases only).
  * - Decreases and unchanged amounts counted in decreasedOrUnchangedCount.
  * - Currency mismatches counted in excludedForCurrencyMismatch.

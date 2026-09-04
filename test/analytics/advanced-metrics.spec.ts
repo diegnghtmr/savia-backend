@@ -16,7 +16,6 @@ import {
   buildSubscriptionPriceIncreases,
   buildWeekdayHeatmap,
 } from '../../src/analytics/advanced-metrics.js';
-import { computeIncreasePercent } from '../../src/recurring/subscription-calculation.js';
 
 describe('bigintSqrt', () => {
   it('computes exact square root for perfect squares (0n, 1n, 4n, 10000n)', () => {
@@ -976,60 +975,6 @@ describe('buildSubscriptionPriceIncreases', () => {
       'sub-10',
     ]);
     expect(result.items.map((i) => i.increasePercent)).toEqual([50, 25, 10]);
-  });
-
-  it('matches computeIncreasePercent from recurring domain exactly across vector cases', () => {
-    const vectors = [
-      {
-        curr: '1250',
-        prev: '1000',
-        currCur: 'USD',
-        prevCur: 'USD',
-        expected: 25,
-      },
-      {
-        curr: '1005',
-        prev: '1000',
-        currCur: 'USD',
-        prevCur: 'USD',
-        expected: 0.5,
-      },
-      {
-        curr: '1000',
-        prev: '1000',
-        currCur: 'USD',
-        prevCur: 'USD',
-        expected: 0,
-      },
-      {
-        curr: '900',
-        prev: '1000',
-        currCur: 'USD',
-        prevCur: 'USD',
-        expected: -10,
-      },
-      {
-        curr: '1000',
-        prev: '0',
-        currCur: 'USD',
-        prevCur: 'USD',
-        expected: null,
-      },
-      {
-        curr: '1000',
-        prev: '1000',
-        currCur: 'USD',
-        prevCur: 'EUR',
-        expected: null,
-      },
-    ];
-    for (const v of vectors) {
-      const canonical = computeIncreasePercent(
-        { amountMinor: v.curr, currency: v.currCur },
-        { amountMinor: v.prev, currency: v.prevCur },
-      );
-      expect(canonical).toBe(v.expected);
-    }
   });
 });
 

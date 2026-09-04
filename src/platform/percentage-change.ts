@@ -6,6 +6,26 @@ export interface AmountMoney {
 const INTEGER_PATTERN = /^-?\d+$/;
 
 /**
+ * Integer division with half-away-from-zero (symmetric half-up) rounding.
+ * Reuses the same tie-breaking logic as computeIncreasePercent:
+ * exact half ties (e.g. ±0.5) round away from zero to the larger magnitude.
+ */
+export function roundDivHalfAwayFromZero(num: bigint, den: bigint): bigint {
+  if (den === 0n) {
+    throw new Error('Division by zero in roundDivHalfAwayFromZero');
+  }
+  const n = den < 0n ? -num : num;
+  const d = den < 0n ? -den : den;
+  const q = n / d;
+  const r = n % d;
+  if (n >= 0n) {
+    return 2n * r >= d ? q + 1n : q;
+  }
+  const absR = -r;
+  return 2n * absR >= d ? q - 1n : q;
+}
+
+/**
  * Computes increasePercent between currentAmount and previousAmount.
  *
  * RULING 59: increasePercent is COMPUTED, never stored.
@@ -57,27 +77,10 @@ export function computeIncreasePercent(
   // Scale delta by 10,000 to compute percentage in hundredths of a percent (0.01%).
   // Tie-breaking rule: Round half-away-from-zero (symmetric half-up), where exact half ties
   // (e.g. ±0.005%) round away from zero to the larger magnitude.
-  let num = (current - previous) * 10000n;
-  let den = previous;
-  if (den < 0n) {
-    num = -num;
-    den = -den;
-  }
-
-  const q = num / den;
-  const r = num % den;
-
-  let roundedHundredths = q;
-  if (num >= 0n) {
-    if (2n * r >= den) {
-      roundedHundredths = q + 1n;
-    }
-  } else {
-    const absR = -r;
-    if (2n * absR >= den) {
-      roundedHundredths = q - 1n;
-    }
-  }
+  const roundedHundredths = roundDivHalfAwayFromZero(
+    (current - previous) * 10000n,
+    previous,
+  );
 
   const result = Number(roundedHundredths) / 100;
   return Object.is(result, -0) ? 0 : result;
