@@ -4947,7 +4947,7 @@ paths:
             name: Idempotency-Key,
             in: header,
             required: true,
-            schema: { type: string, format: uuid },
+            schema: { type: string, format: uuid, maxLength: 255 },
           }
       requestBody:
         required: true
@@ -5005,7 +5005,7 @@ paths:
             name: Idempotency-Key,
             in: header,
             required: true,
-            schema: { type: string, format: uuid },
+            schema: { type: string, format: uuid, maxLength: 255 },
           }
       responses:
         '202':
@@ -5041,7 +5041,7 @@ paths:
         - {
             name: limit,
             in: query,
-            schema: { type: integer, minimum: 1, maximum: 200 },
+            schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
         - {
             name: from,
@@ -5081,7 +5081,7 @@ paths:
             name: Idempotency-Key,
             in: header,
             required: true,
-            schema: { type: string, format: uuid },
+            schema: { type: string, format: uuid, maxLength: 255 },
           }
       requestBody:
         {
@@ -5166,7 +5166,7 @@ paths:
             name: Idempotency-Key,
             in: header,
             required: true,
-            schema: { type: string, format: uuid },
+            schema: { type: string, format: uuid, maxLength: 255 },
           }
         - {
             name: If-Match,
@@ -5233,7 +5233,7 @@ paths:
             name: Idempotency-Key,
             in: header,
             required: true,
-            schema: { type: string, format: uuid },
+            schema: { type: string, format: uuid, maxLength: 255 },
           }
         - {
             name: If-Match,
@@ -5284,7 +5284,7 @@ paths:
         - {
             name: limit,
             in: query,
-            schema: { type: integer, minimum: 1, maximum: 200 },
+            schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
       responses:
         '200':
@@ -5324,7 +5324,7 @@ paths:
             name: Idempotency-Key,
             in: header,
             required: true,
-            schema: { type: string, format: uuid },
+            schema: { type: string, format: uuid, maxLength: 255 },
           }
       requestBody:
         {
@@ -5392,7 +5392,7 @@ paths:
             name: Idempotency-Key,
             in: header,
             required: true,
-            schema: { type: string, format: uuid },
+            schema: { type: string, format: uuid, maxLength: 255 },
           }
       requestBody:
         {
@@ -5463,7 +5463,7 @@ paths:
         - {
             name: limit,
             in: query,
-            schema: { type: integer, minimum: 1, maximum: 200 },
+            schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
       responses:
         '200':
@@ -5503,7 +5503,7 @@ paths:
             name: Idempotency-Key,
             in: header,
             required: true,
-            schema: { type: string, format: uuid },
+            schema: { type: string, format: uuid, maxLength: 255 },
           }
       requestBody:
         {
@@ -5564,7 +5564,7 @@ paths:
             name: Idempotency-Key,
             in: header,
             required: true,
-            schema: { type: string, format: uuid },
+            schema: { type: string, format: uuid, maxLength: 255 },
           }
       requestBody:
         {
