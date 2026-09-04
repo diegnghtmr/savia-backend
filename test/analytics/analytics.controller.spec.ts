@@ -3,6 +3,7 @@ import type { FastifyReply } from 'fastify';
 import type { AuthenticatedRequest } from '../../src/platform/authenticated-request.js';
 import {
   ANALYTICS_OUTCOMES,
+  type AdvancedAnalyticsQuery,
   type AnalyticsPort,
   type AnalyticsSummary,
   type CashFlowAnalytics,
@@ -177,5 +178,176 @@ describe('AnalyticsController', () => {
     );
     expect(reply.statusCode).toBe(200);
     expect(reply.sentBody).toEqual(mockCashFlow);
+  });
+
+  describe('getAdvanced', () => {
+    it('returns 400 when X-Workspace-Id header is missing', async () => {
+      const port: AnalyticsPort = {
+        getSummary: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getAdvancedAnalytics: async () => ({
+          kind: ANALYTICS_OUTCOMES.FORBIDDEN,
+        }),
+      };
+      const controller = new AnalyticsController(port);
+      const reply = mockReply();
+      await controller.getAdvanced(mockReq({}), reply, 'recurring_vs_variable');
+      expect(reply.statusCode).toBe(400);
+      expect((reply.sentBody as ProblemBody)?.title).toBe(
+        'Invalid X-Workspace-Id header',
+      );
+    });
+
+    it('returns 422 when metric is unknown (unknown-metric status test)', async () => {
+      const port: AnalyticsPort = {
+        getSummary: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getAdvancedAnalytics: async () => ({
+          kind: ANALYTICS_OUTCOMES.FORBIDDEN,
+        }),
+      };
+      const controller = new AnalyticsController(port);
+      const reply = mockReply();
+      await controller.getAdvanced(mockReq(), reply, 'unknown_metric_value');
+      expect(reply.statusCode).toBe(422);
+      const body = reply.sentBody as ProblemBody;
+      expect(body?.errors).toBeDefined();
+      expect(body?.errors).toContainEqual(
+        expect.objectContaining({ field: 'metric' }),
+      );
+    });
+
+    it('returns 422 when metric is missing', async () => {
+      const port: AnalyticsPort = {
+        getSummary: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getAdvancedAnalytics: async () => ({
+          kind: ANALYTICS_OUTCOMES.FORBIDDEN,
+        }),
+      };
+      const controller = new AnalyticsController(port);
+      const reply = mockReply();
+      await controller.getAdvanced(mockReq(), reply, undefined);
+      expect(reply.statusCode).toBe(422);
+      const body = reply.sentBody as ProblemBody;
+      expect(body?.errors).toBeDefined();
+      expect(body?.errors).toContainEqual(
+        expect.objectContaining({ field: 'metric' }),
+      );
+    });
+
+    it('returns 422 when from is later than to', async () => {
+      const port: AnalyticsPort = {
+        getSummary: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getAdvancedAnalytics: async () => ({
+          kind: ANALYTICS_OUTCOMES.FORBIDDEN,
+        }),
+      };
+      const controller = new AnalyticsController(port);
+      const reply = mockReply();
+      await controller.getAdvanced(
+        mockReq(),
+        reply,
+        'recurring_vs_variable',
+        '2026-02-01',
+        '2026-01-01',
+      );
+      expect(reply.statusCode).toBe(422);
+      const body = reply.sentBody as ProblemBody;
+      expect(body?.errors).toBeDefined();
+    });
+
+    it('returns 403 when caller is forbidden', async () => {
+      const port: AnalyticsPort = {
+        getSummary: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getAdvancedAnalytics: async () => ({
+          kind: ANALYTICS_OUTCOMES.FORBIDDEN,
+        }),
+      };
+      const controller = new AnalyticsController(port);
+      const reply = mockReply();
+      await controller.getAdvanced(
+        mockReq(),
+        reply,
+        'recurring_vs_variable',
+        '2026-01-01',
+        '2026-01-31',
+      );
+      expect(reply.statusCode).toBe(403);
+    });
+
+    it('returns 422 when currency conversion rate is missing', async () => {
+      const port: AnalyticsPort = {
+        getSummary: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getAdvancedAnalytics: async () => ({
+          kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+          fromCurrency: 'EUR',
+          toCurrency: 'USD',
+        }),
+      };
+      const controller = new AnalyticsController(port);
+      const reply = mockReply();
+      await controller.getAdvanced(
+        mockReq(),
+        reply,
+        'recurring_vs_variable',
+        '2026-01-01',
+        '2026-01-31',
+      );
+      expect(reply.statusCode).toBe(422);
+      expect((reply.sentBody as ProblemBody)?.detail).toContain('EUR');
+      expect((reply.sentBody as ProblemBody)?.detail).toContain('USD');
+    });
+
+    it('uses injected clock to determine default window when dates are omitted', async () => {
+      const queries: AdvancedAnalyticsQuery[] = [];
+      const port: AnalyticsPort = {
+        getSummary: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getAdvancedAnalytics: async (_sub, query) => {
+          queries.push(query);
+          return {
+            kind: ANALYTICS_OUTCOMES.FORBIDDEN,
+          };
+        },
+      };
+      const fixedDate = new Date('2026-09-04T12:00:00.000Z');
+      const controller = new AnalyticsController(port, () => fixedDate);
+      const reply = mockReply();
+      await controller.getAdvanced(mockReq(), reply, 'recurring_vs_variable');
+      expect(queries[0]?.to).toBe('2026-09-04');
+      expect(queries[0]?.from).toBe('2025-10-01');
+    });
+
+    it('returns 200 on success', async () => {
+      const mockResult = {
+        metric: 'recurring_vs_variable',
+        generatedAt: '2026-09-04T12:00:00.000Z',
+        data: { committedMinor: '1000', variableMinor: '2000' },
+        explanation: 'Some explanation',
+      };
+      const port: AnalyticsPort = {
+        getSummary: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+        getAdvancedAnalytics: async () => ({
+          kind: ANALYTICS_OUTCOMES.OK,
+          analytics: mockResult as never,
+        }),
+      };
+      const controller = new AnalyticsController(port);
+      const reply = mockReply();
+      await controller.getAdvanced(
+        mockReq(),
+        reply,
+        'recurring_vs_variable',
+        '2026-01-01',
+        '2026-01-31',
+      );
+      expect(reply.statusCode).toBe(200);
+      expect(reply.sentBody).toEqual(mockResult);
+    });
   });
 });
