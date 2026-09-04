@@ -129,6 +129,9 @@ describe('health endpoint', () => {
       'POST /v1/import-jobs/:importJobId/commit',
       'POST /v1/import-jobs/:importJobId/rollback',
       'GET /v1/import-jobs/:importJobId',
+      'POST /v1/budgets',
+      'GET /v1/budgets',
+      'GET /v1/budgets/:budgetId',
     ]);
 
     await app.close();
