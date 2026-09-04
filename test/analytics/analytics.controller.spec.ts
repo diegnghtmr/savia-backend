@@ -67,6 +67,9 @@ describe('AnalyticsController', () => {
     const port: AnalyticsPort = {
       getSummary: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
       getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+      getAdvancedAnalytics: async () => ({
+        kind: ANALYTICS_OUTCOMES.FORBIDDEN,
+      }),
     };
     const controller = new AnalyticsController(port);
     const reply = mockReply();
@@ -81,6 +84,9 @@ describe('AnalyticsController', () => {
     const port: AnalyticsPort = {
       getSummary: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
       getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+      getAdvancedAnalytics: async () => ({
+        kind: ANALYTICS_OUTCOMES.FORBIDDEN,
+      }),
     };
     const controller = new AnalyticsController(port);
     const reply = mockReply();
@@ -98,6 +104,9 @@ describe('AnalyticsController', () => {
         toCurrency: 'USD',
       }),
       getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+      getAdvancedAnalytics: async () => ({
+        kind: ANALYTICS_OUTCOMES.FORBIDDEN,
+      }),
     };
     const controller = new AnalyticsController(port);
     const reply = mockReply();
@@ -131,6 +140,9 @@ describe('AnalyticsController', () => {
         summary: mockSummary,
       }),
       getCashFlow: async () => ({ kind: ANALYTICS_OUTCOMES.FORBIDDEN }),
+      getAdvancedAnalytics: async () => ({
+        kind: ANALYTICS_OUTCOMES.FORBIDDEN,
+      }),
     };
     const controller = new AnalyticsController(port);
     const reply = mockReply();
@@ -149,6 +161,9 @@ describe('AnalyticsController', () => {
       getCashFlow: async () => ({
         kind: ANALYTICS_OUTCOMES.OK,
         analytics: mockCashFlow,
+      }),
+      getAdvancedAnalytics: async () => ({
+        kind: ANALYTICS_OUTCOMES.FORBIDDEN,
       }),
     };
     const controller = new AnalyticsController(port);

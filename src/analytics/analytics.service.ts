@@ -1,8 +1,11 @@
 import { multiplyMinorByRate } from '../platform/currency-conversion.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
+  ADVANCED_METRIC,
   ANALYTICS_OUTCOMES,
   GRANULARITY,
+  type AdvancedAnalyticsOutcome,
+  type AdvancedAnalyticsQuery,
   type AnalyticsPort,
   type AnalyticsStore,
   type AnalyticsSummaryOutcome,
@@ -10,9 +13,24 @@ import {
   type CashFlowAnalyticsOutcome,
   type CashFlowAnalyticsQuery,
   type CategoryBreakdownItem,
+  type ConvertedDebtCostRow,
+  type ConvertedFlowRow,
+  type ConvertedSubscriptionRow,
   type Granularity,
+  type ScheduledOutflowRow,
   type TimeSeriesPoint,
 } from './analytics.port.js';
+import {
+  buildBalanceProjection,
+  buildDebtCostEvolution,
+  buildFinancialCalendar,
+  buildIncomeStability,
+  buildMonthlySavingsCapacity,
+  buildQuarterlyAverageComparison,
+  buildRecurringVsVariable,
+  buildSubscriptionPriceIncreases,
+  buildWeekdayHeatmap,
+} from './advanced-metrics.js';
 
 export interface AnalyticsTransactionRunner {
   run<T>(
@@ -99,10 +117,28 @@ export function generateBucketPeriods(
   return periods;
 }
 
+function serializeData(val: unknown): unknown {
+  if (typeof val === 'bigint') {
+    return val.toString();
+  }
+  if (Array.isArray(val)) {
+    return val.map(serializeData);
+  }
+  if (val !== null && typeof val === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(val)) {
+      result[key] = serializeData(value);
+    }
+    return result;
+  }
+  return val;
+}
+
 export class AnalyticsService implements AnalyticsPort {
   public constructor(
     private readonly tx: AnalyticsTransactionRunner,
     private readonly store: AnalyticsStore,
+    private readonly clock: () => Date = () => new Date(),
   ) {}
 
   public async getSummary(
@@ -525,6 +561,484 @@ export class AnalyticsService implements AnalyticsPort {
         analytics: {
           series,
           categories,
+        },
+      };
+    });
+  }
+
+  public async getAdvancedAnalytics(
+    subject: string,
+    query: AdvancedAnalyticsQuery,
+  ): Promise<AdvancedAnalyticsOutcome> {
+    return this.tx.run(subject, async (client) => {
+      const role = await this.store.readActiveRole(client, query.workspaceId);
+      if (
+        !['owner', 'administrator', 'editor', 'viewer'].includes(role ?? '')
+      ) {
+        return { kind: ANALYTICS_OUTCOMES.FORBIDDEN };
+      }
+
+      const baseCurrency = await this.store.readWorkspaceBaseCurrency(
+        client,
+        query.workspaceId,
+      );
+      if (!baseCurrency) {
+        return { kind: ANALYTICS_OUTCOMES.FORBIDDEN };
+      }
+
+      const convert = async (
+        amountMinor: string,
+        fromCurrency: string,
+        asOf?: Date | null,
+      ): Promise<
+        { amount: bigint } | { missingRate: { from: string; to: string } }
+      > => {
+        if (fromCurrency === baseCurrency) {
+          return { amount: BigInt(amountMinor) };
+        }
+        const rate = await this.store.findExchangeRate(
+          client,
+          query.workspaceId,
+          fromCurrency,
+          baseCurrency,
+          asOf,
+        );
+        if (!rate) {
+          return { missingRate: { from: fromCurrency, to: baseCurrency } };
+        }
+        return { amount: BigInt(multiplyMinorByRate(amountMinor, rate)) };
+      };
+
+      const loadConvertedFlowRows = async (): Promise<
+        ConvertedFlowRow[] | { missingRate: { from: string; to: string } }
+      > => {
+        const txnRows = await this.store.readTransactionsInPeriod(
+          client,
+          query.workspaceId,
+          query.from,
+          query.to,
+        );
+        const convertedRows: ConvertedFlowRow[] = [];
+        for (const txn of txnRows) {
+          if (
+            txn.type === 'income' ||
+            txn.type === 'expense' ||
+            txn.type === 'refund'
+          ) {
+            const converted = await convert(
+              txn.amountMinor,
+              txn.currency,
+              txn.occurredAt,
+            );
+            if ('missingRate' in converted) {
+              return converted;
+            }
+            convertedRows.push({
+              type: txn.type,
+              amountMinor: converted.amount,
+              occurredAt: txn.occurredAt,
+            });
+          }
+        }
+        return convertedRows;
+      };
+
+      let rawData: unknown = undefined;
+      let explanation: string | null = null;
+
+      switch (query.metric) {
+        case ADVANCED_METRIC.MONTHLY_SAVINGS_CAPACITY: {
+          const flowRows = await loadConvertedFlowRows();
+          if ('missingRate' in flowRows) {
+            return {
+              kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+              fromCurrency: flowRows.missingRate.from,
+              toCurrency: flowRows.missingRate.to,
+            };
+          }
+          const points = buildMonthlySavingsCapacity(
+            query.from,
+            query.to,
+            flowRows,
+          );
+          rawData = { series: points };
+          explanation = 'Monthly savings capacity series over the period.';
+          break;
+        }
+
+        case ADVANCED_METRIC.INCOME_STABILITY: {
+          const flowRows = await loadConvertedFlowRows();
+          if ('missingRate' in flowRows) {
+            return {
+              kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+              fromCurrency: flowRows.missingRate.from,
+              toCurrency: flowRows.missingRate.to,
+            };
+          }
+          const monthlySeries = buildMonthlySavingsCapacity(
+            query.from,
+            query.to,
+            flowRows,
+          );
+          const stability = buildIncomeStability(monthlySeries);
+          rawData = stability;
+          explanation = `Income stability analysis over ${stability.monthsCounted} month(s) based on monthly income variation.`;
+          break;
+        }
+
+        case ADVANCED_METRIC.QUARTERLY_AVERAGE_COMPARISON: {
+          const flowRows = await loadConvertedFlowRows();
+          if ('missingRate' in flowRows) {
+            return {
+              kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+              fromCurrency: flowRows.missingRate.from,
+              toCurrency: flowRows.missingRate.to,
+            };
+          }
+          const monthlySeries = buildMonthlySavingsCapacity(
+            query.from,
+            query.to,
+            flowRows,
+          );
+          const quarters = buildQuarterlyAverageComparison(monthlySeries);
+          rawData = { series: quarters };
+          explanation =
+            'Quarterly average monthly income, expenses, and savings capacity comparison.';
+          break;
+        }
+
+        case ADVANCED_METRIC.WEEKDAY_HEATMAP: {
+          const flowRows = await loadConvertedFlowRows();
+          if ('missingRate' in flowRows) {
+            return {
+              kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+              fromCurrency: flowRows.missingRate.from,
+              toCurrency: flowRows.missingRate.to,
+            };
+          }
+          const heatmap = buildWeekdayHeatmap(flowRows);
+          rawData = { series: heatmap };
+          explanation =
+            'Weekday expenditure heatmap showing transaction count and net expenses by day of the week.';
+          break;
+        }
+
+        case ADVANCED_METRIC.SUBSCRIPTION_PRICE_INCREASES: {
+          const rows = await this.store.readSubscriptionsWithPreviousAmount(
+            client,
+            query.workspaceId,
+          );
+          const result = buildSubscriptionPriceIncreases(rows);
+          rawData = result;
+          const caveats: string[] = [];
+          if (result.excludedForCurrencyMismatch > 0) {
+            caveats.push(
+              `${result.excludedForCurrencyMismatch} subscription(s) excluded due to currency mismatch`,
+            );
+          }
+          if (result.excludedForZeroPrevious > 0) {
+            caveats.push(
+              `${result.excludedForZeroPrevious} subscription(s) excluded due to zero previous amount`,
+            );
+          }
+          explanation = 'Detected price increases across active subscriptions.';
+          if (caveats.length > 0) {
+            explanation += ` Caveat: ${caveats.join('; ')}.`;
+          }
+          break;
+        }
+
+        case ADVANCED_METRIC.RECURRING_VS_VARIABLE: {
+          const subs = await this.store.readActiveSubscriptions(
+            client,
+            query.workspaceId,
+          );
+          const txnRows = await this.store.readTransactionsInPeriod(
+            client,
+            query.workspaceId,
+            query.from,
+            query.to,
+          );
+          let totalExpensesMinor = 0n;
+          for (const txn of txnRows) {
+            if (txn.type === 'expense') {
+              const converted = await convert(
+                txn.amountMinor,
+                txn.currency,
+                txn.occurredAt,
+              );
+              if ('missingRate' in converted) {
+                return {
+                  kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+                  fromCurrency: converted.missingRate.from,
+                  toCurrency: converted.missingRate.to,
+                };
+              }
+              totalExpensesMinor += converted.amount;
+            } else if (txn.type === 'refund') {
+              const converted = await convert(
+                txn.amountMinor,
+                txn.currency,
+                txn.occurredAt,
+              );
+              if ('missingRate' in converted) {
+                return {
+                  kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+                  fromCurrency: converted.missingRate.from,
+                  toCurrency: converted.missingRate.to,
+                };
+              }
+              totalExpensesMinor -= converted.amount;
+            }
+          }
+
+          const convertedSubs: ConvertedSubscriptionRow[] = [];
+          for (const sub of subs) {
+            const converted = await convert(
+              sub.currentAmountMinor,
+              sub.currentCurrency,
+            );
+            if ('missingRate' in converted) {
+              return {
+                kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+                fromCurrency: converted.missingRate.from,
+                toCurrency: converted.missingRate.to,
+              };
+            }
+            convertedSubs.push({
+              amountMinor: converted.amount,
+              frequency: sub.frequency,
+            });
+          }
+
+          const result = buildRecurringVsVariable(
+            query.from,
+            query.to,
+            convertedSubs,
+            totalExpensesMinor,
+          );
+          rawData = result;
+          explanation =
+            'Comparison of committed recurring expenses against variable expenses over the period.';
+          if (result.unclassifiedSubscriptionCount > 0) {
+            explanation += ` Caveat: ${result.unclassifiedSubscriptionCount} subscription(s) could not be classified due to unrecognized frequency.`;
+          }
+          break;
+        }
+
+        case ADVANCED_METRIC.DEBT_COST_EVOLUTION: {
+          const rows = await this.store.readDebtPaymentCostsInPeriod(
+            client,
+            query.workspaceId,
+            query.from,
+            query.to,
+          );
+          const convertedRows: ConvertedDebtCostRow[] = [];
+          for (const row of rows) {
+            const intConv = await convert(
+              row.interestMinor,
+              row.currency,
+              row.occurredAt,
+            );
+            if ('missingRate' in intConv) {
+              return {
+                kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+                fromCurrency: intConv.missingRate.from,
+                toCurrency: intConv.missingRate.to,
+              };
+            }
+            const feeConv = await convert(
+              row.feeMinor,
+              row.currency,
+              row.occurredAt,
+            );
+            if ('missingRate' in feeConv) {
+              return {
+                kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+                fromCurrency: feeConv.missingRate.from,
+                toCurrency: feeConv.missingRate.to,
+              };
+            }
+            convertedRows.push({
+              interestMinor: intConv.amount,
+              feeMinor: feeConv.amount,
+              occurredAt: row.occurredAt,
+            });
+          }
+          const result = buildDebtCostEvolution(
+            query.from,
+            query.to,
+            convertedRows,
+          );
+          rawData = result;
+          explanation =
+            'Monthly evolution of debt interest and fee costs across the period.';
+          break;
+        }
+
+        case ADVANCED_METRIC.FINANCIAL_CALENDAR: {
+          const outflows = await this.store.readScheduledOutflows(
+            client,
+            query.workspaceId,
+            query.from,
+            query.to,
+          );
+          const debtsWithoutScheduledAmount =
+            await this.store.readActiveDebtsWithoutScheduledAmount(
+              client,
+              query.workspaceId,
+            );
+
+          const convertedOutflows: ScheduledOutflowRow[] = [];
+          for (const row of outflows) {
+            let rowDate: Date | null = null;
+            if (row.scheduledDate) {
+              rowDate = new Date(`${row.scheduledDate}T00:00:00.000Z`);
+            } else if (row.scheduledAt) {
+              rowDate = row.scheduledAt;
+            }
+
+            if (row.kind === 'recurring_rule' && row.template) {
+              const tmplAmount = row.template.amount;
+              if (
+                tmplAmount?.currency &&
+                tmplAmount?.amountMinor &&
+                /^-?[0-9]+$/.test(tmplAmount.amountMinor)
+              ) {
+                const conv = await convert(
+                  tmplAmount.amountMinor,
+                  tmplAmount.currency,
+                  rowDate,
+                );
+                if ('missingRate' in conv) {
+                  return {
+                    kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+                    fromCurrency: conv.missingRate.from,
+                    toCurrency: conv.missingRate.to,
+                  };
+                }
+                convertedOutflows.push({
+                  ...row,
+                  template: {
+                    ...row.template,
+                    amount: {
+                      amountMinor: conv.amount.toString(),
+                      currency: baseCurrency,
+                    },
+                  },
+                });
+              } else {
+                convertedOutflows.push(row);
+              }
+            } else if (
+              row.currency &&
+              row.amountMinor !== null &&
+              row.amountMinor !== undefined &&
+              /^-?[0-9]+$/.test(String(row.amountMinor))
+            ) {
+              const conv = await convert(
+                String(row.amountMinor),
+                row.currency,
+                rowDate,
+              );
+              if ('missingRate' in conv) {
+                return {
+                  kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+                  fromCurrency: conv.missingRate.from,
+                  toCurrency: conv.missingRate.to,
+                };
+              }
+              convertedOutflows.push({
+                ...row,
+                amountMinor: conv.amount.toString(),
+                currency: baseCurrency,
+              });
+            } else {
+              convertedOutflows.push(row);
+            }
+          }
+
+          const result = buildFinancialCalendar(
+            query.from,
+            query.to,
+            convertedOutflows,
+            debtsWithoutScheduledAmount,
+          );
+          rawData = result;
+          const caveats: string[] = [];
+          if (result.debtsWithoutScheduledAmount > 0) {
+            caveats.push(
+              `${result.debtsWithoutScheduledAmount} active debt(s) without scheduled payment amount`,
+            );
+          }
+          if (result.recurringRulesWithUnreadableTemplate > 0) {
+            caveats.push(
+              `${result.recurringRulesWithUnreadableTemplate} recurring rule(s) with unreadable template`,
+            );
+          }
+          explanation =
+            'Expected scheduled outflows by calendar day over the period.';
+          if (caveats.length > 0) {
+            explanation += ` Caveat: ${caveats.join('; ')}.`;
+          }
+          break;
+        }
+
+        case ADVANCED_METRIC.BALANCE_PROJECTION: {
+          const accountRows = await this.store.readAccountNativeBalances(
+            client,
+            query.workspaceId,
+          );
+          let openingBalanceMinor = 0n;
+          for (const acct of accountRows) {
+            const converted = await convert(
+              acct.nativeBalanceMinor,
+              acct.currency,
+            );
+            if ('missingRate' in converted) {
+              return {
+                kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+                fromCurrency: converted.missingRate.from,
+                toCurrency: converted.missingRate.to,
+              };
+            }
+            openingBalanceMinor += converted.amount;
+          }
+
+          const flowRows = await loadConvertedFlowRows();
+          if ('missingRate' in flowRows) {
+            return {
+              kind: ANALYTICS_OUTCOMES.MISSING_RATE,
+              fromCurrency: flowRows.missingRate.from,
+              toCurrency: flowRows.missingRate.to,
+            };
+          }
+          const history = buildMonthlySavingsCapacity(
+            query.from,
+            query.to,
+            flowRows,
+          );
+          const result = buildBalanceProjection(
+            query.from,
+            query.to,
+            openingBalanceMinor,
+            history,
+          );
+          rawData = result;
+          explanation = `Extrapolation of future balances based on the historical monthly mean over basisMonths (${result.basisMonths}) month(s); this is an extrapolation, never an observation.`;
+          break;
+        }
+      }
+
+      const serializedData = serializeData(rawData) as Record<string, unknown>;
+
+      return {
+        kind: ANALYTICS_OUTCOMES.OK,
+        analytics: {
+          metric: query.metric,
+          generatedAt: this.clock().toISOString(),
+          data: serializedData,
+          explanation,
         },
       };
     });

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
+  ADVANCED_METRIC,
   ANALYTICS_OUTCOMES,
   type AnalyticsStore,
   type TransactionFlowRow,
   type AccountNativeBalanceRow,
   type DebtOutstandingBalanceRow,
+  type AdvancedAnalyticsOkOutcome,
 } from '../../src/analytics/analytics.port.js';
 import {
   AnalyticsService,
@@ -238,6 +240,233 @@ describe('AnalyticsService', () => {
       expect(res.kind).toBe(ANALYTICS_OUTCOMES.OK);
       if (res.kind !== ANALYTICS_OUTCOMES.OK) return;
       expect(res.analytics.categories).toEqual([]);
+    });
+  });
+
+  describe('getAdvancedAnalytics', () => {
+    const fixedClock = new Date('2026-09-04T12:00:00.000Z');
+
+    it('returns FORBIDDEN if caller is not an active member', async () => {
+      const store = createMockStore({ readActiveRole: async () => undefined });
+      const service = new AnalyticsService(fakeTx, store, () => fixedClock);
+      const res = await service.getAdvancedAnalytics(subject, {
+        workspaceId,
+        metric: ADVANCED_METRIC.RECURRING_VS_VARIABLE,
+        from: '2026-01-01',
+        to: '2026-01-31',
+      });
+      expect(res.kind).toBe(ANALYTICS_OUTCOMES.FORBIDDEN);
+    });
+
+    it('returns MISSING_RATE when exchange rate is missing for conversion', async () => {
+      const store = createMockStore({
+        findExchangeRate: async () => undefined,
+        readTransactionsInPeriod: async () => [
+          {
+            id: 't1',
+            type: 'expense',
+            amountMinor: '1000',
+            currency: 'EUR',
+            occurredAt: new Date('2026-01-10T00:00:00Z'),
+            categoryId: null,
+            categoryName: null,
+          },
+        ],
+      });
+      const service = new AnalyticsService(fakeTx, store, () => fixedClock);
+      const res = await service.getAdvancedAnalytics(subject, {
+        workspaceId,
+        metric: ADVANCED_METRIC.WEEKDAY_HEATMAP,
+        from: '2026-01-01',
+        to: '2026-01-31',
+      });
+      expect(res.kind).toBe(ANALYTICS_OUTCOMES.MISSING_RATE);
+    });
+
+    it('emits generatedAt exactly matching the injected clock (determinism test)', async () => {
+      const store = createMockStore();
+      const service = new AnalyticsService(fakeTx, store, () => fixedClock);
+      const res = await service.getAdvancedAnalytics(subject, {
+        workspaceId,
+        metric: ADVANCED_METRIC.WEEKDAY_HEATMAP,
+        from: '2026-01-01',
+        to: '2026-01-31',
+      });
+      expect(res.kind).toBe(ANALYTICS_OUTCOMES.OK);
+      const ok = res as AdvancedAnalyticsOkOutcome;
+      expect(ok.analytics.generatedAt).toBe('2026-09-04T12:00:00.000Z');
+    });
+
+    it('serialises every AmountMinor into string and JSON.stringify does not throw (serialisation test)', async () => {
+      const store = createMockStore({
+        readTransactionsInPeriod: async () => [
+          {
+            id: 't1',
+            type: 'income',
+            amountMinor: '12345',
+            currency: 'USD',
+            occurredAt: new Date('2026-01-15T00:00:00Z'),
+            categoryId: null,
+            categoryName: null,
+          },
+          {
+            id: 't2',
+            type: 'expense',
+            amountMinor: '4567',
+            currency: 'USD',
+            occurredAt: new Date('2026-01-20T00:00:00Z'),
+            categoryId: null,
+            categoryName: null,
+          },
+        ],
+      });
+      const service = new AnalyticsService(fakeTx, store, () => fixedClock);
+      const res = await service.getAdvancedAnalytics(subject, {
+        workspaceId,
+        metric: ADVANCED_METRIC.MONTHLY_SAVINGS_CAPACITY,
+        from: '2026-01-01',
+        to: '2026-01-31',
+      });
+      expect(res.kind).toBe(ANALYTICS_OUTCOMES.OK);
+      const ok = res as AdvancedAnalyticsOkOutcome;
+      expect(() => JSON.stringify(ok.analytics)).not.toThrow();
+
+      // Check that AmountMinor fields in data are string matching ^-?[0-9]+$
+      const series = ok.analytics.data.series as Array<Record<string, unknown>>;
+      expect(series).toBeDefined();
+      expect(series.length).toBeGreaterThan(0);
+      const first = series[0];
+      expect(typeof first.incomeMinor).toBe('string');
+      expect(first.incomeMinor).toMatch(/^-?[0-9]+$/);
+      expect(typeof first.expensesMinor).toBe('string');
+      expect(first.expensesMinor).toMatch(/^-?[0-9]+$/);
+      expect(typeof first.savingsCapacityMinor).toBe('string');
+      expect(first.savingsCapacityMinor).toMatch(/^-?[0-9]+$/);
+    });
+
+    it('names extrapolation and basisMonths in balance_projection explanation', async () => {
+      const store = createMockStore({
+        readAccountNativeBalances: async () => [
+          { id: 'a1', currency: 'USD', nativeBalanceMinor: '500000' },
+        ],
+        readTransactionsInPeriod: async () => [
+          {
+            id: 't1',
+            type: 'income',
+            amountMinor: '100000',
+            currency: 'USD',
+            occurredAt: new Date('2026-01-15T00:00:00Z'),
+            categoryId: null,
+            categoryName: null,
+          },
+        ],
+      });
+      const service = new AnalyticsService(fakeTx, store, () => fixedClock);
+      const res = await service.getAdvancedAnalytics(subject, {
+        workspaceId,
+        metric: ADVANCED_METRIC.BALANCE_PROJECTION,
+        from: '2026-01-01',
+        to: '2026-03-31',
+      });
+      expect(res.kind).toBe(ANALYTICS_OUTCOMES.OK);
+      const ok = res as AdvancedAnalyticsOkOutcome;
+      expect(ok.analytics.explanation).toContain('extrapolation');
+      expect(ok.analytics.explanation).toContain('basisMonths');
+    });
+
+    it('mentions non-zero exclusion count in explanation when subscriptions are unclassified', async () => {
+      const store = createMockStore({
+        readActiveSubscriptions: async () => [
+          {
+            currentAmountMinor: '5000',
+            currentCurrency: 'USD',
+            frequency: 'unrecognized_unknown_freq',
+          },
+        ],
+      });
+      const service = new AnalyticsService(fakeTx, store, () => fixedClock);
+      const res = await service.getAdvancedAnalytics(subject, {
+        workspaceId,
+        metric: ADVANCED_METRIC.RECURRING_VS_VARIABLE,
+        from: '2026-01-01',
+        to: '2026-01-31',
+      });
+      expect(res.kind).toBe(ANALYTICS_OUTCOMES.OK);
+      const ok = res as AdvancedAnalyticsOkOutcome;
+      expect(ok.analytics.explanation).toContain(
+        '1 subscription(s) could not be classified',
+      );
+    });
+
+    it('mentions non-zero exclusion count in explanation when subscriptions have currency mismatch or zero previous', async () => {
+      const store = createMockStore({
+        readSubscriptionsWithPreviousAmount: async () => [
+          {
+            id: 's1',
+            payeeName: 'Service A',
+            currentAmountMinor: '1000',
+            currentCurrency: 'EUR',
+            previousAmountMinor: '900',
+            previousCurrency: 'USD',
+          },
+          {
+            id: 's2',
+            payeeName: 'Service B',
+            currentAmountMinor: '1000',
+            currentCurrency: 'USD',
+            previousAmountMinor: '0',
+            previousCurrency: 'USD',
+          },
+        ],
+      });
+      const service = new AnalyticsService(fakeTx, store, () => fixedClock);
+      const res = await service.getAdvancedAnalytics(subject, {
+        workspaceId,
+        metric: ADVANCED_METRIC.SUBSCRIPTION_PRICE_INCREASES,
+        from: '2026-01-01',
+        to: '2026-01-31',
+      });
+      expect(res.kind).toBe(ANALYTICS_OUTCOMES.OK);
+      const ok = res as AdvancedAnalyticsOkOutcome;
+      expect(ok.analytics.explanation).toContain('currency mismatch');
+      expect(ok.analytics.explanation).toContain('zero previous amount');
+    });
+
+    it('mentions non-zero debtsWithoutScheduledAmount in financial_calendar explanation', async () => {
+      const store = createMockStore({
+        readActiveDebtsWithoutScheduledAmount: async () => 2,
+      });
+      const service = new AnalyticsService(fakeTx, store, () => fixedClock);
+      const res = await service.getAdvancedAnalytics(subject, {
+        workspaceId,
+        metric: ADVANCED_METRIC.FINANCIAL_CALENDAR,
+        from: '2026-01-01',
+        to: '2026-01-31',
+      });
+      expect(res.kind).toBe(ANALYTICS_OUTCOMES.OK);
+      const ok = res as AdvancedAnalyticsOkOutcome;
+      expect(ok.analytics.explanation).toContain(
+        '2 active debt(s) without scheduled payment amount',
+      );
+    });
+
+    it('successfully computes all nine metrics', async () => {
+      const store = createMockStore();
+      const service = new AnalyticsService(fakeTx, store, () => fixedClock);
+      for (const metric of Object.values(ADVANCED_METRIC)) {
+        const res = await service.getAdvancedAnalytics(subject, {
+          workspaceId,
+          metric,
+          from: '2026-01-01',
+          to: '2026-03-31',
+        });
+        expect(res.kind).toBe(ANALYTICS_OUTCOMES.OK);
+        const ok = res as AdvancedAnalyticsOkOutcome;
+        expect(ok.analytics.metric).toBe(metric);
+        expect(ok.analytics.data).toBeDefined();
+        expect(typeof ok.analytics.data).toBe('object');
+        expect(ok.analytics.generatedAt).toBe('2026-09-04T12:00:00.000Z');
+      }
     });
   });
 });

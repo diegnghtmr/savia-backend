@@ -245,6 +245,23 @@ export type CashFlowAnalyticsOutcome =
   | AnalyticsForbiddenOutcome
   | AnalyticsMissingRateOutcome;
 
+export interface AdvancedAnalytics {
+  readonly metric: AdvancedMetric;
+  readonly generatedAt: string;
+  readonly data: Record<string, unknown>;
+  readonly explanation: string | null;
+}
+
+export interface AdvancedAnalyticsOkOutcome {
+  readonly kind: typeof ANALYTICS_OUTCOMES.OK;
+  readonly analytics: AdvancedAnalytics;
+}
+
+export type AdvancedAnalyticsOutcome =
+  | AdvancedAnalyticsOkOutcome
+  | AnalyticsForbiddenOutcome
+  | AnalyticsMissingRateOutcome;
+
 export interface AnalyticsPort {
   getSummary(
     subject: string,
@@ -255,6 +272,11 @@ export interface AnalyticsPort {
     subject: string,
     query: CashFlowAnalyticsQuery,
   ): Promise<CashFlowAnalyticsOutcome>;
+
+  getAdvancedAnalytics(
+    subject: string,
+    query: AdvancedAnalyticsQuery,
+  ): Promise<AdvancedAnalyticsOutcome>;
 }
 
 export interface AccountNativeBalanceRow extends Record<string, unknown> {
