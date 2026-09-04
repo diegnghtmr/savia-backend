@@ -282,17 +282,17 @@ export interface AnalyticsStore {
     to: string,
   ): Promise<readonly TransactionFlowRow[]>;
 
-  readSubscriptionsWithPreviousAmount?(
+  readSubscriptionsWithPreviousAmount(
     client: TransactionClient,
     workspaceId: string,
   ): Promise<readonly SubscriptionPriceRow[]>;
 
-  readActiveSubscriptions?(
+  readActiveSubscriptions(
     client: TransactionClient,
     workspaceId: string,
   ): Promise<readonly ActiveSubscriptionRow[]>;
 
-  readDebtPaymentCostsInPeriod?(
+  readDebtPaymentCostsInPeriod(
     client: TransactionClient,
     workspaceId: string,
     from: string,
