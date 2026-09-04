@@ -564,6 +564,45 @@ describe('buildQuarterlyAverageComparison', () => {
     // savings: (-1 + -4) / 2 = -2.5 -> -3n (away from zero / down)
     expect(result[0].averageMonthlySavingsCapacityMinor).toBe(-3n);
   });
+
+  it('sorts quarters chronologically and computes delta vs chronological predecessor when input months are out of order', () => {
+    // Non-chronological input: Q3 first, then Q1, then Q2
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-07-01', // Q3
+        incomeMinor: 40000n,
+        expensesMinor: 20000n,
+        savingsCapacityMinor: 20000n,
+      },
+      {
+        month: '2026-01-01', // Q1
+        incomeMinor: 20000n,
+        expensesMinor: 10000n,
+        savingsCapacityMinor: 10000n,
+      },
+      {
+        month: '2026-04-01', // Q2
+        incomeMinor: 10000n,
+        expensesMinor: 5000n,
+        savingsCapacityMinor: 5000n,
+      },
+    ];
+
+    const result = buildQuarterlyAverageComparison(series);
+
+    expect(result.map((point) => point.quarter)).toEqual([
+      '2026-Q1',
+      '2026-Q2',
+      '2026-Q3',
+    ]);
+    expect(result[0].savingsCapacityDeltaPercentVsPreviousQuarter).toBeNull();
+    expect(
+      result[1].savingsCapacityDeltaPercentVsPreviousQuarter,
+    ).not.toBeNull();
+    expect(
+      result[2].savingsCapacityDeltaPercentVsPreviousQuarter,
+    ).not.toBeNull();
+  });
 });
 
 describe('buildWeekdayHeatmap', () => {
