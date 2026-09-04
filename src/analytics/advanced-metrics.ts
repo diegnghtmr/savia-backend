@@ -802,8 +802,14 @@ export function buildFinancialCalendar(
     } else if (row.kind === 'recurring_rule') {
       if (row.template) {
         const templateType = row.template.type;
-        // Only outflows: exclude income, refund, transfer, adjustment
-        if (templateType !== undefined && !OUTFLOW_TYPES.has(templateType)) {
+        // An allow-list must require the known-good, never merely reject the known-bad.
+        // A missing discriminator is not evidence that a charge is an outflow, and this
+        // column guarantees only `jsonb not null`.
+        if (
+          typeof templateType !== 'string' ||
+          !OUTFLOW_TYPES.has(templateType)
+        ) {
+          countedUnreadableTemplate += 1;
           continue;
         }
         // Validate amountMinor and currency presence

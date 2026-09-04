@@ -300,7 +300,7 @@ export interface ScheduledOutflowRow extends Record<string, unknown> {
   readonly scheduledDate?: string | null;
   readonly scheduledAt?: Date | null;
   readonly template?: {
-    readonly type?: string;
+    readonly type?: string | null;
     readonly amount?: {
       readonly amountMinor?: string;
       readonly currency?: string;

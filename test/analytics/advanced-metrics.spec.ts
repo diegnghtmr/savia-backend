@@ -1726,6 +1726,92 @@ describe('buildFinancialCalendar', () => {
     expect(result.totalExpectedOutflowMinor).toBe(7500n); // 1500 + 2500 + 3500
   });
 
+  it('requires an explicitly allowed outflow type for recurring templates and counts missing or non-outflow types as unreadable', () => {
+    const from = '2026-04-01';
+    const to = '2026-04-30';
+    const rows: readonly ScheduledOutflowRow[] = [
+      // Template with no type at all
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-no-type',
+        label: 'Missing Type Rule',
+        scheduledDate: '2026-04-05',
+        template: {
+          amount: { amountMinor: '777', currency: 'USD' },
+        },
+      },
+      // Template with type: null
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-null-type',
+        label: 'Null Type Rule',
+        scheduledDate: '2026-04-10',
+        template: {
+          type: null,
+          amount: { amountMinor: '888', currency: 'USD' },
+        },
+      },
+      // Template with type: 'income'
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-income-type',
+        label: 'Income Type Rule',
+        scheduledDate: '2026-04-12',
+        template: {
+          type: 'income',
+          amount: { amountMinor: '999', currency: 'USD' },
+        },
+      },
+      // Allowed outflow types: expense, debt_payment, fund_contribution
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-expense-type',
+        label: 'Expense Type Rule',
+        scheduledDate: '2026-04-15',
+        template: {
+          type: 'expense',
+          amount: { amountMinor: '1000', currency: 'USD' },
+        },
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-debt-pmt-type',
+        label: 'Debt Payment Type Rule',
+        scheduledDate: '2026-04-20',
+        template: {
+          type: 'debt_payment',
+          amount: { amountMinor: '2000', currency: 'USD' },
+        },
+      },
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-fund-contrib-type',
+        label: 'Fund Contribution Type Rule',
+        scheduledDate: '2026-04-25',
+        template: {
+          type: 'fund_contribution',
+          amount: { amountMinor: '3000', currency: 'USD' },
+        },
+      },
+    ];
+
+    const result = buildFinancialCalendar(from, to, rows);
+
+    // 3 invalid/unreadable templates (no type, null type, income) counted
+    expect(result.recurringRulesWithUnreadableTemplate).toBe(3);
+    // Only the 3 allowed outflow types emitted
+    expect(result.days).toHaveLength(3);
+    expect(result.totalExpectedOutflowMinor).toBe(6000n); // 1000 + 2000 + 3000
+    const emittedRefIds = result.days.flatMap((d) =>
+      d.items.map((i) => i.refId),
+    );
+    expect(emittedRefIds).toEqual([
+      'rule-expense-type',
+      'rule-debt-pmt-type',
+      'rule-fund-contrib-type',
+    ]);
+  });
+
   it('counts an active debt with null minimum_payment_minor in debtsWithoutScheduledAmount and produces no calendar item', () => {
     const from = '2026-06-01';
     const to = '2026-06-30';
