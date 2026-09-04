@@ -140,6 +140,8 @@ describe('health endpoint', () => {
       'GET /v1/debts',
       'POST /v1/debts',
       'POST /v1/debts/:debtId/payments',
+      'GET /v1/analytics/summary',
+      'GET /v1/analytics/cash-flow',
     ]);
 
     await app.close();

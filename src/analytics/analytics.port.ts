@@ -111,19 +111,19 @@ export interface AnalyticsPort {
   ): Promise<CashFlowAnalyticsOutcome>;
 }
 
-export interface AccountNativeBalanceRow {
+export interface AccountNativeBalanceRow extends Record<string, unknown> {
   readonly id: string;
   readonly currency: string;
   readonly nativeBalanceMinor: string;
 }
 
-export interface DebtOutstandingBalanceRow {
+export interface DebtOutstandingBalanceRow extends Record<string, unknown> {
   readonly id: string;
   readonly currency: string;
   readonly outstandingBalanceMinor: string;
 }
 
-export interface TransactionFlowRow {
+export interface TransactionFlowRow extends Record<string, unknown> {
   readonly id: string;
   readonly type: string;
   readonly amountMinor: string;
@@ -133,12 +133,12 @@ export interface TransactionFlowRow {
   readonly categoryName: string | null;
 }
 
-export interface BudgetAllocationRow {
+export interface BudgetAllocationRow extends Record<string, unknown> {
   readonly currency: string;
   readonly plannedMinor: string;
 }
 
-export interface BudgetSpendRow {
+export interface BudgetSpendRow extends Record<string, unknown> {
   readonly amountMinor: string;
   readonly postingCurrency: string;
   readonly occurredAt: Date;
