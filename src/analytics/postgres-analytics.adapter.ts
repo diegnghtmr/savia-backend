@@ -8,6 +8,7 @@ import type {
   BudgetAllocationRow,
   BudgetSpendRow,
   DebtOutstandingBalanceRow,
+  SubscriptionPriceRow,
   TransactionFlowRow,
 } from './analytics.port.js';
 
@@ -146,6 +147,34 @@ where t.workspace_id = $1::uuid
       from,
       to,
     ]);
+    return result.rows;
+  }
+
+  /**
+   * §3.1 subscription_price_increases:
+   * Reads workspace subscriptions that have a recorded previous amount.
+   * Filtered by status in ('detected', 'confirmed').
+   * 'ignored' means the user rejected the detection and 'cancelled' means
+   * the subscription ended; neither is a live recurring charge.
+   */
+  public async readSubscriptionsWithPreviousAmount(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<readonly SubscriptionPriceRow[]> {
+    const sql = `
+select
+  id::text as id,
+  payee_name as "payeeName",
+  current_amount_minor::text as "currentAmountMinor",
+  current_currency as "currentCurrency",
+  previous_amount_minor::text as "previousAmountMinor",
+  previous_currency as "previousCurrency"
+from public.subscriptions
+where workspace_id = $1::uuid
+  and status in ('detected', 'confirmed')
+  and previous_amount_minor is not null`;
+
+    const result = await client.query<SubscriptionPriceRow>(sql, [workspaceId]);
     return result.rows;
   }
 

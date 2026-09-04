@@ -91,6 +91,22 @@ export interface WeekdayHeatmapPoint {
   readonly totalMinor: bigint;
 }
 
+export interface SubscriptionPriceIncreaseItem {
+  readonly subscriptionId: string;
+  readonly payeeName: string;
+  readonly previousAmount: Money;
+  readonly currentAmount: Money;
+  readonly increasePercent: number;
+}
+
+export interface SubscriptionPriceIncreases {
+  readonly items: readonly SubscriptionPriceIncreaseItem[];
+  readonly consideredCount: number;
+  readonly decreasedOrUnchangedCount: number;
+  readonly excludedForCurrencyMismatch: number;
+  readonly excludedForZeroPrevious: number;
+}
+
 export interface AnalyticsSummaryQuery {
   readonly workspaceId: string;
   readonly from: string;
@@ -180,6 +196,15 @@ export interface BudgetSpendRow extends Record<string, unknown> {
   readonly occurredAt: Date;
 }
 
+export interface SubscriptionPriceRow extends Record<string, unknown> {
+  readonly id: string;
+  readonly payeeName: string;
+  readonly currentAmountMinor: string;
+  readonly currentCurrency: string;
+  readonly previousAmountMinor: string;
+  readonly previousCurrency: string;
+}
+
 export interface AnalyticsStore {
   readActiveRole(
     client: TransactionClient,
@@ -207,6 +232,11 @@ export interface AnalyticsStore {
     from: string,
     to: string,
   ): Promise<readonly TransactionFlowRow[]>;
+
+  readSubscriptionsWithPreviousAmount?(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<readonly SubscriptionPriceRow[]>;
 
   readOverlappingBudgetAllocations(
     client: TransactionClient,

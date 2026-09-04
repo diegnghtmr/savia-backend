@@ -4,12 +4,16 @@ import {
   type IncomeStability,
   type MonthlyCapacityPoint,
   type QuarterlyAveragePoint,
+  type SubscriptionPriceIncreaseItem,
+  type SubscriptionPriceIncreases,
+  type SubscriptionPriceRow,
   type WeekdayHeatmapPoint,
 } from './analytics.port.js';
 import {
   generateBucketPeriods,
   truncateToBucketStart,
 } from './analytics.service.js';
+import { computeIncreasePercent } from '../recurring/subscription-calculation.js';
 
 interface BucketAccumulator {
   incomeMinor: bigint;
@@ -412,4 +416,92 @@ export function buildWeekdayHeatmap(
   }
 
   return heatmap;
+}
+
+/**
+ * §3.1 buildSubscriptionPriceIncreases
+ * Pure builder that calculates detected subscription price increases.
+ *
+ * Currency conversion note:
+ * Amounts stay in their own currency. Do NOT convert. A percentage increase is
+ * currency-independent, and converting would invite a missing-rate failure on a
+ * metric that does not need one.
+ *
+ * Rules:
+ * - increasePercent computed with computeIncreasePercent from src/recurring/subscription-calculation.ts.
+ * - Items included only when increasePercent !== null && increasePercent > 0 (increases only).
+ * - Decreases and unchanged amounts counted in decreasedOrUnchangedCount.
+ * - Currency mismatches counted in excludedForCurrencyMismatch.
+ * - Zero previous amounts counted in excludedForZeroPrevious.
+ * - Deterministic order: increasePercent descending, then payeeName ascending, then subscriptionId ascending.
+ */
+export function buildSubscriptionPriceIncreases(
+  rows: readonly SubscriptionPriceRow[],
+): SubscriptionPriceIncreases {
+  let decreasedOrUnchangedCount = 0;
+  let excludedForCurrencyMismatch = 0;
+  let excludedForZeroPrevious = 0;
+  const items: SubscriptionPriceIncreaseItem[] = [];
+
+  for (const row of rows) {
+    const currentAmount = {
+      amountMinor: row.currentAmountMinor,
+      currency: row.currentCurrency,
+    };
+    const previousAmount = {
+      amountMinor: row.previousAmountMinor,
+      currency: row.previousCurrency,
+    };
+
+    if (row.currentCurrency !== row.previousCurrency) {
+      excludedForCurrencyMismatch += 1;
+      continue;
+    }
+
+    if (BigInt(row.previousAmountMinor) === 0n) {
+      excludedForZeroPrevious += 1;
+      continue;
+    }
+
+    const increasePercent = computeIncreasePercent(
+      currentAmount,
+      previousAmount,
+    );
+
+    if (increasePercent === null) {
+      continue;
+    }
+
+    if (increasePercent <= 0) {
+      decreasedOrUnchangedCount += 1;
+      continue;
+    }
+
+    items.push({
+      subscriptionId: row.id,
+      payeeName: row.payeeName,
+      previousAmount,
+      currentAmount,
+      increasePercent,
+    });
+  }
+
+  items.sort((a, b) => {
+    if (b.increasePercent !== a.increasePercent) {
+      return b.increasePercent - a.increasePercent;
+    }
+    const payeeComparison = a.payeeName.localeCompare(b.payeeName);
+    if (payeeComparison !== 0) {
+      return payeeComparison;
+    }
+    return a.subscriptionId.localeCompare(b.subscriptionId);
+  });
+
+  return {
+    items,
+    consideredCount: rows.length,
+    decreasedOrUnchangedCount,
+    excludedForCurrencyMismatch,
+    excludedForZeroPrevious,
+  };
 }

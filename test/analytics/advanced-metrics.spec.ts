@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type {
   ConvertedFlowRow,
   MonthlyCapacityPoint,
+  SubscriptionPriceRow,
 } from '../../src/analytics/analytics.port.js';
 import {
   bigintSqrt,
   buildIncomeStability,
   buildMonthlySavingsCapacity,
   buildQuarterlyAverageComparison,
+  buildSubscriptionPriceIncreases,
   buildWeekdayHeatmap,
 } from '../../src/analytics/advanced-metrics.js';
 
@@ -797,5 +799,177 @@ describe('buildWeekdayHeatmap', () => {
     expect(result[6].weekday).toBe(7);
     expect(result[6].transactionCount).toBe(1);
     expect(result[6].totalMinor).toBe(1000n);
+  });
+});
+
+describe('buildSubscriptionPriceIncreases', () => {
+  it('counts a subscription whose currency differs from its previous amount in excludedForCurrencyMismatch', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-1',
+        payeeName: 'GitHub',
+        currentAmountMinor: '1200',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'EUR',
+      },
+    ];
+
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result).toEqual({
+      items: [],
+      consideredCount: 1,
+      decreasedOrUnchangedCount: 0,
+      excludedForCurrencyMismatch: 1,
+      excludedForZeroPrevious: 0,
+    });
+  });
+
+  it('counts a subscription whose previous amount is 0 in excludedForZeroPrevious', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-2',
+        payeeName: 'Figma',
+        currentAmountMinor: '1500',
+        currentCurrency: 'USD',
+        previousAmountMinor: '0',
+        previousCurrency: 'USD',
+      },
+    ];
+
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result).toEqual({
+      items: [],
+      consideredCount: 1,
+      decreasedOrUnchangedCount: 0,
+      excludedForCurrencyMismatch: 0,
+      excludedForZeroPrevious: 1,
+    });
+  });
+
+  it('counts a price decrease in decreasedOrUnchangedCount and excludes it from items', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-3',
+        payeeName: 'AWS',
+        currentAmountMinor: '8000',
+        currentCurrency: 'USD',
+        previousAmountMinor: '10000',
+        previousCurrency: 'USD',
+      },
+      {
+        id: 'sub-4',
+        payeeName: 'DigitalOcean',
+        currentAmountMinor: '2000',
+        currentCurrency: 'USD',
+        previousAmountMinor: '2000',
+        previousCurrency: 'USD',
+      },
+    ];
+
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result.items).toHaveLength(0);
+    expect(result.consideredCount).toBe(2);
+    expect(result.decreasedOrUnchangedCount).toBe(2);
+    expect(result.excludedForCurrencyMismatch).toBe(0);
+    expect(result.excludedForZeroPrevious).toBe(0);
+  });
+
+  it('breaks ordering ties deterministically by payeeName ascending then subscriptionId ascending', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-c',
+        payeeName: 'Zendesk',
+        currentAmountMinor: '2000',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'USD',
+      },
+      {
+        id: 'sub-b',
+        payeeName: 'Acme Corp',
+        currentAmountMinor: '2000',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'USD',
+      },
+      {
+        id: 'sub-a',
+        payeeName: 'Acme Corp',
+        currentAmountMinor: '4000',
+        currentCurrency: 'USD',
+        previousAmountMinor: '2000',
+        previousCurrency: 'USD',
+      },
+    ];
+
+    // All three have increasePercent = +100%.
+    // Tie-break rule: payeeName asc ('Acme Corp' before 'Zendesk'), then subscriptionId asc ('sub-a' before 'sub-b')
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result.consideredCount).toBe(3);
+    expect(result.items).toHaveLength(3);
+    expect(result.items[0]).toEqual({
+      subscriptionId: 'sub-a',
+      payeeName: 'Acme Corp',
+      previousAmount: { amountMinor: '2000', currency: 'USD' },
+      currentAmount: { amountMinor: '4000', currency: 'USD' },
+      increasePercent: 100,
+    });
+    expect(result.items[1]).toEqual({
+      subscriptionId: 'sub-b',
+      payeeName: 'Acme Corp',
+      previousAmount: { amountMinor: '1000', currency: 'USD' },
+      currentAmount: { amountMinor: '2000', currency: 'USD' },
+      increasePercent: 100,
+    });
+    expect(result.items[2]).toEqual({
+      subscriptionId: 'sub-c',
+      payeeName: 'Zendesk',
+      previousAmount: { amountMinor: '1000', currency: 'USD' },
+      currentAmount: { amountMinor: '2000', currency: 'USD' },
+      increasePercent: 100,
+    });
+  });
+
+  it('includes price increases in items ordered by increasePercent descending', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-10',
+        payeeName: 'Service A',
+        currentAmountMinor: '1100',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'USD',
+      }, // +10%
+      {
+        id: 'sub-20',
+        payeeName: 'Service B',
+        currentAmountMinor: '1500',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'USD',
+      }, // +50%
+      {
+        id: 'sub-30',
+        payeeName: 'Service C',
+        currentAmountMinor: '1250',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'USD',
+      }, // +25%
+    ];
+
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result.items.map((i) => i.subscriptionId)).toEqual([
+      'sub-20',
+      'sub-30',
+      'sub-10',
+    ]);
+    expect(result.items.map((i) => i.increasePercent)).toEqual([50, 25, 10]);
   });
 });
