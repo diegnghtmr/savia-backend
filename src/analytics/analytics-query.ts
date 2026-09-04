@@ -2,7 +2,10 @@ import { ACTIVE_CURRENCIES } from '../platform/field-validation.js';
 import type { FieldViolation } from '../platform/problem-details.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
 import {
+  ADVANCED_METRIC,
   GRANULARITY,
+  type AdvancedAnalyticsQuery,
+  type AdvancedMetric,
   type AnalyticsSummaryQuery,
   type CashFlowAnalyticsQuery,
   type Granularity,
@@ -199,5 +202,106 @@ export function createCashFlowAnalyticsQuery(input: {
     from: input.fromParam!,
     to: input.toParam!,
     granularity,
+  };
+}
+
+export function createAdvancedAnalyticsQuery(
+  input: {
+    workspaceId: string;
+    metricParam?: string;
+    fromParam?: string;
+    toParam?: string;
+  },
+  nowUtc: Date = new Date(),
+): AdvancedAnalyticsQuery {
+  const violations: FieldViolation[] = [];
+
+  if (!UUID_PATTERN.test(input.workspaceId)) {
+    violations.push({
+      field: 'workspaceId',
+      code: 'invalid',
+      message: 'workspaceId must be a valid UUID.',
+    });
+  }
+
+  let metric: AdvancedMetric | undefined = undefined;
+  if (!input.metricParam || input.metricParam.trim() === '') {
+    violations.push({
+      field: 'metric',
+      code: 'required',
+      message: 'metric is required.',
+    });
+  } else {
+    const raw = input.metricParam.trim().toLowerCase();
+    const allowedMetrics = Object.values(ADVANCED_METRIC);
+    if (!allowedMetrics.includes(raw as AdvancedMetric)) {
+      violations.push({
+        field: 'metric',
+        code: 'invalid-metric',
+        message: `metric must be one of: ${allowedMetrics.join(', ')}.`,
+      });
+    } else {
+      metric = raw as AdvancedMetric;
+    }
+  }
+
+  let to: string | undefined = undefined;
+  if (input.toParam !== undefined) {
+    if (!isValidUtcDate(input.toParam)) {
+      violations.push({
+        field: 'to',
+        code: 'invalid',
+        message: 'to must be a valid UTC date (YYYY-MM-DD).',
+      });
+    } else {
+      to = input.toParam;
+    }
+  } else {
+    to = nowUtc.toISOString().slice(0, 10);
+  }
+
+  let from: string | undefined = undefined;
+  if (input.fromParam !== undefined) {
+    if (!isValidUtcDate(input.fromParam)) {
+      violations.push({
+        field: 'from',
+        code: 'invalid',
+        message: 'from must be a valid UTC date (YYYY-MM-DD).',
+      });
+    } else {
+      from = input.fromParam;
+    }
+  } else if (to !== undefined && isValidUtcDate(to)) {
+    // from omitted -> first day of the month 11 months before the month of to
+    const toYear = parseInt(to.slice(0, 4), 10);
+    const toMonth = parseInt(to.slice(5, 7), 10);
+    from = new Date(Date.UTC(toYear, toMonth - 12, 1))
+      .toISOString()
+      .slice(0, 10);
+  }
+
+  if (
+    from !== undefined &&
+    to !== undefined &&
+    isValidUtcDate(from) &&
+    isValidUtcDate(to) &&
+    from > to
+  ) {
+    violations.push({
+      field: 'to',
+      code: 'invalid-range',
+      message: 'to must not be before from.',
+    });
+  }
+
+  if (violations.length > 0 || !metric || !from || !to) {
+    throw new AnalyticsQueryValidationError(Object.freeze(violations));
+  }
+
+  return {
+    workspaceId: input.workspaceId,
+    metric,
+    from,
+    to,
   };
 }
