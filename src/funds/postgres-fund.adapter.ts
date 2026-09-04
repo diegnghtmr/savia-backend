@@ -222,7 +222,7 @@ select
   f.updated_at as "updatedAt",
   coalesce(
     (
-      select sum(p.amount_minor)
+      select -sum(p.amount_minor)
       from public.fund_contributions fc
       join public.ledger_postings p
         on p.workspace_id = fc.workspace_id
@@ -268,7 +268,7 @@ select
   to_char(f.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt",
   coalesce(
     (
-      select sum(p.amount_minor)
+      select -sum(p.amount_minor)
       from public.fund_contributions fc
       join public.ledger_postings p
         on p.workspace_id = fc.workspace_id
@@ -354,7 +354,7 @@ returning
     const txnValues = [
       workspaceId,
       command.accountId,
-      command.amount.amountMinor,
+      negateAmountMinor(command.amount.amountMinor),
       command.amount.currency,
       command.occurredAt,
       command.notes ?? null,
@@ -368,8 +368,8 @@ returning
     }
 
     // 2. Insert balanced pair of ledger postings:
-    //    account leg (leg_kind = 'account', account_id set, amount_minor positive)
-    //    counter leg (leg_kind = 'external', account_id null, amount_minor negated)
+    //    account leg (leg_kind = 'account', account_id set, amount_minor negative outflow)
+    //    counter leg (leg_kind = 'external', account_id null, amount_minor positive counter-leg)
     const postingsSql = `
 insert into public.ledger_postings (
   workspace_id,
@@ -389,10 +389,10 @@ values
       workspaceId,
       txnRow.id,
       command.accountId,
-      command.amount.amountMinor,
+      negateAmountMinor(command.amount.amountMinor),
       command.amount.currency,
       txnRow.occurredAt,
-      negateAmountMinor(command.amount.amountMinor),
+      command.amount.amountMinor,
     ];
 
     await client.query(postingsSql, postingsValues);

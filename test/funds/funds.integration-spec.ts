@@ -440,7 +440,7 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
       const txn = JSON.parse(contribRes.payload);
       expect(txn.type).toBe('fund_contribution');
       expect(txn.status).toBe('confirmed');
-      expect(txn.amount).toEqual({ amountMinor: '1200', currency: 'USD' });
+      expect(txn.amount).toEqual({ amountMinor: '-1200', currency: 'USD' });
       expect(txn.accountId).toBe(account1Id);
 
       // Verify DB postings
@@ -462,14 +462,14 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
       const accountLeg = postings.rows.find((p) => p.leg_kind === 'account');
       expect(accountLeg).toBeDefined();
       expect(accountLeg?.account_id).toBe(account1Id);
-      expect(accountLeg?.amount_minor).toBe('1200');
+      expect(accountLeg?.amount_minor).toBe('-1200');
       expect(accountLeg?.currency).toBe('USD');
       expect(accountLeg?.status).toBe('confirmed');
 
       const externalLeg = postings.rows.find((p) => p.leg_kind === 'external');
       expect(externalLeg).toBeDefined();
       expect(externalLeg?.account_id).toBeNull();
-      expect(externalLeg?.amount_minor).toBe('-1200');
+      expect(externalLeg?.amount_minor).toBe('1200');
       expect(externalLeg?.currency).toBe('USD');
       expect(externalLeg?.status).toBe('confirmed');
 
@@ -507,6 +507,151 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
         amountMinor: '1200',
         currency: 'USD',
       });
+    });
+
+    it('decreases source account balance and increases fund currentAmount by contribution amount', async () => {
+      const fundRes = await application.inject({
+        method: 'POST',
+        url: '/v1/funds',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          name: 'Direction Guard Fund',
+          currency: 'USD',
+          targetAmount: { amountMinor: '50000', currency: 'USD' },
+        },
+      });
+      expect(fundRes.statusCode).toBe(201);
+      const fund = JSON.parse(fundRes.payload);
+
+      // 1. Read source account confirmed posting sum BEFORE contribution
+      const beforeAccountSumRes = await admin.query<{ sum: string }>(
+        `select coalesce(sum(amount_minor), 0)::text as sum
+         from public.ledger_postings
+         where account_id = $1 and status in ('confirmed', 'reconciled')`,
+        [account1Id],
+      );
+      const beforeAccountSum = BigInt(beforeAccountSumRes.rows[0].sum);
+
+      const beforeFundRes = await application.inject({
+        method: 'GET',
+        url: '/v1/funds',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+        },
+      });
+      const fundBefore = JSON.parse(beforeFundRes.payload).items.find(
+        (f: { id: string }) => f.id === fund.id,
+      );
+      const beforeFundAmount = BigInt(fundBefore.currentAmount.amountMinor);
+
+      // 2. Contribute a known amount
+      const contributionAmount = 2500n;
+      const contribRes = await application.inject({
+        method: 'POST',
+        url: `/v1/funds/${fund.id}/contributions`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          accountId: account1Id,
+          amount: {
+            amountMinor: contributionAmount.toString(),
+            currency: 'USD',
+          },
+          occurredAt: '2026-09-03T12:00:00Z',
+        },
+      });
+      expect(contribRes.statusCode).toBe(201);
+
+      // Read source account confirmed posting sum AFTER contribution
+      const afterAccountSumRes = await admin.query<{ sum: string }>(
+        `select coalesce(sum(amount_minor), 0)::text as sum
+         from public.ledger_postings
+         where account_id = $1 and status in ('confirmed', 'reconciled')`,
+        [account1Id],
+      );
+      const afterAccountSum = BigInt(afterAccountSumRes.rows[0].sum);
+
+      // 3. Assert the sum DECREASED by exactly that amount
+      expect(afterAccountSum - beforeAccountSum).toBe(-contributionAmount);
+
+      // Read fund currentAmount AFTER contribution
+      const afterFundRes = await application.inject({
+        method: 'GET',
+        url: '/v1/funds',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+        },
+      });
+      const fundAfter = JSON.parse(afterFundRes.payload).items.find(
+        (f: { id: string }) => f.id === fund.id,
+      );
+      const afterFundAmount = BigInt(fundAfter.currentAmount.amountMinor);
+
+      // 4. Assert in the same test that the fund's currentAmount INCREASED by exactly that amount
+      expect(afterFundAmount - beforeFundAmount).toBe(contributionAmount);
+    });
+
+    it('pins the section 2 invariant: transactions.amount_minor equals the account leg and is negative', async () => {
+      const fundRes = await application.inject({
+        method: 'POST',
+        url: '/v1/funds',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          name: 'Invariant Pin Fund',
+          currency: 'USD',
+          targetAmount: { amountMinor: '50000', currency: 'USD' },
+        },
+      });
+      expect(fundRes.statusCode).toBe(201);
+      const fund = JSON.parse(fundRes.payload);
+
+      const contribRes = await application.inject({
+        method: 'POST',
+        url: `/v1/funds/${fund.id}/contributions`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          accountId: account1Id,
+          amount: { amountMinor: '1500', currency: 'USD' },
+          occurredAt: '2026-09-03T12:00:00Z',
+        },
+      });
+      expect(contribRes.statusCode).toBe(201);
+      const txn = JSON.parse(contribRes.payload);
+
+      const txnRow = await admin.query<{ amount_minor: string }>(
+        'select amount_minor::text from public.transactions where id = $1',
+        [txn.id],
+      );
+      const accountPostingRow = await admin.query<{ amount_minor: string }>(
+        `select amount_minor::text from public.ledger_postings
+         where transaction_id = $1 and leg_kind = 'account'`,
+        [txn.id],
+      );
+
+      expect(txnRow.rows).toHaveLength(1);
+      expect(accountPostingRow.rows).toHaveLength(1);
+      expect(txnRow.rows[0].amount_minor).toBe('-1500');
+      expect(accountPostingRow.rows[0].amount_minor).toBe('-1500');
+      expect(txnRow.rows[0].amount_minor).toBe(
+        accountPostingRow.rows[0].amount_minor,
+      );
     });
   });
 
