@@ -1885,6 +1885,69 @@ describe('buildFinancialCalendar', () => {
     expect(result.days[1].date).toBe('2026-04-01');
     expect(result.days[1].items[0].refId).toBe('utc-item-2');
   });
+
+  it('reports positive magnitudes for negative stored amounts across all four source kinds without clamping', () => {
+    // Expected outflow reports positive magnitudes because direction lives in the field name.
+    // This is NOT a clamp: no sign is discarded to hide a value, negative stored amounts
+    // are normalised to positive magnitude.
+    const from = '2026-07-01';
+    const to = '2026-07-31';
+    const rows: readonly ScheduledOutflowRow[] = [
+      // 1. debt_payment with negative stored amount
+      {
+        kind: 'debt_payment',
+        refId: 'debt-neg',
+        label: 'Negative Debt Payment',
+        amountMinor: -2500n,
+        scheduledDate: '2026-07-05',
+      },
+      // 2. subscription with negative stored amount
+      {
+        kind: 'subscription',
+        refId: 'sub-neg',
+        label: 'Negative Subscription',
+        amountMinor: -1500n,
+        scheduledDate: '2026-07-10',
+      },
+      // 3. recurring_rule with template and negative stored amount
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-tmpl-neg',
+        label: 'Negative Template Rule',
+        scheduledDate: '2026-07-15',
+        template: {
+          type: 'expense',
+          amount: { amountMinor: '-4000', currency: 'USD' },
+        },
+      },
+      // 4. recurring_rule without template and negative stored amount
+      {
+        kind: 'recurring_rule',
+        refId: 'rule-fallback-neg',
+        label: 'Negative Fallback Rule',
+        amountMinor: -3000n,
+        scheduledDate: '2026-07-20',
+      },
+    ];
+
+    const result = buildFinancialCalendar(from, to, rows);
+
+    expect(result.days).toHaveLength(4);
+    // Every source kind reports positive magnitude
+    expect(result.days[0].expectedOutflowMinor).toBe(2500n);
+    expect(result.days[0].items[0].amountMinor).toBe(2500n);
+
+    expect(result.days[1].expectedOutflowMinor).toBe(1500n);
+    expect(result.days[1].items[0].amountMinor).toBe(1500n);
+
+    expect(result.days[2].expectedOutflowMinor).toBe(4000n);
+    expect(result.days[2].items[0].amountMinor).toBe(4000n);
+
+    expect(result.days[3].expectedOutflowMinor).toBe(3000n);
+    expect(result.days[3].items[0].amountMinor).toBe(3000n);
+
+    expect(result.totalExpectedOutflowMinor).toBe(11000n); // 2500 + 1500 + 4000 + 3000
+  });
 });
 
 describe('buildBalanceProjection', () => {

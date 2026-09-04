@@ -760,6 +760,7 @@ export function buildFinancialCalendar(
         countedDebtsWithoutScheduledAmount += 1;
         continue;
       }
+      // Positive magnitude: direction lives in expectedOutflow name; not a clamp (no sign discarded to hide value)
       const positiveAmount = amount < 0n ? -amount : amount;
       let dayItems = daysMap.get(dateStr);
       if (!dayItems) {
@@ -787,6 +788,7 @@ export function buildFinancialCalendar(
       } else {
         continue;
       }
+      // Positive magnitude: direction lives in expectedOutflow name; not a clamp (no sign discarded to hide value)
       const positiveAmount = amount < 0n ? -amount : amount;
       let dayItems = daysMap.get(dateStr);
       if (!dayItems) {
@@ -824,6 +826,7 @@ export function buildFinancialCalendar(
           continue;
         }
         const amount = BigInt(templateAmount.amountMinor);
+        // Positive magnitude: direction lives in expectedOutflow name; not a clamp (no sign discarded to hide value)
         const positiveAmount = amount < 0n ? -amount : amount;
         let dayItems = daysMap.get(dateStr);
         if (!dayItems) {
@@ -853,6 +856,7 @@ export function buildFinancialCalendar(
           countedUnreadableTemplate += 1;
           continue;
         }
+        // Positive magnitude: direction lives in expectedOutflow name; not a clamp (no sign discarded to hide value)
         const positiveAmount = amount < 0n ? -amount : amount;
         let dayItems = daysMap.get(dateStr);
         if (!dayItems) {
