@@ -3,7 +3,6 @@ import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
   ADVANCED_METRIC,
   ANALYTICS_OUTCOMES,
-  GRANULARITY,
   type AdvancedAnalyticsOutcome,
   type AdvancedAnalyticsQuery,
   type AnalyticsPort,
@@ -16,7 +15,6 @@ import {
   type ConvertedDebtCostRow,
   type ConvertedFlowRow,
   type ConvertedSubscriptionRow,
-  type Granularity,
   type ScheduledOutflowRow,
   type TimeSeriesPoint,
 } from './analytics.port.js';
@@ -30,91 +28,17 @@ import {
   buildRecurringVsVariable,
   buildSubscriptionPriceIncreases,
   buildWeekdayHeatmap,
+  generateBucketPeriods,
+  truncateToBucketStart,
 } from './advanced-metrics.js';
+
+export { generateBucketPeriods, truncateToBucketStart };
 
 export interface AnalyticsTransactionRunner {
   run<T>(
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T>;
-}
-
-/**
- * Truncates a UTC Date to its bucket start date string (YYYY-MM-DD).
- */
-export function truncateToBucketStart(
-  date: Date,
-  granularity: Granularity,
-): string {
-  const year = date.getUTCFullYear();
-  const month = date.getUTCMonth();
-  const day = date.getUTCDate();
-
-  switch (granularity) {
-    case GRANULARITY.DAY:
-      return date.toISOString().slice(0, 10);
-    case GRANULARITY.WEEK: {
-      // ISO week starts on Monday
-      const dayOfWeek = date.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
-      const diffToMonday = (dayOfWeek + 6) % 7;
-      const monday = new Date(Date.UTC(year, month, day - diffToMonday));
-      return monday.toISOString().slice(0, 10);
-    }
-    case GRANULARITY.MONTH: {
-      const monthStart = new Date(Date.UTC(year, month, 1));
-      return monthStart.toISOString().slice(0, 10);
-    }
-    case GRANULARITY.QUARTER: {
-      const quarterStartMonth = Math.floor(month / 3) * 3;
-      const quarterStart = new Date(Date.UTC(year, quarterStartMonth, 1));
-      return quarterStart.toISOString().slice(0, 10);
-    }
-  }
-}
-
-/**
- * Generates an inclusive, gap-free list of bucket start dates (YYYY-MM-DD) in UTC.
- */
-export function generateBucketPeriods(
-  fromStr: string,
-  toStr: string,
-  granularity: Granularity,
-): string[] {
-  const fromDate = new Date(`${fromStr}T00:00:00.000Z`);
-  const toDate = new Date(`${toStr}T00:00:00.000Z`);
-
-  const startBucket = truncateToBucketStart(fromDate, granularity);
-  const endBucket = truncateToBucketStart(toDate, granularity);
-
-  const periods: string[] = [];
-  let current = new Date(`${startBucket}T00:00:00.000Z`);
-  const end = new Date(`${endBucket}T00:00:00.000Z`);
-
-  while (current.getTime() <= end.getTime()) {
-    const periodStr = current.toISOString().slice(0, 10);
-    periods.push(periodStr);
-
-    const curYear = current.getUTCFullYear();
-    const curMonth = current.getUTCMonth();
-    const curDay = current.getUTCDate();
-
-    switch (granularity) {
-      case GRANULARITY.DAY:
-        current = new Date(Date.UTC(curYear, curMonth, curDay + 1));
-        break;
-      case GRANULARITY.WEEK:
-        current = new Date(Date.UTC(curYear, curMonth, curDay + 7));
-        break;
-      case GRANULARITY.MONTH:
-        current = new Date(Date.UTC(curYear, curMonth + 1, 1));
-        break;
-      case GRANULARITY.QUARTER:
-        current = new Date(Date.UTC(curYear, curMonth + 3, 1));
-        break;
-    }
-  }
-
-  return periods;
 }
 
 function serializeData(val: unknown): unknown {
