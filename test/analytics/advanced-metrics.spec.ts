@@ -1403,24 +1403,11 @@ describe('buildDebtCostEvolution', () => {
 });
 
 describe('buildFinancialCalendar', () => {
-  it('returns exactly three days for a 365-day period with three scheduled items instead of 365 days', () => {
+  it('returns exactly three days for a 365-day period with pre-shuffled days and item-level tie-breaks', () => {
     const from = '2026-01-01';
     const to = '2026-12-31';
+    // Pre-shuffled order: October, February, May (with tied items in reverse order of kind and refId)
     const rows: readonly ScheduledOutflowRow[] = [
-      {
-        kind: 'subscription',
-        refId: 'sub-1',
-        label: 'Streaming',
-        amountMinor: 1000n,
-        scheduledDate: '2026-02-15',
-      },
-      {
-        kind: 'debt_payment',
-        refId: 'debt-1',
-        label: 'Car Loan',
-        amountMinor: 2500n,
-        scheduledDate: '2026-05-20',
-      },
       {
         kind: 'recurring_rule',
         refId: 'rule-1',
@@ -1432,12 +1419,41 @@ describe('buildFinancialCalendar', () => {
           amount: { amountMinor: '4000', currency: 'USD' },
         },
       },
+      {
+        kind: 'subscription',
+        refId: 'sub-1',
+        label: 'Streaming',
+        amountMinor: 1000n,
+        scheduledDate: '2026-02-15',
+      },
+      {
+        kind: 'subscription',
+        refId: 'sub-2',
+        label: 'Cloud Backup',
+        amountMinor: 1500n,
+        scheduledDate: '2026-05-20',
+      },
+      {
+        kind: 'subscription',
+        refId: 'sub-1',
+        label: 'Music',
+        amountMinor: 1200n,
+        scheduledDate: '2026-05-20',
+      },
+      {
+        kind: 'debt_payment',
+        refId: 'debt-1',
+        label: 'Car Loan',
+        amountMinor: 2500n,
+        scheduledDate: '2026-05-20',
+      },
     ];
 
     const result = buildFinancialCalendar(from, to, rows);
 
     // M1 test: must return exactly 3 days, not 365
     expect(result.days).toHaveLength(3);
+    // Ascending chronological order: February, May, October
     expect(result.days.map((d) => d.date)).toEqual([
       '2026-02-15',
       '2026-05-20',
@@ -1445,6 +1461,15 @@ describe('buildFinancialCalendar', () => {
     ]);
     expect(result.periodStart).toBe(from);
     expect(result.periodEnd).toBe(to);
+
+    // Tied date 2026-05-20: secondary sort by kind (debt_payment < subscription), tertiary sort by refId (sub-1 < sub-2)
+    expect(
+      result.days[1].items.map((i) => ({ kind: i.kind, refId: i.refId })),
+    ).toEqual([
+      { kind: 'debt_payment', refId: 'debt-1' },
+      { kind: 'subscription', refId: 'sub-1' },
+      { kind: 'subscription', refId: 'sub-2' },
+    ]);
   });
 
   it('asserts directly that totalExpectedOutflowMinor equals the sum of every day', () => {
