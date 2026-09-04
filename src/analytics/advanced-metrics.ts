@@ -876,7 +876,6 @@ export function buildFinancialCalendar(
   // Deterministic order: days ascending by date
   const sortedDates = [...daysMap.keys()].sort((a, b) => a.localeCompare(b));
 
-  let totalExpectedOutflowMinor = 0n;
   const days: FinancialCalendarDay[] = [];
 
   for (const date of sortedDates) {
@@ -894,7 +893,6 @@ export function buildFinancialCalendar(
     for (const item of items) {
       dayExpectedOutflowMinor += item.amountMinor;
     }
-    totalExpectedOutflowMinor += dayExpectedOutflowMinor;
 
     days.push({
       date,
@@ -903,16 +901,12 @@ export function buildFinancialCalendar(
     });
   }
 
-  // Assert identity: totalExpectedOutflowMinor equals the sum of every day
-  let sumOfDays = 0n;
-  for (const day of days) {
-    sumOfDays += day.expectedOutflowMinor;
-  }
-  if (sumOfDays !== totalExpectedOutflowMinor) {
-    throw new Error(
-      'Invariant violation: totalExpectedOutflowMinor does not match sum of days',
-    );
-  }
+  // Derived from days, so the total cannot diverge from its parts by construction.
+  // This replaces a runtime invariant check: an impossible state is better than a guarded one.
+  const totalExpectedOutflowMinor = days.reduce(
+    (sum, day) => sum + day.expectedOutflowMinor,
+    0n,
+  );
 
   return {
     periodStart: from,

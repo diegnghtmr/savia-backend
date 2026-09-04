@@ -1472,7 +1472,7 @@ describe('buildFinancialCalendar', () => {
     ]);
   });
 
-  it('asserts directly that totalExpectedOutflowMinor equals the sum of every day', () => {
+  it('documents that totalExpectedOutflowMinor equals the sum of every day as a structural guarantee', () => {
     const from = '2026-01-01';
     const to = '2026-03-31';
     const rows: readonly ScheduledOutflowRow[] = [
