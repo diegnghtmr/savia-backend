@@ -61,7 +61,7 @@ describe('FundsController', () => {
         fund: dummyFund,
       })),
       listFunds: vi.fn(async () => ({
-        kind: 'ok',
+        kind: 'ok' as const,
         page: {
           items: [dummyFund],
           pageInfo: { hasNextPage: false, nextCursor: null },

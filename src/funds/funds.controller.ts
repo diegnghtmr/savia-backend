@@ -156,6 +156,7 @@ export class FundsController {
     if (o.kind === FUND_OUTCOMES.REPLAYED) {
       return void reply.status(o.status).send(o.body);
     }
+    if (o.kind !== FUND_OUTCOMES.CREATED) return;
     void reply.status(201).send(o.fund);
   }
 
@@ -288,6 +289,7 @@ export class FundsController {
     if (o.kind === FUND_OUTCOMES.REPLAYED) {
       return void reply.status(o.status).send(o.body);
     }
+    if (o.kind !== FUND_OUTCOMES.CREATED) return;
     void reply.status(201).send(o.transaction);
   }
 }

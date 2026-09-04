@@ -10,15 +10,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
-import { FundService } from '../../src/funds/fund.service.js';
 import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
   throw new Error('DATABASE_URL is required for integration tests.');
 }
-
-const id = (prefix: string) => `${prefix}0000-0000-4000-8000-000000000001`;
 
 describe('Funds integration suite against disposable PostgreSQL', () => {
   let admin: Pool;

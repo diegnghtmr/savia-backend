@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { IdempotencyStore } from '../../src/platform/idempotency.service.js';
+import type { IdempotencyStore } from '../../src/platform/idempotency.port.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
   FUND_OUTCOMES,
@@ -10,8 +10,6 @@ import {
   type FundTransaction,
 } from '../../src/funds/fund.port.js';
 import {
-  FundCreateRollbackError,
-  FundContributionRollbackError,
   FundService,
   type FundTransactionRunner,
 } from '../../src/funds/fund.service.js';
