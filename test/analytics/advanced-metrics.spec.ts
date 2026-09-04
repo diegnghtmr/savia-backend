@@ -603,6 +603,63 @@ describe('buildQuarterlyAverageComparison', () => {
       result[2].savingsCapacityDeltaPercentVsPreviousQuarter,
     ).not.toBeNull();
   });
+
+  it('applies half-away-from-zero rounding on exact half tie boundaries for quarterly delta in both positive and negative directions', () => {
+    // Hand derivation of tie boundaries (both landing on an exact half hundredth, i.e., ±0.025%):
+    // 1. Positive tie:
+    //    previous = 8000n, current = 8002n
+    //    delta = 8002 - 8000 = +2
+    //    delta% = (2 / 8000) * 100 = 2 / 80 = 0.025%
+    //    In hundredths (basis points): 0.025 * 100 = 2.5 hundredths
+    //    Integer arithmetic: num = 2 * 10000 = 20000n, den = 8000n
+    //    q = 20000 / 8000 = 2n, r = 20000 % 8000 = 4000n
+    //    2 * r = 8000n === den -> exact tie at 0.5 hundredths
+    //    Half-away-from-zero rounds 2.5 up to 3 hundredths -> +0.03%
+    //    (Strictly greater `>` would truncate to 2 hundredths -> +0.02%)
+    //
+    // 2. Negative tie:
+    //    previous = 8000n, current = 7998n
+    //    delta = 7998 - 8000 = -2
+    //    delta% = (-2 / 8000) * 100 = -2 / 80 = -0.025%
+    //    In hundredths (basis points): -0.025 * 100 = -2.5 hundredths
+    //    Integer arithmetic: num = -2 * 10000 = -20000n, den = 8000n
+    //    q = -20000 / 8000 = -2n, r = -20000 % 8000 = -4000n
+    //    2 * |r| = 8000n === den -> exact tie at -0.5 hundredths
+    //    Half-away-from-zero rounds -2.5 away from zero to -3 hundredths -> -0.03%
+    //    (Strictly greater `>` would truncate toward zero to -2 hundredths -> -0.02%)
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01', // Q1: savings 8000n
+        incomeMinor: 8000n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 8000n,
+      },
+      {
+        month: '2026-04-01', // Q2: savings 8002n (delta vs Q1: +0.025% -> +0.03)
+        incomeMinor: 8002n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 8002n,
+      },
+      {
+        month: '2026-07-01', // Q3: savings 8000n
+        incomeMinor: 8000n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 8000n,
+      },
+      {
+        month: '2026-10-01', // Q4: savings 7998n (delta vs Q3: -0.025% -> -0.03)
+        incomeMinor: 7998n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 7998n,
+      },
+    ];
+
+    const result = buildQuarterlyAverageComparison(series);
+
+    expect(result).toHaveLength(4);
+    expect(result[1].savingsCapacityDeltaPercentVsPreviousQuarter).toBe(0.03);
+    expect(result[3].savingsCapacityDeltaPercentVsPreviousQuarter).toBe(-0.03);
+  });
 });
 
 describe('buildWeekdayHeatmap', () => {
