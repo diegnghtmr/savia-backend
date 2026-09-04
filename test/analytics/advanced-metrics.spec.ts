@@ -4,11 +4,35 @@ import type {
   MonthlyCapacityPoint,
 } from '../../src/analytics/analytics.port.js';
 import {
+  bigintSqrt,
   buildIncomeStability,
   buildMonthlySavingsCapacity,
   buildQuarterlyAverageComparison,
   buildWeekdayHeatmap,
 } from '../../src/analytics/advanced-metrics.js';
+
+describe('bigintSqrt', () => {
+  it('computes exact square root for perfect squares (0n, 1n, 4n, 10000n)', () => {
+    expect(bigintSqrt(0n)).toBe(0n);
+    expect(bigintSqrt(1n)).toBe(1n);
+    expect(bigintSqrt(4n)).toBe(2n);
+    expect(bigintSqrt(10000n)).toBe(100n);
+  });
+
+  it('computes floor square root for non-squares (2n -> 1n, 8n -> 2n, 99n -> 9n)', () => {
+    expect(bigintSqrt(2n)).toBe(1n);
+    expect(bigintSqrt(8n)).toBe(2n);
+    expect(bigintSqrt(99n)).toBe(9n);
+  });
+
+  it('computes exact square root for very large values (10n**30n -> 10n**15n)', () => {
+    expect(bigintSqrt(10n ** 30n)).toBe(10n ** 15n);
+  });
+
+  it('throws on negative input', () => {
+    expect(() => bigintSqrt(-1n)).toThrow();
+  });
+});
 
 describe('buildMonthlySavingsCapacity', () => {
   it('returns zero-filled buckets over a real period when input is empty', () => {
@@ -316,6 +340,79 @@ describe('buildIncomeStability', () => {
 
     // Sum is 20001n / 2n = 10000.5n -> rounds away from zero to 10001n
     expect(result.meanMonthlyIncomeMinor).toBe(10001n);
+  });
+
+  it('returns CV exactly 0 when all months have identical income (S === 0n)', () => {
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: 50000n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 50000n,
+      },
+      {
+        month: '2026-02-01',
+        incomeMinor: 50000n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 50000n,
+      },
+      {
+        month: '2026-03-01',
+        incomeMinor: 50000n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 50000n,
+      },
+    ];
+
+    const result = buildIncomeStability(series);
+
+    expect(result.coefficientOfVariationPercent).toBe(0);
+  });
+
+  it('correctly rounds exact tie half-away-from-zero on first inversion regression vector (33.335 -> 33.34)', () => {
+    // Exact CV is 33.335%; half-away-from-zero requires rounding up to 33.34%.
+    // Floating-point math previously misrounded this down to 33.33%.
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: 6276689609128780284n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 6276689609128780284n,
+      },
+      {
+        month: '2026-02-01',
+        incomeMinor: 3138227118105299716n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 3138227118105299716n,
+      },
+    ];
+
+    const result = buildIncomeStability(series);
+
+    expect(result.coefficientOfVariationPercent).toBe(33.34);
+  });
+
+  it('correctly rounds strictly-below-tie half-away-from-zero on second inversion regression vector (33.334999... -> 33.33)', () => {
+    // Exact CV is 33.33499999999999999...%; strictly below the 33.335 tie, requires rounding to 33.33%.
+    // Floating-point math with a 1e-12 fudge previously misrounded this up to 33.34%.
+    const series: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-01-01',
+        incomeMinor: 8666775000000001535n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 8666775000000001535n,
+      },
+      {
+        month: '2026-02-01',
+        incomeMinor: 4333225000000000768n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 4333225000000000768n,
+      },
+    ];
+
+    const result = buildIncomeStability(series);
+
+    expect(result.coefficientOfVariationPercent).toBe(33.33);
   });
 });
 

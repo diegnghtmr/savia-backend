@@ -105,14 +105,23 @@ export function roundDivHalfAwayFromZero(num: bigint, den: bigint): bigint {
 }
 
 /**
- * Rounds a floating-point value to 2 decimals using half-away-from-zero tie-breaking.
+ * Integer square root for BigInt using Newton's method, returning floor(sqrt(value)).
+ * Throws RangeError on negative input. Handles 0n and 1n without looping.
  */
-export function roundNumberToTwoDecimalsHalfAwayFromZero(val: number): number {
-  const sign = val < 0 ? -1 : 1;
-  const abs = Math.abs(val);
-  const roundedHundredths = Math.round(abs * 100 + 1e-12);
-  const result = (sign * roundedHundredths) / 100;
-  return Object.is(result, -0) ? 0 : result;
+export function bigintSqrt(value: bigint): bigint {
+  if (value < 0n) {
+    throw new RangeError('Square root of negative BigInt');
+  }
+  if (value === 0n || value === 1n) {
+    return value;
+  }
+  let x0 = 1n << ((BigInt(value.toString(2).length) + 1n) / 2n);
+  let x1 = (x0 + value / x0) / 2n;
+  while (x1 < x0) {
+    x0 = x1;
+    x1 = (x0 + value / x0) / 2n;
+  }
+  return x0;
 }
 
 /**
@@ -141,6 +150,7 @@ export function buildIncomeStability(
   let minMonthlyIncomeMinor = monthlySeries[0].incomeMinor;
   let maxMonthlyIncomeMinor = monthlySeries[0].incomeMinor;
   let totalIncomeMinor = 0n;
+  let sumSquaredIncomeMinor = 0n;
 
   for (const point of monthlySeries) {
     if (point.incomeMinor < minMonthlyIncomeMinor) {
@@ -150,6 +160,7 @@ export function buildIncomeStability(
       maxMonthlyIncomeMinor = point.incomeMinor;
     }
     totalIncomeMinor += point.incomeMinor;
+    sumSquaredIncomeMinor += point.incomeMinor * point.incomeMinor;
   }
 
   const meanMonthlyIncomeMinor = roundDivHalfAwayFromZero(
@@ -179,24 +190,34 @@ export function buildIncomeStability(
     };
   }
 
-  // §3.4: Use population standard deviation (divide by N, not N - 1).
-  // Population stddev reflects the entire observed period rather than an inferred sample.
-  const meanNumber = Number(totalIncomeMinor) / monthsCounted;
-  let sumSquaredDiffs = 0;
-  for (const point of monthlySeries) {
-    const diff = Number(point.incomeMinor) - meanNumber;
-    sumSquaredDiffs += diff * diff;
+  // §3.4: Population statistics collapse to an exact integer expression. With N observations
+  // xᵢ, T = Σxᵢ, and Q = Σxᵢ²:
+  // population std dev = sqrt(N·Q - T²) / N
+  // CV% = 100 · std dev / |mean| = 100 · [sqrt(S)/N] / (|T|/N) = 100 · sqrt(S) / |T|
+  // where S = N·Q - T². N cancels completely.
+  const N = BigInt(monthsCounted);
+  const S = N * sumSquaredIncomeMinor - totalIncomeMinor * totalIncomeMinor;
+  if (S === 0n) {
+    return {
+      monthsCounted,
+      meanMonthlyIncomeMinor,
+      minMonthlyIncomeMinor,
+      maxMonthlyIncomeMinor,
+      coefficientOfVariationPercent: 0,
+    };
   }
-  const variance = sumSquaredDiffs / monthsCounted;
-  const populationStdDev = Math.sqrt(variance);
 
-  // A coefficient of variation is a dispersion RATIO, so it is never negative: standard
-  // deviation is non-negative and the magnitude of the mean is what it is measured against.
-  // Monthly income can be negative because AmountMinor is a signed integer in the contract,
-  // so dividing by the signed mean would emit a meaningless negative percentage.
-  const cvPercent = (populationStdDev / Math.abs(meanNumber)) * 100;
-  const coefficientOfVariationPercent =
-    roundNumberToTwoDecimalsHalfAwayFromZero(cvPercent);
+  const A = S * 100000000n; // 10^8, so sqrt(A) = 10000 * sqrt(S)
+  const D = totalIncomeMinor < 0n ? -totalIncomeMinor : totalIncomeMinor;
+  let k = bigintSqrt(A) / D;
+  while ((k + 1n) ** 2n * D * D <= A) {
+    k += 1n;
+  }
+  // The tie-break line is the exact restatement of sqrt(A)/D - k >= 1/2, squared to stay in integers.
+  if (4n * A >= (2n * k + 1n) ** 2n * D * D) {
+    k += 1n;
+  }
+  const coefficientOfVariationPercent = Number(k) / 100;
 
   return {
     monthsCounted,
