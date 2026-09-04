@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type {
+  ConvertedDebtCostRow,
   ConvertedFlowRow,
   ConvertedSubscriptionRow,
   MonthlyCapacityPoint,
@@ -7,6 +8,7 @@ import type {
 } from '../../src/analytics/analytics.port.js';
 import {
   bigintSqrt,
+  buildDebtCostEvolution,
   buildIncomeStability,
   buildMonthlySavingsCapacity,
   buildQuarterlyAverageComparison,
@@ -1116,5 +1118,115 @@ describe('buildRecurringVsVariable', () => {
     expect(result31.committedMinor).toBe(10192n);
     expect(result28.committedMinor).toBe(9205n);
     expect(result31.committedMinor).not.toBe(result28.committedMinor);
+  });
+});
+
+describe('buildDebtCostEvolution', () => {
+  it('presents zero-filled buckets for months with no payments and assigns payments correctly across UTC boundaries', () => {
+    // 3 months: Jan, Feb, Mar 2026
+    const from = '2026-01-01';
+    const to = '2026-03-31';
+    const rows: readonly ConvertedDebtCostRow[] = [
+      // 2026-01-31T23:59:59.999Z -> UTC month is January
+      {
+        interestMinor: 1000n,
+        feeMinor: 200n,
+        occurredAt: new Date('2026-01-31T23:59:59.999Z'),
+      },
+      // 2026-02-01T00:00:00.000Z -> UTC month is February
+      {
+        interestMinor: 1500n,
+        feeMinor: 300n,
+        occurredAt: new Date('2026-02-01T00:00:00.000Z'),
+      },
+      // March has NO payments -> must be present, gap-free, zero-filled
+    ];
+
+    const result = buildDebtCostEvolution(from, to, rows);
+
+    expect(result.series).toHaveLength(3);
+    // January bucket
+    expect(result.series[0]).toEqual({
+      month: '2026-01-01',
+      interestMinor: 1000n,
+      feeMinor: 200n,
+      totalCostMinor: 1200n,
+    });
+    // February bucket
+    expect(result.series[1]).toEqual({
+      month: '2026-02-01',
+      interestMinor: 1500n,
+      feeMinor: 300n,
+      totalCostMinor: 1800n,
+    });
+    // March bucket: zero-filled
+    expect(result.series[2]).toEqual({
+      month: '2026-03-01',
+      interestMinor: 0n,
+      feeMinor: 0n,
+      totalCostMinor: 0n,
+    });
+  });
+
+  it('ensures totalCostMinor === interestMinor + feeMinor in every bucket and period totals match', () => {
+    const from = '2026-01-01';
+    const to = '2026-02-28';
+    const rows: readonly ConvertedDebtCostRow[] = [
+      {
+        interestMinor: 4000n,
+        feeMinor: 800n,
+        occurredAt: new Date('2026-01-15T12:00:00Z'),
+      },
+      {
+        interestMinor: 2500n,
+        feeMinor: 500n,
+        occurredAt: new Date('2026-01-20T12:00:00Z'),
+      },
+      {
+        interestMinor: 3000n,
+        feeMinor: 600n,
+        occurredAt: new Date('2026-02-10T12:00:00Z'),
+      },
+    ];
+
+    const result = buildDebtCostEvolution(from, to, rows);
+
+    expect(result.series).toHaveLength(2);
+    for (const point of result.series) {
+      expect(point.totalCostMinor).toBe(point.interestMinor + point.feeMinor);
+    }
+
+    expect(result.totalInterestMinor).toBe(9500n);
+    expect(result.totalFeeMinor).toBe(1900n);
+    expect(result.totalCostMinor).toBe(11400n);
+    expect(result.totalCostMinor).toBe(
+      result.totalInterestMinor + result.totalFeeMinor,
+    );
+  });
+
+  it('returns zero-filled series and all zero totals when input rows are empty', () => {
+    const from = '2026-04-01';
+    const to = '2026-05-31';
+    const rows: readonly ConvertedDebtCostRow[] = [];
+
+    const result = buildDebtCostEvolution(from, to, rows);
+
+    expect(result.series).toEqual([
+      {
+        month: '2026-04-01',
+        interestMinor: 0n,
+        feeMinor: 0n,
+        totalCostMinor: 0n,
+      },
+      {
+        month: '2026-05-01',
+        interestMinor: 0n,
+        feeMinor: 0n,
+        totalCostMinor: 0n,
+      },
+    ]);
+    expect(result.totalInterestMinor).toBe(0n);
+    expect(result.totalFeeMinor).toBe(0n);
+    expect(result.totalCostMinor).toBe(0n);
   });
 });

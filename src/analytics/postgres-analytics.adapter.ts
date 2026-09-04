@@ -9,6 +9,7 @@ import type {
   BudgetAllocationRow,
   BudgetSpendRow,
   DebtOutstandingBalanceRow,
+  DebtPaymentCostRow,
   SubscriptionPriceRow,
   TransactionFlowRow,
 } from './analytics.port.js';
@@ -201,6 +202,51 @@ where workspace_id = $1::uuid
 
     const result = await client.query<ActiveSubscriptionRow>(sql, [
       workspaceId,
+    ]);
+    return result.rows;
+  }
+
+  /**
+   * §3.3 debt_cost_evolution:
+   * Reads debt payment costs (interest and fees) within the period.
+   *
+   * Predicate invariants:
+   * Both the transaction status AND the posting-status predicate are required.
+   * A pending or voided posting must not contribute. Omitting either has
+   * already caused a money defect in this repository.
+   */
+  public async readDebtPaymentCostsInPeriod(
+    client: TransactionClient,
+    workspaceId: string,
+    from: string,
+    to: string,
+  ): Promise<readonly DebtPaymentCostRow[]> {
+    const sql = `
+select
+  dp.interest_minor::text as "interestMinor",
+  dp.fee_minor::text as "feeMinor",
+  d.currency,
+  t.occurred_at as "occurredAt"
+from public.debt_payments dp
+join public.debts d
+  on d.workspace_id = dp.workspace_id and d.id = dp.debt_id
+join public.transactions t
+  on t.workspace_id = dp.workspace_id and t.id = dp.transaction_id
+where dp.workspace_id = $1::uuid
+  and t.status in ('confirmed', 'reconciled')
+  and exists (
+    select 1 from public.ledger_postings p
+    where p.workspace_id = dp.workspace_id
+      and p.transaction_id = dp.transaction_id
+      and p.status in ('confirmed', 'reconciled')
+  )
+  and (t.occurred_at at time zone 'utc')::date >= $2::date
+  and (t.occurred_at at time zone 'utc')::date <= $3::date`;
+
+    const result = await client.query<DebtPaymentCostRow>(sql, [
+      workspaceId,
+      from,
+      to,
     ]);
     return result.rows;
   }

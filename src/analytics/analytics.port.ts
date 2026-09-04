@@ -123,6 +123,26 @@ export interface RecurringVsVariable {
   readonly unclassifiedSubscriptionCount: number;
 }
 
+export interface ConvertedDebtCostRow {
+  readonly interestMinor: bigint;
+  readonly feeMinor: bigint;
+  readonly occurredAt: Date;
+}
+
+export interface DebtCostEvolutionPoint {
+  readonly month: string;
+  readonly interestMinor: bigint;
+  readonly feeMinor: bigint;
+  readonly totalCostMinor: bigint;
+}
+
+export interface DebtCostEvolution {
+  readonly series: readonly DebtCostEvolutionPoint[];
+  readonly totalInterestMinor: bigint;
+  readonly totalFeeMinor: bigint;
+  readonly totalCostMinor: bigint;
+}
+
 export interface AnalyticsSummaryQuery {
   readonly workspaceId: string;
   readonly from: string;
@@ -227,6 +247,13 @@ export interface ActiveSubscriptionRow extends Record<string, unknown> {
   readonly frequency: string;
 }
 
+export interface DebtPaymentCostRow extends Record<string, unknown> {
+  readonly interestMinor: string;
+  readonly feeMinor: string;
+  readonly currency: string;
+  readonly occurredAt: Date;
+}
+
 export interface AnalyticsStore {
   readActiveRole(
     client: TransactionClient,
@@ -264,6 +291,13 @@ export interface AnalyticsStore {
     client: TransactionClient,
     workspaceId: string,
   ): Promise<readonly ActiveSubscriptionRow[]>;
+
+  readDebtPaymentCostsInPeriod?(
+    client: TransactionClient,
+    workspaceId: string,
+    from: string,
+    to: string,
+  ): Promise<readonly DebtPaymentCostRow[]>;
 
   readOverlappingBudgetAllocations(
     client: TransactionClient,

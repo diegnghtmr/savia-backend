@@ -1,7 +1,10 @@
 import {
   GRANULARITY,
+  type ConvertedDebtCostRow,
   type ConvertedFlowRow,
   type ConvertedSubscriptionRow,
+  type DebtCostEvolution,
+  type DebtCostEvolutionPoint,
   type IncomeStability,
   type MonthlyCapacityPoint,
   type QuarterlyAveragePoint,
@@ -612,5 +615,72 @@ export function buildRecurringVsVariable(
     committedPercent,
     consideredSubscriptionCount: subscriptions.length,
     unclassifiedSubscriptionCount,
+  };
+}
+
+interface DebtCostAccumulator {
+  interestMinor: bigint;
+  feeMinor: bigint;
+}
+
+/**
+ * §3.3 buildDebtCostEvolution
+ * Pure builder that calculates monthly debt payment costs (interest and fees).
+ *
+ * Design constraints:
+ * - Buckets: monthly, gap-free and zero-filled via generateBucketPeriods(from, to, GRANULARITY.MONTH).
+ * - A month with no payments is present with real zeros.
+ * - Buckets by occurredAt evaluated in UTC.
+ * - Per month: interestMinor, feeMinor, totalCostMinor = interestMinor + feeMinor.
+ * - Across the whole period: totalInterestMinor, totalFeeMinor, totalCostMinor.
+ * - Currency conversion note: rows arrive already converted to base currency by the caller.
+ */
+export function buildDebtCostEvolution(
+  from: string,
+  to: string,
+  rows: readonly ConvertedDebtCostRow[],
+): DebtCostEvolution {
+  const bucketPeriods = generateBucketPeriods(from, to, GRANULARITY.MONTH);
+
+  const bucketMap = new Map<string, DebtCostAccumulator>();
+  for (const period of bucketPeriods) {
+    bucketMap.set(period, { interestMinor: 0n, feeMinor: 0n });
+  }
+
+  for (const row of rows) {
+    const bucketPeriod = truncateToBucketStart(
+      row.occurredAt,
+      GRANULARITY.MONTH,
+    );
+    const bucket = bucketMap.get(bucketPeriod);
+    if (!bucket) {
+      continue;
+    }
+
+    bucket.interestMinor += row.interestMinor;
+    bucket.feeMinor += row.feeMinor;
+  }
+
+  let totalInterestMinor = 0n;
+  let totalFeeMinor = 0n;
+
+  const series: DebtCostEvolutionPoint[] = bucketPeriods.map((month) => {
+    const bucket = bucketMap.get(month)!;
+    totalInterestMinor += bucket.interestMinor;
+    totalFeeMinor += bucket.feeMinor;
+
+    return {
+      month,
+      interestMinor: bucket.interestMinor,
+      feeMinor: bucket.feeMinor,
+      totalCostMinor: bucket.interestMinor + bucket.feeMinor,
+    };
+  });
+
+  return {
+    series,
+    totalInterestMinor,
+    totalFeeMinor,
+    totalCostMinor: totalInterestMinor + totalFeeMinor,
   };
 }
