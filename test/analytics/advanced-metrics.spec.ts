@@ -1142,6 +1142,130 @@ describe('buildRecurringVsVariable', () => {
       expect(Number.isFinite(result.committedPercent)).toBe(true);
     }
   });
+
+  it('pins exact committedMinor for every token in the frequency table one subscription at a time', () => {
+    // Fixed period: 2026-01-01 to 2026-01-31 (31 inclusive days)
+    // Subscription amount: 10000n minor units
+    // Formula: roundDivHalfAwayFromZero(amountMinor * perYear * days, 365n)
+    //
+    // Hand derivations (amountMinor = 10000n, days = 31n, amountMinor * days = 310000n):
+    //
+    // 1. daily: perYear = 365n
+    //    num = 310000n * 365n = 113,150,000n
+    //    113150000 / 365 = 310000 with remainder 0
+    //    expected = 310000n
+    //
+    // 2. weekly: perYear = 52n
+    //    num = 310000n * 52n = 16,120,000n
+    //    16120000 / 365 = 44164 with remainder 140
+    //    2 * 140 = 280 < 365 -> round down
+    //    expected = 44164n
+    //
+    // 3. biweekly: perYear = 26n
+    //    num = 310000n * 26n = 8,060,000n
+    //    8060000 / 365 = 22082 with remainder 70
+    //    2 * 70 = 140 < 365 -> round down
+    //    expected = 22082n
+    //
+    // 4. fortnightly: perYear = 26n
+    //    num = 310000n * 26n = 8,060,000n
+    //    8060000 / 365 = 22082 with remainder 70
+    //    2 * 70 = 140 < 365 -> round down
+    //    expected = 22082n
+    //
+    // 5. monthly: perYear = 12n
+    //    num = 310000n * 12n = 3,720,000n
+    //    3720000 / 365 = 10191 with remainder 285
+    //    2 * 285 = 570 >= 365 -> round up to 10192n
+    //    expected = 10192n
+    //
+    // 6. bimonthly: perYear = 6n
+    //    num = 310000n * 6n = 1,860,000n
+    //    1860000 / 365 = 5095 with remainder 325
+    //    2 * 325 = 650 >= 365 -> round up to 5096n
+    //    expected = 5096n
+    //
+    // 7. quarterly: perYear = 4n
+    //    num = 310000n * 4n = 1,240,000n
+    //    1240000 / 365 = 3397 with remainder 95
+    //    2 * 95 = 190 < 365 -> round down
+    //    expected = 3397n
+    //
+    // 8. semiannual: perYear = 2n
+    //    num = 310000n * 2n = 620,000n
+    //    620000 / 365 = 1698 with remainder 230
+    //    2 * 230 = 460 >= 365 -> round up to 1699n
+    //    expected = 1699n
+    //
+    // 9. semiannually: perYear = 2n
+    //    num = 310000n * 2n = 620,000n
+    //    620000 / 365 = 1698 with remainder 230
+    //    2 * 230 = 460 >= 365 -> round up to 1699n
+    //    expected = 1699n
+    //
+    // 10. biannual: perYear = 2n
+    //     num = 310000n * 2n = 620,000n
+    //     620000 / 365 = 1698 with remainder 230
+    //     2 * 230 = 460 >= 365 -> round up to 1699n
+    //     expected = 1699n
+    //
+    // 11. yearly: perYear = 1n
+    //     num = 310000n * 1n = 310,000n
+    //     310000 / 365 = 849 with remainder 115
+    //     2 * 115 = 230 < 365 -> round down
+    //     expected = 849n
+    //
+    // 12. annual: perYear = 1n
+    //     num = 310000n * 1n = 310,000n
+    //     310000 / 365 = 849 with remainder 115
+    //     2 * 115 = 230 < 365 -> round down
+    //     expected = 849n
+    //
+    // 13. annually: perYear = 1n
+    //     num = 310000n * 1n = 310,000n
+    //     310000 / 365 = 849 with remainder 115
+    //     2 * 115 = 230 < 365 -> round down
+    //     expected = 849n
+    const from = '2026-01-01';
+    const to = '2026-01-31';
+    const amountMinor = 10000n;
+    const totalExpensesMinor = 500000n;
+
+    const testCases: readonly {
+      readonly frequency: string;
+      readonly expectedCommittedMinor: bigint;
+    }[] = [
+      { frequency: 'daily', expectedCommittedMinor: 310000n },
+      { frequency: 'weekly', expectedCommittedMinor: 44164n },
+      { frequency: 'biweekly', expectedCommittedMinor: 22082n },
+      { frequency: 'fortnightly', expectedCommittedMinor: 22082n },
+      { frequency: 'monthly', expectedCommittedMinor: 10192n },
+      { frequency: 'bimonthly', expectedCommittedMinor: 5096n },
+      { frequency: 'quarterly', expectedCommittedMinor: 3397n },
+      { frequency: 'semiannual', expectedCommittedMinor: 1699n },
+      { frequency: 'semiannually', expectedCommittedMinor: 1699n },
+      { frequency: 'biannual', expectedCommittedMinor: 1699n },
+      { frequency: 'yearly', expectedCommittedMinor: 849n },
+      { frequency: 'annual', expectedCommittedMinor: 849n },
+      { frequency: 'annually', expectedCommittedMinor: 849n },
+    ];
+
+    for (const testCase of testCases) {
+      const result = buildRecurringVsVariable(
+        from,
+        to,
+        [{ amountMinor, frequency: testCase.frequency }],
+        totalExpensesMinor,
+      );
+
+      expect(
+        result.committedMinor,
+        `committedMinor mismatch for frequency: ${testCase.frequency}`,
+      ).toBe(testCase.expectedCommittedMinor);
+      expect(result.consideredSubscriptionCount).toBe(1);
+      expect(result.unclassifiedSubscriptionCount).toBe(0);
+    }
+  });
 });
 
 describe('buildDebtCostEvolution', () => {
