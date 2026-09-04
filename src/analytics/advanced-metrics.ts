@@ -1,5 +1,7 @@
 import {
   GRANULARITY,
+  type BalanceProjection,
+  type BalanceProjectionPoint,
   type ConvertedDebtCostRow,
   type ConvertedFlowRow,
   type ConvertedSubscriptionRow,
@@ -911,5 +913,73 @@ export function buildFinancialCalendar(
       debtsWithoutScheduledAmount + countedDebtsWithoutScheduledAmount,
     recurringRulesWithUnreadableTemplate:
       unreadableTemplateCount + countedUnreadableTemplate,
+  };
+}
+
+/**
+ * §3.2 buildBalanceProjection
+ * Pure builder that extrapolates balance based on historical monthly capacity.
+ *
+ * Design constraints:
+ * - Extrapolation rule: flat-mean extrapolation based on history.
+ * - meanMonthlyIncomeMinor and meanMonthlyExpensesMinor are half-away-from-zero
+ *   integer means over history, calculated via roundDivHalfAwayFromZero.
+ * - When basisMonths === 0, both means are 0n and projection is flat (no division by zero).
+ * - Month buckets: gap-free in order via generateBucketPeriods(from, to, GRANULARITY.MONTH).
+ * - projectedBalanceMinor is a running total: openingBalance + (meanIncome - meanExpenses)
+ *   compounded month by month.
+ * - Nothing is clamped: negative projected balances stay negative.
+ * - Note on scheduled outflows: Do NOT fold financial_calendar's scheduled outflows into the
+ *   projection. The historical mean already accounts for regular recurring charges and debts,
+ *   so adding scheduled calendar outflows on top would double-count them.
+ */
+export function buildBalanceProjection(
+  from: string,
+  to: string,
+  openingBalanceMinor: bigint,
+  history: readonly MonthlyCapacityPoint[],
+): BalanceProjection {
+  const basisMonths = history.length;
+  let meanMonthlyIncomeMinor = 0n;
+  let meanMonthlyExpensesMinor = 0n;
+
+  if (basisMonths > 0) {
+    let sumIncomeMinor = 0n;
+    let sumExpensesMinor = 0n;
+    for (const point of history) {
+      sumIncomeMinor += point.incomeMinor;
+      sumExpensesMinor += point.expensesMinor;
+    }
+    const divisor = BigInt(basisMonths);
+    meanMonthlyIncomeMinor = roundDivHalfAwayFromZero(sumIncomeMinor, divisor);
+    meanMonthlyExpensesMinor = roundDivHalfAwayFromZero(
+      sumExpensesMinor,
+      divisor,
+    );
+  }
+
+  const bucketPeriods = generateBucketPeriods(from, to, GRANULARITY.MONTH);
+  const netMonthlyFlow = meanMonthlyIncomeMinor - meanMonthlyExpensesMinor;
+
+  let runningBalance = openingBalanceMinor;
+  const months: BalanceProjectionPoint[] = [];
+
+  for (const month of bucketPeriods) {
+    runningBalance += netMonthlyFlow;
+    // Nothing is clamped: if runningBalance becomes negative, it remains negative
+    months.push({
+      month,
+      expectedInflowMinor: meanMonthlyIncomeMinor,
+      expectedOutflowMinor: meanMonthlyExpensesMinor,
+      projectedBalanceMinor: runningBalance,
+    });
+  }
+
+  return {
+    openingBalanceMinor,
+    basisMonths,
+    meanMonthlyIncomeMinor,
+    meanMonthlyExpensesMinor,
+    months,
   };
 }

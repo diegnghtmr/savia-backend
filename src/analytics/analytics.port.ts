@@ -165,6 +165,21 @@ export interface FinancialCalendar {
   readonly recurringRulesWithUnreadableTemplate: number;
 }
 
+export interface BalanceProjectionPoint {
+  readonly month: string;
+  readonly expectedInflowMinor: bigint;
+  readonly expectedOutflowMinor: bigint;
+  readonly projectedBalanceMinor: bigint;
+}
+
+export interface BalanceProjection {
+  readonly openingBalanceMinor: bigint;
+  readonly basisMonths: number;
+  readonly meanMonthlyIncomeMinor: bigint;
+  readonly meanMonthlyExpensesMinor: bigint;
+  readonly months: readonly BalanceProjectionPoint[];
+}
+
 export interface AnalyticsSummaryQuery {
   readonly workspaceId: string;
   readonly from: string;

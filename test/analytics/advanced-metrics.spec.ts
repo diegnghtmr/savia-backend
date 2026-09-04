@@ -9,6 +9,7 @@ import type {
 } from '../../src/analytics/analytics.port.js';
 import {
   bigintSqrt,
+  buildBalanceProjection,
   buildDebtCostEvolution,
   buildFinancialCalendar,
   buildIncomeStability,
@@ -1772,5 +1773,150 @@ describe('buildFinancialCalendar', () => {
     expect(result.days[0].items[0].refId).toBe('utc-item-1');
     expect(result.days[1].date).toBe('2026-04-01');
     expect(result.days[1].items[0].refId).toBe('utc-item-2');
+  });
+});
+
+describe('buildBalanceProjection', () => {
+  it('returns zero means, a flat projection, and no division by zero when basisMonths === 0', () => {
+    const from = '2026-07-01';
+    const to = '2026-09-30';
+    const openingBalanceMinor = 100000n;
+    const history: readonly MonthlyCapacityPoint[] = [];
+
+    const result = buildBalanceProjection(
+      from,
+      to,
+      openingBalanceMinor,
+      history,
+    );
+
+    expect(result.basisMonths).toBe(0);
+    expect(result.meanMonthlyIncomeMinor).toBe(0n);
+    expect(result.meanMonthlyExpensesMinor).toBe(0n);
+    expect(result.openingBalanceMinor).toBe(100000n);
+    expect(result.months).toHaveLength(3);
+    expect(result.months).toEqual([
+      {
+        month: '2026-07-01',
+        expectedInflowMinor: 0n,
+        expectedOutflowMinor: 0n,
+        projectedBalanceMinor: 100000n,
+      },
+      {
+        month: '2026-08-01',
+        expectedInflowMinor: 0n,
+        expectedOutflowMinor: 0n,
+        projectedBalanceMinor: 100000n,
+      },
+      {
+        month: '2026-09-01',
+        expectedInflowMinor: 0n,
+        expectedOutflowMinor: 0n,
+        projectedBalanceMinor: 100000n,
+      },
+    ]);
+  });
+
+  it('computes integer mean using history.length as divisor', () => {
+    const from = '2026-01-01';
+    const to = '2026-02-28';
+    const openingBalanceMinor = 50000n;
+    const history: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2025-11-01',
+        incomeMinor: 60000n,
+        expensesMinor: 40000n,
+        savingsCapacityMinor: 20000n,
+      },
+      {
+        month: '2025-12-01',
+        incomeMinor: 80000n,
+        expensesMinor: 50000n,
+        savingsCapacityMinor: 30000n,
+      },
+    ];
+
+    const result = buildBalanceProjection(
+      from,
+      to,
+      openingBalanceMinor,
+      history,
+    );
+
+    // M4 test: divisor must be history.length (2), not history.length + 1 (3)
+    expect(result.basisMonths).toBe(2);
+    // (60000 + 80000) / 2 = 70000n
+    expect(result.meanMonthlyIncomeMinor).toBe(70000n);
+    // (40000 + 50000) / 2 = 45000n
+    expect(result.meanMonthlyExpensesMinor).toBe(45000n);
+    expect(result.months[0].expectedInflowMinor).toBe(70000n);
+    expect(result.months[0].expectedOutflowMinor).toBe(45000n);
+    expect(result.months[0].projectedBalanceMinor).toBe(75000n); // 50000 + 25000
+    expect(result.months[1].projectedBalanceMinor).toBe(100000n); // 75000 + 25000
+  });
+
+  it('drives projectedBalanceMinor negative when mean expenses exceed mean income and never clamps to zero', () => {
+    const from = '2026-10-01';
+    const to = '2026-12-31';
+    const openingBalanceMinor = 10000n;
+    const history: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2026-09-01',
+        incomeMinor: 20000n,
+        expensesMinor: 50000n,
+        savingsCapacityMinor: -30000n,
+      },
+    ];
+
+    const result = buildBalanceProjection(
+      from,
+      to,
+      openingBalanceMinor,
+      history,
+    );
+
+    // M5 test: nothing is clamped at 0n; projection goes negative and stays negative
+    expect(result.months).toHaveLength(3);
+    expect(result.months[0].projectedBalanceMinor).toBe(-20000n); // 10000 - 30000
+    expect(result.months[1].projectedBalanceMinor).toBe(-50000n); // -20000 - 30000
+    expect(result.months[2].projectedBalanceMinor).toBe(-80000n); // -50000 - 30000
+    expect(result.months.every((m) => m.projectedBalanceMinor < 0n)).toBe(true);
+  });
+
+  it('applies half-away-from-zero rounding on the means including a negative case', () => {
+    const from = '2026-01-01';
+    const to = '2026-01-31';
+    const openingBalanceMinor = 0n;
+
+    // Positive tie: (10000 + 10001) / 2 = 20001 / 2 = 10000.5 -> 10001
+    // Negative tie: (-10000 + -10001) / 2 = -20001 / 2 = -10000.5 -> -10001 (away from zero)
+    const history: readonly MonthlyCapacityPoint[] = [
+      {
+        month: '2025-10-01',
+        incomeMinor: 10000n,
+        expensesMinor: -10000n,
+        savingsCapacityMinor: 20000n,
+      },
+      {
+        month: '2025-11-01',
+        incomeMinor: 10001n,
+        expensesMinor: -10001n,
+        savingsCapacityMinor: 20002n,
+      },
+    ];
+
+    const result = buildBalanceProjection(
+      from,
+      to,
+      openingBalanceMinor,
+      history,
+    );
+
+    expect(result.meanMonthlyIncomeMinor).toBe(10001n);
+    expect(result.meanMonthlyExpensesMinor).toBe(-10001n);
+    expect(result.months[0].expectedInflowMinor).toBe(10001n);
+    expect(result.months[0].expectedOutflowMinor).toBe(-10001n);
+    // Net: 10001 - (-10001) = 20002n
+    expect(result.months[0].projectedBalanceMinor).toBe(20002n);
   });
 });
