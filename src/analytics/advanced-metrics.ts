@@ -18,7 +18,49 @@ import {
   generateBucketPeriods,
   truncateToBucketStart,
 } from './analytics.service.js';
-import { computeIncreasePercent } from '../recurring/subscription-calculation.js';
+interface AmountMoney {
+  readonly amountMinor: string;
+  readonly currency: string;
+}
+
+const INTEGER_PATTERN = /^-?\d+$/;
+
+/**
+ * Computes increase percentage between currentAmount and previousAmount.
+ * Follows RULING 59 and RULING 60 tie-breaking rules, matching computeIncreasePercent
+ * in src/recurring/subscription-calculation.ts using roundDivHalfAwayFromZero.
+ */
+function computeIncreasePercent(
+  currentAmount: AmountMoney,
+  previousAmount?: AmountMoney | null,
+): number | null {
+  if (!previousAmount) {
+    return null;
+  }
+  if (currentAmount.currency !== previousAmount.currency) {
+    return null;
+  }
+  if (
+    !INTEGER_PATTERN.test(previousAmount.amountMinor) ||
+    !INTEGER_PATTERN.test(currentAmount.amountMinor)
+  ) {
+    return null;
+  }
+  const previous = BigInt(previousAmount.amountMinor);
+  if (previous === 0n) {
+    return null;
+  }
+  const current = BigInt(currentAmount.amountMinor);
+  if (current === previous) {
+    return 0;
+  }
+  const roundedHundredths = roundDivHalfAwayFromZero(
+    (current - previous) * 10000n,
+    previous,
+  );
+  const result = Number(roundedHundredths) / 100;
+  return Object.is(result, -0) ? 0 : result;
+}
 
 interface BucketAccumulator {
   incomeMinor: bigint;
