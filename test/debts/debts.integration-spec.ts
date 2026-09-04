@@ -608,7 +608,9 @@ describe('Debts integration suite against disposable PostgreSQL', () => {
 
       expect(postingsRes.rows.length).toBe(2);
       const accountLeg = postingsRes.rows.find((p) => p.leg_kind === 'account');
-      const externalLeg = postingsRes.rows.find((p) => p.leg_kind === 'external');
+      const externalLeg = postingsRes.rows.find(
+        (p) => p.leg_kind === 'external',
+      );
 
       expect(accountLeg).toBeDefined();
       expect(accountLeg?.account_id).toBe(account1Id);
@@ -730,7 +732,9 @@ describe('Debts integration suite against disposable PostgreSQL', () => {
       const updatedDebt = JSON.parse(afterDebtRes.payload).items.find(
         (d: { id: string }) => d.id === debt.id,
       );
-      const afterOutstanding = BigInt(updatedDebt.outstandingBalance.amountMinor);
+      const afterOutstanding = BigInt(
+        updatedDebt.outstandingBalance.amountMinor,
+      );
 
       // Half 2: Outstanding balance DECREASED by principal portion only (4000)
       expect(beforeOutstanding - afterOutstanding).toBe(principalPay);
@@ -809,7 +813,9 @@ describe('Debts integration suite against disposable PostgreSQL', () => {
       expect(afterTxns.rows[0].count).toBe(beforeTxns.rows[0].count);
       expect(afterPostings.rows[0].count).toBe(beforePostings.rows[0].count);
       expect(afterSplits.rows[0].count).toBe(beforeSplits.rows[0].count);
-      expect(afterIdempotency.rows[0].count).toBe(beforeIdempotency.rows[0].count);
+      expect(afterIdempotency.rows[0].count).toBe(
+        beforeIdempotency.rows[0].count,
+      );
     });
   });
 

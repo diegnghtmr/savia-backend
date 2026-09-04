@@ -130,11 +130,7 @@ describe('DebtService', () => {
       if (result.kind === DEBT_OUTCOMES.CREATED) {
         expect(result.debt).toEqual(dummyDebt);
       }
-      expect(store.createDebt).toHaveBeenCalledWith(
-        mockClient,
-        'ws1',
-        command,
-      );
+      expect(store.createDebt).toHaveBeenCalledWith(mockClient, 'ws1', command);
       expect(idempotency.write).toHaveBeenCalled();
     });
   });

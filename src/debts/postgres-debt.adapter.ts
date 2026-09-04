@@ -340,8 +340,7 @@ limit $4`;
     // If none of the 3 parts is supplied: totalAmount entirely reduces principal
     // If any part is supplied: parts must sum to total (already enforced by command validator)
     const hasPrincipal =
-      command.principalAmount !== undefined &&
-      command.principalAmount !== null;
+      command.principalAmount !== undefined && command.principalAmount !== null;
     const hasInterest =
       command.interestAmount !== undefined && command.interestAmount !== null;
     const hasFee =

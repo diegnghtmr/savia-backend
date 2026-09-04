@@ -172,7 +172,9 @@ describe('createDebtCommand', () => {
 
   it('rejects non-object input', () => {
     expect(() => createDebtCommand(null)).toThrow(DebtCommandValidationError);
-    expect(() => createDebtCommand('invalid')).toThrow(DebtCommandValidationError);
+    expect(() => createDebtCommand('invalid')).toThrow(
+      DebtCommandValidationError,
+    );
   });
 });
 

@@ -22,9 +22,9 @@ describe('PostgresDebtAdapter helpers', () => {
     });
 
     it('throws RangeError when counter-leg would overflow int8', () => {
-      expect(() =>
-        negateAmountMinor('-9223372036854775809'),
-      ).toThrow(RangeError);
+      expect(() => negateAmountMinor('-9223372036854775809')).toThrow(
+        RangeError,
+      );
     });
   });
 
@@ -111,7 +111,10 @@ describe('PostgresDebtAdapter', () => {
     });
 
     expect(debt.name).toBe('Mortgage');
-    expect(debt.principal).toEqual({ amountMinor: '25000000', currency: 'USD' });
+    expect(debt.principal).toEqual({
+      amountMinor: '25000000',
+      currency: 'USD',
+    });
     expect(debt.outstandingBalance).toEqual({
       amountMinor: '25000000',
       currency: 'USD',

@@ -5574,9 +5574,7 @@ paths:
               application/json:
                 {
                   schema:
-                    {
-                      $ref: '#/components/schemas/CreateDebtPaymentRequest',
-                    },
+                    { $ref: '#/components/schemas/CreateDebtPaymentRequest' },
                 },
             },
         }
