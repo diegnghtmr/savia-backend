@@ -576,7 +576,13 @@ export function buildRecurringVsVariable(
     }
 
     const pct = Number(roundedHundredths) / 100;
-    committedPercent = Object.is(pct, -0) ? 0 : pct;
+    const normalizedPct = Object.is(pct, -0) ? 0 : pct;
+
+    // null here means "not representable" (e.g. non-finite when input magnitude overflows IEEE-754).
+    // It shares a value with the zero-expense case. A real database value can
+    // never reach it because the column is bigint (int64) — this is a guard on a
+    // public exported function, not a live defect.
+    committedPercent = Number.isFinite(normalizedPct) ? normalizedPct : null;
   }
 
   return {

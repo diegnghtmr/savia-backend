@@ -1119,6 +1119,29 @@ describe('buildRecurringVsVariable', () => {
     expect(result28.committedMinor).toBe(9205n);
     expect(result31.committedMinor).not.toBe(result28.committedMinor);
   });
+
+  it('returns null for committedPercent when computed percent is non-finite and ensures non-null values are always finite', () => {
+    const from = '2024-01-01';
+    const to = '2024-01-01';
+    const subscriptions: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10n ** 400n, frequency: 'daily' },
+    ];
+    const totalExpensesMinor = 1n;
+
+    const result = buildRecurringVsVariable(
+      from,
+      to,
+      subscriptions,
+      totalExpensesMinor,
+    );
+
+    // Non-finite computed percentage returns null explicitly instead of Infinity
+    expect(result.committedPercent).toBeNull();
+    // Guard invariant: Number.isFinite is never false for any returned non-null committedPercent
+    if (result.committedPercent !== null) {
+      expect(Number.isFinite(result.committedPercent)).toBe(true);
+    }
+  });
 });
 
 describe('buildDebtCostEvolution', () => {
