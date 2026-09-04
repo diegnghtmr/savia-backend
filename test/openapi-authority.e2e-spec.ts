@@ -13,6 +13,28 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const root = process.cwd();
 const verifier = resolve(root, 'scripts/verify-openapi.mjs');
+
+/**
+ * The contract authority (docs/savia-openapi.yaml) lives in the PARENT savia-general
+ * repository, which is deliberately never published (ADR-0017). A standalone CI checkout
+ * of savia-backend therefore does not have it, so the authority comparison below can only
+ * run on a nested developer checkout, or when SAVIA_OPENAPI_AUTHORITY points at it.
+ *
+ * The skip is announced on purpose. A silent skip would recreate exactly the invisible
+ * mirror drift this comparison exists to catch. The internal shared-parameter consistency
+ * guard in scripts/verify-openapi.mjs needs no authority and DOES run in CI.
+ */
+const authorityPath =
+  process.env.SAVIA_OPENAPI_AUTHORITY ??
+  resolve(root, '../../docs/savia-openapi.yaml');
+const authorityAvailable = existsSync(authorityPath);
+
+if (!authorityAvailable) {
+  console.warn(
+    `[openapi-authority] Skipping the mirror-versus-authority comparison: ${authorityPath} does not exist. ` +
+      'Run this suite from a checkout nested beside savia-general, or set SAVIA_OPENAPI_AUTHORITY.',
+  );
+}
 const testRoot = mkdtempSync(resolve(tmpdir(), 'savia-openapi-authority-'));
 const contract = resolve(testRoot, 'openapi/savia.openapi.yaml');
 const provenance = resolve(testRoot, 'openapi/provenance.json');
@@ -134,53 +156,56 @@ describe('executable OpenAPI authority', () => {
     ]);
   });
 
-  it('mirrors budget response schemas and MCP OAuth scopes semantically', () => {
-    const bundle = (path: string) => {
-      const directory = mkdtempSync(
-        resolve(tmpdir(), 'savia-openapi-semantic-'),
-      );
-      const output = resolve(directory, 'contract.json');
-      try {
-        execFileSync(
-          resolve(root, 'node_modules/.bin/redocly'),
-          ['bundle', path, '--ext', 'json', '--output', output],
-          { cwd: root, stdio: 'pipe' },
+  it.skipIf(!authorityAvailable)(
+    'mirrors budget response schemas and MCP OAuth scopes semantically',
+    () => {
+      const bundle = (path: string) => {
+        const directory = mkdtempSync(
+          resolve(tmpdir(), 'savia-openapi-semantic-'),
         );
-        return JSON.parse(readFileSync(output, 'utf8')) as Record<
-          string,
-          unknown
-        >;
-      } finally {
-        rmSync(directory, { force: true, recursive: true });
-      }
-    };
-    const authority = bundle(resolve(root, '../../docs/savia-openapi.yaml'));
-    const mirror = bundle(resolve(root, 'openapi/savia.openapi.yaml'));
-    const pick = (document: Record<string, unknown>) => {
-      const paths = document.paths as Record<
-        string,
-        Record<string, Record<string, unknown>>
-      >;
-      const schemas = document.components as Record<
-        string,
-        Record<string, unknown>
-      >;
-      const responseContent = (responses: unknown) =>
-        Object.fromEntries(
-          Object.entries(
-            (responses ?? {}) as Record<string, Record<string, unknown>>,
-          )
-            .filter(([, response]) => response.content !== undefined)
-            .map(([status, response]) => [status, response.content]),
-        );
-      return {
-        list: responseContent(paths['/v1/budgets']?.get?.responses),
-        create: responseContent(paths['/v1/budgets']?.post?.responses),
-        get: responseContent(paths['/v1/budgets/{budgetId}']?.get?.responses),
-        oauth: (schemas.securitySchemes?.mcpOAuth as Record<string, unknown>)
-          ?.flows,
+        const output = resolve(directory, 'contract.json');
+        try {
+          execFileSync(
+            resolve(root, 'node_modules/.bin/redocly'),
+            ['bundle', path, '--ext', 'json', '--output', output],
+            { cwd: root, stdio: 'pipe' },
+          );
+          return JSON.parse(readFileSync(output, 'utf8')) as Record<
+            string,
+            unknown
+          >;
+        } finally {
+          rmSync(directory, { force: true, recursive: true });
+        }
       };
-    };
-    expect(pick(mirror)).toEqual(pick(authority));
-  });
+      const authority = bundle(authorityPath);
+      const mirror = bundle(resolve(root, 'openapi/savia.openapi.yaml'));
+      const pick = (document: Record<string, unknown>) => {
+        const paths = document.paths as Record<
+          string,
+          Record<string, Record<string, unknown>>
+        >;
+        const schemas = document.components as Record<
+          string,
+          Record<string, unknown>
+        >;
+        const responseContent = (responses: unknown) =>
+          Object.fromEntries(
+            Object.entries(
+              (responses ?? {}) as Record<string, Record<string, unknown>>,
+            )
+              .filter(([, response]) => response.content !== undefined)
+              .map(([status, response]) => [status, response.content]),
+          );
+        return {
+          list: responseContent(paths['/v1/budgets']?.get?.responses),
+          create: responseContent(paths['/v1/budgets']?.post?.responses),
+          get: responseContent(paths['/v1/budgets/{budgetId}']?.get?.responses),
+          oauth: (schemas.securitySchemes?.mcpOAuth as Record<string, unknown>)
+            ?.flows,
+        };
+      };
+      expect(pick(mirror)).toEqual(pick(authority));
+    },
+  );
 });
