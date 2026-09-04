@@ -24,7 +24,10 @@ export interface AnalyticsTransactionRunner {
 /**
  * Truncates a UTC Date to its bucket start date string (YYYY-MM-DD).
  */
-export function truncateToBucketStart(date: Date, granularity: Granularity): string {
+export function truncateToBucketStart(
+  date: Date,
+  granularity: Granularity,
+): string {
   const year = date.getUTCFullYear();
   const month = date.getUTCMonth();
   const day = date.getUTCDate();
@@ -131,7 +134,9 @@ export class AnalyticsService implements AnalyticsPort {
         amountMinor: string,
         fromCurrency: string,
         asOf?: Date | null,
-      ): Promise<{ amount: bigint } | { missingRate: { from: string; to: string } }> => {
+      ): Promise<
+        { amount: bigint } | { missingRate: { from: string; to: string } }
+      > => {
         if (fromCurrency === targetCurrency) {
           return { amount: BigInt(amountMinor) };
         }
@@ -173,7 +178,10 @@ export class AnalyticsService implements AnalyticsPort {
       );
       let totalDebts = 0n;
       for (const debt of debtRows) {
-        const converted = await convert(debt.outstandingBalanceMinor, debt.currency);
+        const converted = await convert(
+          debt.outstandingBalanceMinor,
+          debt.currency,
+        );
         if ('missingRate' in converted) {
           return {
             kind: ANALYTICS_OUTCOMES.MISSING_RATE,
@@ -206,7 +214,11 @@ export class AnalyticsService implements AnalyticsPort {
       let totalExpenses = 0n;
 
       for (const txn of txnRows) {
-        const converted = await convert(txn.amountMinor, txn.currency, txn.occurredAt);
+        const converted = await convert(
+          txn.amountMinor,
+          txn.currency,
+          txn.occurredAt,
+        );
         if ('missingRate' in converted) {
           return {
             kind: ANALYTICS_OUTCOMES.MISSING_RATE,
@@ -273,7 +285,8 @@ export class AnalyticsService implements AnalyticsPort {
           }
           totalActual += converted.amount;
         }
-        budgetUtilizationPercent = (Number(totalActual) / Number(totalPlanned)) * 100;
+        budgetUtilizationPercent =
+          (Number(totalActual) / Number(totalPlanned)) * 100;
       }
 
       return {
@@ -450,7 +463,7 @@ export class AnalyticsService implements AnalyticsPort {
         }
       }
 
-      let categories: CategoryBreakdownItem[] = [];
+      const categories: CategoryBreakdownItem[] = [];
       if (totalWorkspaceExpenses > 0n) {
         const categoryMap = new Map<
           string,
@@ -497,8 +510,9 @@ export class AnalyticsService implements AnalyticsPort {
         // Deterministic ordering: descending amount, ascending categoryName
         categories.sort(
           (a, b) =>
-            Number(BigInt(b.amount.amountMinor) - BigInt(a.amount.amountMinor)) ||
-            a.categoryName.localeCompare(b.categoryName),
+            Number(
+              BigInt(b.amount.amountMinor) - BigInt(a.amount.amountMinor),
+            ) || a.categoryName.localeCompare(b.categoryName),
         );
       }
 

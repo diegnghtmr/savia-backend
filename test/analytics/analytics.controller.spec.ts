@@ -9,11 +9,27 @@ import {
 } from '../../src/analytics/analytics.port.js';
 import { AnalyticsController } from '../../src/analytics/analytics.controller.js';
 
+interface MockReply {
+  statusCode: number;
+  sentBody: unknown;
+  contentType: string | undefined;
+  request: { id: string; url: string };
+  status(code: number): MockReply;
+  type(ct: string): MockReply;
+  send(body: unknown): MockReply;
+}
+
+type ProblemBody = {
+  title?: string;
+  detail?: string;
+  errors?: unknown;
+};
+
 describe('AnalyticsController', () => {
   const workspaceId = '00000000-0000-4000-8000-000000000001';
 
   const mockReply = () => {
-    const res: any = {
+    const res: MockReply = {
       statusCode: 200,
       sentBody: undefined,
       contentType: undefined,
@@ -31,7 +47,10 @@ describe('AnalyticsController', () => {
         return this;
       },
     };
-    return res as FastifyReply & { statusCode: number; sentBody: unknown };
+    return res as unknown as FastifyReply & {
+      statusCode: number;
+      sentBody: unknown;
+    };
   };
 
   const mockReq = (
@@ -53,7 +72,9 @@ describe('AnalyticsController', () => {
     const reply = mockReply();
     await controller.getSummary(mockReq({}), reply, '2026-01-01', '2026-01-31');
     expect(reply.statusCode).toBe(400);
-    expect((reply.sentBody as any)?.title).toBe('Invalid X-Workspace-Id header');
+    expect((reply.sentBody as ProblemBody)?.title).toBe(
+      'Invalid X-Workspace-Id header',
+    );
   });
 
   it('returns 400 when query validation fails', async () => {
@@ -64,14 +85,9 @@ describe('AnalyticsController', () => {
     const controller = new AnalyticsController(port);
     const reply = mockReply();
     // from > to
-    await controller.getSummary(
-      mockReq(),
-      reply,
-      '2026-02-01',
-      '2026-01-01',
-    );
+    await controller.getSummary(mockReq(), reply, '2026-02-01', '2026-01-01');
     expect(reply.statusCode).toBe(400);
-    expect((reply.sentBody as any)?.errors).toBeDefined();
+    expect((reply.sentBody as ProblemBody)?.errors).toBeDefined();
   });
 
   it('returns 400 with missing currency pair when missing rate occurs', async () => {
@@ -93,8 +109,8 @@ describe('AnalyticsController', () => {
       'USD',
     );
     expect(reply.statusCode).toBe(400);
-    expect((reply.sentBody as any)?.detail).toContain('EUR');
-    expect((reply.sentBody as any)?.detail).toContain('USD');
+    expect((reply.sentBody as ProblemBody)?.detail).toContain('EUR');
+    expect((reply.sentBody as ProblemBody)?.detail).toContain('USD');
   });
 
   it('returns 200 on summary success', async () => {

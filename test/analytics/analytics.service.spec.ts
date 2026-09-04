@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
   ANALYTICS_OUTCOMES,
   type AnalyticsStore,
@@ -16,12 +17,19 @@ describe('AnalyticsService', () => {
   const subject = '00000000-0000-4000-8000-000000000099';
 
   const fakeTx = {
-    run: async <T>(_sub: string, cb: (client: any) => Promise<T>): Promise<T> => {
-      return cb({});
+    run: async <T>(
+      _sub: string,
+      cb: (client: TransactionClient) => Promise<T>,
+    ): Promise<T> => {
+      return cb({
+        query: async () => ({ rows: [], rowCount: 0 }),
+      } as unknown as TransactionClient);
     },
   };
 
-  const createMockStore = (overrides: Partial<AnalyticsStore> = {}): AnalyticsStore => ({
+  const createMockStore = (
+    overrides: Partial<AnalyticsStore> = {},
+  ): AnalyticsStore => ({
     readActiveRole: async () => 'owner',
     readWorkspaceBaseCurrency: async () => 'USD',
     readAccountNativeBalances: async () => [],
@@ -241,7 +249,11 @@ describe('generateBucketPeriods', () => {
   });
 
   it('generates quarter buckets', () => {
-    const buckets = generateBucketPeriods('2026-01-15', '2026-07-20', 'quarter');
+    const buckets = generateBucketPeriods(
+      '2026-01-15',
+      '2026-07-20',
+      'quarter',
+    );
     expect(buckets).toEqual(['2026-01-01', '2026-04-01', '2026-07-01']);
   });
 
