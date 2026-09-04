@@ -288,5 +288,59 @@ describe('DebtService', () => {
         paymentCommand,
       );
     });
+
+    it('returns REPLAYED without calling findDebt or lockAndReadAccount on identical replay', async () => {
+      const store = createMockStore();
+      const idempotency = createMockIdempotency();
+      const fingerprint = computeRequestFingerprint({
+        debtId: 'd1',
+        ...paymentCommand,
+      });
+      vi.mocked(idempotency.read).mockResolvedValue({
+        requestFingerprint: fingerprint,
+        responseStatus: 201,
+        responseEtag: '"1"',
+        responseBody: dummyTransaction,
+      });
+      const service = new DebtService(mockTx, store, idempotency);
+
+      const result = await service.createDebtPayment(
+        'sub1',
+        'ws1',
+        'd1',
+        paymentCommand,
+        'key1',
+      );
+      expect(result.kind).toBe(DEBT_OUTCOMES.REPLAYED);
+      if (result.kind === DEBT_OUTCOMES.REPLAYED) {
+        expect(result.status).toBe(201);
+        expect(result.body).toEqual(dummyTransaction);
+      }
+      expect(store.findDebt).not.toHaveBeenCalled();
+      expect(store.lockAndReadAccount).not.toHaveBeenCalled();
+    });
+
+    it('returns CONFLICT without calling findDebt or lockAndReadAccount on mismatched replay', async () => {
+      const store = createMockStore();
+      const idempotency = createMockIdempotency();
+      vi.mocked(idempotency.read).mockResolvedValue({
+        requestFingerprint: 'different-fingerprint',
+        responseStatus: 201,
+        responseEtag: '"1"',
+        responseBody: dummyTransaction,
+      });
+      const service = new DebtService(mockTx, store, idempotency);
+
+      const result = await service.createDebtPayment(
+        'sub1',
+        'ws1',
+        'd1',
+        paymentCommand,
+        'key1',
+      );
+      expect(result.kind).toBe(DEBT_OUTCOMES.CONFLICT);
+      expect(store.findDebt).not.toHaveBeenCalled();
+      expect(store.lockAndReadAccount).not.toHaveBeenCalled();
+    });
   });
 });

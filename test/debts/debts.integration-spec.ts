@@ -11,6 +11,7 @@ import { AppModule } from '../../src/app.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
+import { PostgresDebtAdapter } from '../../src/debts/postgres-debt.adapter.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -1125,6 +1126,92 @@ describe('Debts integration suite against disposable PostgreSQL', () => {
       );
       expect(dDraft.outstandingBalance.amountMinor).toBe('50000');
     });
+
+    it('still reduces outstandingBalance when parent transaction is voided but posting is confirmed', async () => {
+      // 1. Create a debt with principal 50000 USD
+      const debtRes = await application.inject({
+        method: 'POST',
+        url: '/v1/debts',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          name: 'Parent Voided Debt Invariant',
+          principal: { amountMinor: '50000', currency: 'USD' },
+          annualRate: '0.05',
+          rateType: 'fixed',
+        },
+      });
+      expect(debtRes.statusCode).toBe(201);
+      const debt = JSON.parse(debtRes.payload);
+
+      // 2. Make confirmed payment of 5000 USD
+      const payRes = await application.inject({
+        method: 'POST',
+        url: `/v1/debts/${debt.id}/payments`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          accountId: account1Id,
+          totalAmount: { amountMinor: '5000', currency: 'USD' },
+          occurredAt: '2026-09-03T12:00:00Z',
+        },
+      });
+      expect(payRes.statusCode).toBe(201);
+      const txn = JSON.parse(payRes.payload);
+
+      // Initial check: outstanding balance is 50000 - 5000 = 45000
+      const listRes1 = await application.inject({
+        method: 'GET',
+        url: '/v1/debts',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+        },
+      });
+      const d1 = JSON.parse(listRes1.payload).items.find(
+        (d: { id: string }) => d.id === debt.id,
+      );
+      expect(d1.outstandingBalance.amountMinor).toBe('45000');
+
+      // 3. Mutate PARENT transaction status to 'voided' (satisfying check constraint with voided_at)
+      await admin.query(
+        "update public.transactions set status = 'voided', voided_at = now() where id = $1",
+        [txn.id],
+      );
+
+      // Assert posting status in public.ledger_postings is STILL 'confirmed'
+      const postingRow = await admin.query<{ status: string }>(
+        'select status from public.ledger_postings where transaction_id = $1 and account_id is not null',
+        [txn.id],
+      );
+      expect(postingRow.rows[0].status).toBe('confirmed');
+
+      // 4. Invariant assertion: parent status is irrelevant.
+      // Outstanding balance MUST STILL be reduced by the confirmed posting's principal: 45000
+      // Check both listDebts (query 2) and findDebt (query 1)
+      const listRes2 = await application.inject({
+        method: 'GET',
+        url: '/v1/debts',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+        },
+      });
+      const d2 = JSON.parse(listRes2.payload).items.find(
+        (d: { id: string }) => d.id === debt.id,
+      );
+      expect(d2.outstandingBalance.amountMinor).toBe('45000');
+
+      const adapter = new PostgresDebtAdapter();
+      const debtFromFind = await adapter.findDebt(admin, workspace1Id, debt.id);
+      expect(debtFromFind?.outstandingBalance.amountMinor).toBe('45000');
+    });
   });
 
   // 11. A foreign-currency leg does NOT distort outstandingBalance.
@@ -1309,6 +1396,140 @@ describe('Debts integration suite against disposable PostgreSQL', () => {
         payload: {
           ...payload,
           name: 'Conflict Debt Name',
+        },
+      });
+      expect(resConflict.statusCode).toBe(409);
+    });
+
+    it('replays debt payment even if account is closed and rejects conflict before state evaluation', async () => {
+      // Create a debt to pay
+      const debtRes = await application.inject({
+        method: 'POST',
+        url: '/v1/debts',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          name: 'Payment Idempotency Debt',
+          principal: { amountMinor: '50000', currency: 'USD' },
+          annualRate: '0.05',
+          rateType: 'fixed',
+        },
+      });
+      expect(debtRes.statusCode).toBe(201);
+      const debt = JSON.parse(debtRes.payload);
+
+      // Dedicated account for this test so closing it does not affect any other tests
+      const dedicatedAccountId = randomUUID();
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, status, closed_at, created_by)
+         values ($1, $2, 'Payment Idempotency Account', 'checking', 'USD', 'active', null, $3)`,
+        [dedicatedAccountId, workspace1Id, ownerId],
+      );
+
+      const keyK = randomUUID();
+      const paymentPayload = {
+        accountId: dedicatedAccountId,
+        totalAmount: { amountMinor: '5000', currency: 'USD' },
+        occurredAt: '2026-09-03T12:00:00Z',
+      };
+
+      // 1. Initial write with key K: capture 201 body
+      const res1 = await application.inject({
+        method: 'POST',
+        url: `/v1/debts/${debt.id}/payments`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': keyK,
+        },
+        payload: paymentPayload,
+      });
+      expect(res1.statusCode).toBe(201);
+      const body1 = JSON.parse(res1.payload);
+
+      // Record exact counts
+      const txnCount1 = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.transactions where account_id = $1',
+        [dedicatedAccountId],
+      );
+      const postCount1 = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.ledger_postings where account_id = $1',
+        [dedicatedAccountId],
+      );
+      const dpCount1 = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.debt_payments where debt_id = $1',
+        [debt.id],
+      );
+      expect(txnCount1.rows[0].count).toBe('1');
+      expect(postCount1.rows[0].count).toBe('1');
+      expect(dpCount1.rows[0].count).toBe('1');
+
+      // 2. Mutate account into a state that would now reject a fresh payment (close it)
+      await admin.query(
+        "update public.accounts set status = 'closed', closed_at = now() where id = $1",
+        [dedicatedAccountId],
+      );
+
+      // Verify that a fresh payment with a NEW key is rejected because account is closed (422)
+      const freshRes = await application.inject({
+        method: 'POST',
+        url: `/v1/debts/${debt.id}/payments`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: paymentPayload,
+      });
+      expect(freshRes.statusCode).toBe(422);
+
+      // 3. Replay key K with identical body: returns ORIGINAL stored 201 body, NO second transaction, posting, or debt_payments
+      const resReplay = await application.inject({
+        method: 'POST',
+        url: `/v1/debts/${debt.id}/payments`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': keyK,
+        },
+        payload: paymentPayload,
+      });
+      expect(resReplay.statusCode).toBe(201);
+      expect(JSON.parse(resReplay.payload)).toEqual(body1);
+
+      // Exact counts unchanged: NO second transaction, posting, or debt_payments row
+      const txnCountReplay = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.transactions where account_id = $1',
+        [dedicatedAccountId],
+      );
+      const postCountReplay = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.ledger_postings where account_id = $1',
+        [dedicatedAccountId],
+      );
+      const dpCountReplay = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.debt_payments where debt_id = $1',
+        [debt.id],
+      );
+      expect(txnCountReplay.rows[0].count).toBe('1');
+      expect(postCountReplay.rows[0].count).toBe('1');
+      expect(dpCountReplay.rows[0].count).toBe('1');
+
+      // 4. Same key + different body returns 409, happening BEFORE current-state evaluation
+      // (If state evaluation ran first, closed account would return 422 instead of 409)
+      const resConflict = await application.inject({
+        method: 'POST',
+        url: `/v1/debts/${debt.id}/payments`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': keyK,
+        },
+        payload: {
+          ...paymentPayload,
+          totalAmount: { amountMinor: '6000', currency: 'USD' },
         },
       });
       expect(resConflict.statusCode).toBe(409);
