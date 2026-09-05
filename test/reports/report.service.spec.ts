@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { IdempotencyStore } from '../../src/platform/idempotency.port.js';
+import { computeRequestFingerprint } from '../../src/platform/idempotency.service.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
   REPORT_OUTCOMES,
@@ -36,11 +37,27 @@ describe('ReportService', () => {
     version: 1,
   };
 
-  function createTxMock(): ReportTransaction {
+  interface TxMockState {
+    committed: boolean;
+    rolledBack: boolean;
+  }
+
+  function createTxMock(): ReportTransaction & { state: TxMockState } {
     const fakeClient = {} as TransactionClient;
+    const state: TxMockState = { committed: false, rolledBack: false };
     return {
-      run: vi.fn().mockImplementation((_sub, cb) => cb(fakeClient)),
-      runRead: vi.fn().mockImplementation((_sub, cb) => cb(fakeClient)),
+      state,
+      run: vi.fn().mockImplementation(async (_sub, cb) => {
+        try {
+          const result = await cb(fakeClient);
+          state.committed = true;
+          return result;
+        } catch (error) {
+          state.rolledBack = true;
+          throw error;
+        }
+      }),
+      runRead: vi.fn().mockImplementation(async (_sub, cb) => cb(fakeClient)),
     };
   }
 
@@ -168,14 +185,8 @@ describe('ReportService', () => {
       const tx = createTxMock();
       const store = createStoreMock();
       const idempotency = createIdempotencyMock();
-      const service = new ReportService(tx, store, idempotency);
+      const fingerprint = computeRequestFingerprint(command);
 
-      // First call to find fingerprint
-      await service.createReportDefinition(subject, workspaceId, command, key);
-      const fingerprint = vi.mocked(idempotency.write).mock.calls[0][4];
-
-      // Reset mocks for collision test
-      vi.mocked(store.createReportDefinition).mockClear();
       vi.mocked(idempotency.read)
         .mockResolvedValueOnce(undefined) // first read sees nothing
         .mockResolvedValueOnce({
@@ -187,6 +198,7 @@ describe('ReportService', () => {
         });
       vi.mocked(idempotency.write).mockResolvedValue(false); // write fails due to race
 
+      const service = new ReportService(tx, store, idempotency);
       const outcome = await service.createReportDefinition(
         subject,
         workspaceId,
@@ -199,6 +211,8 @@ describe('ReportService', () => {
         etag: null,
         body: sampleDefinition,
       });
+      expect(tx.state.rolledBack).toBe(true);
+      expect(tx.state.committed).toBe(false);
     });
 
     it('rolls back and handles concurrent collision conflict via thrown ReportDefinitionCreateRollbackError', async () => {
@@ -224,6 +238,8 @@ describe('ReportService', () => {
         key,
       );
       expect(outcome).toEqual({ kind: REPORT_OUTCOMES.CONFLICT });
+      expect(tx.state.rolledBack).toBe(true);
+      expect(tx.state.committed).toBe(false);
     });
   });
 
