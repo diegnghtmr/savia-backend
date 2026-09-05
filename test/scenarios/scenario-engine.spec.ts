@@ -71,6 +71,154 @@ describe('scenario-engine', () => {
     expect(result.risks).toEqual([]);
   });
 
+  describe('Finding 2: percentage overflow and non-safe integer rejection', () => {
+    const invalidPercents: readonly [string, unknown][] = [
+      ['1e308', 1e308],
+      ['Number.MAX_VALUE', Number.MAX_VALUE],
+      ['Infinity', Infinity],
+      ['-Infinity', -Infinity],
+      ['NaN', Number.NaN],
+    ];
+
+    for (const [label, val] of invalidPercents) {
+      it(`rejects percent "${label}": unapplied, named in risks, no throw`, () => {
+        expect(() => {
+          const result = runScenarioEngine({
+            ...baseInput,
+            assumptions: [
+              {
+                type: 'income_change',
+                value: { percent: val },
+              },
+            ],
+          });
+
+          expect(result.status).toBe('failed');
+          expect(result.projected.monthlyIncomeMinor).toBe('100000');
+          expect(result.risks).toEqual([
+            'assumptions[0] (income_change): value is missing amountMinor or percent',
+          ]);
+        }).not.toThrow();
+      });
+    }
+
+    it('applies percent 10 correctly with hand-derived arithmetic', () => {
+      // Baseline: income 100000, expenses 60000, savings 40000
+      // Assumption: percent = 10
+      // Hand-derived arithmetic:
+      // scaled = Math.round(10 * 100) = 1000 (safe integer)
+      // delta = roundDivHalfAwayFromZero(100000 * 1000, 10000) = 10000
+      // projectedIncome = 100000 + 10000 = 110000
+      // projectedExpenses = 60000
+      // projectedSavings = 110000 - 60000 = 50000
+      // difference income = 10000, savings = 10000
+      const result = runScenarioEngine({
+        ...baseInput,
+        assumptions: [
+          {
+            type: 'income_change',
+            value: { percent: 10 },
+          },
+        ],
+      });
+
+      expect(result.status).toBe('completed');
+      expect(result.projected.monthlyIncomeMinor).toBe('110000');
+      expect(result.projected.monthlyExpensesMinor).toBe('60000');
+      expect(result.projected.monthlySavingsCapacityMinor).toBe('50000');
+      expect(result.difference.monthlyIncomeMinor).toBe('10000');
+      expect(result.difference.monthlySavingsCapacityMinor).toBe('10000');
+      expect(result.risks).toEqual([]);
+    });
+
+    it('applies percent -10 correctly with hand-derived arithmetic', () => {
+      // Baseline: income 100000, expenses 60000, savings 40000
+      // Assumption: percent = -10
+      // Hand-derived arithmetic:
+      // scaled = Math.round(-10 * 100) = -1000 (safe integer)
+      // delta = roundDivHalfAwayFromZero(100000 * -1000, 10000) = -10000
+      // projectedIncome = 100000 + (-10000) = 90000
+      // projectedExpenses = 60000
+      // projectedSavings = 90000 - 60000 = 30000
+      // difference income = -10000, savings = -10000
+      const result = runScenarioEngine({
+        ...baseInput,
+        assumptions: [
+          {
+            type: 'income_change',
+            value: { percent: -10 },
+          },
+        ],
+      });
+
+      expect(result.status).toBe('completed');
+      expect(result.projected.monthlyIncomeMinor).toBe('90000');
+      expect(result.projected.monthlyExpensesMinor).toBe('60000');
+      expect(result.projected.monthlySavingsCapacityMinor).toBe('30000');
+      expect(result.difference.monthlyIncomeMinor).toBe('-10000');
+      expect(result.difference.monthlySavingsCapacityMinor).toBe('-10000');
+      expect(result.risks).toEqual([]);
+    });
+
+    it('applies percent 0 correctly with hand-derived arithmetic', () => {
+      // Baseline: income 100000, expenses 60000, savings 40000
+      // Assumption: percent = 0
+      // Hand-derived arithmetic:
+      // scaled = Math.round(0 * 100) = 0 (safe integer)
+      // delta = roundDivHalfAwayFromZero(100000 * 0, 10000) = 0
+      // projectedIncome = 100000 + 0 = 100000
+      // projectedExpenses = 60000
+      // projectedSavings = 100000 - 60000 = 40000
+      // difference income = 0, savings = 0
+      const result = runScenarioEngine({
+        ...baseInput,
+        assumptions: [
+          {
+            type: 'income_change',
+            value: { percent: 0 },
+          },
+        ],
+      });
+
+      expect(result.status).toBe('completed');
+      expect(result.projected.monthlyIncomeMinor).toBe('100000');
+      expect(result.projected.monthlyExpensesMinor).toBe('60000');
+      expect(result.projected.monthlySavingsCapacityMinor).toBe('40000');
+      expect(result.difference.monthlyIncomeMinor).toBe('0');
+      expect(result.difference.monthlySavingsCapacityMinor).toBe('0');
+      expect(result.risks).toEqual([]);
+    });
+
+    it('applies percent 1000 correctly with hand-derived arithmetic', () => {
+      // Baseline: income 100000, expenses 60000, savings 40000
+      // Assumption: percent = 1000
+      // Hand-derived arithmetic:
+      // scaled = Math.round(1000 * 100) = 100000 (safe integer)
+      // delta = roundDivHalfAwayFromZero(100000 * 100000, 10000) = 1000000
+      // projectedIncome = 100000 + 1000000 = 1100000
+      // projectedExpenses = 60000
+      // projectedSavings = 1100000 - 60000 = 1040000
+      // difference income = 1000000, savings = 1000000
+      const result = runScenarioEngine({
+        ...baseInput,
+        assumptions: [
+          {
+            type: 'income_change',
+            value: { percent: 1000 },
+          },
+        ],
+      });
+
+      expect(result.status).toBe('completed');
+      expect(result.projected.monthlyIncomeMinor).toBe('1100000');
+      expect(result.projected.monthlyExpensesMinor).toBe('60000');
+      expect(result.projected.monthlySavingsCapacityMinor).toBe('1040000');
+      expect(result.difference.monthlyIncomeMinor).toBe('1000000');
+      expect(result.difference.monthlySavingsCapacityMinor).toBe('1000000');
+      expect(result.risks).toEqual([]);
+    });
+  });
+
   it('applies expense_change with amountMinor and percent correctly', () => {
     // Baseline: income 100000, expenses 60000
     // Test amountMinor: +15000
