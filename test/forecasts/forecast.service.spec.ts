@@ -27,6 +27,7 @@ interface FakeStoreOptions {
   role?: string;
   baseCurrency?: string;
   forecast?: Forecast;
+  openAccountIds?: readonly string[];
   accounts?: readonly AccountExistenceRow[];
   nativeBalances?: readonly AccountNativeBalanceRow[];
   transactions?: readonly TransactionFlowRow[];
@@ -38,6 +39,8 @@ class FakeForecastStore implements ForecastStore {
   public createdForecasts: CreateForecastRecord[] = [];
   public checkedAccountIds: readonly string[] = [];
   public readNativeBalanceAccountIds?: readonly string[];
+  public readTransactionsInPeriodAccountIds?: readonly string[];
+  public readOpenAccountIdsCalled = false;
 
   public constructor(private readonly options: FakeStoreOptions = {}) {}
 
@@ -64,18 +67,31 @@ class FakeForecastStore implements ForecastStore {
     );
   }
 
+  public async readOpenAccountIds(): Promise<readonly string[]> {
+    this.readOpenAccountIdsCalled = true;
+    return (
+      this.options.openAccountIds ??
+      this.options.nativeBalances?.map((b) => b.id) ?? ['acct-1']
+    );
+  }
+
   public async readAccountNativeBalances(
     _client: TransactionClient,
     _workspaceId: string,
-    accountIds?: readonly string[],
+    accountIds: readonly string[],
   ): Promise<readonly AccountNativeBalanceRow[]> {
     this.readNativeBalanceAccountIds = accountIds;
     return this.options.nativeBalances ?? [];
   }
 
-  public async readTransactionsInPeriod(): Promise<
-    readonly TransactionFlowRow[]
-  > {
+  public async readTransactionsInPeriod(
+    _client: TransactionClient,
+    _workspaceId: string,
+    _from: string,
+    _to: string,
+    accountIds: readonly string[],
+  ): Promise<readonly TransactionFlowRow[]> {
+    this.readTransactionsInPeriodAccountIds = accountIds;
     return this.options.transactions ?? [];
   }
 
@@ -382,6 +398,87 @@ describe('ForecastService', () => {
       );
       // Opening balance should reflect only openId (50000)
       expect(created.series[0].expected.amountMinor).toBe('50000');
+      expect(store.readNativeBalanceAccountIds).toEqual([openId]);
+      expect(store.readTransactionsInPeriodAccountIds).toEqual([openId]);
+    });
+
+    it('when all requested accountIds are closed, passes empty array to both reads resulting in zero balance and zero history', async () => {
+      const closedId = '22222222-0000-4000-8000-000000000002';
+      const store = new FakeForecastStore({
+        accounts: [{ id: closedId, status: 'closed' }],
+        nativeBalances: [],
+      });
+      const idempotency = new FakeIdempotencyStore();
+      const jobs = new FakeJobWriter();
+      const service = new ForecastService(
+        directTransaction,
+        store,
+        idempotency,
+        jobs,
+        () => fixedNow,
+      );
+
+      const cmd: ForecastRequest = {
+        horizonDays: 30,
+        accountIds: [closedId],
+        includeScenarios: false,
+      };
+
+      const result = await service.createBalanceForecast(
+        subject,
+        workspaceId,
+        cmd,
+        'key-1',
+      );
+      expect(result.kind).toBe(FORECAST_OUTCOMES.ACCEPTED);
+      expect(store.readNativeBalanceAccountIds).toEqual([]);
+      expect(store.readTransactionsInPeriodAccountIds).toEqual([]);
+      const created = store.createdForecasts[0];
+      expect(created.series[0].expected.amountMinor).toBe('0');
+      expect(created.confidence).toBe('low');
+      expect(created.assumptions).toContain(
+        '0 months of history available; daily drift and bounds are zero.',
+      );
+      expect(created.assumptions).toContain(
+        `Account ${closedId} is closed and contributes zero.`,
+      );
+    });
+
+    it('when accountIds is absent, queries readOpenAccountIds and passes effective set to both reads', async () => {
+      const openId1 = '11111111-0000-4000-8000-000000000001';
+      const openId2 = '22222222-0000-4000-8000-000000000002';
+      const store = new FakeForecastStore({
+        openAccountIds: [openId1, openId2],
+        nativeBalances: [
+          { id: openId1, currency: 'USD', nativeBalanceMinor: '25000' },
+          { id: openId2, currency: 'USD', nativeBalanceMinor: '35000' },
+        ],
+      });
+      const idempotency = new FakeIdempotencyStore();
+      const jobs = new FakeJobWriter();
+      const service = new ForecastService(
+        directTransaction,
+        store,
+        idempotency,
+        jobs,
+        () => fixedNow,
+      );
+
+      const cmd: ForecastRequest = {
+        horizonDays: 30,
+        includeScenarios: false,
+      };
+
+      const result = await service.createBalanceForecast(
+        subject,
+        workspaceId,
+        cmd,
+        'key-1',
+      );
+      expect(result.kind).toBe(FORECAST_OUTCOMES.ACCEPTED);
+      expect(store.readOpenAccountIdsCalled).toBe(true);
+      expect(store.readNativeBalanceAccountIds).toEqual([openId1, openId2]);
+      expect(store.readTransactionsInPeriodAccountIds).toEqual([openId1, openId2]);
     });
 
     it('returns MISSING_RATE 422 when account has non-base currency with missing exchange rate', async () => {

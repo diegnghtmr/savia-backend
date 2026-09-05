@@ -557,6 +557,41 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       );
     });
 
+    it('scopes historical flow to requested accountIds matching opening balance', async () => {
+      // acctSavingsId was seeded with 500,000 minor and has zero in-window transactions.
+      // All in-window flow belongs to acctCheckingId.
+      // Under proper account scoping, selecting acctSavingsId alone must produce
+      // an initial forecast point equal to its opening balance (500000) with zero drift.
+      const res = await application.inject({
+        method: 'POST',
+        url: '/v1/forecasts/balance',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          horizonDays: 30,
+          accountIds: [acctSavingsId],
+          includeScenarios: false,
+        },
+      });
+
+      expect(res.statusCode).toBe(202);
+      const job = JSON.parse(res.payload);
+      const getRes = await application.inject({
+        method: 'GET',
+        url: `/v1/forecasts/${job.resultResourceId}`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+        },
+      });
+      expect(getRes.statusCode).toBe(200);
+      const forecast = JSON.parse(getRes.payload);
+      expect(forecast.series[0].expected.amountMinor).toBe('500000');
+    });
+
     it('returns 422 MISSING_RATE when transaction flow row has a currency without an exchange rate', async () => {
       // Seed a transaction in workspace 1 with GBP currency (no GBP/USD rate exists)
       const gbpTxnId = randomUUID();

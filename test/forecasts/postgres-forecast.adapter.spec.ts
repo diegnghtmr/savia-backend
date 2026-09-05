@@ -164,7 +164,31 @@ describe('PostgresForecastAdapter', () => {
     );
   });
 
-  it('reads transactions in period with positive and negative posting-status predicates', async () => {
+  it('reads open account ids in workspace', async () => {
+    const mockClient = {
+      query: vi.fn().mockResolvedValueOnce({
+        rows: [
+          { id: '11111111-0000-4000-8000-000000000001' },
+          { id: '22222222-0000-4000-8000-000000000002' },
+        ],
+      }),
+    } as unknown as TransactionClient;
+
+    const adapter = new PostgresForecastAdapter();
+    const ids = await adapter.readOpenAccountIds(mockClient, workspaceId);
+
+    expect(ids).toEqual([
+      '11111111-0000-4000-8000-000000000001',
+      '22222222-0000-4000-8000-000000000002',
+    ]);
+    expect(mockClient.query).toHaveBeenCalledWith(
+      expect.stringContaining("status <> 'closed'"),
+      [workspaceId],
+    );
+  });
+
+  it('reads transactions in period with positive and negative posting-status predicates and account filter', async () => {
+    const accountIds = ['11111111-0000-4000-8000-000000000001'];
     const mockClient = {
       query: vi.fn().mockResolvedValueOnce({
         rows: [
@@ -185,13 +209,18 @@ describe('PostgresForecastAdapter', () => {
       workspaceId,
       '2025-10-01',
       '2026-09-04',
+      accountIds,
     );
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.amountMinor).toBe('25000');
     expect(mockClient.query).toHaveBeenCalledWith(
+      expect.stringContaining('t.account_id = any($4::uuid[])'),
+      [workspaceId, '2025-10-01', '2026-09-04', accountIds],
+    );
+    expect(mockClient.query).toHaveBeenCalledWith(
       expect.stringContaining('not exists'),
-      [workspaceId, '2025-10-01', '2026-09-04'],
+      [workspaceId, '2025-10-01', '2026-09-04', accountIds],
     );
   });
 

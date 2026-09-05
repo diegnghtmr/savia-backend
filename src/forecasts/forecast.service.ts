@@ -101,6 +101,7 @@ export class ForecastService implements ForecastsPort {
         }
 
         const closedAccountAssumptions: string[] = [];
+        let effectiveAccountIds: readonly string[];
         if (command.accountIds !== undefined) {
           const accounts = await this.store.checkAccountsExist(
             client,
@@ -129,6 +130,14 @@ export class ForecastService implements ForecastsPort {
               );
             }
           }
+          effectiveAccountIds = command.accountIds.filter(
+            (id) => foundMap.get(id) !== 'closed',
+          );
+        } else {
+          effectiveAccountIds = await this.store.readOpenAccountIds(
+            client,
+            workspaceId,
+          );
         }
 
         const now = this.clock();
@@ -143,11 +152,12 @@ export class ForecastService implements ForecastsPort {
           workspaceId,
           periodStart,
           periodEnd,
+          effectiveAccountIds,
         );
         const accountBalances = await this.store.readAccountNativeBalances(
           client,
           workspaceId,
-          command.accountIds,
+          effectiveAccountIds,
         );
 
         const rates = new Map<string, string>();

@@ -109,10 +109,25 @@ where workspace_id = $1::uuid
     return result.rows;
   }
 
+  public async readOpenAccountIds(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<readonly string[]> {
+    const sql = `
+select id::text
+from public.accounts
+where workspace_id = $1::uuid
+  and status <> 'closed'
+order by id`;
+
+    const result = await client.query<{ id: string }>(sql, [workspaceId]);
+    return result.rows.map((row) => row.id);
+  }
+
   public async readAccountNativeBalances(
     client: TransactionClient,
     workspaceId: string,
-    accountIds?: readonly string[],
+    accountIds: readonly string[],
   ): Promise<readonly AccountNativeBalanceRow[]> {
     const sql = `
 select
@@ -131,12 +146,12 @@ left join public.ledger_postings posting
  and posting.account_id = acct.id
 where acct.workspace_id = $1::uuid
   and acct.status <> 'closed'
-  and ($2::uuid[] is null or acct.id = any($2::uuid[]))
+  and acct.id = any($2::uuid[])
 group by acct.id, acct.currency`;
 
     const result = await client.query<AccountNativeBalanceRow>(sql, [
       workspaceId,
-      accountIds ?? null,
+      accountIds,
     ]);
     return result.rows;
   }
@@ -146,6 +161,7 @@ group by acct.id, acct.currency`;
     workspaceId: string,
     from: string,
     to: string,
+    accountIds: readonly string[],
   ): Promise<readonly TransactionFlowRow[]> {
     const sql = `
 select
@@ -157,6 +173,7 @@ select
 from public.transactions t
 where t.workspace_id = $1::uuid
   and t.status in ('confirmed', 'reconciled')
+  and t.account_id = any($4::uuid[])
   and exists (
     select 1
     from public.ledger_postings p
@@ -180,6 +197,7 @@ where t.workspace_id = $1::uuid
       workspaceId,
       from,
       to,
+      accountIds,
     ]);
     return result.rows;
   }

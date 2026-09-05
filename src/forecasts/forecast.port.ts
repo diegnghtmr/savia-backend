@@ -146,10 +146,15 @@ export interface ForecastStore {
     accountIds: readonly string[],
   ): Promise<readonly AccountExistenceRow[]>;
 
+  readOpenAccountIds(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<readonly string[]>;
+
   readAccountNativeBalances(
     client: TransactionClient,
     workspaceId: string,
-    accountIds?: readonly string[],
+    accountIds: readonly string[],
   ): Promise<readonly AccountNativeBalanceRow[]>;
 
   readTransactionsInPeriod(
@@ -157,6 +162,7 @@ export interface ForecastStore {
     workspaceId: string,
     from: string,
     to: string,
+    accountIds: readonly string[],
   ): Promise<readonly TransactionFlowRow[]>;
 
   findExchangeRate(
