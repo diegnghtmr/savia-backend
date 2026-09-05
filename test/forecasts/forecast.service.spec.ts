@@ -478,7 +478,10 @@ describe('ForecastService', () => {
       expect(result.kind).toBe(FORECAST_OUTCOMES.ACCEPTED);
       expect(store.readOpenAccountIdsCalled).toBe(true);
       expect(store.readNativeBalanceAccountIds).toEqual([openId1, openId2]);
-      expect(store.readTransactionsInPeriodAccountIds).toEqual([openId1, openId2]);
+      expect(store.readTransactionsInPeriodAccountIds).toEqual([
+        openId1,
+        openId2,
+      ]);
     });
 
     it('returns MISSING_RATE 422 when account has non-base currency with missing exchange rate', async () => {

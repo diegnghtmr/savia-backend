@@ -288,7 +288,9 @@ describe('PostgresForecastAdapter', () => {
     expect(run?.id).toBe('run-1');
     expect(run?.monthlySavingsCapacityMinor).toBe('45000');
     expect(mockClient.query).toHaveBeenCalledWith(
-      expect.stringContaining("projected->>'monthlySavingsCapacityMinor' ~ '^-?[0-9]+$'"),
+      expect.stringContaining(
+        "projected->>'monthlySavingsCapacityMinor' ~ '^-?[0-9]+$'",
+      ),
       [workspaceId],
     );
   });

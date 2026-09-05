@@ -855,7 +855,9 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
           },
         });
         const forecast = JSON.parse(getRes.payload);
-        expect(forecast.assumptions).toContain(`Applied scenario run ${run2Id}.`);
+        expect(forecast.assumptions).toContain(
+          `Applied scenario run ${run2Id}.`,
+        );
         expect(forecast.assumptions).not.toContain(
           `Applied scenario run ${run1Id}.`,
         );
@@ -871,10 +873,9 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
           `delete from public.scenario_runs where scenario_id = $1::uuid`,
           [scenarioId],
         );
-        await admin.query(
-          `delete from public.scenarios where id = $1::uuid`,
-          [scenarioId],
-        );
+        await admin.query(`delete from public.scenarios where id = $1::uuid`, [
+          scenarioId,
+        ]);
       }
     });
 
@@ -930,10 +931,9 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
           `delete from public.scenario_runs where scenario_id = $1::uuid`,
           [malformedScenarioId],
         );
-        await admin.query(
-          `delete from public.scenarios where id = $1::uuid`,
-          [malformedScenarioId],
-        );
+        await admin.query(`delete from public.scenarios where id = $1::uuid`, [
+          malformedScenarioId,
+        ]);
       }
     });
 
