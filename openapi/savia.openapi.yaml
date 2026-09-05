@@ -6250,10 +6250,12 @@ paths:
             format: uuid
         - name: cursor
           in: query
+          required: false
           schema:
             type: string
         - name: limit
           in: query
+          required: false
           schema:
             type: integer
             minimum: 1
