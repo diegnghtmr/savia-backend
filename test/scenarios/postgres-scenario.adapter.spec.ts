@@ -17,6 +17,9 @@ describe('PostgresScenarioAdapter', () => {
     const role = await adapter.readActiveRole(mockClient, workspaceId);
 
     expect(role).toBe('owner');
+    // STRUCTURAL assertion, deliberately not behavioural. Pinning the call to
+    // workspace_actor_active_role verifies the adapter queries active role membership
+    // via the PostgreSQL RLS helper. A harmless query rewrite is expected to update this string.
     expect(mockClient.query).toHaveBeenCalledWith(
       expect.stringContaining('workspace_actor_active_role'),
       [workspaceId],
@@ -53,6 +56,9 @@ describe('PostgresScenarioAdapter', () => {
     expect(scenario.id).toBe('cccccccc-0000-4000-8000-000000000001');
     expect(scenario.description).toBeNull();
     expect(scenario.lastRunId).toBeNull();
+    // STRUCTURAL assertion, deliberately not behavioural. It pins the insert statement
+    // structure and target table public.scenarios against the mocked client; a harmless
+    // query rewrite is expected to update this string.
     expect(mockClient.query).toHaveBeenCalledWith(
       expect.stringMatching(/insert into public\.scenarios/i),
       [
