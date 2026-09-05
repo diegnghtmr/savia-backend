@@ -733,51 +733,121 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       const run2Id = randomUUID();
       const run3Id = randomUUID();
 
+      try {
+        await admin.query(
+          `insert into public.scenario_runs (id, workspace_id, scenario_id, status, baseline, projected, difference, created_at, created_by)
+           values
+             ($1, $2, $3, 'completed', '{}'::jsonb, '{"monthlySavingsCapacityMinor": "50000"}'::jsonb, '{}'::jsonb, now() - interval '2 days', $4),
+             ($5, $2, $3, 'completed', '{}'::jsonb, '{"monthlySavingsCapacityMinor": "150000"}'::jsonb, '{}'::jsonb, now() - interval '1 day', $4),
+             ($6, $2, $3, 'failed', '{}'::jsonb, '{"monthlySavingsCapacityMinor": "999999"}'::jsonb, '{}'::jsonb, now(), $4)`,
+          [run1Id, workspace1Id, scenarioId, ownerId, run2Id, run3Id],
+        );
+
+        const res = await application.inject({
+          method: 'POST',
+          url: '/v1/forecasts/balance',
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': randomUUID(),
+          },
+          payload: {
+            horizonDays: 90,
+            includeScenarios: true,
+          },
+        });
+
+        expect(res.statusCode).toBe(202);
+        const job = JSON.parse(res.payload);
+        const getRes = await application.inject({
+          method: 'GET',
+          url: `/v1/forecasts/${job.resultResourceId}`,
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspace1Id,
+          },
+        });
+        const forecast = JSON.parse(getRes.payload);
+        expect(forecast.assumptions).toContain(`Applied scenario run ${run2Id}.`);
+        expect(forecast.assumptions).not.toContain(
+          `Applied scenario run ${run1Id}.`,
+        );
+        expect(forecast.assumptions).not.toContain(
+          `Applied scenario run ${run3Id}.`,
+        );
+        // Since stdDev is 0 with scenario run, lowerBound equals upperBound
+        expect(forecast.series[0].lowerBound.amountMinor).toBe(
+          forecast.series[0].upperBound.amountMinor,
+        );
+      } finally {
+        await admin.query(
+          `delete from public.scenario_runs where scenario_id = $1::uuid`,
+          [scenarioId],
+        );
+        await admin.query(
+          `delete from public.scenarios where id = $1::uuid`,
+          [scenarioId],
+        );
+      }
+    });
+
+    it('ignores completed scenario run with malformed projected json lacking capacity', async () => {
+      // Create a valid scenario and insert a completed run with projected = '{}'
+      const malformedScenarioId = randomUUID();
+      const malformedRunId = randomUUID();
+
       await admin.query(
-        `insert into public.scenario_runs (id, workspace_id, scenario_id, status, baseline, projected, difference, created_at, created_by)
-         values
-           ($1, $2, $3, 'completed', '{}'::jsonb, '{"monthlySavingsCapacityMinor": "50000"}'::jsonb, '{}'::jsonb, now() - interval '2 days', $4),
-           ($5, $2, $3, 'completed', '{}'::jsonb, '{"monthlySavingsCapacityMinor": "150000"}'::jsonb, '{}'::jsonb, now() - interval '1 day', $4),
-           ($6, $2, $3, 'failed', '{}'::jsonb, '{"monthlySavingsCapacityMinor": "999999"}'::jsonb, '{}'::jsonb, now(), $4)`,
-        [run1Id, workspace1Id, scenarioId, ownerId, run2Id, run3Id],
+        `insert into public.scenarios (id, workspace_id, name, assumptions, created_by)
+         values ($1, $2, 'Malformed Projection Scenario', '[{"type":"income_change","value":{}}]'::jsonb, $3)`,
+        [malformedScenarioId, workspace1Id, ownerId],
       );
 
-      const res = await application.inject({
-        method: 'POST',
-        url: '/v1/forecasts/balance',
-        headers: {
-          authorization: 'Bearer owner-token',
-          'x-workspace-id': workspace1Id,
-          'idempotency-key': randomUUID(),
-        },
-        payload: {
-          horizonDays: 90,
-          includeScenarios: true,
-        },
-      });
+      try {
+        await admin.query(
+          `insert into public.scenario_runs (id, workspace_id, scenario_id, status, baseline, projected, difference, created_at, created_by)
+           values ($1, $2, $3, 'completed', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, now(), $4)`,
+          [malformedRunId, workspace1Id, malformedScenarioId, ownerId],
+        );
 
-      expect(res.statusCode).toBe(202);
-      const job = JSON.parse(res.payload);
-      const getRes = await application.inject({
-        method: 'GET',
-        url: `/v1/forecasts/${job.resultResourceId}`,
-        headers: {
-          authorization: 'Bearer owner-token',
-          'x-workspace-id': workspace1Id,
-        },
-      });
-      const forecast = JSON.parse(getRes.payload);
-      expect(forecast.assumptions).toContain(`Applied scenario run ${run2Id}.`);
-      expect(forecast.assumptions).not.toContain(
-        `Applied scenario run ${run1Id}.`,
-      );
-      expect(forecast.assumptions).not.toContain(
-        `Applied scenario run ${run3Id}.`,
-      );
-      // Since stdDev is 0 with scenario run, lowerBound equals upperBound
-      expect(forecast.series[0].lowerBound.amountMinor).toBe(
-        forecast.series[0].upperBound.amountMinor,
-      );
+        const res = await application.inject({
+          method: 'POST',
+          url: '/v1/forecasts/balance',
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': randomUUID(),
+          },
+          payload: {
+            horizonDays: 90,
+            includeScenarios: true,
+          },
+        });
+
+        expect(res.statusCode).toBe(202);
+        const job = JSON.parse(res.payload);
+        const getRes = await application.inject({
+          method: 'GET',
+          url: `/v1/forecasts/${job.resultResourceId}`,
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspace1Id,
+          },
+        });
+        expect(getRes.statusCode).toBe(200);
+        const forecast = JSON.parse(getRes.payload);
+        expect(forecast.assumptions).toContain(
+          'includeScenarios was requested but no completed scenario run existed; proceeded from history.',
+        );
+      } finally {
+        await admin.query(
+          `delete from public.scenario_runs where scenario_id = $1::uuid`,
+          [malformedScenarioId],
+        );
+        await admin.query(
+          `delete from public.scenarios where id = $1::uuid`,
+          [malformedScenarioId],
+        );
+      }
     });
 
     it('idempotency: replay with same key returns original 202 and creates no second row', async () => {

@@ -227,6 +227,7 @@ select
 from public.scenario_runs
 where workspace_id = $1::uuid
   and status = 'completed'
+  and projected->>'monthlySavingsCapacityMinor' ~ '^-?[0-9]+$'
 order by created_at desc, id desc
 limit 1`;
 
