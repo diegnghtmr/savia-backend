@@ -26,6 +26,7 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
   const viewerId = '33333333-0000-4000-8000-000000000001';
   const otherOwnerId = '44444444-0000-4000-8000-000000000001';
   const nonMemberId = '55555555-0000-4000-8000-000000000001';
+  const dualMemberId = '66666666-0000-4000-8000-000000000001';
 
   const workspace1Id = 'aaaaaaaa-0000-4000-8000-000000000001';
   const workspace2Id = 'bbbbbbbb-0000-4000-8000-000000000001';
@@ -47,8 +48,9 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
         ($2, 'scenarios-editor@example.test'),
         ($3, 'scenarios-viewer@example.test'),
         ($4, 'scenarios-other@example.test'),
-        ($5, 'scenarios-nonmember@example.test')`,
-      [ownerId, editorId, viewerId, otherOwnerId, nonMemberId],
+        ($5, 'scenarios-nonmember@example.test'),
+        ($6, 'scenarios-dual@example.test')`,
+      [ownerId, editorId, viewerId, otherOwnerId, nonMemberId, dualMemberId],
     );
 
     for (const [userId, email, name] of [
@@ -57,6 +59,7 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
       [viewerId, 'scenarios-viewer@example.test', 'Scenarios Viewer'],
       [otherOwnerId, 'scenarios-other@example.test', 'Scenarios Other Owner'],
       [nonMemberId, 'scenarios-nonmember@example.test', 'Scenarios Non Member'],
+      [dualMemberId, 'scenarios-dual@example.test', 'Scenarios Dual Member'],
     ] as const) {
       await admin.query(
         `insert into public.profiles (
@@ -84,8 +87,18 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
         ($1, $2, 'owner', 'active'),
         ($1, $3, 'editor', 'active'),
         ($1, $4, 'viewer', 'active'),
-        ($5, $6, 'owner', 'active')`,
-      [workspace1Id, ownerId, editorId, viewerId, workspace2Id, otherOwnerId],
+        ($5, $6, 'owner', 'active'),
+        ($1, $7, 'editor', 'active'),
+        ($5, $7, 'editor', 'active')`,
+      [
+        workspace1Id,
+        ownerId,
+        editorId,
+        viewerId,
+        workspace2Id,
+        otherOwnerId,
+        dualMemberId,
+      ],
     );
 
     const moduleRef = await Test.createTestingModule({
@@ -99,6 +112,7 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
           if (token === 'viewer-token') return { subject: viewerId };
           if (token === 'other-owner-token') return { subject: otherOwnerId };
           if (token === 'non-member-token') return { subject: nonMemberId };
+          if (token === 'dual-member-token') return { subject: dualMemberId };
           throw new Error('token rejected');
         },
       })
@@ -882,12 +896,14 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
       expect(resWs2.statusCode).toBe(201);
       const ws2Scenario = JSON.parse(resWs2.payload);
 
-      // Attempt to run workspace 2 scenario from workspace 1 with workspace 1 owner
+      // Attempt to run workspace 2 scenario from workspace 1 with a dual-workspace member.
+      // Because dualMember is an active member of both workspaces, RLS permits reading either,
+      // proving that the 404 is enforced by the SQL workspace predicate and not masked by RLS.
       const res = await application.inject({
         method: 'POST',
         url: `/v1/scenarios/${ws2Scenario.id}/runs`,
         headers: {
-          authorization: 'Bearer owner-token',
+          authorization: 'Bearer dual-member-token',
           'x-workspace-id': workspace1Id,
           'idempotency-key': randomUUID(),
         },
