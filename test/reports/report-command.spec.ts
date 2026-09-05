@@ -82,9 +82,10 @@ describe('createReportDefinitionCommand', () => {
         ...validPayload,
         name: name121Astral,
       });
+      expect.fail('Should have thrown');
     } catch (e) {
-      const err = e as ReportCommandValidationError;
-      expect(err.violations).toContainEqual(
+      if (!(e instanceof ReportCommandValidationError)) throw e;
+      expect(e.violations).toContainEqual(
         expect.objectContaining({ field: 'name', code: 'invalid' }),
       );
     }
@@ -110,8 +111,8 @@ describe('createReportDefinitionCommand', () => {
       });
       expect.fail('Should have thrown');
     } catch (e) {
-      const err = e as ReportCommandValidationError;
-      expect(err.violations).toContainEqual(
+      if (!(e instanceof ReportCommandValidationError)) throw e;
+      expect(e.violations).toContainEqual(
         expect.objectContaining({ field: 'unknownField', code: 'not-allowed' }),
       );
     }
@@ -131,8 +132,8 @@ describe('createReportDefinitionCommand', () => {
       createReportDefinitionCommand({ ...validPayload, measures: [] });
       expect.fail('Should have thrown');
     } catch (e) {
-      const err = e as ReportCommandValidationError;
-      expect(err.violations).toContainEqual(
+      if (!(e instanceof ReportCommandValidationError)) throw e;
+      expect(e.violations).toContainEqual(
         expect.objectContaining({ field: 'measures', code: 'invalid' }),
       );
     }
@@ -146,8 +147,8 @@ describe('createReportDefinitionCommand', () => {
       });
       expect.fail('Should have thrown');
     } catch (e) {
-      const err = e as ReportCommandValidationError;
-      expect(err.violations).toContainEqual(
+      if (!(e instanceof ReportCommandValidationError)) throw e;
+      expect(e.violations).toContainEqual(
         expect.objectContaining({ field: 'dimensions.1', code: 'invalid' }),
       );
     }
@@ -161,8 +162,8 @@ describe('createReportDefinitionCommand', () => {
       });
       expect.fail('Should have thrown');
     } catch (e) {
-      const err = e as ReportCommandValidationError;
-      expect(err.violations).toContainEqual(
+      if (!(e instanceof ReportCommandValidationError)) throw e;
+      expect(e.violations).toContainEqual(
         expect.objectContaining({ field: 'measures.1', code: 'invalid' }),
       );
     }
@@ -176,8 +177,8 @@ describe('createReportDefinitionCommand', () => {
       });
       expect.fail('Should have thrown');
     } catch (e) {
-      const err = e as ReportCommandValidationError;
-      expect(err.violations).toContainEqual(
+      if (!(e instanceof ReportCommandValidationError)) throw e;
+      expect(e.violations).toContainEqual(
         expect.objectContaining({ field: 'visualization', code: 'invalid' }),
       );
     }
@@ -192,8 +193,8 @@ describe('createReportDefinitionCommand', () => {
         });
         expect.fail(`Should have thrown for filter: ${String(badFilter)}`);
       } catch (e) {
-        const err = e as ReportCommandValidationError;
-        expect(err.violations).toContainEqual(
+        if (!(e instanceof ReportCommandValidationError)) throw e;
+        expect(e.violations).toContainEqual(
           expect.objectContaining({ field: 'filters', code: 'invalid' }),
         );
       }
