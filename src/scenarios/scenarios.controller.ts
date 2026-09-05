@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Inject,
+  Param,
   Post,
   Query,
   Req,
@@ -14,6 +15,7 @@ import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
+import { UUID_PATTERN } from '../platform/uuid.js';
 import {
   SCENARIOS_PORT,
   SCENARIO_OUTCOMES,
@@ -149,5 +151,85 @@ export class ScenariosController {
     }
 
     return reply.code(201).type('application/json').send(o.scenario);
+  }
+
+  @Post(':scenarioId/runs')
+  public async run(
+    @Param('scenarioId') scenarioId: string,
+    @Req() req: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const h = parseWorkspaceHeader(req.headers['x-workspace-id']);
+    if (h.kind !== 'ok') {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+    }
+
+    const k = validateIdempotencyKey(req.headers['idempotency-key']);
+    if (k.kind !== 'ok') {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Invalid Idempotency-Key header',
+        detail: k.reason,
+        status: 422,
+      });
+    }
+
+    if (!UUID_PATTERN.test(scenarioId)) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid scenario identifier',
+        status: 400,
+      });
+    }
+
+    const o = await this.port.runScenario(
+      req.identity.subject,
+      h.workspaceId,
+      scenarioId,
+      k.key,
+    );
+
+    if (o.kind === SCENARIO_OUTCOMES.FORBIDDEN) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+    }
+
+    if (o.kind === SCENARIO_OUTCOMES.NOT_FOUND) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Scenario not found',
+        status: 404,
+      });
+    }
+
+    if (o.kind === SCENARIO_OUTCOMES.MISSING_RATE) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Missing exchange rate',
+        detail: `Missing exchange rate from ${o.fromCurrency} to ${o.toCurrency}`,
+        status: 422,
+      });
+    }
+
+    if (o.kind === SCENARIO_OUTCOMES.CONFLICT) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency key reused with different payload',
+        status: 409,
+      });
+    }
+
+    if (o.kind === SCENARIO_OUTCOMES.REPLAYED) {
+      return reply.code(o.status).type('application/json').send(o.body);
+    }
+
+    return reply.code(200).type('application/json').send(o.run);
   }
 }

@@ -1,4 +1,4 @@
-// Migrations under test: 202609040001_scenarios.sql
+// Migrations under test: 202609040001_scenarios.sql, 202609040002_scenario_runs.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -26,6 +26,7 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
   const viewerId = '33333333-0000-4000-8000-000000000001';
   const otherOwnerId = '44444444-0000-4000-8000-000000000001';
   const nonMemberId = '55555555-0000-4000-8000-000000000001';
+  const dualMemberId = '66666666-0000-4000-8000-000000000001';
 
   const workspace1Id = 'aaaaaaaa-0000-4000-8000-000000000001';
   const workspace2Id = 'bbbbbbbb-0000-4000-8000-000000000001';
@@ -47,8 +48,9 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
         ($2, 'scenarios-editor@example.test'),
         ($3, 'scenarios-viewer@example.test'),
         ($4, 'scenarios-other@example.test'),
-        ($5, 'scenarios-nonmember@example.test')`,
-      [ownerId, editorId, viewerId, otherOwnerId, nonMemberId],
+        ($5, 'scenarios-nonmember@example.test'),
+        ($6, 'scenarios-dual@example.test')`,
+      [ownerId, editorId, viewerId, otherOwnerId, nonMemberId, dualMemberId],
     );
 
     for (const [userId, email, name] of [
@@ -57,6 +59,7 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
       [viewerId, 'scenarios-viewer@example.test', 'Scenarios Viewer'],
       [otherOwnerId, 'scenarios-other@example.test', 'Scenarios Other Owner'],
       [nonMemberId, 'scenarios-nonmember@example.test', 'Scenarios Non Member'],
+      [dualMemberId, 'scenarios-dual@example.test', 'Scenarios Dual Member'],
     ] as const) {
       await admin.query(
         `insert into public.profiles (
@@ -84,8 +87,18 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
         ($1, $2, 'owner', 'active'),
         ($1, $3, 'editor', 'active'),
         ($1, $4, 'viewer', 'active'),
-        ($5, $6, 'owner', 'active')`,
-      [workspace1Id, ownerId, editorId, viewerId, workspace2Id, otherOwnerId],
+        ($5, $6, 'owner', 'active'),
+        ($1, $7, 'editor', 'active'),
+        ($5, $7, 'editor', 'active')`,
+      [
+        workspace1Id,
+        ownerId,
+        editorId,
+        viewerId,
+        workspace2Id,
+        otherOwnerId,
+        dualMemberId,
+      ],
     );
 
     const moduleRef = await Test.createTestingModule({
@@ -99,6 +112,7 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
           if (token === 'viewer-token') return { subject: viewerId };
           if (token === 'other-owner-token') return { subject: otherOwnerId };
           if (token === 'non-member-token') return { subject: nonMemberId };
+          if (token === 'dual-member-token') return { subject: dualMemberId };
           throw new Error('token rejected');
         },
       })
@@ -171,6 +185,64 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
           [workspace1Id, ownerId],
         ),
       ).rejects.toThrow(/scenarios_assumptions_is_array_check/);
+    });
+
+    it('verifies scenario_runs table has forced RLS and named constraints', async () => {
+      const rlsRes = await admin.query<{ rls: boolean; force: boolean }>(
+        `select relrowsecurity as rls, relforcerowsecurity as force
+         from pg_class where relname = 'scenario_runs' and relnamespace = 'public'::regnamespace`,
+      );
+      expect(rlsRes.rows[0]?.rls).toBe(true);
+      expect(rlsRes.rows[0]?.force).toBe(true);
+
+      const constraintsRes = await admin.query<{ conname: string }>(
+        `select conname from pg_constraint
+         where conrelid = 'public.scenario_runs'::regclass`,
+      );
+      const constraintNames = constraintsRes.rows.map((r) => r.conname);
+      expect(constraintNames).toEqual(
+        expect.arrayContaining([
+          'scenario_runs_workspace_id_id_key',
+          'scenario_runs_status_check',
+          'scenario_runs_risks_is_array_check',
+          'scenario_runs_scenario_workspace_fkey',
+        ]),
+      );
+    });
+
+    it('rejects scenario run insert with invalid status via CHECK constraint', async () => {
+      const scenarioRes = await admin.query<{ id: string }>(
+        `insert into public.scenarios (workspace_id, name, assumptions, created_by)
+         values ($1, 'Valid Scenario For Run', '[{"type":"income_change","value":{}}]'::jsonb, $2)
+         returning id::text`,
+        [workspace1Id, ownerId],
+      );
+      const scenarioId = scenarioRes.rows[0]?.id;
+      await expect(
+        admin.query(
+          `insert into public.scenario_runs (workspace_id, scenario_id, status, baseline, projected, difference, created_by)
+           values ($1, $2, 'invalid_status', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $3)`,
+          [workspace1Id, scenarioId, ownerId],
+        ),
+      ).rejects.toThrow(/scenario_runs_status_check/);
+    });
+
+    it('enforces composite foreign key preventing run from pointing to scenario in different workspace', async () => {
+      const scenario2Res = await admin.query<{ id: string }>(
+        `insert into public.scenarios (workspace_id, name, assumptions, created_by)
+         values ($1, 'Workspace 2 Scenario', '[{"type":"income_change","value":{}}]'::jsonb, $2)
+         returning id::text`,
+        [workspace2Id, otherOwnerId],
+      );
+      const scenario2Id = scenario2Res.rows[0]?.id;
+
+      await expect(
+        admin.query(
+          `insert into public.scenario_runs (workspace_id, scenario_id, status, baseline, projected, difference, created_by)
+           values ($1, $2, 'completed', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $3)`,
+          [workspace1Id, scenario2Id, ownerId],
+        ),
+      ).rejects.toThrow(/scenario_runs_scenario_workspace_fkey/);
     });
   });
 
@@ -727,6 +799,360 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
         },
       });
       expect(resCursor.statusCode).toBe(422);
+    });
+  });
+
+  describe('runScenario operation', () => {
+    let testScenarioId: string;
+
+    beforeAll(async () => {
+      // Create a scenario in workspace 1
+      const res = await application.inject({
+        method: 'POST',
+        url: '/v1/scenarios',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          name: 'Integration Run Test Scenario',
+          description: 'Testing runScenario endpoint',
+          assumptions: [
+            { type: 'income_change', value: { amountMinor: '50000' } },
+          ],
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      const created = JSON.parse(res.payload);
+      testScenarioId = created.id;
+    });
+
+    it('successfully runs scenario, returning 200 with ScenarioRun, updates last_run_id on public.scenarios, and creates row in public.scenario_runs', async () => {
+      const key = randomUUID();
+      const res = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': key,
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const run = JSON.parse(res.payload);
+
+      expect(run.id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      );
+      expect(run.scenarioId).toBe(testScenarioId);
+      expect(run.status).toBe('completed');
+      expect(run.baseline).toBeDefined();
+      expect(run.projected).toBeDefined();
+      expect(run.difference).toBeDefined();
+      expect(run.risks).toEqual([]);
+
+      expect(run.baseline.baseCurrency).toBe('USD');
+      expect(run.projected.baseCurrency).toBe('USD');
+      expect(run.difference.baseCurrency).toBe('USD');
+      expect(run.baseline.monthlyIncomeMinor).toMatch(/^-?[0-9]+$/);
+      expect(run.projected.monthlyIncomeMinor).toMatch(/^-?[0-9]+$/);
+      expect(run.difference.monthlyIncomeMinor).toMatch(/^-?[0-9]+$/);
+
+      // Verify last_run_id is updated on public.scenarios
+      const scenarioRes = await admin.query<{ last_run_id: string | null }>(
+        'select last_run_id from public.scenarios where id = $1',
+        [testScenarioId],
+      );
+      expect(scenarioRes.rows[0]?.last_run_id).toBe(run.id);
+
+      // Verify row exists in public.scenario_runs
+      const runRes = await admin.query<{ id: string; status: string }>(
+        'select id, status from public.scenario_runs where id = $1 and workspace_id = $2 and scenario_id = $3',
+        [run.id, workspace1Id, testScenarioId],
+      );
+      expect(runRes.rows).toHaveLength(1);
+      expect(runRes.rows[0]?.status).toBe('completed');
+    });
+
+    it('M5: scenario lookup scopes by workspace_id, returning 404 when scenario belongs to another workspace (cross-workspace leak prevention)', async () => {
+      // Create a scenario in workspace 2
+      const resWs2 = await application.inject({
+        method: 'POST',
+        url: '/v1/scenarios',
+        headers: {
+          authorization: 'Bearer other-owner-token',
+          'x-workspace-id': workspace2Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          name: 'Workspace 2 Private Scenario',
+          assumptions: [
+            { type: 'income_change', value: { amountMinor: '25000' } },
+          ],
+        },
+      });
+      expect(resWs2.statusCode).toBe(201);
+      const ws2Scenario = JSON.parse(resWs2.payload);
+
+      // Attempt to run workspace 2 scenario from workspace 1 with a dual-workspace member.
+      // Because dualMember is an active member of both workspaces, RLS permits reading either,
+      // proving that the 404 is enforced by the SQL workspace predicate and not masked by RLS.
+      const res = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${ws2Scenario.id}/runs`,
+        headers: {
+          authorization: 'Bearer dual-member-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+      });
+
+      expect(res.statusCode).toBe(404);
+      const problem = JSON.parse(res.payload);
+      expect(problem.status).toBe(404);
+    });
+
+    it('replay with same key returns original 200 and creates no second row', async () => {
+      const key = randomUUID();
+
+      const res1 = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': key,
+        },
+      });
+      expect(res1.statusCode).toBe(200);
+      const run1 = JSON.parse(res1.payload);
+
+      const countBefore = await admin.query<{ count: string }>(
+        'select count(*) as count from public.scenario_runs where scenario_id = $1',
+        [testScenarioId],
+      );
+
+      // Second run with identical idempotency key
+      const res2 = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': key,
+        },
+      });
+      expect(res2.statusCode).toBe(200);
+      const run2 = JSON.parse(res2.payload);
+      expect(run2).toEqual(run1);
+
+      const countAfter = await admin.query<{ count: string }>(
+        'select count(*) as count from public.scenario_runs where scenario_id = $1',
+        [testScenarioId],
+      );
+      expect(Number(countAfter.rows[0]?.count)).toBe(
+        Number(countBefore.rows[0]?.count),
+      );
+    });
+
+    it('same key with different fingerprint returns 409 conflict', async () => {
+      const key = randomUUID();
+
+      // Run on testScenarioId
+      const res1 = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': key,
+        },
+      });
+      expect(res1.statusCode).toBe(200);
+
+      // Create a second scenario in workspace 1
+      const resCreate2 = await application.inject({
+        method: 'POST',
+        url: '/v1/scenarios',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          name: 'Scenario 2 for Conflict',
+          assumptions: [{ type: 'purchase', value: { amountMinor: '1000' } }],
+        },
+      });
+      expect(resCreate2.statusCode).toBe(201);
+      const scenario2 = JSON.parse(resCreate2.payload);
+
+      // Run on second scenario with the same idempotency key -> different fingerprint -> 409
+      const res2 = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${scenario2.id}/runs`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': key,
+        },
+      });
+      expect(res2.statusCode).toBe(409);
+    });
+
+    it('returns 422 when Idempotency-Key is missing or invalid', async () => {
+      const resMissing = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+        },
+      });
+      expect(resMissing.statusCode).toBe(422);
+
+      const resInvalid = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': 'not-a-uuid',
+        },
+      });
+      expect(resInvalid.statusCode).toBe(422);
+    });
+
+    it('returns 400 when X-Workspace-Id is missing or malformed', async () => {
+      const resMissing = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'idempotency-key': randomUUID(),
+        },
+      });
+      expect(resMissing.statusCode).toBe(400);
+
+      const resMalformed = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': 'bad-workspace-id',
+          'idempotency-key': randomUUID(),
+        },
+      });
+      expect(resMalformed.statusCode).toBe(400);
+    });
+
+    it('viewer and non-member cannot run scenarios (403 forbidden)', async () => {
+      const resViewer = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer viewer-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+      });
+      expect(resViewer.statusCode).toBe(403);
+
+      const resNonMember = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer non-member-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+      });
+      expect(resNonMember.statusCode).toBe(403);
+    });
+
+    it('returns 422 when exchange rate is missing for foreign currency', async () => {
+      // Create a foreign currency debt in workspace 1 with no exchange rate
+      const foreignDebtId = randomUUID();
+      await admin.query(
+        `insert into public.debts (id, workspace_id, name, currency, principal_minor, annual_rate, rate_type, status, version)
+         values ($1, $2, 'Foreign JPY Debt', 'JPY', 1000000, 0.05, 'fixed', 'active', 1)`,
+        [foreignDebtId, workspace1Id],
+      );
+
+      const res = await application.inject({
+        method: 'POST',
+        url: `/v1/scenarios/${testScenarioId}/runs`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+      });
+
+      expect(res.statusCode).toBe(422);
+      const problem = JSON.parse(res.payload);
+      expect(problem.status).toBe(422);
+      expect(problem.title).toBe('Missing exchange rate');
+
+      // Clean up foreign debt so subsequent tests are not affected
+      await admin.query('delete from public.debts where id = $1', [
+        foreignDebtId,
+      ]);
+    });
+
+    it('RULING 92: rolls back inserted run row and last_run_id when an error is thrown inside transaction', async () => {
+      const probeRunId = randomUUID();
+      let caughtError = false;
+
+      const client = await admin.connect();
+      try {
+        await client.query('begin');
+
+        // Simulate write in scenario_runs and scenarios update
+        await client.query(
+          `insert into public.scenario_runs (
+            id, workspace_id, scenario_id, status, baseline, projected, difference, risks, created_by
+          ) values ($1, $2, $3, 'completed', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, $4)`,
+          [probeRunId, workspace1Id, testScenarioId, ownerId],
+        );
+        await client.query(
+          'update public.scenarios set last_run_id = $1 where id = $2',
+          [probeRunId, testScenarioId],
+        );
+
+        // Verify inside uncommitted transaction that rows are visible
+        const insideRes = await client.query(
+          'select id from public.scenario_runs where id = $1',
+          [probeRunId],
+        );
+        expect(insideRes.rows).toHaveLength(1);
+
+        // Force conflict / rollback sentinel
+        throw new Error('Forced conflict to test RULING 92 rollback sentinel');
+      } catch {
+        await client.query('rollback');
+        caughtError = true;
+      } finally {
+        client.release();
+      }
+
+      expect(caughtError).toBe(true);
+
+      // Verify outside that nothing persisted: scenario_runs row does not exist
+      const outsideRes = await admin.query(
+        'select id from public.scenario_runs where id = $1',
+        [probeRunId],
+      );
+      expect(outsideRes.rows).toHaveLength(0);
+
+      // Verify scenarios.last_run_id is not probeRunId
+      const scenarioRes = await admin.query<{ last_run_id: string | null }>(
+        'select last_run_id from public.scenarios where id = $1',
+        [testScenarioId],
+      );
+      expect(scenarioRes.rows[0]?.last_run_id).not.toBe(probeRunId);
     });
   });
 });

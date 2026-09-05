@@ -1816,6 +1816,39 @@ components:
             $ref: '#/components/schemas/ScenarioAssumption'
           minItems: 1
       additionalProperties: false
+    ScenarioRun:
+      type: object
+      required:
+        - id
+        - scenarioId
+        - status
+        - baseline
+        - projected
+        - difference
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        scenarioId:
+          $ref: '#/components/schemas/Uuid'
+        status:
+          type: string
+          enum:
+            - completed
+            - failed
+        baseline:
+          type: object
+          additionalProperties: true
+        projected:
+          type: object
+          additionalProperties: true
+        difference:
+          type: object
+          additionalProperties: true
+        risks:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -6350,3 +6383,72 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/scenarios/{scenarioId}/runs:
+    parameters:
+      - name: scenarioId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Uuid'
+      - name: X-Workspace-Id
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: runScenario
+      summary: Run scenario
+      tags:
+        - Scenarios
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      responses:
+        '200':
+          description: Scenario result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScenarioRun'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: The request is structurally valid but violates a business rule.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: run_scenario
+        riskClass: read
+        requiresApproval: false
+        requiredScopes:
+          - reports:read
