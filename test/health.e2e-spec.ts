@@ -148,6 +148,8 @@ describe('health endpoint', () => {
       'POST /v1/scenarios/:scenarioId/runs',
       'POST /v1/forecasts/balance',
       'GET /v1/forecasts/:forecastId',
+      'GET /v1/report-definitions',
+      'POST /v1/report-definitions',
     ]);
 
     await app.close();
