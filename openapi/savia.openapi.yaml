@@ -446,6 +446,9 @@ components:
     Date:
       type: string
       format: date
+    DateTime:
+      type: string
+      format: date-time
     AmountMinor:
       type: string
       pattern: '^-?[0-9]+$'
@@ -1714,6 +1717,34 @@ components:
           items:
             $ref: '#/components/schemas/CategoryBreakdownItem'
       additionalProperties: false
+    AdvancedAnalytics:
+      type: object
+      required:
+        - metric
+        - generatedAt
+        - data
+      properties:
+        metric:
+          type: string
+          enum:
+            - recurring_vs_variable
+            - financial_calendar
+            - weekday_heatmap
+            - balance_projection
+            - quarterly_average_comparison
+            - subscription_price_increases
+            - income_stability
+            - monthly_savings_capacity
+            - debt_cost_evolution
+        generatedAt:
+          $ref: '#/components/schemas/DateTime'
+        data:
+          type: object
+          additionalProperties: true
+        explanation:
+          type:
+            - string
+            - 'null'
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -6066,6 +6097,68 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '403':
           description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /v1/analytics/advanced:
+    get:
+      operationId: getAdvancedAnalytics
+      summary: Get an advanced analytic view
+      tags:
+        - Analytics
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: metric
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - recurring_vs_variable
+              - financial_calendar
+              - weekday_heatmap
+              - balance_projection
+              - quarterly_average_comparison
+              - subscription_price_increases
+              - income_stability
+              - monthly_savings_capacity
+              - debt_cost_evolution
+        - name: from
+          in: query
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: to
+          in: query
+          schema:
+            $ref: '#/components/schemas/Date'
+      responses:
+        '200':
+          description: Advanced analytic result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdvancedAnalytics'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: The request is structurally valid but violates a business rule.
           content:
             application/problem+json:
               schema:
