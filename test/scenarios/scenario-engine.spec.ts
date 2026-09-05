@@ -260,6 +260,109 @@ describe('scenario-engine', () => {
     expect(result.risks).toEqual([]);
   });
 
+  describe('Finding 1: exchange rate validation (non-positive / non-finite rejection)', () => {
+    const invalidRates = ['0', '-1', '', 'abc', 'NaN'] as const;
+
+    for (const invalidRate of invalidRates) {
+      it(`rejects exchange rate "${invalidRate}": unapplied, named in risks, leaves baseline valuation untouched`, () => {
+        // EUR account 10000 minor units with baseline EUR:USD rate 1.2 => baseline net worth 12000 USD
+        // When invalid rate is rejected, projected net worth must remain untouched at 12000 USD.
+        const result = runScenarioEngine({
+          periodStart: '2025-10-01',
+          periodEnd: '2026-09-04',
+          baseCurrency: 'USD',
+          accountBalances: [{ currency: 'EUR', nativeBalanceMinor: '10000' }],
+          debtBalances: [],
+          rates: new Map([['EUR:USD', '1.2']]),
+          assumptions: [
+            {
+              type: 'exchange_rate_change',
+              value: {
+                fromCurrency: 'EUR',
+                toCurrency: 'USD',
+                rate: invalidRate,
+              },
+            },
+          ],
+        });
+
+        // Sole assumption was unapplicable, so status is failed
+        expect(result.status).toBe('failed');
+        expect(result.baseline.netWorthMinor).toBe('12000');
+        expect(result.projected.netWorthMinor).toBe('12000');
+        expect(result.difference.netWorthMinor).toBe('0');
+        expect(result.risks).toEqual([
+          'assumptions[0] (exchange_rate_change): value is missing rate',
+        ]);
+      });
+
+      it(`rejects exchange rate "${invalidRate}" alongside applied assumption: leaves baseline valuation untouched`, () => {
+        const result = runScenarioEngine({
+          periodStart: '2025-10-01',
+          periodEnd: '2026-09-04',
+          baseCurrency: 'USD',
+          monthlyIncomeMinor: 100000n,
+          monthlyExpensesMinor: 60000n,
+          accountBalances: [{ currency: 'EUR', nativeBalanceMinor: '10000' }],
+          debtBalances: [],
+          rates: new Map([['EUR:USD', '1.2']]),
+          assumptions: [
+            {
+              type: 'exchange_rate_change',
+              value: {
+                fromCurrency: 'EUR',
+                toCurrency: 'USD',
+                rate: invalidRate,
+              },
+            },
+            {
+              type: 'income_change',
+              value: { amountMinor: '25000' },
+            },
+          ],
+        });
+
+        expect(result.status).toBe('completed');
+        expect(result.baseline.netWorthMinor).toBe('12000');
+        expect(result.projected.netWorthMinor).toBe('12000');
+        expect(result.difference.netWorthMinor).toBe('0');
+        expect(result.projected.monthlyIncomeMinor).toBe('125000');
+        expect(result.risks).toEqual([
+          'assumptions[0] (exchange_rate_change): value is missing rate',
+        ]);
+      });
+    }
+
+    it('applies strictly positive decimal rate 0.000001 correctly', () => {
+      // 10000000 EUR minor units at baseline 1.2 => 12000000 USD
+      // With rate 0.000001 => 10000000 * 0.000001 = 10 USD
+      const result = runScenarioEngine({
+        periodStart: '2025-10-01',
+        periodEnd: '2026-09-04',
+        baseCurrency: 'USD',
+        accountBalances: [{ currency: 'EUR', nativeBalanceMinor: '10000000' }],
+        debtBalances: [],
+        rates: new Map([['EUR:USD', '1.2']]),
+        assumptions: [
+          {
+            type: 'exchange_rate_change',
+            value: {
+              fromCurrency: 'EUR',
+              toCurrency: 'USD',
+              rate: '0.000001',
+            },
+          },
+        ],
+      });
+
+      expect(result.status).toBe('completed');
+      expect(result.baseline.netWorthMinor).toBe('12000000');
+      expect(result.projected.netWorthMinor).toBe('10');
+      expect(result.difference.netWorthMinor).toBe('-11999990');
+      expect(result.risks).toEqual([]);
+    });
+  });
+
   it('applies savings_contribution correctly (adds to monthly expenses, net worth unchanged)', () => {
     // Baseline: netWorth 500000, expenses 60000, income 100000, savings 40000
     // Assumption: monthlyAmountMinor 10000

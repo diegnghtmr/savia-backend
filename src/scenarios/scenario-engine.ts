@@ -58,6 +58,24 @@ function parseAmountMinor(val: unknown): string | null {
   return null;
 }
 
+function parseExchangeRate(val: unknown): string | null {
+  if (typeof val !== 'string') {
+    return null;
+  }
+  const trimmed = val.trim();
+  if (!/^[0-9]+(\.[0-9]+)?$/.test(trimmed)) {
+    return null;
+  }
+  if (!/[1-9]/.test(trimmed)) {
+    return null;
+  }
+  const num = Number(trimmed);
+  if (!Number.isFinite(num) || num <= 0) {
+    return null;
+  }
+  return trimmed;
+}
+
 function parsePercent(val: unknown): number | null {
   if (typeof val === 'number' && Number.isFinite(val)) {
     return val;
@@ -232,11 +250,7 @@ export function evaluateScenario(
         typeof val.toCurrency === 'string' && val.toCurrency.trim().length === 3
           ? val.toCurrency.trim().toUpperCase()
           : null;
-      const rateStr =
-        typeof val.rate === 'string' &&
-        /^[0-9]+(\.[0-9]+)?$/.test(val.rate.trim())
-          ? val.rate.trim()
-          : null;
+      const rateStr = parseExchangeRate(val.rate);
 
       if (fromCurr && toCurr && rateStr) {
         projectedRates.set(`${fromCurr}:${toCurr}`, rateStr);
