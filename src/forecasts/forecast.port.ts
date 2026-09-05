@@ -87,18 +87,18 @@ export type ForecastGetOutcome =
   | { readonly kind: typeof FORECAST_OUTCOMES.NOT_FOUND }
   | { readonly kind: typeof FORECAST_OUTCOMES.FORBIDDEN };
 
-export interface AccountNativeBalanceRow {
+export interface AccountNativeBalanceRow extends Record<string, unknown> {
   readonly id: string;
   readonly currency: string;
   readonly nativeBalanceMinor: string;
 }
 
-export interface AccountExistenceRow {
+export interface AccountExistenceRow extends Record<string, unknown> {
   readonly id: string;
   readonly status: string;
 }
 
-export interface TransactionFlowRow {
+export interface TransactionFlowRow extends Record<string, unknown> {
   readonly id: string;
   readonly type: 'income' | 'expense' | 'refund';
   readonly amountMinor: string;
@@ -106,7 +106,7 @@ export interface TransactionFlowRow {
   readonly occurredAt: Date;
 }
 
-export interface ScenarioRunRowData {
+export interface ScenarioRunRowData extends Record<string, unknown> {
   readonly id: string;
   readonly monthlySavingsCapacityMinor: string;
 }
