@@ -5219,10 +5219,11 @@ paths:
             required: true,
             schema: { type: string, format: uuid },
           }
-        - { name: cursor, in: query, schema: { type: string } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
         - {
             name: limit,
             in: query,
+            required: false,
             schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
         - {
@@ -5462,10 +5463,11 @@ paths:
             required: true,
             schema: { type: string, format: uuid },
           }
-        - { name: cursor, in: query, schema: { type: string } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
         - {
             name: limit,
             in: query,
+            required: false,
             schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
       responses:
@@ -5641,10 +5643,11 @@ paths:
             required: true,
             schema: { type: string, format: uuid },
           }
-        - { name: cursor, in: query, schema: { type: string } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
         - {
             name: limit,
             in: query,
+            required: false,
             schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
       responses:

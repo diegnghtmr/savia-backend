@@ -136,18 +136,6 @@ const sharedParameterTargets = [
   { name: 'X-Workspace-Id', in: 'header' },
 ];
 
-// Pre-existing operations that omit explicit required: false on query parameters.
-// Discovered during the whole-mirror audit for slice 7.3a; scoped for systemic cleanup
-// in a dedicated round so the mirror is not touched piecemeal.
-const sharedParameterRequiredAllowlist = new Set([
-  'listBudgets:cursor:query',
-  'listBudgets:limit:query',
-  'listFunds:cursor:query',
-  'listFunds:limit:query',
-  'listDebts:cursor:query',
-  'listDebts:limit:query',
-]);
-
 for (const target of sharedParameterTargets) {
   const occurrences = [];
   for (const [path, item] of Object.entries(document.paths ?? {})) {
@@ -195,13 +183,6 @@ for (const target of sharedParameterTargets) {
 
   const requiredFrequencies = new Map();
   for (const occ of occurrences) {
-    if (
-      sharedParameterRequiredAllowlist.has(
-        `${occ.operationId}:${target.name}:${target.in}`,
-      )
-    ) {
-      continue;
-    }
     requiredFrequencies.set(
       occ.required,
       (requiredFrequencies.get(occ.required) ?? 0) + 1,
@@ -218,12 +199,7 @@ for (const target of sharedParameterTargets) {
   }
 
   for (const occ of occurrences) {
-    if (
-      !sharedParameterRequiredAllowlist.has(
-        `${occ.operationId}:${target.name}:${target.in}`,
-      ) &&
-      occ.required !== baselineRequired
-    ) {
+    if (occ.required !== baselineRequired) {
       fail(
         `shared parameter "${target.name}" in ${target.in} has required mismatch in operation "${occ.operationId}": differing field "required"`,
       );
