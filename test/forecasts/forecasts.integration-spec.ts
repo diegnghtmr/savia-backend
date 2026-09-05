@@ -719,6 +719,59 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       expect(forecast.assumptions).toContain('3 month(s) of history used.');
     });
 
+    it('excludes confirmed transactions with no qualifying postings via positive exists predicate alone', async () => {
+      // Seed a confirmed transaction in Month -6 with no qualifying ledger postings.
+      // Negative predicate (not exists pending) DOES NOT exclude it because it has no pending postings.
+      // Only the positive predicate (exists confirmed posting) excludes it.
+      // When positive predicate is intact: Month -6 is excluded, history months count is exactly 3.
+      // When positive predicate is removed: Month -6 is included, history months count becomes 4 (going red).
+      const txnPositiveOnlyId = randomUUID();
+      const curYear = new Date().getUTCFullYear();
+      const curMonth = new Date().getUTCMonth();
+      const monthMinus6 = new Date(
+        Date.UTC(curYear, curMonth - 6, 15, 12, 0, 0, 0),
+      ).toISOString();
+
+      await admin.query(
+        `insert into public.transactions (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
+         values ($1, $2, $3, 'income', 'confirmed', 700000, 'USD', $4::timestamptz, $5)`,
+        [txnPositiveOnlyId, workspace1Id, acctCheckingId, monthMinus6, ownerId],
+      );
+
+      try {
+        const res = await application.inject({
+          method: 'POST',
+          url: '/v1/forecasts/balance',
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': randomUUID(),
+          },
+          payload: {
+            horizonDays: 90,
+          },
+        });
+
+        expect(res.statusCode).toBe(202);
+        const job = JSON.parse(res.payload);
+        const getRes = await application.inject({
+          method: 'GET',
+          url: `/v1/forecasts/${job.resultResourceId}`,
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspace1Id,
+          },
+        });
+        const forecast = JSON.parse(getRes.payload);
+        expect(forecast.assumptions).toContain('3 month(s) of history used.');
+      } finally {
+        await admin.query(
+          `delete from public.transactions where id = $1::uuid`,
+          [txnPositiveOnlyId],
+        );
+      }
+    });
+
     it('counts only history months with actual flow rows instead of all 12 buckets', async () => {
       const res = await application.inject({
         method: 'POST',
