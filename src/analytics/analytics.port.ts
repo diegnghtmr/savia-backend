@@ -16,6 +16,26 @@ export {
   type MonthlyCapacityPoint,
 };
 
+/**
+ * The `granularity` query parameter of GET /v1/analytics/cash-flow, as the contract
+ * authority declares it: day | week | month | quarter.
+ *
+ * This is deliberately NOT the platform `GRANULARITY`. That enum is an implementation
+ * detail shared by analytics, forecasts and reports, and it grows whenever one of them
+ * needs a new bucket. Validating a public query parameter against it means any such
+ * addition silently widens this endpoint's accepted values beyond the contract — which
+ * is exactly what happened when `year` was added for the report engine.
+ */
+export const CASH_FLOW_GRANULARITY = {
+  DAY: 'day',
+  WEEK: 'week',
+  MONTH: 'month',
+  QUARTER: 'quarter',
+} as const;
+
+export type CashFlowGranularity =
+  (typeof CASH_FLOW_GRANULARITY)[keyof typeof CASH_FLOW_GRANULARITY];
+
 export const ADVANCED_METRIC = {
   RECURRING_VS_VARIABLE: 'recurring_vs_variable',
   FINANCIAL_CALENDAR: 'financial_calendar',
