@@ -316,6 +316,16 @@
       "operationId": "getAdvancedAnalytics",
       "method": "GET",
       "path": "/v1/analytics/advanced"
+    },
+    {
+      "operationId": "listScenarios",
+      "method": "GET",
+      "path": "/v1/scenarios"
+    },
+    {
+      "operationId": "createScenario",
+      "method": "POST",
+      "path": "/v1/scenarios"
     }
   ]
 }
