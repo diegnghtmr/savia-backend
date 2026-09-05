@@ -95,6 +95,12 @@ describe('PostgresScenarioAdapter', () => {
 
     const [sql, values] = (mockClient.query as ReturnType<typeof vi.fn>).mock
       .calls[0] as [string, unknown[]];
+    // STRUCTURAL assertion, deliberately not behavioural. Row-level security is the
+    // enforcing layer for cross-workspace reads: the policy on public.scenarios gates
+    // SELECT on workspace_actor_active_role(workspace_id), so removing this predicate
+    // from the query changes NO observable behaviour and no integration test can detect
+    // it. The predicate is defence in depth, and pinning its text is the only way to
+    // keep it. Rewriting the query is expected to update this string.
     expect(sql).toContain('workspace_id = $1::uuid');
     expect(sql).toMatch(/order by.*created_at asc.*id asc/i);
     expect(values).toEqual([workspaceId, null, null, 11]);

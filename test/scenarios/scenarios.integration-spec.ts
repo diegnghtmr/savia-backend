@@ -644,7 +644,10 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
       expect(page2.pageInfo.nextCursor).toBeNull();
     });
 
-    it('M4: cross-workspace isolation - a scenario in another workspace is never returned', async () => {
+    // What this proves is ROW-LEVEL SECURITY, not the adapter's WHERE clause: removing
+    // the query's workspace_id predicate leaves this test green, because the RLS policy
+    // already blocks the read. Named for what it actually guards.
+    it('row-level security keeps a scenario in another workspace out of the list', async () => {
       // Create scenario in workspace 2
       const resWs2 = await application.inject({
         method: 'POST',
