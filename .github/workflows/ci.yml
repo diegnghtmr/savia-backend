@@ -287,6 +287,9 @@ jobs:
       - name: report definitions integration
         shell: bash
         run: pnpm test:integration:report-definitions
+      - name: report runs schema integration
+        shell: bash
+        run: pnpm test:integration:report-runs-schema
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
