@@ -1,5 +1,5 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
-import type { Job } from '../jobs/job.port.js';
+import type { TerminalJob as Job } from '../platform/job-writer.port.js';
 
 export const FORECASTS_PORT = Symbol('ForecastsPort');
 

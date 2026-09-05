@@ -2,8 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
-import type { JobWriter } from '../platform/job-writer.port.js';
-import type { Job } from '../jobs/job.port.js';
+import type { JobWriter, TerminalJob as Job } from '../platform/job-writer.port.js';
 import { multiplyMinorByRate } from '../platform/currency-conversion.js';
 import {
   buildMonthlySavingsCapacity,
