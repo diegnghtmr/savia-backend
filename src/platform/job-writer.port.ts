@@ -1,6 +1,9 @@
 import type { TransactionClient } from './pg-transaction.js';
 export const JOB_WRITER = Symbol('JobWriter');
-export type JobWriterType = 'import_commit' | 'import_rollback';
+export type JobWriterType =
+  | 'import_commit'
+  | 'import_rollback'
+  | 'balance_forecast';
 export interface TerminalJob {
   readonly id: string;
   readonly type: string;
