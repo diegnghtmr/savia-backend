@@ -568,6 +568,55 @@ describe('scenario-engine', () => {
     expect(result.risks).toEqual([]);
   });
 
+  describe('Finding 3: income_gap.months integer contract (no string coercion)', () => {
+    const invalidMonths: readonly [string, unknown][] = [
+      ["'3' (string)", '3'],
+      ['3.5 (non-integer)', 3.5],
+      ['0 (less than 1)', 0],
+      ['-1 (negative)', -1],
+      ['null', null],
+    ];
+
+    for (const [label, val] of invalidMonths) {
+      it(`rejects months value ${label}: unapplied, named in risks`, () => {
+        const result = runScenarioEngine({
+          ...baseInput,
+          assumptions: [
+            {
+              type: 'income_gap',
+              value: { months: val },
+            },
+          ],
+        });
+
+        expect(result.status).toBe('failed');
+        expect(result.projected.monthlyIncomeMinor).toBe(
+          baseInput.monthlyIncomeMinor.toString(),
+        );
+        expect(result.risks).toEqual([
+          'assumptions[0] (income_gap): value is missing months',
+        ]);
+      });
+    }
+
+    it('rejects string coercion on percent in income_change', () => {
+      const result = runScenarioEngine({
+        ...baseInput,
+        assumptions: [
+          {
+            type: 'income_change',
+            value: { percent: '10' },
+          },
+        ],
+      });
+
+      expect(result.status).toBe('failed');
+      expect(result.risks).toEqual([
+        'assumptions[0] (income_change): value is missing amountMinor or percent',
+      ]);
+    });
+  });
+
   describe('Unapplicable assumptions and risks', () => {
     it('records risks for each of the nine types when required fields are missing', () => {
       const assumptions = [

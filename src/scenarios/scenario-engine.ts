@@ -77,35 +77,19 @@ function parseExchangeRate(val: unknown): string | null {
 }
 
 function parsePercent(val: unknown): number | null {
-  let num: number | null = null;
-  if (typeof val === 'number' && Number.isFinite(val)) {
-    num = val;
-  } else if (
-    typeof val === 'string' &&
-    /^-?[0-9]+(\.[0-9]+)?$/.test(val.trim())
-  ) {
-    const parsed = Number(val.trim());
-    if (Number.isFinite(parsed)) {
-      num = parsed;
-    }
-  }
-  if (num === null) {
+  if (typeof val !== 'number' || !Number.isFinite(val)) {
     return null;
   }
-  const scaled = Math.round(num * 100);
+  const scaled = Math.round(val * 100);
   if (!Number.isSafeInteger(scaled)) {
     return null;
   }
-  return num;
+  return val;
 }
 
 function parseMonths(val: unknown): number | null {
   if (typeof val === 'number' && Number.isInteger(val) && val >= 1) {
     return val;
-  }
-  if (typeof val === 'string' && /^[1-9][0-9]*$/.test(val.trim())) {
-    const num = parseInt(val.trim(), 10);
-    return Number.isInteger(num) && num >= 1 ? num : null;
   }
   return null;
 }
