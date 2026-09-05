@@ -222,4 +222,18 @@ describe('executable OpenAPI authority', () => {
       /shared parameter "limit" in query has schema mismatch in operation "listBudgets": differing field "default"/,
     );
   });
+
+  it('rejects shared parameter required drift across operations', () => {
+    writeFileSync(
+      contract,
+      readFileSync(contract, 'utf8').replace(
+        '        - name: cursor\n          in: query\n          required: false\n          schema:',
+        '        - name: cursor\n          in: query\n          schema:',
+      ),
+    );
+
+    expect(verify).toThrow(
+      /shared parameter "cursor" in query has required mismatch in operation "listWorkspaces": differing field "required"/,
+    );
+  });
 });
