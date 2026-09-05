@@ -1,4 +1,4 @@
-// Migrations under test: 202609040001_scenarios.sql
+// Migrations under test: 202609040001_scenarios.sql, 202609040002_scenario_runs.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -171,6 +171,64 @@ describe('Scenarios integration suite against disposable PostgreSQL', () => {
           [workspace1Id, ownerId],
         ),
       ).rejects.toThrow(/scenarios_assumptions_is_array_check/);
+    });
+
+    it('verifies scenario_runs table has forced RLS and named constraints', async () => {
+      const rlsRes = await admin.query<{ rls: boolean; force: boolean }>(
+        `select relrowsecurity as rls, relforcerowsecurity as force
+         from pg_class where relname = 'scenario_runs' and relnamespace = 'public'::regnamespace`,
+      );
+      expect(rlsRes.rows[0]?.rls).toBe(true);
+      expect(rlsRes.rows[0]?.force).toBe(true);
+
+      const constraintsRes = await admin.query<{ conname: string }>(
+        `select conname from pg_constraint
+         where conrelid = 'public.scenario_runs'::regclass`,
+      );
+      const constraintNames = constraintsRes.rows.map((r) => r.conname);
+      expect(constraintNames).toEqual(
+        expect.arrayContaining([
+          'scenario_runs_workspace_id_id_key',
+          'scenario_runs_status_check',
+          'scenario_runs_risks_is_array_check',
+          'scenario_runs_scenario_workspace_fkey',
+        ]),
+      );
+    });
+
+    it('rejects scenario run insert with invalid status via CHECK constraint', async () => {
+      const scenarioRes = await admin.query<{ id: string }>(
+        `insert into public.scenarios (workspace_id, name, assumptions, created_by)
+         values ($1, 'Valid Scenario For Run', '[{"type":"income_change","value":{}}]'::jsonb, $2)
+         returning id::text`,
+        [workspace1Id, ownerId],
+      );
+      const scenarioId = scenarioRes.rows[0]?.id;
+      await expect(
+        admin.query(
+          `insert into public.scenario_runs (workspace_id, scenario_id, status, baseline, projected, difference, created_by)
+           values ($1, $2, 'invalid_status', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $3)`,
+          [workspace1Id, scenarioId, ownerId],
+        ),
+      ).rejects.toThrow(/scenario_runs_status_check/);
+    });
+
+    it('enforces composite foreign key preventing run from pointing to scenario in different workspace', async () => {
+      const scenario2Res = await admin.query<{ id: string }>(
+        `insert into public.scenarios (workspace_id, name, assumptions, created_by)
+         values ($1, 'Workspace 2 Scenario', '[{"type":"income_change","value":{}}]'::jsonb, $2)
+         returning id::text`,
+        [workspace2Id, otherOwnerId],
+      );
+      const scenario2Id = scenario2Res.rows[0]?.id;
+
+      await expect(
+        admin.query(
+          `insert into public.scenario_runs (workspace_id, scenario_id, status, baseline, projected, difference, created_by)
+           values ($1, $2, 'completed', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $3)`,
+          [workspace1Id, scenario2Id, ownerId],
+        ),
+      ).rejects.toThrow(/scenario_runs_scenario_workspace_fkey/);
     });
   });
 
