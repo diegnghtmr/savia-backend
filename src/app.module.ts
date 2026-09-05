@@ -16,6 +16,7 @@ import { BudgetsModule } from './budgets/budgets.module.js';
 import { FundsModule } from './funds/funds.module.js';
 import { DebtsModule } from './debts/debts.module.js';
 import { AnalyticsModule } from './analytics/analytics.module.js';
+import { ScenariosModule } from './scenarios/scenarios.module.js';
 
 @Module({
   controllers: [HealthController],
@@ -35,6 +36,7 @@ import { AnalyticsModule } from './analytics/analytics.module.js';
     FundsModule,
     DebtsModule,
     AnalyticsModule,
+    ScenariosModule,
   ],
 })
 export class AppModule {}
