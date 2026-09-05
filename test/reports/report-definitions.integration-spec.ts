@@ -328,7 +328,8 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
     });
 
     it('returns 400 when Idempotency-Key header is missing or invalid', async () => {
-      const response = await application.inject({
+      // 1. Missing header
+      const missingRes = await application.inject({
         method: 'POST',
         url: '/v1/report-definitions',
         headers: {
@@ -337,7 +338,67 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
         },
         payload: validPayload,
       });
-      expect(response.statusCode).toBe(400);
+      expect(missingRes.statusCode).toBe(400);
+      expect(missingRes.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      expect(missingRes.json()).toEqual(
+        expect.objectContaining({
+          type: 'https://savia.app/problems/bad-request',
+          title: 'Invalid Idempotency-Key header',
+          status: 400,
+          detail: 'Idempotency-Key must be a string.',
+        }),
+      );
+
+      // 2. Present-but-invalid values violating validateIdempotencyKey rules
+      const invalidCases = [
+        {
+          key: '',
+          expectedDetail: 'Idempotency-Key must be a non-empty string.',
+        },
+        {
+          key: '   ',
+          expectedDetail: 'Idempotency-Key must be a non-empty string.',
+        },
+        {
+          key: 'not-a-uuid',
+          expectedDetail: 'Idempotency-Key must be a valid UUID.',
+        },
+        {
+          key: '11111111-0000-4000-8000-000000000001\0extra',
+          expectedDetail: 'Idempotency-Key must not contain NUL characters.',
+        },
+        {
+          key: 'x'.repeat(256),
+          expectedDetail: 'Idempotency-Key must be at most 255 characters.',
+        },
+      ];
+
+      for (const { key, expectedDetail } of invalidCases) {
+        const response = await application.inject({
+          method: 'POST',
+          url: '/v1/report-definitions',
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': key,
+          },
+          payload: validPayload,
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.headers['content-type']).toContain(
+          'application/problem+json',
+        );
+        expect(response.json()).toEqual(
+          expect.objectContaining({
+            type: 'https://savia.app/problems/bad-request',
+            title: 'Invalid Idempotency-Key header',
+            status: 400,
+            detail: expectedDetail,
+          }),
+        );
+      }
     });
 
     it('returns 422 when name is empty', async () => {

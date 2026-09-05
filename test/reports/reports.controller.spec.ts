@@ -159,17 +159,29 @@ describe('ReportsController', () => {
     });
 
     it('returns 400 when Idempotency-Key header is missing or invalid', async () => {
-      const port = createPortMock();
-      const controller = new ReportsController(port);
-      const req = {
-        headers: { 'x-workspace-id': workspaceId },
-        identity: { subject },
-        body: validBody,
-      } as unknown as AuthenticatedRequest;
-      const reply = createReplyMock();
+      for (const badKey of [
+        undefined,
+        '',
+        '   ',
+        'invalid-uuid',
+        'uuid\0nul',
+        'x'.repeat(256),
+      ]) {
+        const port = createPortMock();
+        const controller = new ReportsController(port);
+        const req = {
+          headers: {
+            'x-workspace-id': workspaceId,
+            ...(badKey === undefined ? {} : { 'idempotency-key': badKey }),
+          },
+          identity: { subject },
+          body: validBody,
+        } as unknown as AuthenticatedRequest;
+        const reply = createReplyMock();
 
-      await controller.create(req, reply);
-      expect(reply.getStatus()).toBe(400);
+        await controller.create(req, reply);
+        expect(reply.getStatus()).toBe(400);
+      }
     });
 
     it('returns 422 when body validation fails', async () => {
