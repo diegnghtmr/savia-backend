@@ -1,3 +1,4 @@
+import type { ArtifactStorage } from '../platform/artifact-storage.port.js';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
@@ -7,7 +8,6 @@ import {
   type CreateExportJobCommand,
   type ExportCreateOutcome,
   type ExportGetOutcome,
-  type ExportStorage,
   type ExportStore,
   type ExportsPort,
 } from './export.port.js';
@@ -36,7 +36,7 @@ export class ExportService implements ExportsPort {
     private readonly transaction: ExportTransaction,
     private readonly store: ExportStore,
     private readonly idempotency: IdempotencyStore,
-    private readonly storage: ExportStorage,
+    private readonly storage: ArtifactStorage,
   ) {}
   public async createExportJob(
     subject: string,

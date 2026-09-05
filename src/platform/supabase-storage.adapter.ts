@@ -1,10 +1,10 @@
-import type { ExportStorage } from './export.port.js';
+import type { ArtifactStorage } from './artifact-storage.port.js';
 interface StorageConfig {
   readonly url: string;
   readonly key: string;
 }
 export class SupabaseStorageConfigurationError extends Error {}
-export class SupabaseStorageAdapter implements ExportStorage {
+export class SupabaseStorageAdapter implements ArtifactStorage {
   private config: StorageConfig | undefined;
   public constructor(
     private readonly environment: NodeJS.ProcessEnv = process.env,

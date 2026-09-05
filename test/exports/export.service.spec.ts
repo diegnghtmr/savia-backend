@@ -4,8 +4,8 @@ import { CommitOutcomeUnknownError } from '../../src/platform/pg-transaction.js'
 import {
   type ExportJob,
   type ExportStore,
-  type ExportStorage,
 } from '../../src/exports/export.port.js';
+import type { ArtifactStorage } from '../../src/platform/artifact-storage.port.js';
 import type {
   IdempotencyRecord,
   IdempotencyStore,
@@ -33,7 +33,7 @@ const job = (
 });
 
 function harness(
-  sign: ExportStorage['sign'] = async (_path, expiry) => ({
+  sign: ArtifactStorage['sign'] = async (_path, expiry) => ({
     url: 'https://signed.test/file',
     expiresAt: expiry,
   }),
@@ -107,7 +107,7 @@ function harness(
       return true;
     },
   };
-  const storage: ExportStorage = {
+  const storage: ArtifactStorage = {
     upload: async () => {
       uploads += 1;
     },

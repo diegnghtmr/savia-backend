@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SupabaseStorageAdapter } from '../../src/exports/supabase-storage.adapter.js';
+import { SupabaseStorageAdapter } from '../../src/platform/supabase-storage.adapter.js';
 
 const token = (exp: number) =>
   `x.${Buffer.from(JSON.stringify({ exp })).toString('base64url')}.x`;
