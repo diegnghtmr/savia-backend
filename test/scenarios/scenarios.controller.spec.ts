@@ -93,12 +93,18 @@ describe('ScenariosController', () => {
     } as unknown as AuthenticatedRequest;
   }
 
+  function createMockPort(overrides?: Partial<ScenariosPort>): ScenariosPort {
+    return {
+      createScenario: vi.fn(),
+      listScenarios: vi.fn(),
+      runScenario: vi.fn(),
+      ...overrides,
+    };
+  }
+
   describe('POST /v1/scenarios (create)', () => {
     it('returns 400 when X-Workspace-Id is missing or malformed', async () => {
-      const mockPort: ScenariosPort = {
-        createScenario: vi.fn(),
-        listScenarios: vi.fn(),
-      };
+      const mockPort = createMockPort();
       const controller = new ScenariosController(mockPort);
 
       for (const workspaceIdHeader of [undefined, '', 'not-a-uuid']) {
@@ -115,10 +121,7 @@ describe('ScenariosController', () => {
     });
 
     it('returns 400 when Idempotency-Key is missing or invalid', async () => {
-      const mockPort: ScenariosPort = {
-        createScenario: vi.fn(),
-        listScenarios: vi.fn(),
-      };
+      const mockPort = createMockPort();
       const controller = new ScenariosController(mockPort);
 
       for (const idempotencyKeyHeader of [undefined, '', 'not-a-uuid']) {
@@ -135,10 +138,7 @@ describe('ScenariosController', () => {
     });
 
     it('returns 422 when body validation fails', async () => {
-      const mockPort: ScenariosPort = {
-        createScenario: vi.fn(),
-        listScenarios: vi.fn(),
-      };
+      const mockPort = createMockPort();
       const controller = new ScenariosController(mockPort);
 
       const invalidBodies = [
@@ -162,12 +162,11 @@ describe('ScenariosController', () => {
     });
 
     it('returns 403 when port returns FORBIDDEN', async () => {
-      const mockPort: ScenariosPort = {
+      const mockPort = createMockPort({
         createScenario: vi.fn().mockResolvedValueOnce({
           kind: SCENARIO_OUTCOMES.FORBIDDEN,
         }),
-        listScenarios: vi.fn(),
-      };
+      });
       const controller = new ScenariosController(mockPort);
 
       const reply = createReplyMock();
@@ -182,12 +181,11 @@ describe('ScenariosController', () => {
     });
 
     it('returns 409 when port returns CONFLICT', async () => {
-      const mockPort: ScenariosPort = {
+      const mockPort = createMockPort({
         createScenario: vi.fn().mockResolvedValueOnce({
           kind: SCENARIO_OUTCOMES.CONFLICT,
         }),
-        listScenarios: vi.fn(),
-      };
+      });
       const controller = new ScenariosController(mockPort);
 
       const reply = createReplyMock();
@@ -202,13 +200,12 @@ describe('ScenariosController', () => {
     });
 
     it('returns 201 when port returns CREATED', async () => {
-      const mockPort: ScenariosPort = {
+      const mockPort = createMockPort({
         createScenario: vi.fn().mockResolvedValueOnce({
           kind: SCENARIO_OUTCOMES.CREATED,
           scenario: sampleScenario,
         }),
-        listScenarios: vi.fn(),
-      };
+      });
       const controller = new ScenariosController(mockPort);
 
       const reply = createReplyMock();
@@ -224,14 +221,13 @@ describe('ScenariosController', () => {
     });
 
     it('returns original status and body when port returns REPLAYED', async () => {
-      const mockPort: ScenariosPort = {
+      const mockPort = createMockPort({
         createScenario: vi.fn().mockResolvedValueOnce({
           kind: SCENARIO_OUTCOMES.REPLAYED,
           status: 201,
           body: sampleScenario,
         }),
-        listScenarios: vi.fn(),
-      };
+      });
       const controller = new ScenariosController(mockPort);
 
       const reply = createReplyMock();
@@ -249,10 +245,7 @@ describe('ScenariosController', () => {
 
   describe('GET /v1/scenarios (list)', () => {
     it('returns 400 when X-Workspace-Id is missing or malformed', async () => {
-      const mockPort: ScenariosPort = {
-        createScenario: vi.fn(),
-        listScenarios: vi.fn(),
-      };
+      const mockPort = createMockPort();
       const controller = new ScenariosController(mockPort);
 
       for (const workspaceIdHeader of [undefined, '', 'bad-uuid']) {
@@ -265,10 +258,7 @@ describe('ScenariosController', () => {
     });
 
     it('returns 422 when limit is invalid or out-of-range', async () => {
-      const mockPort: ScenariosPort = {
-        createScenario: vi.fn(),
-        listScenarios: vi.fn(),
-      };
+      const mockPort = createMockPort();
       const controller = new ScenariosController(mockPort);
 
       for (const limit of ['0', '201', 'abc', '-5']) {
@@ -284,10 +274,7 @@ describe('ScenariosController', () => {
     });
 
     it('returns 422 when cursor is invalid', async () => {
-      const mockPort: ScenariosPort = {
-        createScenario: vi.fn(),
-        listScenarios: vi.fn(),
-      };
+      const mockPort = createMockPort();
       const controller = new ScenariosController(mockPort);
 
       const reply = createReplyMock();
@@ -301,12 +288,11 @@ describe('ScenariosController', () => {
     });
 
     it('returns 403 when port returns FORBIDDEN', async () => {
-      const mockPort: ScenariosPort = {
-        createScenario: vi.fn(),
+      const mockPort = createMockPort({
         listScenarios: vi.fn().mockResolvedValueOnce({
           kind: SCENARIO_OUTCOMES.FORBIDDEN,
         }),
-      };
+      });
       const controller = new ScenariosController(mockPort);
 
       const reply = createReplyMock();
@@ -321,13 +307,12 @@ describe('ScenariosController', () => {
         items: [sampleScenario],
         pageInfo: { hasNextPage: false, nextCursor: null },
       };
-      const mockPort: ScenariosPort = {
-        createScenario: vi.fn(),
+      const mockPort = createMockPort({
         listScenarios: vi.fn().mockResolvedValueOnce({
           kind: 'ok',
           page,
         }),
-      };
+      });
       const controller = new ScenariosController(mockPort);
 
       const reply = createReplyMock();

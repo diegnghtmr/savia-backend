@@ -4,25 +4,13 @@ import {
   type ConvertedFlowRow,
 } from '../platform/monthly-capacity.js';
 import { roundDivHalfAwayFromZero } from '../platform/percentage-change.js';
-import type { ScenarioAssumption } from './scenario.port.js';
+import type {
+  ScenarioAssumption,
+  ScenarioFigureSet,
+  ScenarioRunResult,
+} from './scenario.port.js';
 
-export interface ScenarioFigureSet {
-  readonly periodStart: string;
-  readonly periodEnd: string;
-  readonly baseCurrency: string;
-  readonly monthlyIncomeMinor: string;
-  readonly monthlyExpensesMinor: string;
-  readonly monthlySavingsCapacityMinor: string;
-  readonly netWorthMinor: string;
-}
-
-export interface ScenarioRunResult {
-  readonly status: 'completed' | 'failed';
-  readonly baseline: ScenarioFigureSet;
-  readonly projected: ScenarioFigureSet;
-  readonly difference: ScenarioFigureSet;
-  readonly risks: readonly string[];
-}
+export type { ScenarioFigureSet, ScenarioRunResult };
 
 export interface RawFlowRow {
   readonly type: 'income' | 'expense' | 'refund';
