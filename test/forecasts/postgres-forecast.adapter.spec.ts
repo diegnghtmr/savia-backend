@@ -218,6 +218,25 @@ describe('PostgresForecastAdapter', () => {
     );
   });
 
+  it('returns undefined when exchange rate is not found', async () => {
+    const mockClient = {
+      query: vi.fn().mockResolvedValueOnce({
+        rows: [],
+      }),
+    } as unknown as TransactionClient;
+
+    const adapter = new PostgresForecastAdapter();
+    const rate = await adapter.findExchangeRate(
+      mockClient,
+      workspaceId,
+      'GBP',
+      'USD',
+      new Date('2026-09-04T12:00:00.000Z'),
+    );
+
+    expect(rate).toBeUndefined();
+  });
+
   it('finds most recent completed scenario run', async () => {
     const mockClient = {
       query: vi.fn().mockResolvedValueOnce({
