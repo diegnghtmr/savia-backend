@@ -3,6 +3,7 @@ export const GRANULARITY = {
   WEEK: 'week',
   MONTH: 'month',
   QUARTER: 'quarter',
+  YEAR: 'year',
 } as const;
 
 export type Granularity = (typeof GRANULARITY)[keyof typeof GRANULARITY];
@@ -50,6 +51,10 @@ export function truncateToBucketStart(
       const quarterStart = new Date(Date.UTC(year, quarterStartMonth, 1));
       return quarterStart.toISOString().slice(0, 10);
     }
+    case GRANULARITY.YEAR: {
+      const yearStart = new Date(Date.UTC(year, 0, 1));
+      return yearStart.toISOString().slice(0, 10);
+    }
   }
 }
 
@@ -91,6 +96,9 @@ export function generateBucketPeriods(
         break;
       case GRANULARITY.QUARTER:
         current = new Date(Date.UTC(curYear, curMonth + 3, 1));
+        break;
+      case GRANULARITY.YEAR:
+        current = new Date(Date.UTC(curYear + 1, 0, 1));
         break;
     }
   }

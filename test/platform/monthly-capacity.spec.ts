@@ -15,6 +15,7 @@ describe('truncateToBucketStart', () => {
     expect(truncateToBucketStart(d, GRANULARITY.WEEK)).toBe('2026-03-09');
     expect(truncateToBucketStart(d, GRANULARITY.MONTH)).toBe('2026-03-01');
     expect(truncateToBucketStart(d, GRANULARITY.QUARTER)).toBe('2026-01-01');
+    expect(truncateToBucketStart(d, GRANULARITY.YEAR)).toBe('2026-01-01');
   });
 });
 
