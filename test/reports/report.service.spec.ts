@@ -93,6 +93,25 @@ describe('ReportService', () => {
       expect(outcome).toEqual({ kind: REPORT_OUTCOMES.FORBIDDEN });
     });
 
+    it.each(['owner', 'administrator', 'editor'] as const)(
+      'allows %s role to create report definition',
+      async (role) => {
+        const tx = createTxMock();
+        const store = createStoreMock();
+        vi.mocked(store.readActiveRole).mockResolvedValue(role);
+        const idempotency = createIdempotencyMock();
+        const service = new ReportService(tx, store, idempotency);
+
+        const outcome = await service.createReportDefinition(
+          subject,
+          workspaceId,
+          command,
+          key,
+        );
+        expect(outcome.kind).toBe(REPORT_OUTCOMES.CREATED);
+      },
+    );
+
     it('returns CREATED on first request and writes idempotency record', async () => {
       const tx = createTxMock();
       const store = createStoreMock();
@@ -257,6 +276,23 @@ describe('ReportService', () => {
       });
       expect(outcome).toEqual({ kind: REPORT_OUTCOMES.FORBIDDEN });
     });
+
+    it.each(['owner', 'administrator', 'editor', 'viewer'] as const)(
+      'allows %s role to list report definitions',
+      async (role) => {
+        const tx = createTxMock();
+        const store = createStoreMock();
+        vi.mocked(store.readActiveRole).mockResolvedValue(role);
+        const idempotency = createIdempotencyMock();
+        const service = new ReportService(tx, store, idempotency);
+
+        const outcome = await service.listReportDefinitions(subject, {
+          workspaceId,
+          limit: 10,
+        });
+        expect(outcome.kind).toBe('ok');
+      },
+    );
 
     it('returns page without nextCursor when results do not exceed limit', async () => {
       const tx = createTxMock();

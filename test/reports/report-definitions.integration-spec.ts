@@ -26,6 +26,7 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
   const otherOwnerId = '44444444-0000-4000-8000-000000000001';
   const nonMemberId = '55555555-0000-4000-8000-000000000001';
   const dualMemberId = '66666666-0000-4000-8000-000000000001';
+  const adminId = '77777777-0000-4000-8000-000000000001';
 
   const workspace1Id = 'aaaaaaaa-0000-4000-8000-000000000001';
   const workspace2Id = 'bbbbbbbb-0000-4000-8000-000000000001';
@@ -48,8 +49,17 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
         ($3, 'reports-viewer@example.test'),
         ($4, 'reports-other@example.test'),
         ($5, 'reports-nonmember@example.test'),
-        ($6, 'reports-dual@example.test')`,
-      [ownerId, editorId, viewerId, otherOwnerId, nonMemberId, dualMemberId],
+        ($6, 'reports-dual@example.test'),
+        ($7, 'reports-admin@example.test')`,
+      [
+        ownerId,
+        editorId,
+        viewerId,
+        otherOwnerId,
+        nonMemberId,
+        dualMemberId,
+        adminId,
+      ],
     );
 
     for (const [userId, email, name] of [
@@ -59,6 +69,7 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
       [otherOwnerId, 'reports-other@example.test', 'Reports Other Owner'],
       [nonMemberId, 'reports-nonmember@example.test', 'Reports Non Member'],
       [dualMemberId, 'reports-dual@example.test', 'Reports Dual Member'],
+      [adminId, 'reports-admin@example.test', 'Reports Administrator'],
     ] as const) {
       await admin.query(
         `insert into public.profiles (
@@ -81,13 +92,14 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
     );
 
     // Seed memberships:
-    // Workspace 1: owner, editor, viewer, dualMember (editor)
+    // Workspace 1: owner, editor, viewer, dualMember (editor), administrator
     // Workspace 2: otherOwner (owner), dualMember (editor)
     await admin.query(
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status) values
         ($1, $2, 'owner', 'active'),
         ($1, $3, 'editor', 'active'),
         ($1, $4, 'viewer', 'active'),
+        ($1, $8, 'administrator', 'active'),
         ($5, $6, 'owner', 'active'),
         ($1, $7, 'editor', 'active'),
         ($5, $7, 'editor', 'active')`,
@@ -99,6 +111,7 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
         workspace2Id,
         otherOwnerId,
         dualMemberId,
+        adminId,
       ],
     );
 
@@ -114,6 +127,7 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
           if (token === 'other-owner-token') return { subject: otherOwnerId };
           if (token === 'non-member-token') return { subject: nonMemberId };
           if (token === 'dual-member-token') return { subject: dualMemberId };
+          if (token === 'admin-token') return { subject: adminId };
           throw new Error('token rejected');
         },
       })
@@ -277,6 +291,27 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
         payload: validPayload,
       });
       expect(response.statusCode).toBe(403);
+    });
+
+    it('exercises owner, administrator, editor, and viewer at create endpoint boundary', async () => {
+      for (const [token, expectedStatus] of [
+        ['owner-token', 201],
+        ['admin-token', 201],
+        ['editor-token', 201],
+        ['viewer-token', 403],
+      ] as const) {
+        const response = await application.inject({
+          method: 'POST',
+          url: '/v1/report-definitions',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': randomUUID(),
+          },
+          payload: { ...validPayload, name: `Report for ${token}` },
+        });
+        expect(response.statusCode).toBe(expectedStatus);
+      }
     });
 
     it('returns 400 when X-Workspace-Id header is missing or invalid', async () => {
@@ -590,6 +625,28 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
       const body = response.json();
       expect(Array.isArray(body.items)).toBe(true);
       expect(body.pageInfo).toBeDefined();
+    });
+
+    it('exercises owner, administrator, editor, and viewer at list endpoint boundary', async () => {
+      for (const token of [
+        'owner-token',
+        'admin-token',
+        'editor-token',
+        'viewer-token',
+      ] as const) {
+        const response = await application.inject({
+          method: 'GET',
+          url: '/v1/report-definitions',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-workspace-id': workspace1Id,
+          },
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(Array.isArray(body.items)).toBe(true);
+        expect(body.pageInfo).toBeDefined();
+      }
     });
 
     it('supports cursor pagination across items', async () => {

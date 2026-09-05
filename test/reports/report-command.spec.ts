@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  REPORT_DIMENSIONS,
+  REPORT_MEASURES,
+  REPORT_VISUALIZATIONS,
+} from '../../src/reports/report.port.js';
+import {
   createReportDefinitionCommand,
   ReportCommandValidationError,
 } from '../../src/reports/report-command.js';
@@ -193,5 +198,137 @@ describe('createReportDefinitionCommand', () => {
         );
       }
     }
+  });
+
+  describe('table-driven enum coverage (FIX 2)', () => {
+    const AUTHORITY_DIMENSIONS = [
+      'date',
+      'day',
+      'week',
+      'month',
+      'quarter',
+      'year',
+      'account',
+      'account_type',
+      'category',
+      'tag',
+      'payee',
+      'currency',
+      'member',
+      'status',
+      'transaction_type',
+      'variability',
+    ] as const;
+
+    const AUTHORITY_MEASURES = [
+      'sum',
+      'count',
+      'average',
+      'minimum',
+      'maximum',
+      'variation',
+      'percentage',
+      'balance',
+      'budget',
+      'variance',
+      'moving_average',
+      'converted_value',
+    ] as const;
+
+    const AUTHORITY_VISUALIZATIONS = [
+      'table',
+      'kpi',
+      'bar',
+      'line',
+      'area',
+      'donut',
+      'heatmap',
+      'calendar',
+      'pivot',
+    ] as const;
+
+    it('asserts authority enum counts and exact member parity', () => {
+      expect(REPORT_DIMENSIONS).toHaveLength(16);
+      expect(REPORT_MEASURES).toHaveLength(12);
+      expect(REPORT_VISUALIZATIONS).toHaveLength(9);
+      expect([...REPORT_DIMENSIONS].sort()).toEqual(
+        [...AUTHORITY_DIMENSIONS].sort(),
+      );
+      expect([...REPORT_MEASURES].sort()).toEqual(
+        [...AUTHORITY_MEASURES].sort(),
+      );
+      expect([...REPORT_VISUALIZATIONS].sort()).toEqual(
+        [...AUTHORITY_VISUALIZATIONS].sort(),
+      );
+    });
+
+    describe('dimensions acceptance', () => {
+      it.each(AUTHORITY_DIMENSIONS)(
+        'accepts authority dimension: %s',
+        (dimension) => {
+          const result = createReportDefinitionCommand({
+            ...validPayload,
+            dimensions: [dimension],
+          });
+          expect(result.dimensions).toEqual([dimension]);
+        },
+      );
+
+      it.each(REPORT_DIMENSIONS)(
+        'accepts exported dimension: %s',
+        (dimension) => {
+          const result = createReportDefinitionCommand({
+            ...validPayload,
+            dimensions: [dimension],
+          });
+          expect(result.dimensions).toEqual([dimension]);
+        },
+      );
+    });
+
+    describe('measures acceptance', () => {
+      it.each(AUTHORITY_MEASURES)(
+        'accepts authority measure: %s',
+        (measure) => {
+          const result = createReportDefinitionCommand({
+            ...validPayload,
+            measures: [measure],
+          });
+          expect(result.measures).toEqual([measure]);
+        },
+      );
+
+      it.each(REPORT_MEASURES)('accepts exported measure: %s', (measure) => {
+        const result = createReportDefinitionCommand({
+          ...validPayload,
+          measures: [measure],
+        });
+        expect(result.measures).toEqual([measure]);
+      });
+    });
+
+    describe('visualizations acceptance', () => {
+      it.each(AUTHORITY_VISUALIZATIONS)(
+        'accepts authority visualization: %s',
+        (visualization) => {
+          const result = createReportDefinitionCommand({
+            ...validPayload,
+            visualization,
+          });
+          expect(result.visualization).toBe(visualization);
+        },
+      );
+
+      it.each(REPORT_VISUALIZATIONS)(
+        'accepts exported visualization: %s',
+        (visualization) => {
+          const result = createReportDefinitionCommand({
+            ...validPayload,
+            visualization,
+          });
+          expect(result.visualization).toBe(visualization);
+        },
+      );
+    });
   });
 });
