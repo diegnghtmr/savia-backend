@@ -51,6 +51,7 @@ export const FORECAST_OUTCOMES = {
   CONFLICT: 'conflict',
   FORBIDDEN: 'forbidden',
   UNPROCESSABLE: 'unprocessable',
+  MISSING_RATE: 'missing_rate',
   NOT_FOUND: 'not_found',
   OK: 'ok',
 } as const;
@@ -71,6 +72,11 @@ export type ForecastCreateOutcome =
   | {
       readonly kind: typeof FORECAST_OUTCOMES.UNPROCESSABLE;
       readonly violations: readonly { field: string; message: string }[];
+    }
+  | {
+      readonly kind: typeof FORECAST_OUTCOMES.MISSING_RATE;
+      readonly fromCurrency: string;
+      readonly toCurrency: string;
     };
 
 export type ForecastGetOutcome =
@@ -81,8 +87,49 @@ export type ForecastGetOutcome =
   | { readonly kind: typeof FORECAST_OUTCOMES.NOT_FOUND }
   | { readonly kind: typeof FORECAST_OUTCOMES.FORBIDDEN };
 
+export interface AccountNativeBalanceRow {
+  readonly id: string;
+  readonly currency: string;
+  readonly nativeBalanceMinor: string;
+}
+
+export interface AccountExistenceRow {
+  readonly id: string;
+  readonly status: string;
+}
+
+export interface TransactionFlowRow {
+  readonly id: string;
+  readonly type: 'income' | 'expense' | 'refund';
+  readonly amountMinor: string;
+  readonly currency: string;
+  readonly occurredAt: Date;
+}
+
+export interface ScenarioRunRowData {
+  readonly id: string;
+  readonly monthlySavingsCapacityMinor: string;
+}
+
+export interface CreateForecastRecord {
+  readonly id: string;
+  readonly jobId: string;
+  readonly status: ForecastStatus;
+  readonly confidence: ForecastConfidence;
+  readonly method: string;
+  readonly horizonDays: number;
+  readonly assumptions: readonly string[];
+  readonly series: readonly ForecastPoint[];
+  readonly generatedAt: Date;
+}
+
 export interface ForecastStore {
   readActiveRole(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<string | undefined>;
+
+  readWorkspaceBaseCurrency(
     client: TransactionClient,
     workspaceId: string,
   ): Promise<string | undefined>;
@@ -92,6 +139,45 @@ export interface ForecastStore {
     workspaceId: string,
     forecastId: string,
   ): Promise<Forecast | undefined>;
+
+  checkAccountsExist(
+    client: TransactionClient,
+    workspaceId: string,
+    accountIds: readonly string[],
+  ): Promise<readonly AccountExistenceRow[]>;
+
+  readAccountNativeBalances(
+    client: TransactionClient,
+    workspaceId: string,
+    accountIds?: readonly string[],
+  ): Promise<readonly AccountNativeBalanceRow[]>;
+
+  readTransactionsInPeriod(
+    client: TransactionClient,
+    workspaceId: string,
+    from: string,
+    to: string,
+  ): Promise<readonly TransactionFlowRow[]>;
+
+  findExchangeRate(
+    client: TransactionClient,
+    workspaceId: string,
+    baseCurrency: string,
+    quoteCurrency: string,
+    asOf?: Date | null,
+  ): Promise<string | undefined>;
+
+  findMostRecentCompletedScenarioRun(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<ScenarioRunRowData | undefined>;
+
+  createForecast(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    data: CreateForecastRecord,
+  ): Promise<void>;
 }
 
 export interface ForecastsPort {
