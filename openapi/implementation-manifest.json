@@ -331,6 +331,16 @@
       "operationId": "runScenario",
       "method": "POST",
       "path": "/v1/scenarios/{scenarioId}/runs"
+    },
+    {
+      "operationId": "createBalanceForecast",
+      "method": "POST",
+      "path": "/v1/forecasts/balance"
+    },
+    {
+      "operationId": "getForecast",
+      "method": "GET",
+      "path": "/v1/forecasts/{forecastId}"
     }
   ]
 }

@@ -1849,6 +1849,78 @@ components:
           items:
             type: string
       additionalProperties: false
+    ForecastRequest:
+      type: object
+      properties:
+        horizonDays:
+          type: integer
+          minimum: 1
+          maximum: 730
+          default: 90
+        accountIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uuid'
+          uniqueItems: true
+        includeScenarios:
+          type: boolean
+          default: false
+      additionalProperties: false
+    ForecastPoint:
+      type: object
+      required:
+        - date
+        - expected
+        - lowerBound
+        - upperBound
+      properties:
+        date:
+          $ref: '#/components/schemas/Date'
+        expected:
+          $ref: '#/components/schemas/Money'
+        lowerBound:
+          $ref: '#/components/schemas/Money'
+        upperBound:
+          $ref: '#/components/schemas/Money'
+      additionalProperties: false
+    Forecast:
+      type: object
+      required:
+        - id
+        - status
+        - generatedAt
+        - confidence
+        - assumptions
+        - series
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        status:
+          type: string
+          enum:
+            - queued
+            - processing
+            - completed
+            - failed
+        generatedAt:
+          $ref: '#/components/schemas/DateTime'
+        confidence:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+        assumptions:
+          type: array
+          items:
+            type: string
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/ForecastPoint'
+        method:
+          type: string
+      additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -6448,6 +6520,120 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
       x-savia-mcp-tool:
         name: run_scenario
+        riskClass: read
+        requiresApproval: false
+        requiredScopes:
+          - reports:read
+  /v1/forecasts/balance:
+    post:
+      operationId: createBalanceForecast
+      summary: Create balance forecast
+      tags:
+        - Forecasts
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForecastRequest'
+      responses:
+        '202':
+          description: Forecast job accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: The request is structurally valid but violates a business rule.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: get_forecast
+        riskClass: read
+        requiresApproval: false
+        requiredScopes:
+          - reports:read
+  /v1/forecasts/{forecastId}:
+    parameters:
+      - name: forecastId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Uuid'
+      - name: X-Workspace-Id
+        in: header
+        required: true
+        description: Workspace in which the operation is executed.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getForecast
+      summary: Get completed or in-progress forecast
+      tags:
+        - Forecasts
+      responses:
+        '200':
+          description: Forecast.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Forecast'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: get_forecast
         riskClass: read
         requiresApproval: false
         requiredScopes:
