@@ -284,6 +284,9 @@ jobs:
       - name: forecasts integration
         shell: bash
         run: pnpm test:integration:forecasts
+      - name: report definitions integration
+        shell: bash
+        run: pnpm test:integration:report-definitions
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
