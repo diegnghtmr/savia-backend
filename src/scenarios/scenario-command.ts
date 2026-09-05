@@ -39,13 +39,17 @@ export function createScenarioCommand(input: unknown): CreateScenarioRequest {
   });
 
   const name = body.name;
-  if (typeof name !== 'string' || name.length < 1 || name.length > 120) {
+  if (
+    typeof name !== 'string' ||
+    [...name].length < 1 ||
+    [...name].length > 120
+  ) {
     add(violations, 'name', 'invalid', 'must be between 1 and 120 characters');
   }
 
   const description = body.description;
   if (description !== undefined && description !== null) {
-    if (typeof description !== 'string' || description.length > 1000) {
+    if (typeof description !== 'string' || [...description].length > 1000) {
       add(
         violations,
         'description',

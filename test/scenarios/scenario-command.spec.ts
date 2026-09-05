@@ -173,6 +173,55 @@ describe('createScenarioCommand validation', () => {
     }
   });
 
+  it('accepts name of exactly 120 astral characters (code points)', () => {
+    const astralName = '💰'.repeat(120);
+    const result = createScenarioCommand({ ...validBase, name: astralName });
+    expect(result.name).toBe(astralName);
+  });
+
+  it('rejects name of 121 astral characters (code points)', () => {
+    const astralName = '💰'.repeat(121);
+    expect(() =>
+      createScenarioCommand({ ...validBase, name: astralName }),
+    ).toThrow(ScenarioCommandValidationError);
+    try {
+      createScenarioCommand({ ...validBase, name: astralName });
+    } catch (err) {
+      const error = err as ScenarioCommandValidationError;
+      expect(error.violations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'name', code: 'invalid' }),
+        ]),
+      );
+    }
+  });
+
+  it('accepts description of exactly 1000 astral characters (code points)', () => {
+    const astralDescription = '💰'.repeat(1000);
+    const result = createScenarioCommand({
+      ...validBase,
+      description: astralDescription,
+    });
+    expect(result.description).toBe(astralDescription);
+  });
+
+  it('rejects description of 1001 astral characters (code points)', () => {
+    const astralDescription = '💰'.repeat(1001);
+    expect(() =>
+      createScenarioCommand({ ...validBase, description: astralDescription }),
+    ).toThrow(ScenarioCommandValidationError);
+    try {
+      createScenarioCommand({ ...validBase, description: astralDescription });
+    } catch (err) {
+      const error = err as ScenarioCommandValidationError;
+      expect(error.violations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'description', code: 'invalid' }),
+        ]),
+      );
+    }
+  });
+
   it('rejects empty assumptions array with violation naming assumptions', () => {
     expect(() =>
       createScenarioCommand({ ...validBase, assumptions: [] }),
