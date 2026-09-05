@@ -59,7 +59,12 @@ export function createForecastCommand(input: unknown): ForecastRequest {
   let accountIds: string[] | undefined = undefined;
   if (body.accountIds !== undefined) {
     if (!Array.isArray(body.accountIds)) {
-      add(violations, 'accountIds', 'invalid-type', 'must be an array of UUIDs');
+      add(
+        violations,
+        'accountIds',
+        'invalid-type',
+        'must be an array of UUIDs',
+      );
     } else {
       const ids: string[] = [];
       const seen = new Set<string>();

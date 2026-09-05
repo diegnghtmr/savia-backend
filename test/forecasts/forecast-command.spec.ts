@@ -29,7 +29,9 @@ describe('createForecastCommand', () => {
       createForecastCommand({ horizonDays: 0 });
     } catch (err) {
       const error = err as ForecastCommandValidationError;
-      expect(error.violations.some((v) => v.field === 'horizonDays')).toBe(true);
+      expect(error.violations.some((v) => v.field === 'horizonDays')).toBe(
+        true,
+      );
     }
   });
 
@@ -41,7 +43,9 @@ describe('createForecastCommand', () => {
       createForecastCommand({ horizonDays: 731 });
     } catch (err) {
       const error = err as ForecastCommandValidationError;
-      expect(error.violations.some((v) => v.field === 'horizonDays')).toBe(true);
+      expect(error.violations.some((v) => v.field === 'horizonDays')).toBe(
+        true,
+      );
     }
   });
 
@@ -53,7 +57,9 @@ describe('createForecastCommand', () => {
       createForecastCommand({ horizonDays: 90.5 });
     } catch (err) {
       const error = err as ForecastCommandValidationError;
-      expect(error.violations.some((v) => v.field === 'horizonDays')).toBe(true);
+      expect(error.violations.some((v) => v.field === 'horizonDays')).toBe(
+        true,
+      );
     }
   });
 
@@ -65,7 +71,9 @@ describe('createForecastCommand', () => {
       createForecastCommand({ horizonDays: '90' });
     } catch (err) {
       const error = err as ForecastCommandValidationError;
-      expect(error.violations.some((v) => v.field === 'horizonDays')).toBe(true);
+      expect(error.violations.some((v) => v.field === 'horizonDays')).toBe(
+        true,
+      );
     }
   });
 
@@ -77,7 +85,9 @@ describe('createForecastCommand', () => {
       createForecastCommand({ horizonDays: null });
     } catch (err) {
       const error = err as ForecastCommandValidationError;
-      expect(error.violations.some((v) => v.field === 'horizonDays')).toBe(true);
+      expect(error.violations.some((v) => v.field === 'horizonDays')).toBe(
+        true,
+      );
     }
   });
 
@@ -115,7 +125,9 @@ describe('createForecastCommand', () => {
 
   it('rejects non-array accountIds', () => {
     expect(() =>
-      createForecastCommand({ accountIds: '11111111-1111-4111-8111-111111111111' }),
+      createForecastCommand({
+        accountIds: '11111111-1111-4111-8111-111111111111',
+      }),
     ).toThrow(ForecastCommandValidationError);
   });
 
@@ -136,9 +148,9 @@ describe('createForecastCommand', () => {
       createForecastCommand({ includeScenarios: 'true' });
     } catch (err) {
       const error = err as ForecastCommandValidationError;
-      expect(
-        error.violations.some((v) => v.field === 'includeScenarios'),
-      ).toBe(true);
+      expect(error.violations.some((v) => v.field === 'includeScenarios')).toBe(
+        true,
+      );
     }
   });
 
