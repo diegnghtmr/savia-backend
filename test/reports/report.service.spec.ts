@@ -122,15 +122,10 @@ describe('ReportService', () => {
       const fingerprint = vi.mocked(idempotency.write).mock.calls[0][4];
 
       vi.mocked(idempotency.read).mockResolvedValue({
-        id: 'idem-rec-1',
-        subject,
-        route: 'POST /v1/report-definitions',
-        key,
         requestFingerprint: fingerprint,
         responseStatus: 201,
         responseEtag: null,
         responseBody: sampleDefinition,
-        createdAt: new Date(),
       });
 
       const outcome = await service.createReportDefinition(
@@ -153,15 +148,10 @@ describe('ReportService', () => {
       const store = createStoreMock();
       const idempotency = createIdempotencyMock();
       vi.mocked(idempotency.read).mockResolvedValue({
-        id: 'idem-rec-1',
-        subject,
-        route: 'POST /v1/report-definitions',
-        key,
         requestFingerprint: 'different-fingerprint',
         responseStatus: 201,
         responseEtag: null,
         responseBody: sampleDefinition,
-        createdAt: new Date(),
       });
       const service = new ReportService(tx, store, idempotency);
 
@@ -190,15 +180,10 @@ describe('ReportService', () => {
         .mockResolvedValueOnce(undefined) // first read sees nothing
         .mockResolvedValueOnce({
           // reread after failed write sees winner
-          id: 'idem-rec-2',
-          subject,
-          route: 'POST /v1/report-definitions',
-          key,
           requestFingerprint: fingerprint,
           responseStatus: 201,
           responseEtag: null,
           responseBody: sampleDefinition,
-          createdAt: new Date(),
         });
       vi.mocked(idempotency.write).mockResolvedValue(false); // write fails due to race
 
@@ -225,15 +210,10 @@ describe('ReportService', () => {
       vi.mocked(idempotency.read)
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce({
-          id: 'idem-rec-3',
-          subject,
-          route: 'POST /v1/report-definitions',
-          key,
           requestFingerprint: 'conflicting-fingerprint',
           responseStatus: 201,
           responseEtag: null,
           responseBody: sampleDefinition,
-          createdAt: new Date(),
         });
       vi.mocked(idempotency.write).mockResolvedValue(false);
 
