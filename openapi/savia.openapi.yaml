@@ -1921,6 +1921,119 @@ components:
         method:
           type: string
       additionalProperties: false
+    ReportDimension:
+      type: string
+      enum:
+        - date
+        - day
+        - week
+        - month
+        - quarter
+        - year
+        - account
+        - account_type
+        - category
+        - tag
+        - payee
+        - currency
+        - member
+        - status
+        - transaction_type
+        - variability
+    ReportMeasure:
+      type: string
+      enum:
+        - sum
+        - count
+        - average
+        - minimum
+        - maximum
+        - variation
+        - percentage
+        - balance
+        - budget
+        - variance
+        - moving_average
+        - converted_value
+    ReportDefinition:
+      type: object
+      required:
+        - id
+        - name
+        - dimensions
+        - measures
+        - visualization
+        - filters
+        - version
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        name:
+          type: string
+        dimensions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReportDimension'
+        measures:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReportMeasure'
+        visualization:
+          type: string
+          enum:
+            - table
+            - kpi
+            - bar
+            - line
+            - area
+            - donut
+            - heatmap
+            - calendar
+            - pivot
+        filters:
+          type: object
+          additionalProperties: true
+        version:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    CreateReportDefinitionRequest:
+      type: object
+      required:
+        - name
+        - dimensions
+        - measures
+        - visualization
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        dimensions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReportDimension'
+        measures:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReportMeasure'
+          minItems: 1
+        visualization:
+          type: string
+          enum:
+            - table
+            - kpi
+            - bar
+            - line
+            - area
+            - donut
+            - heatmap
+            - calendar
+            - pivot
+        filters:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -6638,3 +6751,122 @@ paths:
         requiresApproval: false
         requiredScopes:
           - reports:read
+  /v1/report-definitions:
+    get:
+      operationId: listReportDefinitions
+      summary: List saved report definitions
+      tags:
+        - Reports
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Report definition page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - items
+                  - pageInfo
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ReportDefinition'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+    post:
+      operationId: createReportDefinition
+      summary: Create report definition
+      tags:
+        - Reports
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReportDefinitionRequest'
+      responses:
+        '201':
+          description: Report definition created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportDefinition'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: The request is structurally valid but violates a business rule.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: create_report_definition
+        riskClass: low_risk_write
+        requiresApproval: true
+        requiredScopes:
+          - reports:write
