@@ -525,6 +525,40 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       ).toBe(true);
     });
 
+    it('returns 422 when dual-workspace member requests account belonging to another workspace', async () => {
+      // acctWs2Id belongs to workspace 2.
+      // dual-member-token has active membership in both workspace 1 and workspace 2.
+      // RLS allows dual-member to read rows in workspace 2, so only the workspace_id predicate
+      // in checkAccountsExist prevents acctWs2Id from being accepted in workspace 1.
+      const res = await application.inject({
+        method: 'POST',
+        url: '/v1/forecasts/balance',
+        headers: {
+          authorization: 'Bearer dual-member-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          horizonDays: 30,
+          accountIds: [acctCheckingId, acctWs2Id],
+        },
+      });
+
+      expect(res.statusCode).toBe(422);
+      const problem = JSON.parse(res.payload);
+      expect(problem.status).toBe(422);
+      expect(problem.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'accountIds' }),
+        ]),
+      );
+      expect(
+        problem.errors.some((e: { message: string }) =>
+          e.message.includes(acctWs2Id),
+        ),
+      ).toBe(true);
+    });
+
     it('handles closed account in accountIds: contributes zero and records assumption', async () => {
       const res = await application.inject({
         method: 'POST',
