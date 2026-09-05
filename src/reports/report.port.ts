@@ -44,7 +44,8 @@ export const REPORT_MEASURE = {
   CONVERTED_VALUE: 'converted_value',
 } as const;
 
-export type ReportMeasure = (typeof REPORT_MEASURE)[keyof typeof REPORT_MEASURE];
+export type ReportMeasure =
+  (typeof REPORT_MEASURE)[keyof typeof REPORT_MEASURE];
 
 export const REPORT_MEASURES: readonly ReportMeasure[] = Object.freeze(
   Object.values(REPORT_MEASURE),

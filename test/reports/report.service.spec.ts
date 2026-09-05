@@ -9,7 +9,6 @@ import {
   type ReportStore,
 } from '../../src/reports/report.port.js';
 import {
-  ReportDefinitionCreateRollbackError,
   ReportService,
   type ReportTransaction,
 } from '../../src/reports/report.service.js';
@@ -296,11 +295,17 @@ describe('ReportService', () => {
       const tx = createTxMock();
       const store = createStoreMock();
       const item1: ReportItem = {
-        reportDefinition: { ...sampleDefinition, id: '11111111-0000-4000-8000-000000000001' },
+        reportDefinition: {
+          ...sampleDefinition,
+          id: '11111111-0000-4000-8000-000000000001',
+        },
         cursorAt: '2026-09-05T01:00:00.000000Z',
       };
       const item2: ReportItem = {
-        reportDefinition: { ...sampleDefinition, id: '22222222-0000-4000-8000-000000000002' },
+        reportDefinition: {
+          ...sampleDefinition,
+          id: '22222222-0000-4000-8000-000000000002',
+        },
         cursorAt: '2026-09-05T02:00:00.000000Z',
       };
       // limit is 1, store returns 2 items

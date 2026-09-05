@@ -10,11 +10,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
-import {
-  REPORT_DIMENSIONS,
-  REPORT_MEASURES,
-  REPORT_VISUALIZATIONS,
-} from '../../src/reports/report.port.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
