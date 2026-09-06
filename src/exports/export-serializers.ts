@@ -9,14 +9,20 @@ export function serializeCsv(rows: readonly Record<string, unknown>[]): Buffer {
     if (/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value)) return value;
     return /^[=+\-@]|^[\t\r]/.test(value) ? `'${value}` : value;
   };
-  const esc = (v: unknown) =>
-    `"${neutralize(String(v ?? '')).replaceAll('"', '""')}"`;
+  const esc = (v: unknown) => escapeCsvField(v, neutralize);
   return Buffer.from(
     [
       cols.join(','),
       ...rows.map((r) => cols.map((c) => esc(r[c])).join(',')),
     ].join('\n'),
   );
+}
+
+export function escapeCsvField(
+  value: unknown,
+  neutralize: (value: string) => string = (input) => input,
+): string {
+  return `"${neutralize(String(value ?? '')).replaceAll('"', '""')}"`;
 }
 export function serializeJsonBackup(rows: ExportRows): Buffer {
   return Buffer.from(
