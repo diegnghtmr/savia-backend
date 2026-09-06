@@ -88,12 +88,20 @@ describe('Report runs integration contract and endpoint suite', () => {
   const catExpenseId = 'dddddddd-0000-4000-8000-000000000001';
   const catIncomeId = 'dddddddd-0000-4000-8000-000000000002';
   const catExpense2Id = 'dddddddd-0000-4000-8000-000000000003';
+  const catNoPostingsId = 'dddddddd-0000-4000-8000-000000000004';
+  const catPendingPostingId = 'dddddddd-0000-4000-8000-000000000005';
 
   const txEurId = 'eeeeeeee-0000-4000-8000-000000000001';
   const txEur2Id = 'eeeeeeee-0000-4000-8000-000000000002';
   const txJulyId = 'eeeeeeee-0000-4000-8000-000000000003';
+  const txIncomeId = 'eeeeeeee-0000-4000-8000-000000000004';
+  const txNoPostingsId = 'eeeeeeee-0000-4000-8000-000000000005';
+  const txPendingPostingId = 'eeeeeeee-0000-4000-8000-000000000006';
+
   const budgetJuneId = 'ffffffff-0000-4000-8000-000000000001';
   const customDefId = 'aaaaaaaa-1111-4000-8000-000000000001';
+  const defW2Id = 'aaaaaaaa-2222-4000-8000-000000000001';
+  const defExpenseOnlyId = 'aaaaaaaa-3333-4000-8000-000000000001';
 
   beforeAll(async () => {
     Object.assign(process.env, {
@@ -207,8 +215,18 @@ describe('Report runs integration contract and endpoint suite', () => {
       `insert into public.categories (id, workspace_id, name, kind, created_by) values
         ($1, $2, 'Expenses', 'expense', $3),
         ($4, $2, 'Income', 'income', $3),
-        ($5, $2, 'Utilities', 'expense', $3)`,
-      [catExpenseId, workspace1Id, ownerId, catIncomeId, catExpense2Id],
+        ($5, $2, 'Utilities', 'expense', $3),
+        ($6, $2, 'No Postings Cat', 'expense', $3),
+        ($7, $2, 'Pending Postings Cat', 'expense', $3)`,
+      [
+        catExpenseId,
+        workspace1Id,
+        ownerId,
+        catIncomeId,
+        catExpense2Id,
+        catNoPostingsId,
+        catPendingPostingId,
+      ],
     );
 
     // 7. Seed confirmed EUR transaction with confirmed ledger posting (transfer_id is null)
@@ -265,6 +283,52 @@ describe('Report runs integration contract and endpoint suite', () => {
       [workspace1Id, txJulyId, acct1Usd],
     );
 
+    // Seed confirmed USD income transaction
+    await admin.query(
+      `insert into public.transactions (
+        id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, category_id, created_by
+      ) values (
+        $1, $2, $3, 'income', 'confirmed', 80000, 'USD', '2026-06-20 12:00:00+00', $4, $5
+      )`,
+      [txIncomeId, workspace1Id, acct1Usd, catIncomeId, ownerId],
+    );
+    await admin.query(
+      `insert into public.ledger_postings (
+        id, workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at
+      ) values
+        (gen_random_uuid(), $1, $2, $3, 'account', 80000, 'USD', 'confirmed', '2026-06-20 12:00:00+00'),
+        (gen_random_uuid(), $1, $2, null, 'external', -80000, 'USD', 'confirmed', '2026-06-20 12:00:00+00')`,
+      [workspace1Id, txIncomeId, acct1Usd],
+    );
+
+    // Seed confirmed transaction with NO postings (isolated to positive posting predicate)
+    await admin.query(
+      `insert into public.transactions (
+        id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, category_id, created_by
+      ) values (
+        $1, $2, $3, 'expense', 'confirmed', 15000, 'USD', '2026-06-21 12:00:00+00', $4, $5
+      )`,
+      [txNoPostingsId, workspace1Id, acct1Usd, catNoPostingsId, ownerId],
+    );
+
+    // Seed confirmed transaction with one confirmed and one pending posting (isolated to negative posting predicate)
+    await admin.query(
+      `insert into public.transactions (
+        id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, category_id, created_by
+      ) values (
+        $1, $2, $3, 'expense', 'confirmed', 25000, 'USD', '2026-06-22 12:00:00+00', $4, $5
+      )`,
+      [txPendingPostingId, workspace1Id, acct1Usd, catPendingPostingId, ownerId],
+    );
+    await admin.query(
+      `insert into public.ledger_postings (
+        id, workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at
+      ) values
+        (gen_random_uuid(), $1, $2, $3, 'account', 25000, 'USD', 'confirmed', '2026-06-22 12:00:00+00'),
+        (gen_random_uuid(), $1, $2, null, 'external', -25000, 'USD', 'pending', '2026-06-22 12:00:00+00')`,
+      [workspace1Id, txPendingPostingId, acct1Usd],
+    );
+
     // 8. Seed June budget with allocation only for catExpenseId
     await admin.query(
       `insert into public.budgets (id, workspace_id, name, method, period_start, period_end, currency, created_by) values
@@ -282,6 +346,20 @@ describe('Report runs integration contract and endpoint suite', () => {
       `insert into public.report_definitions (id, workspace_id, name, dimensions, measures, visualization, filters, created_by) values
         ($1, $2, 'Custom Budget Def', '["month", "category"]'::jsonb, '["budget", "converted_value"]'::jsonb, 'table', '{}'::jsonb, $3)`,
       [customDefId, workspace1Id, ownerId],
+    );
+
+    // 10. Seed definition in workspace 2 (for dual member cross-workspace scoping test)
+    await admin.query(
+      `insert into public.report_definitions (id, workspace_id, name, dimensions, measures, visualization, filters, created_by) values
+        ($1, $2, 'Workspace 2 Def', '["month"]'::jsonb, '["converted_value"]'::jsonb, 'table', '{}'::jsonb, $3)`,
+      [defW2Id, workspace2Id, otherOwnerId],
+    );
+
+    // 11. Seed definition with type: 'expense' in workspace 1 (for FIX 8 definition filter test)
+    await admin.query(
+      `insert into public.report_definitions (id, workspace_id, name, dimensions, measures, visualization, filters, created_by) values
+        ($1, $2, 'Expense Only Def', '["category"]'::jsonb, '["converted_value"]'::jsonb, 'table', '{"type": "expense"}'::jsonb, $3)`,
+      [defExpenseOnlyId, workspace1Id, ownerId],
     );
 
     // Bootstrap Nest application
@@ -677,4 +755,70 @@ describe('Report runs integration contract and endpoint suite', () => {
       ]);
     });
   });
+
+  describe('FIX 8: Definition filters intersection', () => {
+    it('applies saved definition type filter (expense) and excludes income transactions', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          definitionId: defExpenseOnlyId,
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string; status: string };
+      expect(body.status).toBe('completed');
+
+      const artifactPath = `${workspace1Id}/${body.id}.json`;
+      const uploaded = inMemoryStorage.uploaded.get(artifactPath);
+      expect(uploaded).toBeDefined();
+
+      const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
+      expect(grid.rows.length).toBeGreaterThan(0);
+      const incomeRow = grid.rows.find((r) => r.key.includes(catIncomeId));
+      expect(incomeRow).toBeUndefined();
+      const expenseRow = grid.rows.find((r) => r.key.includes(catExpenseId));
+      expect(expenseRow).toBeDefined();
+    });
+
+    it('returns empty row set when caller type filter conflicts with definition type filter', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          definitionId: defExpenseOnlyId,
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+            type: 'income',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const artifactPath = `${workspace1Id}/${body.id}.json`;
+      const uploaded = inMemoryStorage.uploaded.get(artifactPath);
+      const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
+      expect(grid.rows).toEqual([]);
+    });
+  });
 });
+

@@ -264,14 +264,56 @@ export class ReportService implements ReportsPort {
         )
           .toISOString()
           .slice(0, 10);
-        const periodStart =
+        const defFilters =
+          'filters' in shape &&
+          typeof shape.filters === 'object' &&
+          shape.filters !== null
+            ? (shape.filters as Record<string, unknown>)
+            : undefined;
+
+        const shapeTypeFilter =
+          'typeFilter' in shape
+            ? shape.typeFilter
+            : typeof defFilters?.type === 'string'
+              ? defFilters.type
+              : undefined;
+
+        const defFrom =
+          typeof defFilters?.from === 'string' ? defFilters.from : undefined;
+        const callerFrom =
           typeof command.filters.from === 'string'
             ? command.filters.from
-            : defaultStart;
-        const to =
+            : undefined;
+
+        let periodStart: string;
+        if (defFrom && callerFrom) {
+          periodStart = defFrom > callerFrom ? defFrom : callerFrom;
+        } else if (defFrom) {
+          periodStart = defFrom;
+        } else if (callerFrom) {
+          periodStart = callerFrom;
+        } else {
+          periodStart = defaultStart;
+        }
+
+        const defTo =
+          typeof defFilters?.to === 'string' ? defFilters.to : undefined;
+        const callerTo =
           typeof command.filters.to === 'string'
             ? command.filters.to
-            : periodEnd;
+            : undefined;
+
+        let to: string;
+        if (defTo && callerTo) {
+          to = defTo < callerTo ? defTo : callerTo;
+        } else if (defTo) {
+          to = defTo;
+        } else if (callerTo) {
+          to = callerTo;
+        } else {
+          to = periodEnd;
+        }
+
         const callerType =
           typeof command.filters.type === 'string'
             ? command.filters.type
@@ -283,7 +325,7 @@ export class ReportService implements ReportsPort {
             workspaceId,
             periodStart,
             to,
-            'typeFilter' in shape ? shape.typeFilter : undefined,
+            shapeTypeFilter,
             callerType,
           );
         } catch (error) {

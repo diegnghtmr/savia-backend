@@ -445,6 +445,56 @@ describe('ReportService', () => {
       );
     });
 
+    it('intersects definition filters (type, from, to) with caller filters and prevents caller from widening them', async () => {
+      const tx = createTxMock();
+      const store = createRunStore();
+      const savedDefinition: ReportDefinition = {
+        id: 'dddddddd-0000-4000-8000-000000000001',
+        name: 'Expense Q2',
+        dimensions: ['category'],
+        measures: ['converted_value'],
+        visualization: 'table',
+        filters: {
+          type: 'expense',
+          from: '2026-04-01',
+          to: '2026-06-30',
+        },
+        version: 1,
+      };
+      vi.mocked(store.readReportDefinition!).mockResolvedValue(savedDefinition);
+      const service = new ReportService(
+        tx,
+        store,
+        createIdempotencyMock(),
+        createStorageMock(),
+      );
+
+      const outcome = await service.createReportRun(
+        subject,
+        workspaceId,
+        {
+          definitionId: savedDefinition.id,
+          format: 'json',
+          filters: {
+            from: '2026-01-01',
+            to: '2026-12-31',
+            type: 'income',
+          },
+        },
+        key,
+      );
+
+      expect(outcome.kind).toBe(REPORT_RUN_OUTCOMES.CREATED);
+      expect(store.readReportSourceRows).toHaveBeenCalledWith(
+        expect.anything(),
+        workspaceId,
+        '2026-04-01',
+        '2026-06-30',
+        'expense',
+        'income',
+      );
+    });
+
     it('returns UNPROCESSABLE for an unknown definition without reading source rows', async () => {
       const tx = createTxMock();
       const store = createRunStore();
