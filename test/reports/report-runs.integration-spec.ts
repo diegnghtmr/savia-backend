@@ -318,7 +318,13 @@ describe('Report runs integration contract and endpoint suite', () => {
       ) values (
         $1, $2, $3, 'expense', 'confirmed', 25000, 'USD', '2026-06-22 12:00:00+00', $4, $5
       )`,
-      [txPendingPostingId, workspace1Id, acct1Usd, catPendingPostingId, ownerId],
+      [
+        txPendingPostingId,
+        workspace1Id,
+        acct1Usd,
+        catPendingPostingId,
+        ownerId,
+      ],
     );
     await admin.query(
       `insert into public.ledger_postings (
@@ -820,5 +826,221 @@ describe('Report runs integration contract and endpoint suite', () => {
       expect(grid.rows).toEqual([]);
     });
   });
-});
 
+  describe('FIX 6: Behavioral endpoint integration suite', () => {
+    it('excludes confirmed transaction with no qualifying postings (positive posting predicate)', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const artifactPath = `${workspace1Id}/${body.id}.json`;
+      const uploaded = inMemoryStorage.uploaded.get(artifactPath);
+      const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
+
+      // catExpenseId is present (confirmed with qualifying postings)
+      const expenseRow = grid.rows.find((r) => r.key.includes(catExpenseId));
+      expect(expenseRow).toBeDefined();
+
+      // catNoPostingsId is excluded solely by the positive posting predicate
+      const noPostingsRow = grid.rows.find((r) =>
+        r.key.includes(catNoPostingsId),
+      );
+      expect(noPostingsRow).toBeUndefined();
+    });
+
+    it('excludes confirmed transaction with one pending sibling posting (negative posting predicate)', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const artifactPath = `${workspace1Id}/${body.id}.json`;
+      const uploaded = inMemoryStorage.uploaded.get(artifactPath);
+      const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
+
+      // catPendingPostingId is excluded solely by the negative posting predicate
+      const pendingRow = grid.rows.find((r) =>
+        r.key.includes(catPendingPostingId),
+      );
+      expect(pendingRow).toBeUndefined();
+    });
+
+    it('returns 404 for getReportRun cross-workspace access with dual-workspace member', async () => {
+      // Create a report run in workspace 1 by dual member
+      const createRes = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer dual-member-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+      expect(createRes.statusCode).toBe(202);
+      const { id: runId } = JSON.parse(createRes.body) as { id: string };
+
+      // Dual member attempts to read runId with x-workspace-id: workspace2Id
+      const getRes = await application.inject({
+        method: 'GET',
+        url: `/v1/report-runs/${runId}`,
+        headers: {
+          authorization: 'Bearer dual-member-token',
+          'x-workspace-id': workspace2Id,
+        },
+      });
+      expect(getRes.statusCode).toBe(404);
+    });
+
+    it('returns 422 when unknown definitionId is requested across workspace boundaries with dual member', async () => {
+      // defW2Id exists in workspace 2; dual member requests it in workspace 1
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer dual-member-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          definitionId: defW2Id,
+          format: 'json',
+          filters: {},
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      const body = JSON.parse(response.body) as {
+        errors?: readonly { field: string; code: string; message: string }[];
+      };
+      expect(body.errors).toEqual([
+        {
+          field: 'definitionId',
+          code: 'invalid',
+          message: 'Report definition was not found.',
+        },
+      ]);
+    });
+
+    it('intersects preset and caller filters returning empty row set when disjoint', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            type: 'income',
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const artifactPath = `${workspace1Id}/${body.id}.json`;
+      const uploaded = inMemoryStorage.uploaded.get(artifactPath);
+      const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
+      expect(grid.rows).toEqual([]);
+    });
+
+    it('replays response for idempotent request with no second database row and no second uploaded artifact', async () => {
+      const idemKey = randomUUID();
+      const payload = {
+        preset: 'expenses',
+        format: 'json',
+        filters: {
+          from: '2026-06-01',
+          to: '2026-06-30',
+        },
+      };
+
+      const res1 = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': idemKey,
+        },
+        payload,
+      });
+      expect(res1.statusCode).toBe(202);
+      const body1 = JSON.parse(res1.body) as { id: string };
+
+      const uploadCountBefore = inMemoryStorage.uploadCallCount;
+      const dbRunsBefore = await admin.query<{ count: string }>(
+        `select count(*)::text as count from public.report_runs where workspace_id = $1`,
+        [workspace1Id],
+      );
+      const dbCountBefore = parseInt(dbRunsBefore.rows[0]?.count ?? '0', 10);
+
+      const res2 = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': idemKey,
+        },
+        payload,
+      });
+      expect(res2.statusCode).toBe(202);
+      const body2 = JSON.parse(res2.body) as { id: string };
+      expect(body2.id).toBe(body1.id);
+
+      // Assert no second artifact upload and no second database row
+      expect(inMemoryStorage.uploadCallCount).toBe(uploadCountBefore);
+      const dbRunsAfter = await admin.query<{ count: string }>(
+        `select count(*)::text as count from public.report_runs where workspace_id = $1`,
+        [workspace1Id],
+      );
+      const dbCountAfter = parseInt(dbRunsAfter.rows[0]?.count ?? '0', 10);
+      expect(dbCountAfter).toBe(dbCountBefore);
+    });
+  });
+});
