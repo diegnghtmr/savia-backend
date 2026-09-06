@@ -9,7 +9,6 @@ import {
   type AnalyticsSummaryQuery,
   type CashFlowAnalyticsQuery,
   type CashFlowGranularity,
-  type Granularity,
 } from './analytics.port.js';
 
 export class AnalyticsQueryValidationError extends Error {
@@ -180,13 +179,13 @@ export function createCashFlowAnalyticsQuery(input: {
   }
 
   // 4.6 Granularity: day | week | month | quarter, default month
-  let granularity: Granularity = CASH_FLOW_GRANULARITY.MONTH;
+  let granularity: CashFlowGranularity = CASH_FLOW_GRANULARITY.MONTH;
   if (input.granularityParam !== undefined) {
     const raw = input.granularityParam.trim().toLowerCase();
     if (
       Object.values(CASH_FLOW_GRANULARITY).includes(raw as CashFlowGranularity)
     ) {
-      granularity = raw as Granularity;
+      granularity = raw as CashFlowGranularity;
     } else {
       violations.push({
         field: 'granularity',

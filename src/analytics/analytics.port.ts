@@ -218,7 +218,7 @@ export interface CashFlowAnalyticsQuery {
   readonly workspaceId: string;
   readonly from: string;
   readonly to: string;
-  readonly granularity: Granularity;
+  readonly granularity: CashFlowGranularity;
 }
 
 export interface AdvancedAnalyticsQuery {
