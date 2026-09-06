@@ -34,6 +34,84 @@ function createRow(overrides: Partial<ReportSourceRow> = {}): ReportSourceRow {
 
 describe('Report Engine (pure)', () => {
   describe('Mutation-proof behaviors', () => {
+    it('formats int64-scale variation without losing BigInt precision', () => {
+      const rows = [
+        createRow({
+          occurredAt: new Date('2026-01-10T00:00:00.000Z'),
+          convertedMinor: 1n,
+        }),
+        createRow({
+          occurredAt: new Date('2026-02-10T00:00:00.000Z'),
+          convertedMinor: 9223372036854775807n,
+        }),
+      ];
+
+      const grid = buildReportGrid({
+        rows,
+        dimensions: [REPORT_DIMENSION.MONTH],
+        measures: [REPORT_MEASURE.VARIATION],
+        baseCurrency: 'USD',
+        budgetedMinorByBucket: new Map(),
+      });
+
+      expect(grid.rows[1].cells[0]).toEqual({
+        measure: REPORT_MEASURE.VARIATION,
+        value: '922337203685477580600.00',
+      });
+    });
+
+    it('formats negative int64-scale variation exactly', () => {
+      const rows = [
+        createRow({
+          occurredAt: new Date('2026-01-10T00:00:00.000Z'),
+          convertedMinor: 9223372036854775807n,
+        }),
+        createRow({
+          occurredAt: new Date('2026-02-10T00:00:00.000Z'),
+          convertedMinor: -9223372036854775807n,
+        }),
+      ];
+
+      const grid = buildReportGrid({
+        rows,
+        dimensions: [REPORT_DIMENSION.MONTH],
+        measures: [REPORT_MEASURE.VARIATION],
+        baseCurrency: 'USD',
+        budgetedMinorByBucket: new Map(),
+      });
+
+      expect(grid.rows[1].cells[0]).toEqual({
+        measure: REPORT_MEASURE.VARIATION,
+        value: '-200.00',
+      });
+    });
+
+    it('rounds an exact half tie away from zero for variation', () => {
+      const rows = [
+        createRow({
+          occurredAt: new Date('2026-01-10T00:00:00.000Z'),
+          convertedMinor: 20000n,
+        }),
+        createRow({
+          occurredAt: new Date('2026-02-10T00:00:00.000Z'),
+          convertedMinor: 20001n,
+        }),
+      ];
+
+      const grid = buildReportGrid({
+        rows,
+        dimensions: [REPORT_DIMENSION.MONTH],
+        measures: [REPORT_MEASURE.VARIATION],
+        baseCurrency: 'USD',
+        budgetedMinorByBucket: new Map(),
+      });
+
+      expect(grid.rows[1].cells[0]).toEqual({
+        measure: REPORT_MEASURE.VARIATION,
+        value: '0.01',
+      });
+    });
+
     it('tag fan-out counts row once per tag into separate buckets and totals exceed grand total', () => {
       const row = createRow({
         convertedMinor: 1000n,

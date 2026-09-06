@@ -25,6 +25,38 @@ export function roundDivHalfAwayFromZero(num: bigint, den: bigint): bigint {
   return 2n * absR >= d ? q - 1n : q;
 }
 
+export function computeIncreasePercentHundredths(
+  previousAmount: AmountMoney,
+  currentAmount: AmountMoney,
+): bigint | null {
+  if (currentAmount.currency !== previousAmount.currency) {
+    return null;
+  }
+
+  if (
+    !INTEGER_PATTERN.test(previousAmount.amountMinor) ||
+    !INTEGER_PATTERN.test(currentAmount.amountMinor)
+  ) {
+    return null;
+  }
+
+  const previous = BigInt(previousAmount.amountMinor);
+  if (previous === 0n) {
+    return null;
+  }
+
+  const current = BigInt(currentAmount.amountMinor);
+  return roundDivHalfAwayFromZero((current - previous) * 10000n, previous);
+}
+
+export function formatHundredths(value: bigint): string {
+  const sign = value < 0n ? '-' : '';
+  const absolute = value < 0n ? -value : value;
+  const whole = absolute / 100n;
+  const fraction = absolute % 100n;
+  return `${sign}${whole.toString()}.${fraction.toString().padStart(2, '0')}`;
+}
+
 /**
  * Computes increasePercent between currentAmount and previousAmount.
  *
@@ -74,12 +106,9 @@ export function computeIncreasePercent(
     return 0;
   }
 
-  // Scale delta by 10,000 to compute percentage in hundredths of a percent (0.01%).
-  // Tie-breaking rule: Round half-away-from-zero (symmetric half-up), where exact half ties
-  // (e.g. ±0.005%) round away from zero to the larger magnitude.
-  const roundedHundredths = roundDivHalfAwayFromZero(
-    (current - previous) * 10000n,
-    previous,
+  const roundedHundredths = computeIncreasePercentHundredths(
+    previousAmount,
+    currentAmount,
   );
 
   const result = Number(roundedHundredths) / 100;

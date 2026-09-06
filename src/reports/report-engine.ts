@@ -3,7 +3,8 @@ import {
   truncateToBucketStart,
 } from '../platform/monthly-capacity.js';
 import {
-  computeIncreasePercent,
+  computeIncreasePercentHundredths,
+  formatHundredths,
   roundDivHalfAwayFromZero,
 } from '../platform/percentage-change.js';
 import {
@@ -82,14 +83,6 @@ const TAG_WARNING =
   'Rows are counted once per tag; totals across tag buckets may exceed the grand total.';
 const MIXED_CURRENCY_WARNING =
   'Native sum is undefined for buckets mixing currencies; use converted_value.';
-
-function formatTwoDecimalsBigInt(hundredths: bigint): string {
-  const sign = hundredths < 0n ? '-' : '';
-  const abs = hundredths < 0n ? -hundredths : hundredths;
-  const whole = abs / 100n;
-  const frac = abs % 100n;
-  return `${sign}${whole.toString()}.${frac.toString().padStart(2, '0')}`;
-}
 
 function getDimensionValues(
   dim: ReportDimension,
@@ -318,7 +311,7 @@ export function buildReportGrid(input: ReportEngineInput): ReportGrid {
             value = null;
           } else {
             const hundredths = roundDivHalfAwayFromZero(S * 10000n, grandTotal);
-            value = formatTwoDecimalsBigInt(hundredths);
+            value = formatHundredths(hundredths);
           }
           break;
         }
@@ -332,11 +325,11 @@ export function buildReportGrid(input: ReportEngineInput): ReportGrid {
             value = null;
           } else {
             const prevS = sPerBucket[i - 1];
-            const pct = computeIncreasePercent(
-              { amountMinor: S.toString(), currency: input.baseCurrency },
+            const hundredths = computeIncreasePercentHundredths(
               { amountMinor: prevS.toString(), currency: input.baseCurrency },
+              { amountMinor: S.toString(), currency: input.baseCurrency },
             );
-            value = pct === null ? null : pct.toFixed(2);
+            value = hundredths === null ? null : formatHundredths(hundredths);
           }
           break;
         }
