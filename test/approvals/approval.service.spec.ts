@@ -187,6 +187,28 @@ describe('ApprovalService', () => {
         expect(outcome.approval.status).toBe('expired');
       }
     });
+
+    it('pins expiry boundary: reports status: expired when expiresAt is exactly equal to clock', async () => {
+      const tx = createTxMock();
+      const store = createStoreMock();
+      vi.mocked(store.findApprovalById).mockResolvedValue({
+        ...samplePendingRecord,
+        status: 'pending',
+        expiresAt: new Date('2026-09-05T12:00:00.000Z'), // exactly now
+      });
+      const idempotency = createIdempotencyMock();
+      const service = new ApprovalService(tx, store, idempotency, clock);
+
+      const outcome = await service.getApproval(
+        subject,
+        workspaceId,
+        approvalId,
+      );
+      expect(outcome.kind).toBe(APPROVAL_OUTCOMES.OK);
+      if (outcome.kind === APPROVAL_OUTCOMES.OK) {
+        expect(outcome.approval.status).toBe('expired');
+      }
+    });
   });
 
   describe('confirmApproval', () => {
@@ -299,6 +321,29 @@ describe('ApprovalService', () => {
         ...samplePendingRecord,
         status: 'pending',
         expiresAt: new Date('2026-09-05T11:59:59.000Z'), // past relative to now (12:00:00)
+      });
+      const idempotency = createIdempotencyMock();
+      const service = new ApprovalService(tx, store, idempotency, clock);
+
+      const outcome = await service.confirmApproval(
+        subject,
+        workspaceId,
+        approvalId,
+        command,
+        key,
+      );
+
+      expect(outcome.kind).toBe(APPROVAL_OUTCOMES.CONFLICT);
+      expect(store.updateApprovalDecision).not.toHaveBeenCalled();
+    });
+
+    it('pins expiry boundary: returns CONFLICT when expiresAt is exactly equal to clock', async () => {
+      const tx = createTxMock();
+      const store = createStoreMock();
+      vi.mocked(store.findApprovalById).mockResolvedValue({
+        ...samplePendingRecord,
+        status: 'pending',
+        expiresAt: new Date('2026-09-05T12:00:00.000Z'), // exactly now
       });
       const idempotency = createIdempotencyMock();
       const service = new ApprovalService(tx, store, idempotency, clock);

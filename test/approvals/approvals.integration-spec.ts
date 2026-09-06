@@ -371,6 +371,42 @@ describe('Approvals integration contract and endpoint suite', () => {
 
       expect(res.statusCode).toBe(409);
     });
+
+    it('pins expiry boundary: treats expiresAt equal to insertion clock (now()) as expired on GET and confirm', async () => {
+      const approvalId = randomUUID();
+      await admin.query(
+        `insert into public.approvals (
+          id, workspace_id, tool_name, risk_class, arguments_hash, preview, status, expires_at, created_by
+        ) values (
+          $1, $2, 'execute_trade', 'financial_write', 'hash-boundary', '{"symbol": "AAPL"}'::jsonb, 'pending', now(), $3
+        )`,
+        [approvalId, workspace1Id, ownerId],
+      );
+
+      const getRes = await application.inject({
+        method: 'GET',
+        url: `/v1/approvals/${approvalId}`,
+        headers: {
+          authorization: 'Bearer viewer-token',
+          'x-workspace-id': workspace1Id,
+        },
+      });
+      expect(getRes.statusCode).toBe(200);
+      const getBody = JSON.parse(getRes.body) as { status: string };
+      expect(getBody.status).toBe('expired');
+
+      const confirmRes = await application.inject({
+        method: 'POST',
+        url: `/v1/approvals/${approvalId}/confirm`,
+        headers: {
+          authorization: 'Bearer admin-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: { argumentsHash: 'hash-boundary' },
+      });
+      expect(confirmRes.statusCode).toBe(409);
+    });
   });
 
   describe('Role gating', () => {
@@ -900,6 +936,131 @@ describe('Approvals integration contract and endpoint suite', () => {
           'idempotency-key': idemKey,
         },
         payload: { argumentsHash: hash, reason: 'First try' },
+      });
+      expect(res2.statusCode).toBe(409);
+    });
+
+    it('rejects repeated confirm on expired approval with 409 Conflict even with original idempotency key', async () => {
+      const approvalId = randomUUID();
+      const hash = 'hash-idem-expired';
+      const idemKey = randomUUID();
+
+      await admin.query(
+        `insert into public.approvals (
+          id, workspace_id, tool_name, risk_class, arguments_hash, preview, status, expires_at, created_by
+        ) values (
+          $1, $2, 'tool_idem', 'financial_write', $3, '{}'::jsonb, 'pending', now() + interval '1 day', $4
+        )`,
+        [approvalId, workspace1Id, hash, ownerId],
+      );
+
+      const res1 = await application.inject({
+        method: 'POST',
+        url: `/v1/approvals/${approvalId}/confirm`,
+        headers: {
+          authorization: 'Bearer admin-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': idemKey,
+        },
+        payload: { argumentsHash: hash, reason: 'First try' },
+      });
+      expect(res1.statusCode).toBe(200);
+
+      // Now expire the row
+      await admin.query(
+        `update public.approvals set expires_at = now() - interval '1 second' where id = $1`,
+        [approvalId],
+      );
+
+      const res2 = await application.inject({
+        method: 'POST',
+        url: `/v1/approvals/${approvalId}/confirm`,
+        headers: {
+          authorization: 'Bearer admin-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': idemKey,
+        },
+        payload: { argumentsHash: hash, reason: 'First try' },
+      });
+      expect(res2.statusCode).toBe(409);
+    });
+
+    it('rejects confirm with 409 Conflict when approval was rejected even with original reject key', async () => {
+      const approvalId = randomUUID();
+      const hash = 'hash-idem-rejected';
+      const idemKey = randomUUID();
+
+      await admin.query(
+        `insert into public.approvals (
+          id, workspace_id, tool_name, risk_class, arguments_hash, preview, status, expires_at, created_by
+        ) values (
+          $1, $2, 'tool_idem', 'financial_write', $3, '{}'::jsonb, 'pending', now() + interval '1 day', $4
+        )`,
+        [approvalId, workspace1Id, hash, ownerId],
+      );
+
+      const res1 = await application.inject({
+        method: 'POST',
+        url: `/v1/approvals/${approvalId}/reject`,
+        headers: {
+          authorization: 'Bearer admin-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': idemKey,
+        },
+        payload: { argumentsHash: hash, reason: 'Reject first' },
+      });
+      expect(res1.statusCode).toBe(200);
+
+      // Attempting confirm on rejected approval with the original key
+      const res2 = await application.inject({
+        method: 'POST',
+        url: `/v1/approvals/${approvalId}/confirm`,
+        headers: {
+          authorization: 'Bearer admin-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': idemKey,
+        },
+        payload: { argumentsHash: hash, reason: 'Reject first' },
+      });
+      expect(res2.statusCode).toBe(409);
+    });
+
+    it('rejects reject with 409 Conflict when approval was approved even with original confirm key', async () => {
+      const approvalId = randomUUID();
+      const hash = 'hash-idem-approved';
+      const idemKey = randomUUID();
+
+      await admin.query(
+        `insert into public.approvals (
+          id, workspace_id, tool_name, risk_class, arguments_hash, preview, status, expires_at, created_by
+        ) values (
+          $1, $2, 'tool_idem', 'financial_write', $3, '{}'::jsonb, 'pending', now() + interval '1 day', $4
+        )`,
+        [approvalId, workspace1Id, hash, ownerId],
+      );
+
+      const res1 = await application.inject({
+        method: 'POST',
+        url: `/v1/approvals/${approvalId}/confirm`,
+        headers: {
+          authorization: 'Bearer admin-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': idemKey,
+        },
+        payload: { argumentsHash: hash, reason: 'Confirm first' },
+      });
+      expect(res1.statusCode).toBe(200);
+
+      // Attempting reject on approved approval with the original key
+      const res2 = await application.inject({
+        method: 'POST',
+        url: `/v1/approvals/${approvalId}/reject`,
+        headers: {
+          authorization: 'Bearer admin-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': idemKey,
+        },
+        payload: { argumentsHash: hash, reason: 'Confirm first' },
       });
       expect(res2.statusCode).toBe(409);
     });
