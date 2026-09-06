@@ -140,7 +140,11 @@ describe('Report runs schema, named constraints, and RLS (202609050002_report_ru
   });
 
   describe('Named constraints', () => {
-    it('enforces report_runs_workspace_id_id_key composite unique constraint in database and rejects duplicate id insert', async () => {
+    it('asserts report_runs_workspace_id_id_key composite unique constraint exists', async () => {
+      // STRUCTURAL assertion, deliberately not behavioural. PostgreSQL checks the
+      // primary key before this redundant unique constraint when id is duplicated;
+      // catalog inspection is the only independent proof that the FK-required
+      // composite unique constraint exists.
       const uqRes = await admin.query<{ def: string }>(
         `select pg_get_constraintdef(oid) as def
            from pg_constraint
@@ -150,35 +154,6 @@ describe('Report runs schema, named constraints, and RLS (202609050002_report_ru
       );
       expect(uqRes.rows).toHaveLength(1);
       expect(uqRes.rows[0].def).toMatch(/unique \(workspace_id, id\)/i);
-
-      const runId = '00000000-0000-4000-8000-000000008271';
-      await asSubject(ownerA, async (client) => {
-        await client.query(
-          `insert into public.report_runs (
-             id, workspace_id, preset, status, format, created_by
-           ) values (
-             $1, $2, 'monthly_summary', 'queued', 'json', $3
-           )`,
-          [runId, ws1Id, ownerA],
-        );
-      });
-
-      const err = await capturePgError(() =>
-        asSubject(ownerA, async (client) => {
-          await client.query(
-            `insert into public.report_runs (
-               id, workspace_id, preset, status, format, created_by
-             ) values (
-               $1, $2, 'cash_flow', 'queued', 'json', $3
-             )`,
-            [runId, ws1Id, ownerA],
-          );
-        }),
-      );
-      expect(err.code).toBe('23505');
-      expect(['report_runs_workspace_id_id_key', 'report_runs_pkey']).toContain(
-        err.constraint,
-      );
     });
 
     it('enforces report_runs_status_check', async () => {
