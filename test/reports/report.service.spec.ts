@@ -514,6 +514,41 @@ describe('ReportService', () => {
       );
     });
 
+    it('returns replay outcome even when storage cleanup fails', async () => {
+      const tx = createTxMock();
+      const store = createRunStore();
+      const idempotency = createIdempotencyMock();
+      const storage = createStorageMock();
+      vi.mocked(storage.remove).mockRejectedValue(new Error('cleanup failed'));
+      const fingerprint = computeRequestFingerprint(runCommand);
+      vi.mocked(idempotency.write).mockResolvedValue(false);
+      vi.mocked(idempotency.read)
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce({
+          requestFingerprint: fingerprint,
+          responseStatus: 202,
+          responseEtag: null,
+          responseBody: sampleRun,
+        });
+
+      const service = new ReportService(tx, store, idempotency, storage);
+      const outcome = await service.createReportRun(
+        subject,
+        workspaceId,
+        runCommand,
+        key,
+      );
+
+      expect(outcome).toEqual({
+        kind: REPORT_RUN_OUTCOMES.REPLAYED,
+        status: 202,
+        etag: null,
+        body: sampleRun,
+      });
+      expect(tx.state.events).toEqual(['commit', 'rollback']);
+      expect(storage.remove).toHaveBeenCalled();
+    });
+
     it('rolls back the insert transaction for a concurrent conflict', async () => {
       const tx = createTxMock();
       const store = createRunStore();

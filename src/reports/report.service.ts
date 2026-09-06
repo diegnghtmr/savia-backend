@@ -423,8 +423,13 @@ export class ReportService implements ReportsPort {
       });
       return { kind: REPORT_RUN_OUTCOMES.CREATED, reportRun };
     } catch (error) {
-      if (uploadedPath !== undefined && this.storage)
-        await this.storage.remove(uploadedPath);
+      if (uploadedPath !== undefined && this.storage) {
+        try {
+          await this.storage.remove(uploadedPath);
+        } catch {
+          // Best-effort cleanup must never mask or replace the primary error
+        }
+      }
       if (error instanceof ReportMissingRateError)
         return {
           kind: REPORT_RUN_OUTCOMES.MISSING_RATE,
