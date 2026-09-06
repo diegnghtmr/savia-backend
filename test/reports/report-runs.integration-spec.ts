@@ -6,7 +6,7 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
@@ -19,6 +19,14 @@ import {
   ReportRunCommandValidationError,
 } from '../../src/reports/report-run-command.js';
 import type { ReportGrid } from '../../src/reports/report-engine.js';
+import {
+  REPORT_GRID_CELL_CAP,
+  REPORT_MAX_CELL_STRING_LENGTH,
+  REPORT_SOURCE_ROW_CAP,
+  setReportGridCellCap,
+  setReportMaxCellStringLength,
+  setReportSourceRowCap,
+} from '../../src/reports/report.port.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -481,6 +489,158 @@ describe('Report runs integration contract and endpoint suite', () => {
         (c) => c.measure === 'budget',
       );
       expect(budgetCell?.value).toBeNull();
+    });
+  });
+
+  describe('FIX 3: Resource bounds (row cap, cell cap, string length)', () => {
+    afterEach(() => {
+      setReportSourceRowCap(REPORT_SOURCE_ROW_CAP);
+      setReportGridCellCap(REPORT_GRID_CELL_CAP);
+      setReportMaxCellStringLength(REPORT_MAX_CELL_STRING_LENGTH);
+    });
+
+    it('returns 202 when source row count is exactly at the cap', async () => {
+      // In June 2026 we have 2 transactions (txEurId and txEur2Id)
+      setReportSourceRowCap(2);
+
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+    });
+
+    it('returns 422 when source row count is one over the cap', async () => {
+      // 2 transactions in June, cap set to 1 -> one over the cap
+      setReportSourceRowCap(1);
+
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      const body = JSON.parse(response.body) as {
+        detail?: string;
+        errors?: readonly { field: string; message: string }[];
+      };
+      const message = body.detail ?? body.errors?.[0]?.message;
+      expect(message).toContain(
+        'Report matched more source rows than the limit',
+      );
+    });
+
+    it('returns 202 when grid cell count is exactly at the cap', async () => {
+      // expenses preset has 2 rows and 2 measures ('converted_value', 'percentage') -> 4 cells
+      setReportGridCellCap(4);
+
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+    });
+
+    it('returns 422 when grid cell count is one over the cap', async () => {
+      // expenses preset has 4 cells, cap set to 3 -> one over the cap
+      setReportGridCellCap(3);
+
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      const body = JSON.parse(response.body) as {
+        detail?: string;
+        errors?: readonly { field: string; message: string }[];
+      };
+      const message = body.detail ?? body.errors?.[0]?.message;
+      expect(message).toContain('grid cells, exceeding the synchronous limit');
+    });
+
+    it('returns 422 when an individual cell string exceeds maximum allowed length', async () => {
+      setReportMaxCellStringLength(5); // 'Expenses' is 8 chars, so it exceeds 5
+
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      const body = JSON.parse(response.body) as {
+        detail?: string;
+        errors?: readonly { field: string; message: string }[];
+      };
+      const message = body.detail ?? body.errors?.[0]?.message;
+      expect(message).toContain('Report cell string length exceeded maximum');
     });
   });
 });

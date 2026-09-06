@@ -8,10 +8,14 @@ import {
   roundDivHalfAwayFromZero,
 } from '../platform/percentage-change.js';
 import {
+  getReportGridCellCap,
+  getReportMaxCellStringLength,
   REPORT_DIMENSION,
   REPORT_DIMENSIONS,
   REPORT_MEASURE,
   REPORT_MEASURES,
+  ReportCellCapExceededError,
+  ReportCellStringLengthExceededError,
   type ReportDimension,
   type ReportMeasure,
   type ReportSourceRow,
@@ -341,6 +345,26 @@ export function buildReportGrid(input: ReportEngineInput): ReportGrid {
     }
 
     reportRows.push({ key: b.key, cells });
+  }
+
+  const gridCellCap = getReportGridCellCap();
+  const maxCellLength = getReportMaxCellStringLength();
+  const totalCells = reportRows.length * input.measures.length;
+  if (Number.isFinite(gridCellCap) && totalCells > gridCellCap) {
+    throw new ReportCellCapExceededError(gridCellCap, totalCells);
+  }
+
+  for (const row of reportRows) {
+    for (const k of row.key) {
+      if (k.length > maxCellLength) {
+        throw new ReportCellStringLengthExceededError(maxCellLength);
+      }
+    }
+    for (const cell of row.cells) {
+      if (cell.value && cell.value.length > maxCellLength) {
+        throw new ReportCellStringLengthExceededError(maxCellLength);
+      }
+    }
   }
 
   return {

@@ -28,7 +28,7 @@ describe('PostgresReportAdapter report-run queries', () => {
     baseCurrency: 'USD',
   };
 
-  it('keeps workspace scope and both independent posting predicates', async () => {
+  it('STRUCTURAL: verifies SQL query structure for source row selection', async () => {
     const { client, query } = clientWithRows([]);
     await new PostgresReportAdapter().readReportSourceRows(
       client,
@@ -39,6 +39,10 @@ describe('PostgresReportAdapter report-run queries', () => {
     );
 
     const [sql, values] = query.mock.calls[0] as [string, readonly unknown[]];
+    // STRUCTURAL assertion, deliberately not behavioural. Row-level security is the
+    // enforcing layer for cross-workspace reads: the policy gates SELECT,
+    // and behavioural guarantees are provided by test/reports/report-runs.integration-spec.ts.
+    // The predicate is defence in depth, and pinning its text is the only way to keep it.
     expect(sql).toContain('where t.workspace_id = $1::uuid');
     expect(sql).toContain("and t.status in ('confirmed', 'reconciled')");
     expect(sql).toContain('and exists (');
@@ -52,6 +56,7 @@ describe('PostgresReportAdapter report-run queries', () => {
       '2026-01-01',
       '2026-09-05',
       'expense',
+      50001,
     ]);
   });
 

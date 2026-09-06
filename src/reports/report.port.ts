@@ -252,6 +252,95 @@ export interface CreateReportRunRecord {
   readonly completedAt: Date;
 }
 
+/**
+ * Maximum source rows allowed in a synchronous report run to prevent heap exhaustion
+ * and event-loop monopolization. 50,000 rows provides rich analytics coverage for
+ * multi-year workspace history while keeping memory and processing within safe request bounds.
+ */
+export const REPORT_SOURCE_ROW_CAP = 50_000;
+
+/**
+ * Maximum total grid cells (rows * measures) allowed in a generated report.
+ * Guards against fan-out explosion (e.g. multi-tag expansion) while allowing large tabular outputs.
+ */
+export const REPORT_GRID_CELL_CAP = 100_000;
+
+/**
+ * Maximum string length allowed for an individual rendered cell or dimension value.
+ * Prevents single pathological strings (e.g. 100k-char payee or note) from dominating renderers.
+ */
+export const REPORT_MAX_CELL_STRING_LENGTH = 4096;
+
+let activeSourceRowCap = REPORT_SOURCE_ROW_CAP;
+let activeGridCellCap = REPORT_GRID_CELL_CAP;
+let activeMaxCellStringLength = REPORT_MAX_CELL_STRING_LENGTH;
+
+export function getReportSourceRowCap(): number {
+  if (process.env.REPORT_SOURCE_ROW_CAP !== undefined) {
+    const parsed = Number(process.env.REPORT_SOURCE_ROW_CAP);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return activeSourceRowCap;
+}
+
+export function setReportSourceRowCap(cap: number): void {
+  activeSourceRowCap = cap;
+}
+
+export function getReportGridCellCap(): number {
+  if (process.env.REPORT_GRID_CELL_CAP !== undefined) {
+    const parsed = Number(process.env.REPORT_GRID_CELL_CAP);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return activeGridCellCap;
+}
+
+export function setReportGridCellCap(cap: number): void {
+  activeGridCellCap = cap;
+}
+
+export function getReportMaxCellStringLength(): number {
+  if (process.env.REPORT_MAX_CELL_STRING_LENGTH !== undefined) {
+    const parsed = Number(process.env.REPORT_MAX_CELL_STRING_LENGTH);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return activeMaxCellStringLength;
+}
+
+export function setReportMaxCellStringLength(max: number): void {
+  activeMaxCellStringLength = max;
+}
+
+export class ReportRowCapExceededError extends Error {
+  public constructor(public readonly cap: number) {
+    super(
+      `Report matched more source rows than the limit of ${cap} allowed for synchronous execution. Please specify a narrower period or additional filters.`,
+    );
+    this.name = 'ReportRowCapExceededError';
+  }
+}
+
+export class ReportCellCapExceededError extends Error {
+  public constructor(
+    public readonly cap: number,
+    public readonly actual: number,
+  ) {
+    super(
+      `Report generated ${actual} grid cells, exceeding the synchronous limit of ${cap}. Please specify a narrower period or fewer dimensions/measures.`,
+    );
+    this.name = 'ReportCellCapExceededError';
+  }
+}
+
+export class ReportCellStringLengthExceededError extends Error {
+  public constructor(public readonly maxLength: number) {
+    super(
+      `Report cell string length exceeded maximum allowed length of ${maxLength} characters.`,
+    );
+    this.name = 'ReportCellStringLengthExceededError';
+  }
+}
+
 export class ReportMissingRateError extends Error {
   public constructor(
     public readonly fromCurrency: string,

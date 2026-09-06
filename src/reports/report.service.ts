@@ -7,7 +7,12 @@ import type { ArtifactStorage } from '../platform/artifact-storage.port.js';
 import { computeReportGrid } from './report-engine.js';
 import { REPORT_PRESETS } from './report-presets.js';
 import { serializeReport } from './report-serializers.js';
-import { ReportMissingRateError } from './report.port.js';
+import {
+  ReportMissingRateError,
+  ReportRowCapExceededError,
+  ReportCellCapExceededError,
+  ReportCellStringLengthExceededError,
+} from './report.port.js';
 import {
   REPORT_OUTCOMES,
   type CreateReportDefinitionRequest,
@@ -271,14 +276,26 @@ export class ReportService implements ReportsPort {
           typeof command.filters.type === 'string'
             ? command.filters.type
             : undefined;
-        const rows = await this.store.readReportSourceRows!(
-          client,
-          workspaceId,
-          periodStart,
-          to,
-          'typeFilter' in shape ? shape.typeFilter : undefined,
-          callerType,
-        );
+        let rows;
+        try {
+          rows = await this.store.readReportSourceRows!(
+            client,
+            workspaceId,
+            periodStart,
+            to,
+            'typeFilter' in shape ? shape.typeFilter : undefined,
+            callerType,
+          );
+        } catch (error) {
+          if (error instanceof ReportRowCapExceededError) {
+            return {
+              kind: REPORT_RUN_OUTCOMES.UNPROCESSABLE,
+              detail: error.message,
+              violations: [{ field: 'filters', message: error.message }],
+            } as const;
+          }
+          throw error;
+        }
         const baseCurrency = await this.store.readWorkspaceBaseCurrency!(
           client,
           workspaceId,
@@ -304,13 +321,28 @@ export class ReportService implements ReportsPort {
             ],
           } as const;
         }
-        let grid = computeReportGrid({
-          rows,
-          dimensions: shape.dimensions,
-          measures: shape.measures,
-          baseCurrency,
-          budgetedMinorByBucket: budget,
-        });
+        let grid;
+        try {
+          grid = computeReportGrid({
+            rows,
+            dimensions: shape.dimensions,
+            measures: shape.measures,
+            baseCurrency,
+            budgetedMinorByBucket: budget,
+          });
+        } catch (error) {
+          if (
+            error instanceof ReportCellCapExceededError ||
+            error instanceof ReportCellStringLengthExceededError
+          ) {
+            return {
+              kind: REPORT_RUN_OUTCOMES.UNPROCESSABLE,
+              detail: error.message,
+              violations: [{ field: 'filters', message: error.message }],
+            } as const;
+          }
+          throw error;
+        }
         if (command.preset === 'budget') {
           const unbudgetedCount = grid.rows.filter(
             (r) => r.cells.find((c) => c.measure === 'budget')?.value === null,

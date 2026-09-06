@@ -15,7 +15,11 @@ import type {
   ReportRunStatus,
 } from './report.port.js';
 import type { ReportSourceRow } from './report.port.js';
-import { ReportMissingRateError } from './report.port.js';
+import {
+  getReportSourceRowCap,
+  ReportMissingRateError,
+  ReportRowCapExceededError,
+} from './report.port.js';
 
 interface ReportDefinitionRow extends Record<string, unknown> {
   readonly id: string;
@@ -206,13 +210,20 @@ where t.workspace_id = $1::uuid
   )
   and (t.occurred_at at time zone 'utc')::date between $2::date and $3::date
   and ($4::text is null or t.type = $4::text)
-order by t.occurred_at asc, t.id asc`;
+order by t.occurred_at asc, t.id asc
+limit $5`;
+    const cap = getReportSourceRowCap();
+    const limitValue = Number.isFinite(cap) ? cap + 1 : null;
     const result = await client.query<Record<string, unknown>>(sql, [
       workspaceId,
       from,
       to,
       types || null,
+      limitValue,
     ]);
+    if (Number.isFinite(cap) && result.rows.length > cap) {
+      throw new ReportRowCapExceededError(cap);
+    }
     for (const row of result.rows) {
       if (row.currency !== row.baseCurrency && row.rate === null) {
         throw new ReportMissingRateError(
