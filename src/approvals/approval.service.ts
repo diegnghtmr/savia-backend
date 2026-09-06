@@ -168,15 +168,12 @@ export class ApprovalService implements ApprovalsPort {
           key,
           workspaceId,
         );
-        if (existing) {
-          return existing.requestFingerprint === fingerprint
-            ? {
-                kind: APPROVAL_OUTCOMES.REPLAYED,
-                status: existing.responseStatus,
-                etag: existing.responseEtag,
-                body: existing.responseBody,
-              }
-            : { kind: APPROVAL_OUTCOMES.CONFLICT };
+        if (existing && existing.requestFingerprint !== fingerprint) {
+          return {
+            kind: APPROVAL_OUTCOMES.CONFLICT,
+            reason:
+              'Idempotency key already used with different request parameters',
+          };
         }
 
         const approval = await this.store.findApprovalById(
@@ -188,18 +185,55 @@ export class ApprovalService implements ApprovalsPort {
           return { kind: APPROVAL_OUTCOMES.NOT_FOUND };
         }
 
+        const now = this.clock();
+        if (approval.status === 'consumed') {
+          return {
+            kind: APPROVAL_OUTCOMES.CONFLICT,
+            reason: 'Approval has already been consumed',
+          };
+        }
+
+        if (
+          approval.status === 'expired' ||
+          approval.expiresAt.getTime() <= now.getTime()
+        ) {
+          return {
+            kind: APPROVAL_OUTCOMES.CONFLICT,
+            reason: 'Approval has expired',
+          };
+        }
+
+        if (existing) {
+          // This is a deliberate narrowing of idempotency semantics: an idempotency key
+          // normally means "safe to repeat". For an authorization decision it must mean
+          // "safe to repeat while the decision still stands". A replay is not a fresh grant.
+          // If the approval has expired, been consumed, or transitioned to an incompatible terminal status,
+          // it must be refused with 409 rather than returning a misleading successful replay.
+          if (targetStatus === 'approved' && approval.status === 'rejected') {
+            return {
+              kind: APPROVAL_OUTCOMES.CONFLICT,
+              reason: 'Approval is not pending',
+            };
+          }
+          if (targetStatus === 'rejected' && approval.status === 'approved') {
+            return {
+              kind: APPROVAL_OUTCOMES.CONFLICT,
+              reason: 'Approval is not pending',
+            };
+          }
+
+          return {
+            kind: APPROVAL_OUTCOMES.REPLAYED,
+            status: existing.responseStatus,
+            etag: existing.responseEtag,
+            body: existing.responseBody,
+          };
+        }
+
         if (approval.status !== 'pending') {
           return {
             kind: APPROVAL_OUTCOMES.CONFLICT,
             reason: 'Approval is not pending',
-          };
-        }
-
-        const now = this.clock();
-        if (approval.expiresAt.getTime() <= now.getTime()) {
-          return {
-            kind: APPROVAL_OUTCOMES.CONFLICT,
-            reason: 'Approval has expired',
           };
         }
 

@@ -380,7 +380,84 @@ describe('ApprovalService', () => {
         key,
       );
 
-      expect(outcome).toEqual({ kind: APPROVAL_OUTCOMES.CONFLICT });
+      expect(outcome).toEqual({
+        kind: APPROVAL_OUTCOMES.CONFLICT,
+        reason:
+          'Idempotency key already used with different request parameters',
+      });
+      expect(store.updateApprovalDecision).not.toHaveBeenCalled();
+    });
+
+    it('refuses idempotent replay with 409 Conflict when approval is already consumed', async () => {
+      const tx = createTxMock();
+      const store = createStoreMock();
+      const idempotency = createIdempotencyMock();
+      const fingerprint = computeRequestFingerprint({
+        approvalId,
+        ...command,
+      });
+
+      vi.mocked(idempotency.read).mockResolvedValue({
+        requestFingerprint: fingerprint,
+        responseStatus: 200,
+        responseEtag: null,
+        responseBody: { id: approvalId, status: 'approved' },
+      });
+      vi.mocked(store.findApprovalById).mockResolvedValue({
+        ...samplePendingRecord,
+        status: 'consumed',
+      });
+
+      const service = new ApprovalService(tx, store, idempotency, clock);
+      const outcome = await service.confirmApproval(
+        subject,
+        workspaceId,
+        approvalId,
+        command,
+        key,
+      );
+
+      expect(outcome).toEqual({
+        kind: APPROVAL_OUTCOMES.CONFLICT,
+        reason: 'Approval has already been consumed',
+      });
+      expect(store.updateApprovalDecision).not.toHaveBeenCalled();
+    });
+
+    it('refuses idempotent replay with 409 Conflict when approval has expired', async () => {
+      const tx = createTxMock();
+      const store = createStoreMock();
+      const idempotency = createIdempotencyMock();
+      const fingerprint = computeRequestFingerprint({
+        approvalId,
+        ...command,
+      });
+
+      vi.mocked(idempotency.read).mockResolvedValue({
+        requestFingerprint: fingerprint,
+        responseStatus: 200,
+        responseEtag: null,
+        responseBody: { id: approvalId, status: 'approved' },
+      });
+      vi.mocked(store.findApprovalById).mockResolvedValue({
+        ...samplePendingRecord,
+        status: 'approved',
+        expiresAt: new Date('2026-09-05T11:00:00.000Z'), // expired relative to now (12:00:00)
+      });
+
+      const service = new ApprovalService(tx, store, idempotency, clock);
+      const outcome = await service.confirmApproval(
+        subject,
+        workspaceId,
+        approvalId,
+        command,
+        key,
+      );
+
+      expect(outcome).toEqual({
+        kind: APPROVAL_OUTCOMES.CONFLICT,
+        reason: 'Approval has expired',
+      });
       expect(store.updateApprovalDecision).not.toHaveBeenCalled();
     });
 

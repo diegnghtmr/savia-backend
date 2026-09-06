@@ -858,6 +858,51 @@ describe('Approvals integration contract and endpoint suite', () => {
       });
       expect(res2.statusCode).toBe(409);
     });
+
+    it('rejects repeated confirm on consumed approval with 409 Conflict even with same idempotency key', async () => {
+      const approvalId = randomUUID();
+      const hash = 'hash-idem-consumed';
+      const idemKey = randomUUID();
+
+      await admin.query(
+        `insert into public.approvals (
+          id, workspace_id, tool_name, risk_class, arguments_hash, preview, status, expires_at, created_by
+        ) values (
+          $1, $2, 'tool_idem', 'financial_write', $3, '{}'::jsonb, 'pending', now() + interval '1 day', $4
+        )`,
+        [approvalId, workspace1Id, hash, ownerId],
+      );
+
+      const res1 = await application.inject({
+        method: 'POST',
+        url: `/v1/approvals/${approvalId}/confirm`,
+        headers: {
+          authorization: 'Bearer admin-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': idemKey,
+        },
+        payload: { argumentsHash: hash, reason: 'First try' },
+      });
+      expect(res1.statusCode).toBe(200);
+
+      // Transition the row to consumed
+      await admin.query(
+        `update public.approvals set status = 'consumed', decided_by = null, decided_at = null where id = $1`,
+        [approvalId],
+      );
+
+      const res2 = await application.inject({
+        method: 'POST',
+        url: `/v1/approvals/${approvalId}/confirm`,
+        headers: {
+          authorization: 'Bearer admin-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': idemKey,
+        },
+        payload: { argumentsHash: hash, reason: 'First try' },
+      });
+      expect(res2.statusCode).toBe(409);
+    });
   });
 
   describe('Concurrent decision race condition', () => {
