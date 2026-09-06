@@ -74,6 +74,13 @@ export function createReportDefinitionCommand(
           'invalid',
           'must be a supported report dimension',
         );
+      } else if (item === 'variability') {
+        add(
+          violations,
+          `dimensions.${index}`,
+          'unsupported',
+          "variability dimension is not supported by this deployment's data model",
+        );
       } else {
         validatedDimensions.push(item as ReportDimension);
       }

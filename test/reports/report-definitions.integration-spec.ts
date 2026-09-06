@@ -489,6 +489,31 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
       expect(resMeas.statusCode).toBe(422);
     });
 
+    it('returns 422 when variability dimension is requested', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-definitions',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: { ...validPayload, dimensions: ['variability'] },
+      });
+      expect(response.statusCode).toBe(422);
+      const body = JSON.parse(response.body) as {
+        errors?: readonly { field: string; code: string; message: string }[];
+      };
+      expect(body.errors).toContainEqual(
+        expect.objectContaining({
+          field: 'dimensions.0',
+          code: 'unsupported',
+          message:
+            "variability dimension is not supported by this deployment's data model",
+        }),
+      );
+    });
+
     it('returns 422 when visualization is invalid', async () => {
       const response = await application.inject({
         method: 'POST',
