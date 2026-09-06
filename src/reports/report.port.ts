@@ -313,6 +313,7 @@ export type ReportRunCreateOutcome =
   | {
       readonly kind: typeof REPORT_RUN_OUTCOMES.UNPROCESSABLE;
       readonly violations: readonly { field: string; message: string }[];
+      readonly detail?: string;
     }
   | {
       readonly kind: typeof REPORT_RUN_OUTCOMES.MISSING_RATE;

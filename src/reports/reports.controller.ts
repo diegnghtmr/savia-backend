@@ -226,6 +226,9 @@ export class ReportsController {
         type: PROBLEM_TYPES.UNPROCESSABLE,
         title: 'Report run request unprocessable',
         status: 422,
+        ...('detail' in outcome && outcome.detail
+          ? { detail: outcome.detail }
+          : {}),
         errors: outcome.violations.map((v) => ({
           field: v.field,
           code: 'invalid',

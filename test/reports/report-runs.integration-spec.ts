@@ -79,8 +79,13 @@ describe('Report runs integration contract and endpoint suite', () => {
 
   const catExpenseId = 'dddddddd-0000-4000-8000-000000000001';
   const catIncomeId = 'dddddddd-0000-4000-8000-000000000002';
+  const catExpense2Id = 'dddddddd-0000-4000-8000-000000000003';
 
   const txEurId = 'eeeeeeee-0000-4000-8000-000000000001';
+  const txEur2Id = 'eeeeeeee-0000-4000-8000-000000000002';
+  const txJulyId = 'eeeeeeee-0000-4000-8000-000000000003';
+  const budgetJuneId = 'ffffffff-0000-4000-8000-000000000001';
+  const customDefId = 'aaaaaaaa-1111-4000-8000-000000000001';
 
   beforeAll(async () => {
     Object.assign(process.env, {
@@ -193,8 +198,9 @@ describe('Report runs integration contract and endpoint suite', () => {
     await admin.query(
       `insert into public.categories (id, workspace_id, name, kind, created_by) values
         ($1, $2, 'Expenses', 'expense', $3),
-        ($4, $2, 'Income', 'income', $3)`,
-      [catExpenseId, workspace1Id, ownerId, catIncomeId],
+        ($4, $2, 'Income', 'income', $3),
+        ($5, $2, 'Utilities', 'expense', $3)`,
+      [catExpenseId, workspace1Id, ownerId, catIncomeId, catExpense2Id],
     );
 
     // 7. Seed confirmed EUR transaction with confirmed ledger posting (transfer_id is null)
@@ -213,6 +219,61 @@ describe('Report runs integration contract and endpoint suite', () => {
         (gen_random_uuid(), $1, $2, $3, 'account', 10000, 'EUR', 'confirmed', '2026-06-15 12:00:00+00'),
         (gen_random_uuid(), $1, $2, null, 'external', -10000, 'EUR', 'confirmed', '2026-06-15 12:00:00+00')`,
       [workspace1Id, txEurId, acct1Eur],
+    );
+
+    // Seed second EUR transaction with catExpense2Id (for partial budget warning test)
+    await admin.query(
+      `insert into public.transactions (
+        id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, category_id, created_by
+      ) values (
+        $1, $2, $3, 'expense', 'confirmed', 5000, 'EUR', '2026-06-16 12:00:00+00', $4, $5
+      )`,
+      [txEur2Id, workspace1Id, acct1Eur, catExpense2Id, ownerId],
+    );
+    await admin.query(
+      `insert into public.ledger_postings (
+        id, workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at
+      ) values
+        (gen_random_uuid(), $1, $2, $3, 'account', 5000, 'EUR', 'confirmed', '2026-06-16 12:00:00+00'),
+        (gen_random_uuid(), $1, $2, null, 'external', -5000, 'EUR', 'confirmed', '2026-06-16 12:00:00+00')`,
+      [workspace1Id, txEur2Id, acct1Eur],
+    );
+
+    // Seed July transaction in USD
+    await admin.query(
+      `insert into public.transactions (
+        id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, category_id, created_by
+      ) values (
+        $1, $2, $3, 'expense', 'confirmed', 3000, 'USD', '2026-07-15 12:00:00+00', $4, $5
+      )`,
+      [txJulyId, workspace1Id, acct1Usd, catExpenseId, ownerId],
+    );
+    await admin.query(
+      `insert into public.ledger_postings (
+        id, workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at
+      ) values
+        (gen_random_uuid(), $1, $2, $3, 'account', 3000, 'USD', 'confirmed', '2026-07-15 12:00:00+00'),
+        (gen_random_uuid(), $1, $2, null, 'external', -3000, 'USD', 'confirmed', '2026-07-15 12:00:00+00')`,
+      [workspace1Id, txJulyId, acct1Usd],
+    );
+
+    // 8. Seed June budget with allocation only for catExpenseId
+    await admin.query(
+      `insert into public.budgets (id, workspace_id, name, method, period_start, period_end, currency, created_by) values
+        ($1, $2, 'June Budget', 'envelope', '2026-06-01', '2026-06-30', 'USD', $3)`,
+      [budgetJuneId, workspace1Id, ownerId],
+    );
+    await admin.query(
+      `insert into public.budget_allocations (id, workspace_id, budget_id, category_id, planned_minor) values
+        (gen_random_uuid(), $1, $2, $3, 50000)`,
+      [workspace1Id, budgetJuneId, catExpenseId],
+    );
+
+    // 9. Seed custom report definition with budget measure
+    await admin.query(
+      `insert into public.report_definitions (id, workspace_id, name, dimensions, measures, visualization, filters, created_by) values
+        ($1, $2, 'Custom Budget Def', '["month", "category"]'::jsonb, '["budget", "converted_value"]'::jsonb, 'table', '{}'::jsonb, $3)`,
+      [customDefId, workspace1Id, ownerId],
     );
 
     // Bootstrap Nest application
@@ -319,12 +380,107 @@ describe('Report runs integration contract and endpoint suite', () => {
       expect(uploaded).toBeDefined();
 
       const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
-      expect(grid.rows.length).toBe(1);
+      const eurRow = grid.rows.find((r) => r.key.includes(catExpenseId));
+      expect(eurRow).toBeDefined();
       // 100.00 EUR (10000 minor) * 1.10 = 11000 USD minor
-      const convertedCell = grid.rows[0]?.cells.find(
+      const convertedCell = eurRow?.cells.find(
         (c) => c.measure === 'converted_value',
       );
       expect(convertedCell?.value).toBe('11000');
+    });
+  });
+
+  describe('FIX 2: Budget join and empty budget policy', () => {
+    it('returns 422 with problem-details when budget preset has no applicable budget in period', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'budget',
+          format: 'json',
+          filters: {
+            from: '2026-07-01',
+            to: '2026-07-31',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      const body = JSON.parse(response.body) as {
+        detail?: string;
+        errors?: readonly { field: string; message: string }[];
+      };
+      const message = body.detail ?? body.errors?.[0]?.message;
+      expect(message).toContain('No budget exists for the requested period.');
+    });
+
+    it('returns 202 and warnings when budget preset has some unbudgeted buckets', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'budget',
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const uploaded = inMemoryStorage.uploaded.get(
+        `${workspace1Id}/${body.id}.json`,
+      );
+      expect(uploaded).toBeDefined();
+      const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
+      expect(
+        grid.warnings.some((w) => w.includes('bucket had no budget.')),
+      ).toBe(true);
+    });
+
+    it('returns 202 with null cells and no error for custom definition with budget measure and no budget', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          definitionId: customDefId,
+          format: 'json',
+          filters: {
+            from: '2026-07-01',
+            to: '2026-07-31',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const uploaded = inMemoryStorage.uploaded.get(
+        `${workspace1Id}/${body.id}.json`,
+      );
+      expect(uploaded).toBeDefined();
+      const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
+      expect(grid.warnings).toEqual([]);
+      const budgetCell = grid.rows[0]?.cells.find(
+        (c) => c.measure === 'budget',
+      );
+      expect(budgetCell?.value).toBeNull();
     });
   });
 });

@@ -292,13 +292,37 @@ export class ReportService implements ReportsPort {
           to,
           shape.dimensions,
         );
-        const grid = computeReportGrid({
+        if (command.preset === 'budget' && budget.size === 0) {
+          return {
+            kind: REPORT_RUN_OUTCOMES.UNPROCESSABLE,
+            detail: 'No budget exists for the requested period.',
+            violations: [
+              {
+                field: 'preset',
+                message: 'No budget exists for the requested period.',
+              },
+            ],
+          } as const;
+        }
+        let grid = computeReportGrid({
           rows,
           dimensions: shape.dimensions,
           measures: shape.measures,
           baseCurrency,
           budgetedMinorByBucket: budget,
         });
+        if (command.preset === 'budget') {
+          const unbudgetedCount = grid.rows.filter(
+            (r) => r.cells.find((c) => c.measure === 'budget')?.value === null,
+          ).length;
+          if (unbudgetedCount > 0) {
+            const warningMessage = `${unbudgetedCount} ${unbudgetedCount === 1 ? 'bucket had' : 'buckets had'} no budget.`;
+            grid = {
+              ...grid,
+              warnings: [...grid.warnings, warningMessage],
+            };
+          }
+        }
         return { kind: 'prepared' as const, grid, shape, periodStart, to };
       });
       if (prepared.kind !== 'prepared') return prepared;

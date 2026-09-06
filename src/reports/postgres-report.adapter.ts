@@ -257,7 +257,7 @@ order by t.occurred_at asc, t.id asc`;
       categoryId: string;
       plannedMinor: string;
     }>(
-      `select to_char(ba.period_start, 'YYYY-MM-01') as month, ba.category_id::text as "categoryId",
+      `select to_char(b.period_start, 'YYYY-MM-01') as month, ba.category_id::text as "categoryId",
               ba.planned_minor::text as "plannedMinor"
          from public.budgets b join public.budget_allocations ba on ba.workspace_id = b.workspace_id and ba.budget_id = b.id
         where b.workspace_id = $1::uuid and b.period_start <= $3::date and b.period_end >= $2::date`,
