@@ -135,9 +135,11 @@ describe('PostgresApprovalAdapter', () => {
     expect(result?.decisionReason).toBe('Approved by admin');
 
     // STRUCTURAL assertion, deliberately not behavioural. It pins the update statement
-    // structure and workspace_id predicate against the mocked client.
+    // structure, workspace_id predicate, status = 'pending', and expiry precondition against the mocked client.
     expect(mockClient.query).toHaveBeenCalledWith(
-      expect.stringMatching(/update\s+public\.approvals/i),
+      expect.stringMatching(
+        /update\s+public\.approvals[\s\S]*status\s*=\s*'pending'[\s\S]*expires_at\s*>/i,
+      ),
       [
         workspaceId,
         approvalId,
@@ -147,5 +149,27 @@ describe('PostgresApprovalAdapter', () => {
         'Approved by admin',
       ],
     );
+  });
+
+  it('returns undefined when update matches zero rows (precondition failed)', async () => {
+    const decidedAt = new Date('2026-09-05T13:00:00.000Z');
+    const mockClient = {
+      query: vi.fn().mockResolvedValueOnce({
+        rows: [],
+      }),
+    } as unknown as TransactionClient;
+
+    const adapter = new PostgresApprovalAdapter();
+    const result = await adapter.updateApprovalDecision(
+      mockClient,
+      workspaceId,
+      approvalId,
+      'approved',
+      subject,
+      decidedAt,
+      null,
+    );
+
+    expect(result).toBeUndefined();
   });
 });

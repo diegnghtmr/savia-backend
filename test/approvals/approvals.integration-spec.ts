@@ -859,4 +859,75 @@ describe('Approvals integration contract and endpoint suite', () => {
       expect(res2.statusCode).toBe(409);
     });
   });
+
+  describe('Concurrent decision race condition', () => {
+    it('serialises concurrent decisions so exactly one succeeds and one receives 409 Conflict', async () => {
+      const approvalId = randomUUID();
+      const hash = 'hash-concurrent';
+      await admin.query(
+        `insert into public.approvals (
+          id, workspace_id, tool_name, risk_class, arguments_hash, preview, status, expires_at, created_by
+        ) values (
+          $1, $2, 'execute_trade', 'financial_write', $3, '{}'::jsonb, 'pending', now() + interval '1 day', $4
+        )`,
+        [approvalId, workspace1Id, hash, ownerId],
+      );
+
+      // Install temporary BEFORE UPDATE trigger to make the race deterministic
+      await admin.query(`
+        create or replace function public.test_delay_approval_update() returns trigger as $$
+        begin
+          perform pg_sleep(0.3);
+          return new;
+        end;
+        $$ language plpgsql;
+
+        drop trigger if exists trg_test_delay_approval_update on public.approvals;
+        create trigger trg_test_delay_approval_update
+        before update on public.approvals
+        for each row execute function public.test_delay_approval_update();
+      `);
+
+      try {
+        const [confirmRes, rejectRes] = await Promise.all([
+          application.inject({
+            method: 'POST',
+            url: `/v1/approvals/${approvalId}/confirm`,
+            headers: {
+              authorization: 'Bearer owner-token',
+              'x-workspace-id': workspace1Id,
+              'idempotency-key': randomUUID(),
+            },
+            payload: { argumentsHash: hash, reason: 'Owner confirmation' },
+          }),
+          application.inject({
+            method: 'POST',
+            url: `/v1/approvals/${approvalId}/reject`,
+            headers: {
+              authorization: 'Bearer admin-token',
+              'x-workspace-id': workspace1Id,
+              'idempotency-key': randomUUID(),
+            },
+            payload: { argumentsHash: hash, reason: 'Admin rejection' },
+          }),
+        ]);
+
+        const statusCodes = [confirmRes.statusCode, rejectRes.statusCode].sort(
+          (a, b) => a - b,
+        );
+        expect(statusCodes).toEqual([200, 409]);
+
+        const rowResult = await admin.query<{ status: string }>(
+          `select status from public.approvals where id = $1`,
+          [approvalId],
+        );
+        expect(['approved', 'rejected']).toContain(rowResult.rows[0]?.status);
+      } finally {
+        await admin.query(`
+          drop trigger if exists trg_test_delay_approval_update on public.approvals;
+          drop function if exists public.test_delay_approval_update();
+        `);
+      }
+    });
+  });
 });

@@ -107,6 +107,8 @@ export class PostgresApprovalAdapter implements ApprovalStore {
               decision_reason = $6
         where workspace_id = $1::uuid
           and id = $2::uuid
+          and status = 'pending'
+          and expires_at > $5::timestamptz
         returning id,
                   workspace_id as "workspaceId",
                   tool_name as "toolName",
