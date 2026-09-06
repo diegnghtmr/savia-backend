@@ -165,10 +165,7 @@ function compareBuckets(
     if (TEMPORAL_DIMENSIONS.has(dim)) {
       return valA < valB ? -1 : 1;
     }
-    const cmp = valA.localeCompare(valB, undefined, { numeric: false });
-    if (cmp !== 0) {
-      return cmp;
-    }
+    return valA < valB ? -1 : 1;
   }
   return 0;
 }

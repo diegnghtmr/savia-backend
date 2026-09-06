@@ -512,6 +512,29 @@ describe('Report Engine (pure)', () => {
       ]);
     });
 
+    it('sorts bucket keys by deterministic code-point order', () => {
+      const rows = ['ä', 'z', 'A', 'a', '10', '2'].map((categoryId) =>
+        createRow({ categoryId }),
+      );
+
+      const grid = buildReportGrid({
+        rows,
+        dimensions: [REPORT_DIMENSION.CATEGORY],
+        measures: [REPORT_MEASURE.COUNT],
+        baseCurrency: 'USD',
+        budgetedMinorByBucket: new Map(),
+      });
+
+      expect(grid.rows.map((row) => row.key[0])).toEqual([
+        '10',
+        '2',
+        'A',
+        'a',
+        'z',
+        'ä',
+      ]);
+    });
+
     it('allow-list rejects unknown or injected dimensions and measures by throwing', () => {
       const maliciousDimension =
         'date; DROP TABLE report_runs; --' as ReportDimension;
