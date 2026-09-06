@@ -14,32 +14,11 @@ import {
   REPORT_MEASURES,
   type ReportDimension,
   type ReportMeasure,
+  type ReportSourceRow,
 } from './report.port.js';
+export type { ReportSourceRow } from './report.port.js';
 
 export const UNIT_SEPARATOR = '\x1f';
-
-export interface ReportSourceRow {
-  readonly transactionId: string;
-  readonly occurredAt: Date; // UTC
-  readonly type:
-    | 'income'
-    | 'expense'
-    | 'refund'
-    | 'adjustment'
-    | 'debt_payment'
-    | 'fund_contribution';
-  readonly status: string;
-  readonly amountMinor: bigint; // native currency
-  readonly currency: string;
-  readonly convertedMinor: bigint; // workspace base currency
-  readonly accountId: string;
-  readonly accountType: string;
-  readonly categoryId: string | null;
-  readonly tags: readonly string[];
-  readonly payee: string | null;
-  readonly memberId: string;
-  readonly variability: 'fixed' | 'variable' | null;
-}
 
 export interface ReportEngineInput {
   readonly rows: readonly ReportSourceRow[];

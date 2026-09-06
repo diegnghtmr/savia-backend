@@ -82,6 +82,7 @@
     "test:integration:scenarios": "bash scripts/run-disposable-database-suite.sh test/scenarios/scenarios.integration-spec.ts",
     "test:integration:forecasts": "bash scripts/run-disposable-database-suite.sh test/forecasts/forecasts.integration-spec.ts",
     "test:integration:report-definitions": "bash scripts/run-disposable-database-suite.sh test/reports/report-definitions.integration-spec.ts",
+    "test:integration:report-runs": "bash scripts/run-disposable-database-suite.sh test/reports/report-runs.integration-spec.ts",
     "test:integration:report-runs-schema": "bash scripts/run-disposable-database-suite.sh test/reports/report-runs-schema.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",

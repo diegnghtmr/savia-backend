@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { escapeCsvField } from '../platform/csv.js';
 import type { ExportFormat, ExportRows } from './export.port.js';
 function columns(rows: readonly Record<string, unknown>[]): string[] {
   return [...new Set(rows.flatMap((r) => Object.keys(r)))];
@@ -18,12 +19,6 @@ export function serializeCsv(rows: readonly Record<string, unknown>[]): Buffer {
   );
 }
 
-export function escapeCsvField(
-  value: unknown,
-  neutralize: (value: string) => string = (input) => input,
-): string {
-  return `"${neutralize(String(value ?? '')).replaceAll('"', '""')}"`;
-}
 export function serializeJsonBackup(rows: ExportRows): Buffer {
   return Buffer.from(
     JSON.stringify(

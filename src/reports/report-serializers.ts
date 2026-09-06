@@ -1,5 +1,5 @@
 import PDFDocument from 'pdfkit';
-import { escapeCsvField } from '../exports/export-serializers.js';
+import { escapeCsvField } from '../platform/csv.js';
 import type { ReportGrid } from './report-engine.js';
 
 export interface SerializedReport {

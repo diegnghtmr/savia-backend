@@ -73,6 +73,7 @@ case "$spec" in
   test/scenarios/scenarios.integration-spec.ts) ;;
   test/forecasts/forecasts.integration-spec.ts) ;;
   test/reports/report-definitions.integration-spec.ts) ;;
+  test/reports/report-runs.integration-spec.ts) ;;
   test/reports/report-runs-schema.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
