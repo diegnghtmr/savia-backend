@@ -91,6 +91,20 @@ export function createReportRunCommand(input: unknown): CreateReportRunRequest {
       );
     }
   }
+  if (
+    typeof filters.from === 'string' &&
+    typeof filters.to === 'string' &&
+    isIsoDate(filters.from) &&
+    isIsoDate(filters.to) &&
+    filters.from > filters.to
+  ) {
+    add(
+      violations,
+      'filters.to',
+      'invalid-range',
+      'to must not be before from.',
+    );
+  }
   if (violations.length > 0)
     throw new ReportRunCommandValidationError(
       Object.freeze(sortViolations(violations)),

@@ -41,4 +41,25 @@ describe('createReportRunCommand', () => {
       }),
     ).toThrow(ReportRunCommandValidationError);
   });
+
+  it('rejects a reversed date range with invalid-range on filters.to', () => {
+    try {
+      createReportRunCommand({
+        preset: 'expenses',
+        format: 'json',
+        filters: { from: '2026-06-30', to: '2026-06-01' },
+      });
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ReportRunCommandValidationError);
+      const err = error as ReportRunCommandValidationError;
+      expect(err.violations).toEqual([
+        {
+          field: 'filters.to',
+          code: 'invalid-range',
+          message: 'to must not be before from.',
+        },
+      ]);
+    }
+  });
 });

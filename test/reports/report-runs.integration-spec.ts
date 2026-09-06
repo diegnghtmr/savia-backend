@@ -643,4 +643,38 @@ describe('Report runs integration contract and endpoint suite', () => {
       expect(message).toContain('Report cell string length exceeded maximum');
     });
   });
+
+  describe('FIX 4: Reversed period validation', () => {
+    it('returns 422 with invalid-range on filters.to when from > to', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            from: '2026-06-30',
+            to: '2026-06-01',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      const body = JSON.parse(response.body) as {
+        errors?: readonly { field: string; code: string; message: string }[];
+      };
+      expect(body.errors).toEqual([
+        {
+          field: 'filters.to',
+          code: 'invalid-range',
+          message: 'to must not be before from.',
+        },
+      ]);
+    });
+  });
 });
