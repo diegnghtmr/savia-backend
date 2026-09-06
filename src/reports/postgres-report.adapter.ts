@@ -188,7 +188,7 @@ left join lateral (
 ) tags on true
 left join lateral (
   select rate::text as rate from public.exchange_rates
-   where workspace_id = t.workspace_id and base_currency = w.base_currency and quote_currency = t.currency
+   where workspace_id = t.workspace_id and base_currency = t.currency and quote_currency = w.base_currency
    order by (effective_at <= now()) desc, case when effective_at <= now() then effective_at end desc, effective_at asc, id desc
    limit 1
 ) rates on t.currency <> w.base_currency
