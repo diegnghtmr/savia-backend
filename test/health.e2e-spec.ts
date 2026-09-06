@@ -152,6 +152,9 @@ describe('health endpoint', () => {
       'POST /v1/report-definitions',
       'POST /v1/report-runs',
       'GET /v1/report-runs/:reportRunId',
+      'GET /v1/approvals/:approvalId',
+      'POST /v1/approvals/:approvalId/confirm',
+      'POST /v1/approvals/:approvalId/reject',
     ]);
 
     await app.close();
