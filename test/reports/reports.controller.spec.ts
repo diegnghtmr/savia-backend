@@ -3,7 +3,9 @@ import type { FastifyReply } from 'fastify';
 import type { AuthenticatedRequest } from '../../src/platform/authenticated-request.js';
 import {
   REPORT_OUTCOMES,
+  REPORT_RUN_OUTCOMES,
   type ReportDefinition,
+  type ReportRun,
   type ReportsPort,
 } from '../../src/reports/report.port.js';
 import { ReportsController } from '../../src/reports/reports.controller.js';
@@ -23,6 +25,18 @@ describe('ReportsController', () => {
     version: 1,
   };
 
+  const sampleRun: ReportRun = {
+    id: 'eeeeeeee-0000-4000-8000-000000000001',
+    definitionId: null,
+    preset: 'expenses',
+    status: 'completed',
+    format: 'json',
+    snapshotId: null,
+    downloadUrl: 'https://storage.example.test/report.json',
+    expiresAt: '2026-09-12T00:00:00.000Z',
+    createdAt: '2026-09-05T00:00:00.000Z',
+  };
+
   function createPortMock(): ReportsPort {
     return {
       createReportDefinition: vi.fn().mockResolvedValue({
@@ -35,6 +49,14 @@ describe('ReportsController', () => {
           items: [sampleDefinition],
           pageInfo: { hasNextPage: false, nextCursor: null },
         },
+      }),
+      createReportRun: vi.fn().mockResolvedValue({
+        kind: REPORT_RUN_OUTCOMES.CREATED,
+        reportRun: sampleRun,
+      }),
+      getReportRun: vi.fn().mockResolvedValue({
+        kind: REPORT_RUN_OUTCOMES.OK,
+        reportRun: sampleRun,
       }),
     };
   }
@@ -281,6 +303,27 @@ describe('ReportsController', () => {
       await controller.create(req, reply);
       expect(reply.getStatus()).toBe(201);
       expect(reply.send).toHaveBeenCalledWith(sampleDefinition);
+    });
+  });
+
+  describe('createRun', () => {
+    it('returns 202 when a report run is created', async () => {
+      const port = createPortMock();
+      const controller = new ReportsController(port);
+      const req = {
+        headers: {
+          'x-workspace-id': workspaceId,
+          'idempotency-key': idempotencyKey,
+        },
+        identity: { subject },
+        body: { preset: 'expenses', format: 'json', filters: {} },
+      } as unknown as AuthenticatedRequest;
+      const reply = createReplyMock();
+
+      await controller.createRun(req, reply);
+
+      expect(reply.getStatus()).toBe(202);
+      expect(reply.send).toHaveBeenCalledWith(sampleRun);
     });
   });
 });
