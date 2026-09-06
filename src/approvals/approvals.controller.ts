@@ -44,6 +44,7 @@ export class ApprovalsController {
   ): Promise<void> {
     const h = parseWorkspaceHeader(req.headers['x-workspace-id']);
     if (h.kind !== 'ok') {
+      // Contract gap: status 400 is emitted at runtime for invalid X-Workspace-Id, but undeclared in upstream OpenAPI for getApproval.
       return sendProblem(reply, {
         type: PROBLEM_TYPES.BAD_REQUEST,
         title: 'Invalid X-Workspace-Id header',
@@ -56,6 +57,7 @@ export class ApprovalsController {
       validApprovalId = validateApprovalId(approvalId);
     } catch (e) {
       if (e instanceof ApprovalQueryValidationError) {
+        // Contract gap: status 400 is emitted at runtime for invalid approvalId, but undeclared in upstream OpenAPI for getApproval.
         return sendProblem(reply, {
           type: PROBLEM_TYPES.BAD_REQUEST,
           title: 'Invalid approval identifier',
@@ -117,6 +119,7 @@ export class ApprovalsController {
   ): Promise<void> {
     const h = parseWorkspaceHeader(req.headers['x-workspace-id']);
     if (h.kind !== 'ok') {
+      // Contract gap: status 400 is emitted at runtime for invalid X-Workspace-Id, but undeclared in upstream OpenAPI for confirmApproval and rejectApproval.
       return sendProblem(reply, {
         type: PROBLEM_TYPES.BAD_REQUEST,
         title: 'Invalid X-Workspace-Id header',
@@ -126,6 +129,7 @@ export class ApprovalsController {
 
     const k = validateIdempotencyKey(req.headers['idempotency-key']);
     if (k.kind !== 'ok') {
+      // Contract gap: status 400 is emitted at runtime for invalid Idempotency-Key, but undeclared in upstream OpenAPI for confirmApproval and rejectApproval.
       return sendProblem(reply, {
         type: PROBLEM_TYPES.BAD_REQUEST,
         title: 'Invalid Idempotency-Key header',
@@ -139,6 +143,7 @@ export class ApprovalsController {
       validApprovalId = validateApprovalId(approvalId);
     } catch (e) {
       if (e instanceof ApprovalQueryValidationError) {
+        // Contract gap: status 400 is emitted at runtime for invalid approvalId, but undeclared in upstream OpenAPI for confirmApproval and rejectApproval.
         return sendProblem(reply, {
           type: PROBLEM_TYPES.BAD_REQUEST,
           title: 'Invalid approval identifier',
