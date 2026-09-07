@@ -32,12 +32,26 @@ $$;
 
 -- 2. Trigger function on public.ledger_postings
 --
--- security definer here is LOAD-BEARING, not decoration (precedent: 202608240005_ledger_postings.sql:178-185):
--- public.accounts FORCEs row level security, so an invoker-rights function would be
--- filtered by the writing subject's policies and could read no account row at all --
--- an invariant that silently passes while appearing to work.
+-- security definer here is defense in depth, and the reason is narrower than it may look.
+-- It is NOT that the current application writer would be blind: under the policies installed
+-- today, savia_application holds application_reads_workspace_account
+-- (202608240002_account_tables.sql), so an invoker-rights function WOULD see the compared
+-- account row and WOULD refuse the mismatch. This was verified against a live database by
+-- installing an invoker-rights version and inserting a mismatched leg as savia_application:
+-- the insert was still refused with SQLSTATE 23514 naming this constraint.
+--
+-- The load-bearing argument is different: public.accounts FORCEs row level security, and this
+-- is a database-wide invariant that must hold for EVERY writer, including future roles and
+-- maintenance paths whose visibility does not cover the compared account row. An invoker-rights
+-- function would then read no row and, absent the null guard below, would be an invariant that
+-- silently passes while appearing to work -- the failure mode documented at
+-- 202608240005_ledger_postings.sql:178-185. Owning the function with savia_elevated, pinning
+-- search_path and revoking PUBLIC execute make the lookup independent of caller visibility.
+-- This mirrors the wording 202608240006_account_currency_invariant.sql:44-56 already uses.
+--
 -- savia_elevated already holds SELECT on public.accounts and policy elevated_reads_accounts
--- (installed by 202608240006_account_currency_invariant.sql:35-42).
+-- (installed by 202608240006_account_currency_invariant.sql:35-42); confirmed live, so this
+-- migration deliberately does not re-grant them.
 --
 -- Advisory lock ordering analysis:
 -- Project convention (202608240006:78-92) is SUBJECT -> WORKSPACE -> ACCOUNT.
