@@ -167,6 +167,9 @@ jobs:
       - name: ledger postings schema integration
         shell: bash
         run: pnpm test:integration:ledger-postings-schema
+      - name: posting currency invariant integration
+        shell: bash
+        run: pnpm test:integration:posting-currency-invariant
       - name: transactions create integration
         shell: bash
         run: pnpm test:integration:transactions-create

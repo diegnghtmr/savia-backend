@@ -94,7 +94,9 @@ describe('PostgresTransactionAdapter.lockAndReadAccount', () => {
       query: vi
         .fn()
         .mockResolvedValueOnce({ rows: [] }) // 1. Lock
-        .mockResolvedValueOnce({ rows: [{ status: 'active', currency: 'USD' }] }), // 2. Account check
+        .mockResolvedValueOnce({
+          rows: [{ status: 'active', currency: 'USD' }],
+        }), // 2. Account check
     };
 
     const result = await adapter.lockAndReadAccount(
