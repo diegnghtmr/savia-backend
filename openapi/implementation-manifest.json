@@ -376,6 +376,16 @@
       "operationId": "rejectApproval",
       "method": "POST",
       "path": "/v1/approvals/{approvalId}/reject"
+    },
+    {
+      "operationId": "listNotifications",
+      "method": "GET",
+      "path": "/v1/notifications"
+    },
+    {
+      "operationId": "markNotificationRead",
+      "method": "POST",
+      "path": "/v1/notifications/{notificationId}/read"
     }
   ]
 }

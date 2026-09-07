@@ -2169,6 +2169,34 @@ components:
             - 'null'
           maxLength: 500
       additionalProperties: false
+    Notification:
+      type: object
+      required:
+        - id
+        - type
+        - title
+        - read
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        type:
+          type: string
+        title:
+          type: string
+        body:
+          type:
+            - string
+            - 'null'
+        read:
+          type: boolean
+        actionUrl:
+          type:
+            - string
+            - 'null'
+        createdAt:
+          $ref: '#/components/schemas/DateTime'
+      additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -7285,3 +7313,92 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ApprovalDecisionRequest'
+  /v1/notifications:
+    get:
+      operationId: listNotifications
+      summary: List notifications
+      tags:
+        - Notifications
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: unreadOnly
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Notification page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - items
+                  - pageInfo
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Notification'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /v1/notifications/{notificationId}/read:
+    parameters:
+      - name: notificationId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Uuid'
+    post:
+      operationId: markNotificationRead
+      summary: Mark notification as read
+      tags:
+        - Notifications
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      responses:
+        '204':
+          description: Notification marked as read.
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
