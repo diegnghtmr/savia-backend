@@ -444,6 +444,69 @@ describe('Notifications integration contract and endpoint suite', () => {
         '60000000-0000-4000-8000-000000000006',
       ]);
     });
+
+    it('pages through rows with byte-identical created_at timestamps asserting deterministic total order and no duplicate or omission', async () => {
+      await admin.query(
+        'delete from public.notifications where subject_id = $1',
+        [user2Id],
+      );
+
+      const fixedTimestamp = '2026-09-07 12:00:00.123456+00';
+      const rowA = {
+        id: '11111111-aaaa-4000-8000-000000000001',
+        title: 'Tiebreak A',
+      };
+      const rowB = {
+        id: '22222222-bbbb-4000-8000-000000000002',
+        title: 'Tiebreak B',
+      };
+      const rowC = {
+        id: '33333333-cccc-4000-8000-000000000003',
+        title: 'Tiebreak C',
+      };
+
+      // Shuffled insertion order intentionally: rowC, rowA, rowB
+      const shuffled = [rowC, rowA, rowB];
+      for (const row of shuffled) {
+        await admin.query(
+          `insert into public.notifications (id, subject_id, type, title, read, created_at)
+           values ($1, $2, 'system', $3, false, $4::timestamptz)`,
+          [row.id, user2Id, row.title, fixedTimestamp],
+        );
+      }
+
+      const collectedIds: string[] = [];
+      let cursor: string | null = null;
+      let pageCount = 0;
+
+      while (true) {
+        pageCount++;
+        const url = cursor
+          ? `/v1/notifications?limit=1&cursor=${encodeURIComponent(cursor)}`
+          : '/v1/notifications?limit=1';
+
+        const res = await application.inject({
+          method: 'GET',
+          url,
+          headers: { authorization: `Bearer ${user2Token}` },
+        });
+
+        expect(res.statusCode).toBe(200);
+        const data = JSON.parse(res.payload);
+        expect(data.items).toHaveLength(1);
+        collectedIds.push(data.items[0].id);
+
+        if (!data.pageInfo.hasNextPage) {
+          expect(data.pageInfo.nextCursor).toBeNull();
+          break;
+        }
+        expect(data.pageInfo.nextCursor).not.toBeNull();
+        cursor = data.pageInfo.nextCursor;
+      }
+
+      expect(pageCount).toBe(3);
+      expect(collectedIds).toEqual([rowA.id, rowB.id, rowC.id]);
+    });
   });
 
   describe('markNotificationRead: atomic update, idempotency and conflicts', () => {
