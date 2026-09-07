@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { LedgerModule } from '../ledger/ledger.module.js';
-import { LEDGER_PORT, type LedgerPort } from '../ledger/ledger.port.js';
+import {
+  LEDGER_WRITER,
+  type LedgerWriter,
+} from '../platform/ledger-writer.port.js';
 import {
   ARTIFACT_STORAGE,
   type ArtifactStorage,
@@ -25,15 +28,15 @@ import { ReceiptsController } from './receipts.controller.js';
         PostgresReceiptAdapter,
         PostgresIdempotencyAdapter,
         ARTIFACT_STORAGE,
-        LEDGER_PORT,
+        LEDGER_WRITER,
       ],
       useFactory: (
         tx: PgTransaction,
         store: PostgresReceiptAdapter,
         idempotency: PostgresIdempotencyAdapter,
         storage: ArtifactStorage,
-        ledger: LedgerPort,
-      ) => new ReceiptService(tx, store, idempotency, storage, ledger),
+        ledgerWriter: LedgerWriter,
+      ) => new ReceiptService(tx, store, idempotency, storage, ledgerWriter),
     },
     { provide: RECEIPTS_PORT, useExisting: ReceiptService },
   ],

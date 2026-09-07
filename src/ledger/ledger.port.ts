@@ -2,16 +2,19 @@ import type { Cursor, PageInfo } from '../platform/cursor.js';
 
 export const LEDGER_PORT = Symbol('LedgerPort');
 
-export const TRANSACTION_TYPE = {
-  INCOME: 'income',
-  EXPENSE: 'expense',
-  ADJUSTMENT: 'adjustment',
-  REFUND: 'refund',
-  DEBT_PAYMENT: 'debt_payment',
-  FUND_CONTRIBUTION: 'fund_contribution',
-} as const;
-export type TransactionType =
-  (typeof TRANSACTION_TYPE)[keyof typeof TRANSACTION_TYPE];
+import {
+  TRANSACTION_TYPE,
+  type TransactionType,
+  type Money,
+  type CreateTransactionCommand,
+} from '../platform/ledger-writer.port.js';
+
+export {
+  TRANSACTION_TYPE,
+  type TransactionType,
+  type Money,
+  type CreateTransactionCommand,
+};
 
 export const TRANSACTION_STATUS = {
   DRAFT: 'draft',
@@ -41,11 +44,6 @@ export const TRANSACTION_SOURCE = {
 } as const;
 export type TransactionSource =
   (typeof TRANSACTION_SOURCE)[keyof typeof TRANSACTION_SOURCE];
-
-export interface Money {
-  readonly amountMinor: string;
-  readonly currency: string;
-}
 
 export interface ConvertedMoney {
   readonly original: Money;
@@ -82,21 +80,6 @@ export interface Transaction {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly version: number;
-}
-
-export interface CreateTransactionCommand {
-  readonly type: TransactionType;
-  readonly accountId: string;
-  readonly amount: Money;
-  readonly occurredAt: string;
-  readonly status: 'draft' | 'pending' | 'confirmed' | 'reconciled';
-  readonly categoryId?: string | null;
-  readonly payeeId?: string | null;
-  readonly description?: string | null;
-  readonly notes?: string | null;
-  readonly tagIds?: readonly string[];
-  readonly receiptId?: string | null;
-  readonly importJobId?: string | null;
 }
 
 export const TRANSACTION_CREATE_OUTCOMES = {

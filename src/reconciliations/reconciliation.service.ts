@@ -42,6 +42,9 @@ export class ReconciliationService implements ReconciliationsPort {
     private readonly store: ReconciliationStore,
     private readonly idempotencyStore: IdempotencyStore,
     private readonly ledgerWriter: LedgerWriter = {
+      createTransaction: async () => {
+        throw new Error('Ledger writer is not configured.');
+      },
       createAdjustmentTransaction: async () => {
         throw new Error('Ledger writer is not configured.');
       },

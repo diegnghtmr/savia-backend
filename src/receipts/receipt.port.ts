@@ -74,6 +74,11 @@ export interface ReceiptStore {
     workspaceId: string,
     id: string,
   ): Promise<Receipt | undefined>;
+  claim(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ): Promise<boolean>;
   confirm(
     client: TransactionClient,
     workspaceId: string,

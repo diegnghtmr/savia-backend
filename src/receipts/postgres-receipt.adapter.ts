@@ -82,6 +82,19 @@ export class PostgresReceiptAdapter implements ReceiptStore {
     return row ? toReceipt(row) : undefined;
   }
 
+  public async claim(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ): Promise<boolean> {
+    const result = await client.query(
+      `update public.receipts set updated_at = now()
+         where workspace_id = $1::uuid and id = $2::uuid and status in ('uploaded', 'awaiting_review') and transaction_id is null`,
+      [workspaceId, id],
+    );
+    return result.rowCount === 1;
+  }
+
   public async confirm(
     client: TransactionClient,
     workspaceId: string,
@@ -90,7 +103,7 @@ export class PostgresReceiptAdapter implements ReceiptStore {
   ): Promise<boolean> {
     const result = await client.query(
       `update public.receipts set status = 'confirmed', transaction_id = $3::uuid, updated_at = now(), version = version + 1
-         where workspace_id = $1::uuid and id = $2::uuid and status in ('uploaded', 'awaiting_review') and transaction_id is null`,
+         where workspace_id = $1::uuid and id = $2::uuid`,
       [workspaceId, id, transactionId],
     );
     return result.rowCount === 1;

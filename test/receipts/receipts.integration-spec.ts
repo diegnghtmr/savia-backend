@@ -348,4 +348,89 @@ describe('receipts over Fastify multipart HTTP', () => {
         .statusCode,
     ).toBe(401);
   });
+  it('prevents financial duplication on concurrent confirms with different idempotency keys', async () => {
+    const created = JSON.parse((await upload()).payload);
+    await admin.query(`
+      create or replace function public.delay_receipt_update() returns trigger as $$
+      begin
+        perform pg_sleep(0.05);
+        return new;
+      end;
+      $$ language plpgsql;
+      grant execute on function public.delay_receipt_update() to savia_application;
+      create trigger trg_delay_receipt_update
+      before update on public.receipts
+      for each row execute function public.delay_receipt_update();
+    `);
+    try {
+      const [res1, res2] = await Promise.all([
+        app.inject({
+          method: 'POST',
+          url: `/v1/receipts/${created.id}/confirm`,
+          headers: {
+            authorization: 'Bearer owner',
+            'x-workspace-id': workspace,
+            'idempotency-key': randomUUID(),
+          },
+          payload: { transaction: transaction('USD') },
+        }),
+        app.inject({
+          method: 'POST',
+          url: `/v1/receipts/${created.id}/confirm`,
+          headers: {
+            authorization: 'Bearer owner',
+            'x-workspace-id': workspace,
+            'idempotency-key': randomUUID(),
+          },
+          payload: { transaction: transaction('USD') },
+        }),
+      ]);
+      const statuses = [res1.statusCode, res2.statusCode].sort();
+      expect(statuses).toEqual([201, 409]);
+
+      const txCount = await admin.query<{ count: string }>(
+        'select count(*)::text as count from public.transactions where workspace_id = $1',
+        [workspace],
+      );
+      expect(txCount.rows[0].count).toBe('1');
+    } finally {
+      await admin.query(`
+        drop trigger if exists trg_delay_receipt_update on public.receipts;
+        drop function if exists public.delay_receipt_update();
+      `);
+    }
+  });
+  it('rolls back claim when transaction creation fails, leaving receipt confirmable', async () => {
+    const created = JSON.parse((await upload()).payload);
+    const failedResponse = await app.inject({
+      method: 'POST',
+      url: `/v1/receipts/${created.id}/confirm`,
+      headers: {
+        authorization: 'Bearer owner',
+        'x-workspace-id': workspace,
+        'idempotency-key': randomUUID(),
+      },
+      payload: { transaction: transaction('EUR') },
+    });
+    expect(failedResponse.statusCode).toBe(422);
+
+    const txCount = await admin.query<{ count: string }>(
+      'select count(*)::text as count from public.transactions where workspace_id = $1',
+      [workspace],
+    );
+    expect(txCount.rows[0].count).toBe('0');
+
+    const retryResponse = await app.inject({
+      method: 'POST',
+      url: `/v1/receipts/${created.id}/confirm`,
+      headers: {
+        authorization: 'Bearer owner',
+        'x-workspace-id': workspace,
+        'idempotency-key': randomUUID(),
+      },
+      payload: { transaction: transaction('USD') },
+    });
+    expect(retryResponse.statusCode).toBe(201);
+    expect(JSON.parse(retryResponse.payload).receiptId).toBe(created.id);
+  });
 });
