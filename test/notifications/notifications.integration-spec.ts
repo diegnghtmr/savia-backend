@@ -410,6 +410,61 @@ describe('Notifications integration contract and endpoint suite', () => {
     });
 
     it('pages with unreadOnly=false returning all fixtures in stable total order', async () => {
+      await admin.query(
+        'delete from public.notifications where subject_id = $1',
+        [user1Id],
+      );
+
+      const fixtures = [
+        {
+          id: 'f1000000-0000-4000-8000-000000000001',
+          ts: '2026-09-07 10:01:00+00',
+          title: 'Total Order 1',
+        },
+        {
+          id: 'f1000000-0000-4000-8000-000000000002',
+          ts: '2026-09-07 10:02:00+00',
+          title: 'Total Order 2',
+        },
+        {
+          id: 'f1000000-0000-4000-8000-000000000003',
+          ts: '2026-09-07 10:03:00+00',
+          title: 'Total Order 3',
+        },
+        {
+          id: 'f1000000-0000-4000-8000-000000000004',
+          ts: '2026-09-07 10:04:00+00',
+          title: 'Total Order 4',
+        },
+        {
+          id: 'f1000000-0000-4000-8000-000000000005',
+          ts: '2026-09-07 10:05:00+00',
+          title: 'Total Order 5',
+        },
+        {
+          id: 'f1000000-0000-4000-8000-000000000006',
+          ts: '2026-09-07 10:06:00+00',
+          title: 'Total Order 6',
+        },
+      ];
+
+      // Insert in shuffled order
+      const shuffled = [
+        fixtures[2],
+        fixtures[5],
+        fixtures[0],
+        fixtures[4],
+        fixtures[1],
+        fixtures[3],
+      ];
+      for (const f of shuffled) {
+        await admin.query(
+          `insert into public.notifications (id, subject_id, type, title, read, created_at)
+           values ($1, $2, 'system', $3, false, $4::timestamptz)`,
+          [f.id, user1Id, f.title, f.ts],
+        );
+      }
+
       const collectedIds: string[] = [];
       let cursor: string | null = null;
 
@@ -435,14 +490,7 @@ describe('Notifications integration contract and endpoint suite', () => {
       }
 
       expect(collectedIds).toHaveLength(6);
-      expect(collectedIds).toEqual([
-        '10000000-0000-4000-8000-000000000001',
-        '20000000-0000-4000-8000-000000000002',
-        '30000000-0000-4000-8000-000000000003',
-        '40000000-0000-4000-8000-000000000004',
-        '50000000-0000-4000-8000-000000000005',
-        '60000000-0000-4000-8000-000000000006',
-      ]);
+      expect(collectedIds).toEqual(fixtures.map((f) => f.id));
     });
 
     it('pages through rows with byte-identical created_at timestamps asserting deterministic total order and no duplicate or omission', async () => {
@@ -511,7 +559,14 @@ describe('Notifications integration contract and endpoint suite', () => {
 
   describe('markNotificationRead: atomic update, idempotency and conflicts', () => {
     it('marks an unread notification as read returning 204 with no content and sets read_at', async () => {
-      const notifId = '10000000-0000-4000-8000-000000000001';
+      const notifId = 'a1000000-0000-4000-8000-000000000001';
+      await admin.query(
+        `insert into public.notifications (id, subject_id, type, title, read, read_at)
+         values ($1, $2, 'system', 'Unread Notification', false, null)
+         on conflict (id) do update set read = false, read_at = null`,
+        [notifId, user1Id],
+      );
+
       const key = randomUUID();
 
       const response = await application.inject({
@@ -536,7 +591,15 @@ describe('Notifications integration contract and endpoint suite', () => {
     });
 
     it('marking an already-read notification read again stays 204 and preserves read_at', async () => {
-      const notifId = '10000000-0000-4000-8000-000000000001';
+      const notifId = 'a2000000-0000-4000-8000-000000000002';
+      const initialReadAt = new Date('2026-09-01T12:00:00.000Z');
+      await admin.query(
+        `insert into public.notifications (id, subject_id, type, title, read, read_at)
+         values ($1, $2, 'system', 'Already Read Notification', true, $3)
+         on conflict (id) do update set read = true, read_at = $3`,
+        [notifId, user1Id, initialReadAt],
+      );
+
       const before = await admin.query<{ read_at: Date }>(
         'select read_at from public.notifications where id = $1',
         [notifId],
@@ -567,7 +630,14 @@ describe('Notifications integration contract and endpoint suite', () => {
     });
 
     it('replaying with the same idempotency key and same notificationId returns 204', async () => {
-      const notifId = '30000000-0000-4000-8000-000000000003';
+      const notifId = 'a3000000-0000-4000-8000-000000000003';
+      await admin.query(
+        `insert into public.notifications (id, subject_id, type, title, read, read_at)
+         values ($1, $2, 'system', 'Replay Notification', false, null)
+         on conflict (id) do update set read = false, read_at = null`,
+        [notifId, user1Id],
+      );
+
       const key = randomUUID();
 
       const first = await application.inject({
@@ -592,9 +662,21 @@ describe('Notifications integration contract and endpoint suite', () => {
     });
 
     it('fires 409 conflict when idempotency key is reused with a different notificationId', async () => {
+      const notifA = 'a4000000-0000-4000-8000-000000000004';
+      const notifB = 'a5000000-0000-4000-8000-000000000005';
+      for (const [id, title] of [
+        [notifA, 'Conflict Notification A'],
+        [notifB, 'Conflict Notification B'],
+      ] as const) {
+        await admin.query(
+          `insert into public.notifications (id, subject_id, type, title, read, read_at)
+           values ($1, $2, 'system', $3, false, null)
+           on conflict (id) do update set read = false, read_at = null`,
+          [id, user1Id, title],
+        );
+      }
+
       const key = randomUUID();
-      const notifA = '30000000-0000-4000-8000-000000000003';
-      const notifB = '50000000-0000-4000-8000-000000000005';
 
       const first = await application.inject({
         method: 'POST',
