@@ -63,6 +63,8 @@ export class ReceiptsController {
     let bytes: Buffer | undefined;
     let preference: unknown;
     let ocr: unknown;
+    let parsedPreference: (typeof RECEIPT_PROCESSING_PREFERENCES)[keyof typeof RECEIPT_PROCESSING_PREFERENCES];
+    let parsedOcr: Record<string, unknown> | null;
     try {
       for await (const part of request.parts()) {
         if (part.type === 'file') {
@@ -83,8 +85,8 @@ export class ReceiptsController {
       if (!bytes || !fileName) throw new Error('file is required.');
       if (!ALLOWED_CONTENT_TYPES.has(contentType))
         throw new Error('Only PDF, JPEG, PNG, and WebP files are accepted.');
-      const parsedPreference = parseProcessingPreference(preference);
-      const parsedOcr = parseDeviceOcrResult(ocr);
+      parsedPreference = parseProcessingPreference(preference);
+      parsedOcr = parseDeviceOcrResult(ocr);
       if (
         parsedPreference === RECEIPT_PROCESSING_PREFERENCES.DEVICE_RESULT &&
         parsedOcr === null
@@ -95,39 +97,6 @@ export class ReceiptsController {
         parsedOcr !== null
       )
         throw new Error('deviceOcrResult is only allowed with device_result.');
-      const outcome = await this.port.createReceipt(
-        request.identity.subject,
-        header.workspaceId,
-        {
-          fileName,
-          contentType,
-          bytes,
-          processingPreference: parsedPreference,
-          deviceOcrResult: parsedOcr,
-        },
-        key.key,
-      );
-      if (outcome.kind === RECEIPT_OUTCOMES.FORBIDDEN)
-        return sendProblem(reply, {
-          type: PROBLEM_TYPES.FORBIDDEN,
-          title: 'Workspace access forbidden',
-          status: 403,
-        });
-      if (outcome.kind === RECEIPT_OUTCOMES.CONFLICT)
-        return sendProblem(reply, {
-          type: PROBLEM_TYPES.CONFLICT,
-          title: 'Idempotency key reused with different payload',
-          status: 409,
-        });
-      if (outcome.kind === RECEIPT_OUTCOMES.NOT_FOUND)
-        return sendProblem(reply, {
-          type: PROBLEM_TYPES.NOT_FOUND,
-          title: 'Receipt not found',
-          status: 404,
-        });
-      if (outcome.kind === RECEIPT_OUTCOMES.TRANSACTION_REPLAYED)
-        return void reply.status(outcome.status).send(outcome.body);
-      return void reply.status(202).send(outcome.receipt);
     } catch (error) {
       return sendProblem(reply, {
         type: PROBLEM_TYPES.UNPROCESSABLE,
@@ -136,6 +105,39 @@ export class ReceiptsController {
         detail: error instanceof Error ? error.message : undefined,
       });
     }
+    const outcome = await this.port.createReceipt(
+      request.identity.subject,
+      header.workspaceId,
+      {
+        fileName,
+        contentType,
+        bytes,
+        processingPreference: parsedPreference,
+        deviceOcrResult: parsedOcr,
+      },
+      key.key,
+    );
+    if (outcome.kind === RECEIPT_OUTCOMES.FORBIDDEN)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+    if (outcome.kind === RECEIPT_OUTCOMES.CONFLICT)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency key reused with different payload',
+        status: 409,
+      });
+    if (outcome.kind === RECEIPT_OUTCOMES.NOT_FOUND)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Receipt not found',
+        status: 404,
+      });
+    if (outcome.kind === RECEIPT_OUTCOMES.TRANSACTION_REPLAYED)
+      return void reply.status(outcome.status).send(outcome.body);
+    return void reply.status(202).send(outcome.receipt);
   }
 
   @Get(':receiptId')
