@@ -299,6 +299,9 @@ jobs:
       - name: approvals integration
         shell: bash
         run: pnpm test:integration:approvals
+      - name: notifications integration
+        shell: bash
+        run: pnpm test:integration:notifications
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
