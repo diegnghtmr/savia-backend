@@ -78,6 +78,7 @@ case "$spec" in
   test/reports/report-runs-schema.integration-spec.ts) ;;
   test/approvals/approvals.integration-spec.ts) ;;
   test/notifications/notifications.integration-spec.ts) ;;
+  test/receipts/receipts.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 

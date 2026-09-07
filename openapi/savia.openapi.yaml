@@ -29,6 +29,48 @@ components:
             reports:read: Run and read reports.
             reports:write: Create report definitions.
             workspace:admin: Administer workspace integrations.
+  parameters:
+    WorkspaceIdHeader:
+      name: X-Workspace-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+        maxLength: 255
+  responses:
+    Unauthorized:
+      description: Unauthorized.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetails' }
+    Forbidden:
+      description: Forbidden.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetails' }
+    NotFound:
+      description: Not found.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetails' }
+    Conflict:
+      description: Conflict.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetails' }
+    UnprocessableEntity:
+      description: The request violates a business rule.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetails' }
   schemas:
     OnboardingRequest:
       type: object
@@ -2168,6 +2210,68 @@ components:
             - string
             - 'null'
           maxLength: 500
+      additionalProperties: false
+    ReceiptField:
+      type: object
+      required:
+        - value
+        - confidence
+      properties:
+        value: {}
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+      additionalProperties: false
+    Receipt:
+      type: object
+      required:
+        - id
+        - status
+        - fileName
+        - processingLocation
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        status:
+          type: string
+          enum: [uploaded, processing, awaiting_review, confirmed, failed]
+        fileName:
+          type: string
+        processingLocation:
+          type: string
+          enum: [device, savia, external_provider]
+        merchant:
+          anyOf:
+            - $ref: '#/components/schemas/ReceiptField'
+            - type: 'null'
+        date:
+          anyOf:
+            - $ref: '#/components/schemas/ReceiptField'
+            - type: 'null'
+        currency:
+          anyOf:
+            - $ref: '#/components/schemas/ReceiptField'
+            - type: 'null'
+        total:
+          anyOf:
+            - $ref: '#/components/schemas/ReceiptField'
+            - type: 'null'
+        transactionId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        createdAt:
+          $ref: '#/components/schemas/DateTime'
+      additionalProperties: false
+    ConfirmReceiptRequest:
+      type: object
+      required: [transaction]
+      properties:
+        transaction:
+          $ref: '#/components/schemas/CreateTransactionRequest'
       additionalProperties: false
     Notification:
       type: object
@@ -6914,6 +7018,93 @@ paths:
         requiresApproval: false
         requiredScopes:
           - reports:read
+  /v1/receipts:
+    post:
+      operationId: createReceipt
+      summary: Upload receipt or invoice
+      tags: [Receipts]
+      responses:
+        '202':
+          description: Receipt processing accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                processingPreference:
+                  type: string
+                  enum: [device_result, savia, external_provider]
+                  default: savia
+                deviceOcrResult:
+                  type: [object, 'null']
+                  additionalProperties: true
+              additionalProperties: false
+  /v1/receipts/{receiptId}:
+    parameters:
+      - name: receiptId
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/Uuid' }
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    get:
+      operationId: getReceipt
+      summary: Get receipt and OCR result
+      tags: [Receipts]
+      responses:
+        '200':
+          description: Receipt.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Receipt' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/receipts/{receiptId}/confirm:
+    parameters:
+      - name: receiptId
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/Uuid' }
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: confirmReceipt
+      summary: Confirm OCR and create transaction
+      tags: [Receipts]
+      responses:
+        '201':
+          description: Transaction created from receipt.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmReceiptRequest' }
   /v1/report-definitions:
     get:
       operationId: listReportDefinitions

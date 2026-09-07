@@ -302,6 +302,9 @@ jobs:
       - name: notifications integration
         shell: bash
         run: pnpm test:integration:notifications
+      - name: receipts integration
+        shell: bash
+        run: pnpm test:integration:receipts
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

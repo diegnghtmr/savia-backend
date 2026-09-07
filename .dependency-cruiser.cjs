@@ -21,7 +21,7 @@ module.exports = {
       comment:
         'Feature modules must not import from each other; shared code belongs in src/platform',
       from: {
-        path: '^src/(?!reconciliations/|exports/)([^/]+)/',
+        path: '^src/(?!reconciliations/|exports/|receipts/)([^/]+)/',
         pathNot: '^src/platform/',
       },
       to: {
@@ -67,6 +67,23 @@ module.exports = {
           '^src/ledger/ledger\\.module\\.ts$',
           '^src/accounts/postgres-accounts\\.adapter\\.ts$',
           '^src/ledger/postgres-transaction\\.adapter\\.ts$',
+        ],
+      },
+    },
+    {
+      name: 'receipts-feature-isolation',
+      severity: 'error',
+      comment:
+        'Receipts may compose the ledger module, but no other feature may be imported',
+      from: { path: '^src/receipts/' },
+      to: {
+        path: '^src/([^/]+)/',
+        pathNot: [
+          '^src/receipts/',
+          '^src/platform/',
+          '^src/ledger/ledger\\.module\\.ts$',
+          '^src/ledger/ledger\\.port\\.ts$',
+          '^src/ledger/transaction-command\\.ts$',
         ],
       },
     },

@@ -11,8 +11,8 @@ import multipart from '@fastify/multipart';
 export const IMPORT_MULTIPART_LIMITS = {
   fileSize: 5 * 1024 * 1024,
   files: 1,
-  fields: 1,
-  parts: 2,
+  fields: 2,
+  parts: 3,
 } as const;
 
 async function bootstrap(): Promise<void> {
