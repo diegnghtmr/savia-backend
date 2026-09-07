@@ -129,7 +129,10 @@ function fakeStore(
   voidTransaction: ReturnType<typeof vi.fn>;
 } {
   const role = 'role' in options ? options.role : 'owner';
-  const account = 'account' in options ? options.account : { status: 'active' };
+  const account =
+    'account' in options
+      ? options.account
+      : { status: 'active', currency: 'USD' };
   const transaction =
     'transaction' in options ? options.transaction : sampleTransaction();
   const updatedTransaction =
@@ -385,7 +388,7 @@ describe('TransactionService.create', () => {
   it('refuses ACCOUNT_CLOSED when store reports account status is closed', async () => {
     const store = fakeStore({
       role: 'owner',
-      account: { status: 'closed' },
+      account: { status: 'closed', currency: 'USD' },
     });
     const idempotency = fakeIdempotencyStore();
     const fakeTransaction = new FakeTransaction();
@@ -411,11 +414,109 @@ describe('TransactionService.create', () => {
     expect(idempotency.write).not.toHaveBeenCalled();
   });
 
+  it('refuses CURRENCY_MISMATCH when command currency does not match account currency', async () => {
+    const store = fakeStore({
+      role: 'owner',
+      account: { status: 'active', currency: 'USD' },
+    });
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      sampleCommand({
+        amount: { amountMinor: '5000', currency: 'EUR' },
+      }),
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_CREATE_OUTCOMES.CURRENCY_MISMATCH,
+    });
+    expect(fakeTransaction.calls).toEqual(['run']);
+    expect(store.createTransaction).not.toHaveBeenCalled();
+    expect(idempotency.write).not.toHaveBeenCalled();
+  });
+
+  it('strictly enforces case-sensitive currency comparison: USD does not match usd', async () => {
+    const store = fakeStore({
+      role: 'owner',
+      account: { status: 'active', currency: 'USD' },
+    });
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      sampleCommand({
+        amount: { amountMinor: '5000', currency: 'usd' },
+      }),
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_CREATE_OUTCOMES.CURRENCY_MISMATCH,
+    });
+    expect(store.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('pins ordering: non-existent account returns ACCOUNT_UNRESOLVED rather than leaking currency mismatch', async () => {
+    const store = fakeStore({
+      role: 'owner',
+      account: undefined,
+    });
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      sampleCommand({
+        amount: { amountMinor: '5000', currency: 'EUR' },
+      }),
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED,
+    });
+    expect(store.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('pins ordering: closed account returns ACCOUNT_CLOSED rather than currency mismatch', async () => {
+    const store = fakeStore({
+      role: 'owner',
+      account: { status: 'closed', currency: 'USD' },
+    });
+    const idempotency = fakeIdempotencyStore();
+    const fakeTransaction = new FakeTransaction();
+    const service = new TransactionService(fakeTransaction, store, idempotency);
+
+    const outcome = await service.create(
+      SUBJECT,
+      WORKSPACE_ID,
+      sampleCommand({
+        amount: { amountMinor: '5000', currency: 'EUR' },
+      }),
+      idempotencyKey,
+    );
+
+    expect(outcome).toEqual({
+      kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED,
+    });
+    expect(store.createTransaction).not.toHaveBeenCalled();
+  });
+
   it('creates transaction, records idempotency and returns CREATED outcome', async () => {
     const txn = sampleTransaction();
     const store = fakeStore({
       role: 'owner',
-      account: { status: 'active' },
+      account: { status: 'active', currency: 'USD' },
       transaction: txn,
     });
     const idempotency = fakeIdempotencyStore(undefined, true);
@@ -462,7 +563,9 @@ describe('TransactionService.create', () => {
   it('returns CATEGORY_NOT_FOUND outcome when store throws TransactionCategoryNotFoundError on create', async () => {
     const fakeStore: LedgerStore = {
       readActiveRole: vi.fn().mockResolvedValue('owner'),
-      lockAndReadAccount: vi.fn().mockResolvedValue({ status: 'active' }),
+      lockAndReadAccount: vi
+        .fn()
+        .mockResolvedValue({ status: 'active', currency: 'USD' }),
       createTransaction: vi
         .fn()
         .mockRejectedValue(new TransactionCategoryNotFoundError()),
@@ -493,7 +596,9 @@ describe('TransactionService.create', () => {
   it('returns PAYEE_NOT_FOUND outcome when store throws TransactionPayeeNotFoundError on create', async () => {
     const fakeStore: LedgerStore = {
       readActiveRole: vi.fn().mockResolvedValue('owner'),
-      lockAndReadAccount: vi.fn().mockResolvedValue({ status: 'active' }),
+      lockAndReadAccount: vi
+        .fn()
+        .mockResolvedValue({ status: 'active', currency: 'USD' }),
       createTransaction: vi
         .fn()
         .mockRejectedValue(new TransactionPayeeNotFoundError()),

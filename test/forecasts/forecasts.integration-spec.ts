@@ -642,8 +642,8 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       );
       await admin.query(
         `insert into public.ledger_postings (id, workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at) values
-          ($1, $2, $3, $4, 'account', 50000, 'GBP', 'confirmed', $5::timestamptz),
-          ($6, $2, $3, null, 'external', -50000, 'GBP', 'confirmed', $5::timestamptz)`,
+          ($1, $2, $3, $4, 'account', 50000, 'USD', 'confirmed', $5::timestamptz),
+          ($6, $2, $3, null, 'external', -50000, 'USD', 'confirmed', $5::timestamptz)`,
         [
           randomUUID(),
           workspace1Id,

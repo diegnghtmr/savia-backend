@@ -304,6 +304,41 @@ describe('TransactionController.createTransaction', () => {
     );
   });
 
+  it('answers 422 with Account currency mismatch problem when outcome is CURRENCY_MISMATCH', async () => {
+    const { controller, reply } = createMocks({
+      create: vi.fn().mockResolvedValue({
+        kind: TRANSACTION_CREATE_OUTCOMES.CURRENCY_MISMATCH,
+      }),
+    });
+    const request = {
+      headers: {
+        'x-workspace-id': workspaceId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: validBody,
+      identity: { subject },
+    } as unknown as AuthenticatedRequest;
+
+    await controller.createTransaction(request, reply);
+
+    expect(reply.status).toHaveBeenCalledWith(422);
+    expect(reply.type).toHaveBeenCalledWith('application/problem+json');
+    expect(reply.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Account currency mismatch',
+        status: 422,
+        errors: [
+          {
+            field: 'amount.currency',
+            code: 'currency-mismatch',
+            message: 'Transaction currency must match account currency',
+          },
+        ],
+      }),
+    );
+  });
+
   it('answers 409 CONFLICT when idempotency conflict occurs', async () => {
     const { controller, reply } = createMocks({
       create: vi.fn().mockResolvedValue({

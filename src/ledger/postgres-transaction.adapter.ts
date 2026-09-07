@@ -177,15 +177,18 @@ export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
     );
 
     // 2. Pre-check account existence and status in workspace
-    const accountResult = await client.query<{ status: string }>(
-      'select a.status from public.accounts a where a.workspace_id = $1::uuid and a.id = $2::uuid',
+    const accountResult = await client.query<{
+      status: string;
+      currency: string;
+    }>(
+      'select a.status, a.currency from public.accounts a where a.workspace_id = $1::uuid and a.id = $2::uuid',
       [workspaceId, accountId],
     );
     const accountRow = accountResult.rows[0];
     if (!accountRow) {
       return undefined;
     }
-    return { status: accountRow.status };
+    return { status: accountRow.status, currency: accountRow.currency };
   }
 
   public async createTransaction(
