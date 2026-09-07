@@ -248,6 +248,15 @@ export class TransactionController {
       return;
     }
 
+    if (outcome.kind === TRANSACTION_CREATE_OUTCOMES.RECEIPT_ALREADY_LINKED) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Receipt already linked to a transaction',
+        status: 409,
+      });
+      return;
+    }
+
     if (outcome.kind === TRANSACTION_CREATE_OUTCOMES.REPLAYED) {
       let r = reply.status(outcome.status);
       if (outcome.etag) {

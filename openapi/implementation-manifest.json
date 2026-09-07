@@ -386,6 +386,21 @@
       "operationId": "markNotificationRead",
       "method": "POST",
       "path": "/v1/notifications/{notificationId}/read"
+    },
+    {
+      "operationId": "createReceipt",
+      "method": "POST",
+      "path": "/v1/receipts"
+    },
+    {
+      "operationId": "getReceipt",
+      "method": "GET",
+      "path": "/v1/receipts/{receiptId}"
+    },
+    {
+      "operationId": "confirmReceipt",
+      "method": "POST",
+      "path": "/v1/receipts/{receiptId}/confirm"
     }
   ]
 }
