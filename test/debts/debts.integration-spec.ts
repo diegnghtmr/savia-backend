@@ -1252,19 +1252,27 @@ describe('Debts integration suite against disposable PostgreSQL', () => {
       });
       expect(payRes.statusCode).toBe(201);
 
+      // Create an EUR account in workspace 1 to satisfy posting-currency invariant
+      const eurAccountId = randomUUID();
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, status, created_by)
+         values ($1, $2, 'EUR Account WS1', 'checking', 'EUR', 'active', $3)`,
+        [eurAccountId, workspace1Id, ownerId],
+      );
+
       // Insert directly a foreign currency posting into ledger_postings linked to the debt
       const foreignTxnId = randomUUID();
       await admin.query(
         `insert into public.transactions (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
          values ($1, $2, $3, 'debt_payment', 'confirmed', -999999, 'EUR', now(), $4)`,
-        [foreignTxnId, workspace1Id, account1Id, ownerId],
+        [foreignTxnId, workspace1Id, eurAccountId, ownerId],
       );
       await admin.query(
         `insert into public.ledger_postings (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
          values
            ($1, $2, $3, 'account', -999999, 'EUR', 'confirmed', now()),
            ($1, $2, null, 'external', 999999, 'EUR', 'confirmed', now())`,
-        [workspace1Id, foreignTxnId, account1Id],
+        [workspace1Id, foreignTxnId, eurAccountId],
       );
       await admin.query(
         `insert into public.debt_payments (workspace_id, debt_id, transaction_id, principal_minor, interest_minor, fee_minor)
