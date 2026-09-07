@@ -106,6 +106,7 @@ export const TRANSACTION_CREATE_OUTCOMES = {
   FORBIDDEN: 'forbidden',
   ACCOUNT_UNRESOLVED: 'account_unresolved',
   ACCOUNT_CLOSED: 'account_closed',
+  CURRENCY_MISMATCH: 'currency_mismatch',
   CATEGORY_NOT_FOUND: 'category_not_found',
   PAYEE_NOT_FOUND: 'payee_not_found',
 } as const;
@@ -140,6 +141,10 @@ export interface TransactionCreateAccountClosed {
   readonly kind: typeof TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED;
 }
 
+export interface TransactionCreateCurrencyMismatch {
+  readonly kind: typeof TRANSACTION_CREATE_OUTCOMES.CURRENCY_MISMATCH;
+}
+
 export interface TransactionCreateCategoryNotFound {
   readonly kind: typeof TRANSACTION_CREATE_OUTCOMES.CATEGORY_NOT_FOUND;
 }
@@ -155,6 +160,7 @@ export type TransactionCreateOutcome =
   | TransactionCreateForbidden
   | TransactionCreateAccountUnresolved
   | TransactionCreateAccountClosed
+  | TransactionCreateCurrencyMismatch
   | TransactionCreateCategoryNotFound
   | TransactionCreatePayeeNotFound;
 

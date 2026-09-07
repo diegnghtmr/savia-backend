@@ -50,6 +50,7 @@ export class TransactionPayeeNotFoundError extends Error {
 
 export interface LedgerAccountRecord {
   readonly status: string;
+  readonly currency: string;
 }
 
 export interface TransactionItem {
@@ -168,6 +169,9 @@ export class TransactionService implements LedgerPort {
       }
       if (account.status === 'closed') {
         return { kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED };
+      }
+      if (command.amount.currency !== account.currency) {
+        return { kind: TRANSACTION_CREATE_OUTCOMES.CURRENCY_MISMATCH };
       }
 
       // 4. Create transaction via store

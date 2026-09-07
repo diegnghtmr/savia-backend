@@ -89,12 +89,12 @@ describe('PostgresTransactionAdapter.lockAndReadAccount', () => {
   const workspaceId = '00000000-0000-0000-0000-000000000951';
   const accountId = '00000000-0000-0000-0000-000000000A01'; // Mixed case to test lowercasing
 
-  it('takes per-account advisory lock on lowercased account id and returns account status', async () => {
+  it('takes per-account advisory lock on lowercased account id and returns account status and currency', async () => {
     const client: TransactionClient = {
       query: vi
         .fn()
         .mockResolvedValueOnce({ rows: [] }) // 1. Lock
-        .mockResolvedValueOnce({ rows: [{ status: 'active' }] }), // 2. Account check
+        .mockResolvedValueOnce({ rows: [{ status: 'active', currency: 'USD' }] }), // 2. Account check
     };
 
     const result = await adapter.lockAndReadAccount(
@@ -114,10 +114,12 @@ describe('PostgresTransactionAdapter.lockAndReadAccount', () => {
     const [accountSql, accountValues] = (
       client.query as ReturnType<typeof vi.fn>
     ).mock.calls[1] as [string, unknown[]];
-    expect(accountSql).toContain('select a.status from public.accounts a');
+    expect(accountSql).toContain(
+      'select a.status, a.currency from public.accounts a',
+    );
     expect(accountValues).toEqual([workspaceId, accountId]);
 
-    expect(result).toEqual({ status: 'active' });
+    expect(result).toEqual({ status: 'active', currency: 'USD' });
   });
 
   it('returns undefined when account row does not exist in workspace', async () => {

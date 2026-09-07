@@ -203,6 +203,22 @@ export class TransactionController {
       return;
     }
 
+    if (outcome.kind === TRANSACTION_CREATE_OUTCOMES.CURRENCY_MISMATCH) {
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Account currency mismatch',
+        status: 422,
+        errors: [
+          {
+            field: 'amount.currency',
+            code: 'currency-mismatch',
+            message: 'Transaction currency must match account currency',
+          },
+        ],
+      });
+      return;
+    }
+
     if (outcome.kind === TRANSACTION_CREATE_OUTCOMES.CATEGORY_NOT_FOUND) {
       sendProblem(reply, {
         type: PROBLEM_TYPES.UNPROCESSABLE,
