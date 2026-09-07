@@ -11,8 +11,13 @@ create table public.notifications (
   read boolean not null default false,
   read_at timestamptz,
   created_at timestamptz not null default now(),
+  -- The notification type vocabulary is deliberately not frozen because no producer exists yet,
+  -- and the first producer slice owns that decision. We constrain the structural format:
+  -- non-empty, bounded length (1 to 64 chars, justified against title's 1-255 bound),
+  -- and lowercase snake_case format matching ^[a-z][a-z0-9_]*$.
   constraint notifications_type_check check (
-    type in ('approval_requested', 'approval_decided', 'import_completed', 'export_ready', 'system')
+    char_length(type) between 1 and 64
+    and type ~ '^[a-z][a-z0-9_]*$'
   ),
   constraint notifications_title_length_check check (
     char_length(title) between 1 and 255

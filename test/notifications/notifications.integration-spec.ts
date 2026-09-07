@@ -148,14 +148,52 @@ describe('Notifications integration contract and endpoint suite', () => {
       expect(updateCols).toEqual(['read', 'read_at']);
     });
 
-    it('enforces notifications_type_check constraint', async () => {
+    it('enforces notifications_type_check format constraint', async () => {
+      // Rejects uppercase characters
       await expect(
         admin.query(
           `insert into public.notifications (subject_id, type, title)
-           values ($1, 'invalid_type_vocabulary', 'Test Title')`,
+           values ($1, 'UPPERCASE_TYPE', 'Test Title')`,
           [user1Id],
         ),
       ).rejects.toThrow(/notifications_type_check/);
+
+      // Rejects leading digit
+      await expect(
+        admin.query(
+          `insert into public.notifications (subject_id, type, title)
+           values ($1, '1_leading_digit', 'Test Title')`,
+          [user1Id],
+        ),
+      ).rejects.toThrow(/notifications_type_check/);
+
+      // Rejects empty string
+      await expect(
+        admin.query(
+          `insert into public.notifications (subject_id, type, title)
+           values ($1, '', 'Test Title')`,
+          [user1Id],
+        ),
+      ).rejects.toThrow(/notifications_type_check/);
+
+      // Rejects exceeding bounded length (64 chars)
+      await expect(
+        admin.query(
+          `insert into public.notifications (subject_id, type, title)
+           values ($1, $2, 'Test Title')`,
+          [user1Id, 'a'.repeat(65)],
+        ),
+      ).rejects.toThrow(/notifications_type_check/);
+
+      // Accepts a well-formed open event type not in the old speculative enumeration
+      const customType = 'workspace_billing_threshold_reached';
+      const insertResult = await admin.query<{ id: string }>(
+        `insert into public.notifications (subject_id, type, title)
+         values ($1, $2, 'Well-formed Custom Type')
+         returning id`,
+        [user1Id, customType],
+      );
+      expect(insertResult.rows[0].id).toBeDefined();
     });
 
     it('enforces notifications_title_length_check constraint', async () => {
