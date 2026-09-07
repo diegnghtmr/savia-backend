@@ -165,6 +165,11 @@ export class ReceiptService implements ReceiptsPort {
         if (outcome.kind === TRANSACTION_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT) {
           throw new ReceiptRollbackError({ kind: RECEIPT_OUTCOMES.CONFLICT });
         }
+        if (
+          outcome.kind === TRANSACTION_CREATE_OUTCOMES.RECEIPT_ALREADY_LINKED
+        ) {
+          throw new ReceiptRollbackError({ kind: RECEIPT_OUTCOMES.CONFLICT });
+        }
         if (outcome.kind === TRANSACTION_CREATE_OUTCOMES.REPLAYED) {
           throw new ReceiptRollbackError({
             kind: RECEIPT_OUTCOMES.TRANSACTION_REPLAYED,

@@ -230,6 +230,13 @@ export class TransactionService implements LedgerPort, LedgerWriter {
       if (error instanceof TransactionPayeeNotFoundError) {
         return { kind: TRANSACTION_CREATE_OUTCOMES.PAYEE_NOT_FOUND };
       }
+      if (
+        isPostgresConstraintError(error, 'receipts_one_transaction_per_receipt')
+      ) {
+        return {
+          kind: TRANSACTION_CREATE_OUTCOMES.RECEIPT_ALREADY_LINKED,
+        };
+      }
       throw error;
     }
 
@@ -732,4 +739,14 @@ export class TransactionService implements LedgerPort, LedgerWriter {
       };
     });
   }
+}
+
+function isPostgresConstraintError(
+  error: unknown,
+  constraint: string,
+): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error))
+    return false;
+  const pgError = error as { code?: unknown; constraint?: unknown };
+  return pgError.code === '23505' && pgError.constraint === constraint;
 }

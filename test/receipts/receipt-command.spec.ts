@@ -306,19 +306,19 @@ describe('receipt-command', () => {
       }
     });
 
-    it('rejects unknown top-level key in deviceOcrResult asserting field name', () => {
+    it('accepts and preserves unknown top-level keys for later dropping', () => {
       const input = JSON.stringify({
         unknownField: { value: 'test', confidence: 0.5 },
       });
-      expect.assertions(3);
-      try {
-        parseDeviceOcrResult(input);
-      } catch (error) {
-        expect(error).toBeInstanceOf(ReceiptCommandValidationError);
-        const err = error as ReceiptCommandValidationError;
-        expect(err.violations[0].field).toBe('deviceOcrResult.unknownField');
-        expect(err.violations[0].code).toBe('not-allowed');
-      }
+      expect(parseDeviceOcrResult(input)).toEqual({
+        unknownField: { value: 'test', confidence: 0.5 },
+      });
+      expect(toReceiptFields(parseDeviceOcrResult(input))).toEqual({
+        merchant: null,
+        date: null,
+        currency: null,
+        total: null,
+      });
     });
   });
 

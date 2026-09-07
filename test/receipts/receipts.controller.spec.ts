@@ -656,6 +656,25 @@ describe('ReceiptsController', () => {
       );
     });
 
+    it('returns 422 when confirmation has an unknown top-level property', async () => {
+      const port = new FakeReceiptsPort();
+      const controller = new ReceiptsController(port);
+      const reply = new FakeReply();
+
+      await controller.confirm(
+        receiptId,
+        createConfirmRequest({ ...validTransactionPayload, unexpected: true }),
+        reply as unknown as FastifyReply,
+      );
+
+      expect(reply.statusCode).toBe(422);
+      expect(
+        (reply.sentBody as { errors: Array<{ field: string }> }).errors[0]
+          .field,
+      ).toBe('unexpected');
+      expect(port.confirmCalls).toHaveLength(0);
+    });
+
     it('returns 403 when port returns FORBIDDEN', async () => {
       const port = new FakeReceiptsPort();
       port.confirmResult = { kind: RECEIPT_OUTCOMES.FORBIDDEN };

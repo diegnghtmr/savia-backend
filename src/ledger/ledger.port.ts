@@ -92,6 +92,7 @@ export const TRANSACTION_CREATE_OUTCOMES = {
   CURRENCY_MISMATCH: 'currency_mismatch',
   CATEGORY_NOT_FOUND: 'category_not_found',
   PAYEE_NOT_FOUND: 'payee_not_found',
+  RECEIPT_ALREADY_LINKED: 'receipt_already_linked',
 } as const;
 export type TransactionCreateOutcomeKind =
   (typeof TRANSACTION_CREATE_OUTCOMES)[keyof typeof TRANSACTION_CREATE_OUTCOMES];
@@ -136,6 +137,10 @@ export interface TransactionCreatePayeeNotFound {
   readonly kind: typeof TRANSACTION_CREATE_OUTCOMES.PAYEE_NOT_FOUND;
 }
 
+export interface TransactionCreateReceiptAlreadyLinked {
+  readonly kind: typeof TRANSACTION_CREATE_OUTCOMES.RECEIPT_ALREADY_LINKED;
+}
+
 export type TransactionCreateOutcome =
   | TransactionCreateCreated
   | TransactionCreateReplayed
@@ -145,7 +150,8 @@ export type TransactionCreateOutcome =
   | TransactionCreateAccountClosed
   | TransactionCreateCurrencyMismatch
   | TransactionCreateCategoryNotFound
-  | TransactionCreatePayeeNotFound;
+  | TransactionCreatePayeeNotFound
+  | TransactionCreateReceiptAlreadyLinked;
 
 export const TRANSACTION_READ_OUTCOMES = {
   OK: 'ok',

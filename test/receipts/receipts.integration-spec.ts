@@ -1,4 +1,5 @@
 // Migration under test: 202609060004_receipts.sql
+// Migration under test: 202609060005_receipt_transaction_uniqueness.sql
 import multipart from '@fastify/multipart';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
@@ -154,6 +155,7 @@ describe('receipts over Fastify multipart HTTP', () => {
     key = randomUUID(),
     fields: Readonly<Record<string, string>> = {},
     content = Buffer.from('receipt'),
+    name = 'receipt.pdf',
   ) {
     return app.inject({
       method: 'POST',
@@ -164,16 +166,32 @@ describe('receipts over Fastify multipart HTTP', () => {
         'idempotency-key': key,
         'content-type': `multipart/form-data; boundary=${boundary}`,
       },
-      payload: form(content, 'receipt.pdf', 'application/pdf', fields),
+      payload: form(content, name, 'application/pdf', fields),
     });
   }
-  function transaction(currency = 'USD') {
+  async function createDirectTransaction(
+    receiptId: string,
+    key = randomUUID(),
+  ) {
+    return app.inject({
+      method: 'POST',
+      url: '/v1/transactions',
+      headers: {
+        authorization: 'Bearer owner',
+        'x-workspace-id': workspace,
+        'idempotency-key': key,
+      },
+      payload: transaction('USD', receiptId),
+    });
+  }
+  function transaction(currency = 'USD', receiptId?: string) {
     return {
       type: 'expense',
       accountId: account,
       amount: { amountMinor: '100', currency },
       occurredAt: '2026-01-01T00:00:00Z',
       status: 'confirmed',
+      ...(receiptId === undefined ? {} : { receiptId }),
     };
   }
 
@@ -219,7 +237,7 @@ describe('receipts over Fastify multipart HTTP', () => {
       ).statusCode,
     ).toBe(422);
   });
-  it('rejects invalid confidence and unknown OCR fields', async () => {
+  it('rejects invalid confidence and accepts unknown OCR fields', async () => {
     expect(
       (
         await upload(randomUUID(), {
@@ -230,17 +248,43 @@ describe('receipts over Fastify multipart HTTP', () => {
         })
       ).statusCode,
     ).toBe(422);
+    const unknown = await upload(randomUUID(), {
+      processingPreference: 'device_result',
+      deviceOcrResult: JSON.stringify({
+        unknown: { value: 1, confidence: 1 },
+      }),
+    });
+    expect(unknown.statusCode).toBe(202);
+    expect(JSON.parse(unknown.payload)).not.toHaveProperty('unknown');
+  });
+
+  it.each([
+    ['nul\0byte.pdf', 'nul filename'],
+    ['line\nfeed.pdf', 'control-character filename'],
+    ['', 'empty filename'],
+    ['a'.repeat(256) + '.pdf', 'over-long filename'],
+  ])('rejects %s before storage', async (name) => {
     expect(
-      (
-        await upload(randomUUID(), {
-          processingPreference: 'device_result',
-          deviceOcrResult: JSON.stringify({
-            unknown: { value: 1, confidence: 1 },
-          }),
-        })
-      ).statusCode,
+      (await upload(randomUUID(), {}, Buffer.from('receipt'), name)).statusCode,
     ).toBe(422);
   });
+
+  it.each([
+    ['../../etc/passwd', 'passwd'],
+    ['/absolute.pdf', 'absolute.pdf'],
+  ])(
+    'normalizes path-like filename %s beneath receipt prefix',
+    async (name, normalizedName) => {
+      const response = await upload(
+        randomUUID(),
+        {},
+        Buffer.from('receipt'),
+        name,
+      );
+      expect(response.statusCode).toBe(202);
+      expect(JSON.parse(response.payload).fileName).toBe(normalizedName);
+    },
+  );
   it('rejects oversized and disallowed uploads', async () => {
     expect(
       (await upload(randomUUID(), {}, Buffer.alloc(5 * 1024 * 1024 + 1)))
@@ -399,6 +443,65 @@ describe('receipts over Fastify multipart HTTP', () => {
         drop function if exists public.delay_receipt_update();
       `);
     }
+  });
+
+  it('rejects direct transaction after receipt confirmation and preserves one link', async () => {
+    const created = JSON.parse((await upload()).payload);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/v1/receipts/${created.id}/confirm`,
+          headers: {
+            authorization: 'Bearer owner',
+            'x-workspace-id': workspace,
+            'idempotency-key': randomUUID(),
+          },
+          payload: { transaction: transaction() },
+        })
+      ).statusCode,
+    ).toBe(201);
+    expect((await createDirectTransaction(created.id)).statusCode).toBe(409);
+    const count = await admin.query<{ count: string }>(
+      'select count(*)::text as count from public.transactions where workspace_id = $1 and receipt_id = $2',
+      [workspace, created.id],
+    );
+    expect(count.rows[0].count).toBe('1');
+  });
+
+  it('rejects confirm after direct transaction and preserves one link', async () => {
+    const created = JSON.parse((await upload()).payload);
+    expect((await createDirectTransaction(created.id)).statusCode).toBe(201);
+    const confirm = await app.inject({
+      method: 'POST',
+      url: `/v1/receipts/${created.id}/confirm`,
+      headers: {
+        authorization: 'Bearer owner',
+        'x-workspace-id': workspace,
+        'idempotency-key': randomUUID(),
+      },
+      payload: { transaction: transaction() },
+    });
+    expect(confirm.statusCode).toBe(409);
+    const count = await admin.query<{ count: string }>(
+      'select count(*)::text as count from public.transactions where workspace_id = $1 and receipt_id = $2',
+      [workspace, created.id],
+    );
+    expect(count.rows[0].count).toBe('1');
+  });
+
+  it('allows only one of two concurrent direct transactions for a receipt', async () => {
+    const created = JSON.parse((await upload()).payload);
+    const [first, second] = await Promise.all([
+      createDirectTransaction(created.id),
+      createDirectTransaction(created.id),
+    ]);
+    expect([first.statusCode, second.statusCode].sort()).toEqual([201, 409]);
+    const count = await admin.query<{ count: string }>(
+      'select count(*)::text as count from public.transactions where workspace_id = $1 and receipt_id = $2',
+      [workspace, created.id],
+    );
+    expect(count.rows[0].count).toBe('1');
   });
   it('rolls back claim when transaction creation fails, leaving receipt confirmable', async () => {
     const created = JSON.parse((await upload()).payload);

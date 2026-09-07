@@ -54,15 +54,6 @@ export function parseDeviceOcrResult(
     throw invalidOcr('deviceOcrResult');
   const result = parsed as Record<string, unknown>;
   const violations: FieldViolation[] = [];
-  for (const key of Object.keys(result)) {
-    if (!FIELDS.includes(key as ReceiptFieldName))
-      add(
-        violations,
-        `deviceOcrResult.${key}`,
-        'not-allowed',
-        'is not allowed',
-      );
-  }
   for (const field of FIELDS) {
     if (!(field in result)) continue;
     const candidate = result[field];

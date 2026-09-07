@@ -37,6 +37,7 @@ const ALLOWED_CONTENT_TYPES = new Set([
   'image/png',
   'image/webp',
 ]);
+const MAX_FILENAME_LENGTH = 255;
 
 @Controller('v1/receipts')
 @UseGuards(JwtAuthGuard)
@@ -71,6 +72,14 @@ export class ReceiptsController {
           if (part.fieldname !== 'file' || bytes)
             throw new Error('Only one file part named file is allowed.');
           fileName = part.filename;
+          if (
+            fileName.length === 0 ||
+            fileName.length > MAX_FILENAME_LENGTH ||
+            containsControlCharacter(fileName)
+          )
+            throw new Error(
+              'Filename must be 1-255 characters without control characters.',
+            );
           contentType = part.mimetype;
           const chunks: Buffer[] = [];
           for await (const chunk of part.file) chunks.push(Buffer.from(chunk));
@@ -189,6 +198,17 @@ export class ReceiptsController {
       });
     try {
       const body = (request as FastifyRequest & { body: unknown }).body;
+      if (typeof body === 'object' && body !== null && !Array.isArray(body)) {
+        const violations = Object.keys(body)
+          .filter((key) => key !== 'transaction')
+          .map((key) => ({
+            field: key,
+            code: 'not-allowed',
+            message: 'is not allowed',
+          }));
+        if (violations.length)
+          throw new TransactionCommandValidationError(violations);
+      }
       const transactionBody =
         typeof body === 'object' && body !== null && 'transaction' in body
           ? (body as Record<string, unknown>).transaction
@@ -242,4 +262,11 @@ export class ReceiptsController {
       throw error;
     }
   }
+}
+
+function containsControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 31 || codePoint === 127;
+  });
 }
