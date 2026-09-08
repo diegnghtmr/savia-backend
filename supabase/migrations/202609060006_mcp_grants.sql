@@ -1,8 +1,13 @@
 begin;
 
-create function public.mcp_array_is_unique(values anyarray)
+-- The parameter is deliberately NOT named `values`: that is a reserved word in
+-- PostgreSQL, and `cardinality(values)` inside the body parses as the start of a
+-- VALUES clause, so `create function` fails with `syntax error at or near "values"`.
+-- Because every integration suite applies every migration, that one word took the
+-- whole disposable-database gate down, not just this table.
+create function public.mcp_array_is_unique(items anyarray)
 returns boolean language sql immutable strict as $$
-  select cardinality(values) = (select count(distinct value) from unnest(values) as entries(value));
+  select cardinality(items) = (select count(distinct value) from unnest(items) as entries(value));
 $$;
 
 create table public.mcp_grants (
