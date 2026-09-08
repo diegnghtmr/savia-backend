@@ -81,6 +81,7 @@ case "$spec" in
   test/receipts/receipts.integration-spec.ts) ;;
   test/mcp/mcp-grants.integration-spec.ts) ;;
   test/ai/ai-credentials.integration-spec.ts) ;;
+  test/agent/agent-conversations.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 

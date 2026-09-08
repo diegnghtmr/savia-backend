@@ -443,6 +443,16 @@
       "path": "/v1/ai/credentials/{credentialId}"
     },
     {
+      "operationId": "listAgentConversations",
+      "method": "GET",
+      "path": "/v1/agent/conversations"
+    },
+    {
+      "operationId": "createAgentConversation",
+      "method": "POST",
+      "path": "/v1/agent/conversations"
+    },
+    {
       "operationId": "setDefaultAIModel",
       "method": "PUT",
       "path": "/v1/ai/default-model"
