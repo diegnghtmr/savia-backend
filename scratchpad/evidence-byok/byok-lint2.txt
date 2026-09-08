@@ -1,8 +1,0 @@
-$ eslint .
-
-/home/diegnghtmr/Documents/project/savia-general/generar/savia-backend/src/ai/ai-credential.service.ts
-  157:5  error  '_key' is defined but never used  @typescript-eslint/no-unused-vars
-
-✖ 1 problem (1 error, 0 warnings)
-
-[ELIFECYCLE] Command failed with exit code 1.

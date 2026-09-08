@@ -1,9 +1,0 @@
-
- RUN  v4.1.10 /home/diegnghtmr/Documents/project/savia-general/generar/savia-backend
-
-
- Test Files  2 passed (2)
-      Tests  8 passed (8)
-   Start at  13:42:57
-   Duration  146ms (transform 66ms, setup 29ms, import 67ms, tests 12ms, environment 0ms)
-

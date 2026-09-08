@@ -13,3 +13,7 @@ supabase/.temp/
 # and prettier scans everything it is not told to skip.
 .atl/
 .playwright-mcp/
+
+# Session scratch for coding agents: evidence captures and slice reports.
+# Work product, never source.
+scratchpad/

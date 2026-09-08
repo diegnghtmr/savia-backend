@@ -1,4 +1,0 @@
-Checking formatting...
-[warn] scratchpad/slice-byok-report.md
-[warn] test/ai/ai-credentials.integration-spec.ts
-[warn] Code style issues found in 2 files. Run Prettier with --write to fix.

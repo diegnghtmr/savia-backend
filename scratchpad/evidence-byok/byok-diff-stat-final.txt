@@ -1,9 +1,0 @@
- scratchpad/slice-byok-report.md                    |  51 ++-
- src/ai/ai-credential.port.ts                       |   5 +
- src/ai/ai-credential.service.ts                    | 196 +++++++++--
- src/ai/ai-credentials.controller.ts                |  18 +-
- src/ai/ai-credentials.module.ts                    |  11 +-
- src/ai/postgres-ai-credential.adapter.ts           |   5 +-
- .../migrations/202609060007_ai_credentials.sql     |   2 +-
- test/ai/ai-credentials.integration-spec.ts         | 390 +++++++++++++++++++--
- 8 files changed, 596 insertions(+), 82 deletions(-)

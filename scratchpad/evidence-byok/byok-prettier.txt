@@ -1,4 +1,0 @@
-Checking formatting...
-[warn] openapi/savia.openapi.yaml
-[warn] src/ai/ai-credential-command.ts
-[warn] Code style issues found in 2 files. Run Prettier with --write to fix.
