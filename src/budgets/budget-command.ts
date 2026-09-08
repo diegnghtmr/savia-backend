@@ -47,7 +47,11 @@ export function createBudgetCommand(input: unknown): CreateBudgetRequest {
       add(violations, key, 'not-allowed', 'is not allowed');
   });
   const name = body.name;
-  if (typeof name !== 'string' || name.length < 1 || name.length > 120)
+  if (
+    typeof name !== 'string' ||
+    [...name].length < 1 ||
+    [...name].length > 120
+  )
     add(violations, 'name', 'invalid', 'must be between 1 and 120 characters');
   const methods = Object.values(BUDGET_METHODS);
   if (
@@ -135,7 +139,11 @@ export function updateBudgetCommand(input: unknown): UpdateBudgetRequest {
   });
   if (body.name !== undefined) {
     const name = body.name;
-    if (typeof name !== 'string' || name.length < 1 || name.length > 120) {
+    if (
+      typeof name !== 'string' ||
+      [...name].length < 1 ||
+      [...name].length > 120
+    ) {
       add(
         violations,
         'name',
