@@ -43,8 +43,9 @@ const CREATE_STATUSES = ['draft', 'pending', 'confirmed'] as const;
 const ISO_DATE_TIME_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/i;
 
-const BIGINT_MIN = -9223372036854775807n;
+const BIGINT_MIN = -9223372036854775808n;
 const BIGINT_MAX = 9223372036854775807n;
+const NEGATABLE_BIGINT_MIN = -9223372036854775807n;
 
 export class TransactionCommandValidationError extends Error {
   public constructor(public readonly violations: readonly FieldViolation[]) {
@@ -161,7 +162,11 @@ export function createTransactionCommand(
       } else {
         try {
           const val = BigInt(trimmed);
-          if (val < BIGINT_MIN || val > BIGINT_MAX) {
+          if (
+            val < BIGINT_MIN ||
+            val > BIGINT_MAX ||
+            val < NEGATABLE_BIGINT_MIN
+          ) {
             add(
               violations,
               'amount.amountMinor',
