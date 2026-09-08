@@ -63,7 +63,7 @@ export class PostgresAgentMessageAdapter implements AgentMessageStore {
     events: readonly AgentEvent[],
   ): Promise<boolean> {
     const r = await client.query(
-      'insert into public.agent_message_idempotency(subject_id,workspace_id,conversation_id,idempotency_key,request_fingerprint,events) values ($1::uuid,$2::uuid,$3::uuid,$4,$5,$6::jsonb) on conflict do nothing returning id',
+      'insert into public.agent_message_idempotency(subject_id,workspace_id,conversation_id,idempotency_key,request_fingerprint,events) values ($1::uuid,$2::uuid,$3::uuid,$4,$5,$6::jsonb) on conflict do nothing returning conversation_id',
       [
         subject,
         workspaceId,
