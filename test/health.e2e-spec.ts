@@ -172,6 +172,7 @@ describe('health endpoint', () => {
       'PUT /v1/ai/default-model',
       'GET /v1/agent/conversations',
       'POST /v1/agent/conversations',
+      'POST /v1/agent/conversations/:conversationId/messages',
     ]);
 
     await app.close();

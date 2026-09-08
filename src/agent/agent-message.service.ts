@@ -1,0 +1,146 @@
+import { randomUUID } from 'node:crypto';
+import { computeRequestFingerprint } from '../platform/idempotency.service.js';
+import {
+  AGENT_EVENT_TYPES,
+  AGENT_MESSAGE_OUTCOMES,
+  type AgentEvent,
+  type AgentMessageCommand,
+  type AgentMessageOutcome,
+  type AgentMessagePort,
+  type AgentMessageStore,
+  type AgentMessageTransaction,
+  type AgentProviderPort,
+} from './agent-message.port.js';
+
+export class AgentMessageService implements AgentMessagePort {
+  public constructor(
+    private readonly tx: AgentMessageTransaction,
+    private readonly store: AgentMessageStore,
+    private readonly provider: AgentProviderPort,
+  ) {}
+  public prepare(
+    subject: string,
+    workspaceId: string,
+    conversationId: string,
+    key: string,
+    command: AgentMessageCommand,
+  ): Promise<AgentMessageOutcome> {
+    return this.tx.run(subject, async (client) => {
+      if (
+        !(await this.store.conversationExists(
+          client,
+          workspaceId,
+          conversationId,
+        ))
+      )
+        return { kind: AGENT_MESSAGE_OUTCOMES.NOT_FOUND };
+      const fingerprint = computeRequestFingerprint(command);
+      const existing = await this.store.readIdempotency(
+        client,
+        subject,
+        workspaceId,
+        conversationId,
+        key,
+      );
+      if (existing)
+        return existing.fingerprint === fingerprint
+          ? {
+              kind: AGENT_MESSAGE_OUTCOMES.READY,
+              runId: existing.events[0]?.runId ?? randomUUID(),
+            }
+          : { kind: AGENT_MESSAGE_OUTCOMES.CONFLICT };
+      if (
+        !(await this.store.consumeRateLimit(
+          client,
+          subject,
+          workspaceId,
+          conversationId,
+          new Date().toISOString(),
+        ))
+      )
+        return { kind: AGENT_MESSAGE_OUTCOMES.RATE_LIMITED, retryAfter: 60 };
+      return { kind: AGENT_MESSAGE_OUTCOMES.READY, runId: randomUUID() };
+    });
+  }
+  public async execute(
+    subject: string,
+    workspaceId: string,
+    conversationId: string,
+    key: string,
+    command: AgentMessageCommand,
+    signal: AbortSignal,
+    emit: (event: AgentEvent) => void,
+  ): Promise<void> {
+    const runId = randomUUID();
+    const events: AgentEvent[] = [];
+    const push = (type: AgentEvent['type'], data: Record<string, unknown>) => {
+      if (signal.aborted) return;
+      const event = { type, runId, timestamp: new Date().toISOString(), data };
+      events.push(event);
+      emit(event);
+    };
+    push(AGENT_EVENT_TYPES.RUN_STARTED, {});
+    try {
+      for await (const chunk of this.provider.stream(command, signal)) {
+        if (signal.aborted) return;
+        push(chunk.type, chunk.data);
+        if (
+          chunk.type === 'tool_proposed' &&
+          chunk.data.requiresApproval === true
+        )
+          push(AGENT_EVENT_TYPES.APPROVAL_REQUIRED, {
+            deferred: true,
+            reason: 'Approval creation is not exposed by APPROVALS_PORT.',
+          });
+      }
+      if (!signal.aborted) push(AGENT_EVENT_TYPES.RUN_COMPLETED, {});
+      if (!signal.aborted)
+        await this.tx.run(subject, async (client) => {
+          await this.store.saveRun(
+            client,
+            workspaceId,
+            conversationId,
+            subject,
+            runId,
+            command.message,
+            events,
+          );
+          await this.store.saveIdempotency(
+            client,
+            subject,
+            workspaceId,
+            conversationId,
+            key,
+            computeRequestFingerprint(command),
+            events,
+          );
+        });
+    } catch (error) {
+      if (!signal.aborted) {
+        push(AGENT_EVENT_TYPES.RUN_FAILED, {
+          message: error instanceof Error ? error.message : 'Provider failed',
+        });
+        await this.tx.run(subject, async (client) => {
+          await this.store.saveRun(
+            client,
+            workspaceId,
+            conversationId,
+            subject,
+            runId,
+            command.message,
+            events,
+          );
+          await this.store.saveIdempotency(
+            client,
+            subject,
+            workspaceId,
+            conversationId,
+            key,
+            computeRequestFingerprint(command),
+            events,
+          );
+        });
+      }
+    }
+  }
+}

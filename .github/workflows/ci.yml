@@ -314,6 +314,9 @@ jobs:
       - name: Agent conversations integration
         shell: bash
         run: pnpm test:integration:agent-conversations
+      - name: Agent messages integration
+        shell: bash
+        run: pnpm test:integration:agent-messages
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
