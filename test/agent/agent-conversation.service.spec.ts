@@ -1,110 +1,113 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AgentConversationService } from '../../src/agent/agent-conversation.service.js';
-import type { AgentConversationTransaction } from '../../src/agent/agent-conversation.service.js';
+import type { IdempotencyRecord, IdempotencyStore } from '../../src/platform/idempotency.port.js';
+import type { TransactionClient } from '../../src/platform/pg-transaction.js';
+import { AgentConversationService, type AgentConversationTransaction } from '../../src/agent/agent-conversation.service.js';
+
 const conversation = {
   id: '22222222-2222-4222-8222-222222222222',
-  title: 'x',
-  modelRef: null,
+  title: 'x', modelRef: null,
   createdAt: '2026-01-01T00:00:00.000000Z',
   updatedAt: '2026-01-01T00:00:00.000000Z',
 };
-const tx = {
-  run: vi.fn(async <T>(_s: string, cb: (c: never) => Promise<T>) =>
-    cb({} as never),
-  ),
-  runRead: vi.fn(async <T>(_s: string, cb: (c: never) => Promise<T>) =>
-    cb({} as never),
-  ),
-};
-const transaction = tx as unknown as AgentConversationTransaction;
+const subject = '11111111-1111-4111-8111-111111111111';
+const workspace = '33333333-3333-4333-8333-333333333333';
+const command = { title: 'x', modelRef: null, credentialId: null };
+
+class RecordingTransaction implements AgentConversationTransaction {
+  public committed = 0;
+  public rolledBack = 0;
+  private readonly client: TransactionClient = { query: async () => ({ rows: [] }) };
+
+  public async run<T>(_subject: string, callback: (client: TransactionClient) => Promise<T>): Promise<T> {
+    try {
+      const result = await callback(this.client);
+      this.committed++;
+      return result;
+    } catch (error) {
+      this.rolledBack++;
+      throw error;
+    }
+  }
+
+  public async runRead<T>(_subject: string, callback: (client: TransactionClient) => Promise<T>): Promise<T> {
+    return callback(this.client);
+  }
+}
+
+function store(overrides: Record<string, unknown> = {}) {
+  return {
+    createId: vi.fn(() => conversation.id),
+    hasActiveMembership: vi.fn(async () => true),
+    credentialUsable: vi.fn(async () => true),
+    create: vi.fn(async () => conversation),
+    list: vi.fn(async () => [conversation]),
+    ...overrides,
+  };
+}
+
+function idempotency(overrides: Record<string, unknown> = {}): IdempotencyStore {
+  return {
+    read: vi.fn(async () => undefined),
+    write: vi.fn(async () => true),
+    ...overrides,
+  } as unknown as IdempotencyStore;
+}
+
 describe('agent conversation service', () => {
-  it('creates and records idempotency', async () => {
-    const store = {
-      createId: vi.fn(() => conversation.id),
-      hasActiveMembership: vi.fn(async () => true),
-      credentialUsable: vi.fn(async () => true),
-      create: vi.fn(async () => conversation),
-      list: vi.fn(),
-    };
-    const idem = {
-      read: vi.fn(async () => undefined),
-      write: vi.fn(async () => true),
-    };
-    const result = await new AgentConversationService(
-      transaction,
-      store as never,
-      idem,
-    ).createAgentConversation(
-      '11111111-1111-4111-8111-111111111111',
-      '33333333-3333-4333-8333-333333333333',
-      { title: 'x', modelRef: null, credentialId: null },
-      '44444444-4444-4444-8444-444444444444',
-    );
+  it('commits a successful create after recording idempotency', async () => {
+    const tx = new RecordingTransaction();
+    const idem = idempotency();
+    const result = await new AgentConversationService(tx, store(), idem).createAgentConversation(subject, workspace, command, 'key');
     expect(result).toEqual({ kind: 'created', conversation });
-    expect(idem.write).toHaveBeenCalled();
+    expect(tx.committed).toBe(1);
+    expect(tx.rolledBack).toBe(0);
+    expect(idem.write).toHaveBeenCalledOnce();
   });
-  it('paginates with cursor tie-break', async () => {
-    const store = {
-      hasActiveMembership: vi.fn(async () => true),
-      list: vi.fn(async () => [
-        conversation,
-        { ...conversation, id: '11111111-1111-4111-8111-111111111111' },
-      ]),
-    };
-    const result = await new AgentConversationService(
-      transaction,
-      store as never,
-      {} as never,
-    ).listAgentConversations(
-      '11111111-1111-4111-8111-111111111111',
-      '33333333-3333-4333-8333-333333333333',
-      { limit: 1 },
-    );
-    expect(result).toMatchObject({
-      kind: 'ok',
-      page: { items: [conversation], pageInfo: { hasNextPage: true } },
+
+  it.each([
+    ['idempotency write loses', false],
+    ['idempotency write throws', new Error('write failed')],
+  ])('rolls back when the post-write completion path %s', async (_name, writeResult) => {
+    const tx = new RecordingTransaction();
+    const write = vi.fn(async () => {
+      if (writeResult instanceof Error) throw writeResult;
+      return writeResult;
     });
+    const operation = new AgentConversationService(tx, store(), idempotency({ write })).createAgentConversation(subject, workspace, command, 'key');
+    if (writeResult instanceof Error) await expect(operation).rejects.toThrow('write failed');
+    else expect(await operation).toEqual({ kind: 'conflict' });
+    expect(tx.committed).toBe(0);
+    expect(tx.rolledBack).toBe(1);
   });
-  it('throws inside the transaction when the idempotency write loses', async () => {
-    const events: string[] = [];
-    const recording = {
-      run: async <T>(
-        _subject: string,
-        callback: (client: never) => Promise<T>,
-      ) => {
-        try {
-          const value = await callback({} as never);
-          events.push('return');
-          return value;
-        } catch (error) {
-          events.push('throw');
-          throw error;
-        }
-      },
-      runRead: tx.runRead,
-    } as unknown as AgentConversationTransaction;
-    const store = {
-      createId: vi.fn(() => conversation.id),
-      hasActiveMembership: vi.fn(async () => true),
-      credentialUsable: vi.fn(async () => true),
-      create: vi.fn(async () => conversation),
-      list: vi.fn(),
-    };
-    const idem = {
-      read: vi.fn(async () => undefined),
-      write: vi.fn(async () => false),
-    };
+
+  it('commits the credential-rejection outcome without writing an idempotency record', async () => {
+    const tx = new RecordingTransaction();
+    const write = vi.fn(async () => true);
     const result = await new AgentConversationService(
-      recording,
-      store as never,
-      idem,
-    ).createAgentConversation(
-      '11111111-1111-4111-8111-111111111111',
-      '33333333-3333-4333-8333-333333333333',
-      { title: 'x', modelRef: null, credentialId: null },
-      '44444444-4444-4444-8444-444444444444',
-    );
+      tx,
+      store({ credentialUsable: vi.fn(async () => false) }),
+      idempotency({ write }),
+    ).createAgentConversation(subject, workspace, { ...command, credentialId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }, 'key');
+    expect(result).toEqual({ kind: 'invalid' });
+    expect(write).not.toHaveBeenCalled();
+    expect(tx.committed).toBe(1);
+    expect(tx.rolledBack).toBe(0);
+  });
+
+  it('replays and conflicts by fingerprint inside the transaction', async () => {
+    const record: IdempotencyRecord = {
+      requestFingerprint: 'different', responseStatus: 201, responseEtag: null, responseBody: conversation,
+    };
+    const tx = new RecordingTransaction();
+    const result = await new AgentConversationService(tx, store(), idempotency({ read: vi.fn(async () => record) })).createAgentConversation(subject, workspace, command, 'key');
     expect(result).toEqual({ kind: 'conflict' });
-    expect(events).toEqual(['throw']);
+    expect(tx.committed).toBe(1);
+    expect(tx.rolledBack).toBe(0);
+  });
+
+  it('paginates with a cursor tie-break and read transaction', async () => {
+    const tx = new RecordingTransaction();
+    const result = await new AgentConversationService(tx, store({ list: vi.fn(async () => [conversation, { ...conversation, id: '11111111-1111-4111-8111-111111111111' }]) }), idempotency()).listAgentConversations(subject, workspace, { limit: 1 });
+    expect(result).toMatchObject({ kind: 'ok', page: { items: [conversation], pageInfo: { hasNextPage: true, nextCursor: expect.any(String) } } });
   });
 });

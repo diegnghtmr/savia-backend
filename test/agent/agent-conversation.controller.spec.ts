@@ -24,33 +24,45 @@ const request = {
   identity: { subject: '11111111-1111-4111-8111-111111111111' },
 } as never;
 describe('AgentConversationsController', () => {
-  it('maps create outcomes', async () => {
-    const p = {
-      createAgentConversation: vi.fn(async () => ({
-        kind: 'created',
-        conversation: { id: 'x' },
-      })),
-      listAgentConversations: vi.fn(),
-    };
-    const r = new Reply();
-    await new AgentConversationsController(p as never).create(
-      request,
-      {},
-      r as never,
-    );
-    expect(r.statusCode).toBe(201);
+  it('maps every create outcome to its declared status and problem details', async () => {
+    const outcomes = [
+      ['created', 201],
+      ['forbidden', 403],
+      ['invalid', 422],
+      ['conflict', 409],
+    ] as const;
+    for (const [kind, status] of outcomes) {
+      const p = {
+        createAgentConversation: vi.fn(async () =>
+          kind === 'created'
+            ? { kind, conversation: { id: 'x' } }
+            : { kind },
+        ),
+        listAgentConversations: vi.fn(),
+      };
+      const r = new Reply();
+      await new AgentConversationsController(p as never).create(request, {}, r as never);
+      expect(r.statusCode).toBe(status);
+      if (status !== 201)
+        expect(r.body).toEqual(expect.objectContaining({ status, type: expect.any(String) }));
+    }
   });
-  it('maps invalid credential to 422', async () => {
+
+  it('maps list success and forbidden outcomes to 200 and 403', async () => {
     const p = {
-      createAgentConversation: vi.fn(async () => ({ kind: 'invalid' })),
-      listAgentConversations: vi.fn(),
+      createAgentConversation: vi.fn(),
+      listAgentConversations: vi.fn(async () => ({
+        kind: 'ok',
+        page: { items: [], pageInfo: { hasNextPage: false, nextCursor: null } },
+      })),
     };
     const r = new Reply();
-    await new AgentConversationsController(p as never).create(
-      request,
-      {},
-      r as never,
-    );
-    expect(r.statusCode).toBe(422);
+    await new AgentConversationsController(p as never).list(request, r as never);
+    expect(r.statusCode).toBe(200);
+    p.listAgentConversations.mockResolvedValue({ kind: 'forbidden' });
+    const forbidden = new Reply();
+    await new AgentConversationsController(p as never).list(request, forbidden as never);
+    expect(forbidden.statusCode).toBe(403);
+    expect(forbidden.body).toEqual(expect.objectContaining({ status: 403 }));
   });
 });
