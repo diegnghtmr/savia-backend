@@ -100,7 +100,10 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
         subject,
       ]);
       const result = await callback({
-        query: (text, values) => client.query(text, values),
+        query: (text: string, values?: readonly unknown[]) =>
+          values === undefined
+            ? client.query(text)
+            : client.query(text, [...values]),
       } as unknown as Pool);
       await client.query('rollback');
       return result;
