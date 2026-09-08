@@ -33,11 +33,11 @@ export class PostgresAgentConversationAdapter
     c: TransactionClient,
     workspaceId: string,
   ): Promise<boolean> {
-    const r = await c.query<{ count: string }>(
-      "select count(*)::text as count from public.workspace_memberships where workspace_id=$1::uuid and profile_id=nullif(current_setting('app.subject_id', true), '')::uuid and status='active'",
+    const r = await c.query<{ role: string | null }>(
+      'select public.workspace_actor_active_role($1::uuid) as role',
       [workspaceId],
     );
-    return r.rows[0]?.count === '1';
+    return r.rows[0]?.role !== null && r.rows[0]?.role !== undefined;
   }
   public async credentialUsable(
     c: TransactionClient,

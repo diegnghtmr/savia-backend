@@ -65,4 +65,46 @@ describe('agent conversation service', () => {
       page: { items: [conversation], pageInfo: { hasNextPage: true } },
     });
   });
+  it('throws inside the transaction when the idempotency write loses', async () => {
+    const events: string[] = [];
+    const recording = {
+      run: async <T>(
+        _subject: string,
+        callback: (client: never) => Promise<T>,
+      ) => {
+        try {
+          const value = await callback({} as never);
+          events.push('return');
+          return value;
+        } catch (error) {
+          events.push('throw');
+          throw error;
+        }
+      },
+      runRead: tx.runRead,
+    } as unknown as AgentConversationTransaction;
+    const store = {
+      createId: vi.fn(() => conversation.id),
+      hasActiveMembership: vi.fn(async () => true),
+      credentialUsable: vi.fn(async () => true),
+      create: vi.fn(async () => conversation),
+      list: vi.fn(),
+    };
+    const idem = {
+      read: vi.fn(async () => undefined),
+      write: vi.fn(async () => false),
+    };
+    const result = await new AgentConversationService(
+      recording,
+      store as never,
+      idem,
+    ).createAgentConversation(
+      '11111111-1111-4111-8111-111111111111',
+      '33333333-3333-4333-8333-333333333333',
+      { title: 'x', modelRef: null, credentialId: null },
+      '44444444-4444-4444-8444-444444444444',
+    );
+    expect(result).toEqual({ kind: 'conflict' });
+    expect(events).toEqual(['throw']);
+  });
 });
