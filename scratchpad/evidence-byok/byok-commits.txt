@@ -1,0 +1,3 @@
+1c5dfac feat(contract): publish AI credential operations
+3eec555 feat(ai): add credential operations and storage
+964e60b feat(platform): add credential encryption seam
