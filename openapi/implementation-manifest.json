@@ -453,6 +453,11 @@
       "path": "/v1/agent/conversations"
     },
     {
+      "operationId": "sendAgentMessage",
+      "method": "POST",
+      "path": "/v1/agent/conversations/{conversationId}/messages"
+    },
+    {
       "operationId": "setDefaultAIModel",
       "method": "PUT",
       "path": "/v1/ai/default-model"

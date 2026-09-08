@@ -74,6 +74,12 @@ export class AgentMessagesController {
           status: 429,
         });
       }
+      if (outcome.kind === AGENT_MESSAGE_OUTCOMES.FORBIDDEN)
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.FORBIDDEN,
+          title: 'Workspace access forbidden',
+          status: 403,
+        });
       reply.hijack();
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
@@ -101,6 +107,7 @@ export class AgentMessagesController {
         command,
         controller.signal,
         write,
+        outcome.replay,
       );
       if (!controller.signal.aborted) reply.raw.end();
     } catch (error) {

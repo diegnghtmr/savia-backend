@@ -47,6 +47,7 @@ export class AgentMessageService implements AgentMessagePort {
           ? {
               kind: AGENT_MESSAGE_OUTCOMES.READY,
               runId: existing.events[0]?.runId ?? randomUUID(),
+              replay: existing.events,
             }
           : { kind: AGENT_MESSAGE_OUTCOMES.CONFLICT };
       if (
@@ -70,7 +71,12 @@ export class AgentMessageService implements AgentMessagePort {
     command: AgentMessageCommand,
     signal: AbortSignal,
     emit: (event: AgentEvent) => void,
+    replay?: readonly AgentEvent[],
   ): Promise<void> {
+    if (replay) {
+      for (const event of replay) emit(event);
+      return;
+    }
     const runId = randomUUID();
     const events: AgentEvent[] = [];
     const push = (type: AgentEvent['type'], data: Record<string, unknown>) => {

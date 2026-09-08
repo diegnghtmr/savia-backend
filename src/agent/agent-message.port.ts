@@ -117,12 +117,14 @@ export interface AgentMessagePort {
     command: AgentMessageCommand,
     signal: AbortSignal,
     emit: (event: AgentEvent) => void,
+    replay?: readonly AgentEvent[],
   ): Promise<void>;
 }
 export type AgentMessageOutcome =
   | {
       readonly kind: typeof AGENT_MESSAGE_OUTCOMES.READY;
       readonly runId: string;
+      readonly replay?: readonly AgentEvent[];
     }
   | { readonly kind: typeof AGENT_MESSAGE_OUTCOMES.FORBIDDEN }
   | { readonly kind: typeof AGENT_MESSAGE_OUTCOMES.NOT_FOUND }
