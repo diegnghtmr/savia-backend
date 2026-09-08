@@ -28,7 +28,8 @@ describe('PostgresAgentConversationAdapter', () => {
   it('applies workspace scoping and total ordering without a cursor', async () => {
     const query = vi.fn(async () => ({ rows: [] }));
     await new PostgresAgentConversationAdapter().list({ query } as never, 'workspace', 3);
-    const [sql, values] = query.mock.calls[0] ?? [];
+    const calls = query.mock.calls as unknown as unknown[][];
+    const [sql, values] = calls[0] ?? [];
     expect(String(sql)).toContain('where workspace_id=$1::uuid');
     expect(String(sql)).toContain('order by created_at,id');
     expect(values).toEqual(['workspace', 3]);

@@ -16,7 +16,7 @@ const command = { title: 'x', modelRef: null, credentialId: null };
 class RecordingTransaction implements AgentConversationTransaction {
   public committed = 0;
   public rolledBack = 0;
-  private readonly client: TransactionClient = { query: async () => ({ rows: [] }) };
+  private readonly client = { query: async () => ({ rows: [] }) } as unknown as TransactionClient;
 
   public async run<T>(_subject: string, callback: (client: TransactionClient) => Promise<T>): Promise<T> {
     try {

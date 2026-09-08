@@ -51,7 +51,7 @@ describe('AgentConversationsController', () => {
   it('maps list success and forbidden outcomes to 200 and 403', async () => {
     const p = {
       createAgentConversation: vi.fn(),
-      listAgentConversations: vi.fn(async () => ({
+      listAgentConversations: vi.fn(async (): Promise<unknown> => ({
         kind: 'ok',
         page: { items: [], pageInfo: { hasNextPage: false, nextCursor: null } },
       })),
