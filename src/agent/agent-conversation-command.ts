@@ -30,7 +30,7 @@ export function createAgentConversationCommand(
   if (rawTitle !== undefined && rawTitle !== null) {
     if (typeof rawTitle !== 'string')
       add(violations, 'title', 'invalid-type', 'must be a string or null');
-    else if (rawTitle.length > 120)
+    else if ([...rawTitle].length > 120)
       add(violations, 'title', 'max-length', 'must be at most 120 characters');
     else title = rawTitle;
   }

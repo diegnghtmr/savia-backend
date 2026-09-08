@@ -33,6 +33,10 @@ describe('agent conversation command', () => {
       createAgentConversationCommand({ title: 'x'.repeat(120) }).title,
     ).toHaveLength(120);
     violation({ title: 'x'.repeat(121) }, 'title');
+    expect(
+      createAgentConversationCommand({ title: '\u{1F600}'.repeat(120) }).title,
+    ).toBe('\u{1F600}'.repeat(120));
+    violation({ title: '\u{1F600}'.repeat(121) }, 'title');
     violation({ title: 1 }, 'title');
   });
 
