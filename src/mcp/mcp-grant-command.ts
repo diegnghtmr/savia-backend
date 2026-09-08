@@ -35,6 +35,8 @@ const FIELDS = [
 ] as const;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const BIGINT_MIN = -9223372036854775807n;
+const BIGINT_MAX = 9223372036854775807n;
 function uniqueIds(
   value: unknown,
   field: string,
@@ -100,25 +102,86 @@ export function createMcpGrantCommand(input: unknown): CreateMcpGrantCommand {
       : uniqueIds(body.accountIds, 'accountIds', false, violations);
   let maxWriteAmount: Money | null = null;
   if (body.maxWriteAmount !== undefined && body.maxWriteAmount !== null) {
-    const money = body.maxWriteAmount as Record<string, unknown>;
+    const rawMoney = body.maxWriteAmount;
     if (
-      typeof money !== 'object' ||
-      Array.isArray(money) ||
-      typeof money.amountMinor !== 'number' ||
-      !Number.isSafeInteger(money.amountMinor)
-    )
+      typeof rawMoney !== 'object' ||
+      rawMoney === null ||
+      Array.isArray(rawMoney)
+    ) {
       add(
         violations,
         'maxWriteAmount',
         'invalid-type',
         'must be Money or null',
       );
-    const currency = currencyValue(
-      money.currency,
-      'maxWriteAmount.currency',
-      violations,
-    );
-    maxWriteAmount = { amountMinor: money.amountMinor as number, currency };
+    } else {
+      const money = rawMoney as Record<string, unknown>;
+      let validatedAmountMinor: string | undefined;
+      if (money.amountMinor === undefined)
+        add(
+          violations,
+          'maxWriteAmount.amountMinor',
+          'required',
+          'must be a non-empty string',
+        );
+      else if (typeof money.amountMinor !== 'string')
+        add(
+          violations,
+          'maxWriteAmount.amountMinor',
+          'invalid-type',
+          'must be a string',
+        );
+      else if (money.amountMinor.includes('\0'))
+        add(
+          violations,
+          'maxWriteAmount.amountMinor',
+          'invalid-characters',
+          'must not contain null characters',
+        );
+      else {
+        if (!money.amountMinor)
+          add(
+            violations,
+            'maxWriteAmount.amountMinor',
+            'required',
+            'must be a non-empty string',
+          );
+        else if (!/^-?[0-9]+$/.test(money.amountMinor))
+          add(
+            violations,
+            'maxWriteAmount.amountMinor',
+            'invalid-format',
+            'must be an integer minor-unit amount string',
+          );
+        else {
+          try {
+            const value = BigInt(money.amountMinor);
+            if (value < BIGINT_MIN || value > BIGINT_MAX)
+              add(
+                violations,
+                'maxWriteAmount.amountMinor',
+                'invalid-range',
+                'must be within 64-bit signed integer range',
+              );
+            else validatedAmountMinor = money.amountMinor;
+          } catch {
+            add(
+              violations,
+              'maxWriteAmount.amountMinor',
+              'invalid-range',
+              'must be within 64-bit signed integer range',
+            );
+          }
+        }
+      }
+      const currency = currencyValue(
+        money.currency,
+        'maxWriteAmount.currency',
+        violations,
+      );
+      if (validatedAmountMinor !== undefined && currency !== undefined)
+        maxWriteAmount = { amountMinor: validatedAmountMinor, currency };
+    }
   }
   let expiresAt: Date | null = null;
   if (body.expiresAt !== undefined && body.expiresAt !== null) {

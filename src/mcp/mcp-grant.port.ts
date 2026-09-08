@@ -19,7 +19,7 @@ export const MCP_GRANT_OUTCOMES = {
 } as const;
 
 export interface Money {
-  readonly amountMinor: number;
+  readonly amountMinor: string;
   readonly currency: string;
 }
 export interface CreateMcpGrantCommand {

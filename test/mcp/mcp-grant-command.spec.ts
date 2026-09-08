@@ -24,6 +24,11 @@ function violations(input: unknown) {
 function fields(input: unknown): string[] {
   return violations(input).map((violation) => violation.field);
 }
+function violationCodes(input: unknown, field: string): string[] {
+  return violations(input)
+    .filter((violation) => violation.field === field)
+    .map((violation) => violation.code);
+}
 
 describe('MCP grant command', () => {
   it.each(MCP_GRANT_SCOPES)('accepts scope %s', (scope) => {
@@ -61,19 +66,83 @@ describe('MCP grant command', () => {
       'accountIds',
     );
   });
+  it('accepts signed 64-bit amountMinor strings and preserves precision', () => {
+    expect(
+      createMcpGrantCommand({
+        ...base(),
+        maxWriteAmount: { amountMinor: '125000', currency: 'usd' },
+      }),
+    ).toMatchObject({
+      maxWriteAmount: { amountMinor: '125000', currency: 'USD' },
+    });
+    expect(
+      createMcpGrantCommand({
+        ...base(),
+        maxWriteAmount: { amountMinor: '-5000', currency: 'USD' },
+      }).maxWriteAmount,
+    ).toEqual({ amountMinor: '-5000', currency: 'USD' });
+    expect(
+      createMcpGrantCommand({
+        ...base(),
+        maxWriteAmount: { amountMinor: '0', currency: 'USD' },
+      }).maxWriteAmount,
+    ).toEqual({ amountMinor: '0', currency: 'USD' });
+    expect(
+      createMcpGrantCommand({
+        ...base(),
+        maxWriteAmount: {
+          amountMinor: '9007199254740993',
+          currency: 'USD',
+        },
+      }).maxWriteAmount,
+    ).toEqual({ amountMinor: '9007199254740993', currency: 'USD' });
+  });
+  it('rejects invalid amountMinor values with its nested field name', () => {
+    for (const amountMinor of [
+      125000,
+      '12.5',
+      '1e5',
+      '',
+      ' 125 ',
+      '12\x005',
+      '9223372036854775808',
+    ])
+      expect(
+        fields({
+          ...base(),
+          maxWriteAmount: { amountMinor, currency: 'USD' },
+        }),
+      ).toContain('maxWriteAmount.amountMinor');
+    for (const amountMinor of ['12.5', '1e5', ' 125 '])
+      expect(
+        violationCodes(
+          { ...base(), maxWriteAmount: { amountMinor, currency: 'USD' } },
+          'maxWriteAmount.amountMinor',
+        ),
+      ).toContain('invalid-format');
+    expect(
+      violationCodes(
+        {
+          ...base(),
+          maxWriteAmount: { amountMinor: '12\x005', currency: 'USD' },
+        },
+        'maxWriteAmount.amountMinor',
+      ),
+    ).toContain('invalid-characters');
+  });
   it('rejects inactive currencies and independently incomplete amounts', () => {
     expect(
       fields({
         ...base(),
-        maxWriteAmount: { amountMinor: 1, currency: 'ZZZ' },
+        maxWriteAmount: { amountMinor: '1', currency: 'ZZZ' },
       }),
     ).toContain('maxWriteAmount.currency');
-    expect(fields({ ...base(), maxWriteAmount: { amountMinor: 1 } })).toContain(
-      'maxWriteAmount.currency',
-    );
+    expect(
+      fields({ ...base(), maxWriteAmount: { amountMinor: '1' } }),
+    ).toContain('maxWriteAmount.currency');
     expect(
       fields({ ...base(), maxWriteAmount: { currency: 'USD' } }),
-    ).toContain('maxWriteAmount');
+    ).toContain('maxWriteAmount.amountMinor');
   });
   it('rejects unknown top-level keys and reports that key', () => {
     expect(fields({ ...base(), unknown: true })).toContain('unknown');
@@ -83,7 +152,7 @@ describe('MCP grant command', () => {
       createMcpGrantCommand({
         ...base(),
         workspaceIds: [workspace.toUpperCase()],
-        maxWriteAmount: { amountMinor: 4, currency: 'usd' },
+        maxWriteAmount: { amountMinor: '4', currency: 'usd' },
       }),
     ).toMatchObject({
       workspaceIds: [workspace],
