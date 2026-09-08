@@ -308,6 +308,9 @@ jobs:
       - name: MCP grants integration
         shell: bash
         run: pnpm test:integration:mcp-grants
+      - name: AI credentials integration
+        shell: bash
+        run: pnpm test:integration:ai-credentials
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
