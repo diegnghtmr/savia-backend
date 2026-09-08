@@ -69,3 +69,26 @@ it('emits started, newline-safe text, and one terminal event', async () => {
   ]);
   expect(events.every((e) => e.data !== undefined)).toBe(true);
 });
+
+it('does not emit after a provider terminal event', async () => {
+  const events: Array<{ type: string }> = [];
+  const provider: AgentProviderPort = {
+    stream: async function* () {
+      yield { type: 'run_completed', data: {} } as never;
+      yield { type: 'text_delta', data: { text: 'stray' } };
+    },
+  };
+  await new AgentMessageService(new Tx(), store(), provider).execute(
+    subject,
+    workspace,
+    conversation,
+    'terminal-key',
+    { message: 'x', modelRef: null, credentialId: null },
+    new AbortController().signal,
+    (event) => events.push(event),
+  );
+  expect(events.map((event) => event.type)).toEqual([
+    'run_started',
+    'run_completed',
+  ]);
+});

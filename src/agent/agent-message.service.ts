@@ -79,17 +79,25 @@ export class AgentMessageService implements AgentMessagePort {
     }
     const runId = randomUUID();
     const events: AgentEvent[] = [];
+    let terminal = false;
     const push = (type: AgentEvent['type'], data: Record<string, unknown>) => {
-      if (signal.aborted) return;
+      if (signal.aborted || terminal) return false;
       const event = { type, runId, timestamp: new Date().toISOString(), data };
       events.push(event);
       emit(event);
+      if (
+        type === AGENT_EVENT_TYPES.RUN_COMPLETED ||
+        type === AGENT_EVENT_TYPES.RUN_FAILED
+      )
+        terminal = true;
+      return true;
     };
     push(AGENT_EVENT_TYPES.RUN_STARTED, {});
     try {
       for await (const chunk of this.provider.stream(command, signal)) {
         if (signal.aborted) return;
         push(chunk.type, chunk.data);
+        if (terminal) break;
         if (
           chunk.type === 'tool_proposed' &&
           chunk.data.requiresApproval === true
