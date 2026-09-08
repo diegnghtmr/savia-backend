@@ -57,6 +57,13 @@ export const PROVIDERS: readonly ProviderDescriptor[] = Object.freeze([
     policyStatus: 'approved',
   },
 ]);
+export function isProviderPolicyAllowed(provider: ProviderDescriptor): boolean {
+  return (
+    provider.enabled &&
+    (provider.policyStatus === 'approved' ||
+      provider.policyStatus === 'restricted')
+  );
+}
 export class AIRollbackError extends Error {
   public constructor(public readonly outcome: typeof AI_OUTCOMES.CONFLICT) {
     super('AI credential transaction rollback');
@@ -83,6 +90,11 @@ export class AICredentialService implements AIServicePort {
     command: CreateCredentialCommand,
     key: string,
   ): Promise<Outcome> {
+    const provider = PROVIDERS.find(
+      (item) => item.providerId === command.providerId,
+    );
+    if (provider && !isProviderPolicyAllowed(provider))
+      return { kind: AI_OUTCOMES.CONFLICT };
     const route = 'POST /v1/ai/credentials';
     const requestFingerprint = fingerprint(command);
     try {
@@ -163,24 +175,33 @@ export class AICredentialService implements AIServicePort {
                 credential: existing.responseBody as never,
               }
             : { kind: AI_OUTCOMES.CONFLICT };
-        const credential = await this.store.update(
-          c,
-          workspaceId,
-          id,
-          {
-            ...command,
-            replacementSecret:
-              command.replacementSecret === undefined
-                ? undefined
-                : this.crypto.encrypt(command.replacementSecret),
-            maskedIdentifier:
-              command.replacementSecret === undefined
-                ? undefined
-                : mask(command.replacementSecret),
-          },
-          ifMatch,
-        );
-        if (!credential) return { kind: AI_OUTCOMES.PRECONDITION };
+        let credential: Awaited<ReturnType<Store['update']>>;
+        try {
+          credential = await this.store.update(
+            c,
+            workspaceId,
+            id,
+            {
+              ...command,
+              replacementSecret:
+                command.replacementSecret === undefined
+                  ? undefined
+                  : this.crypto.encrypt(command.replacementSecret),
+              maskedIdentifier:
+                command.replacementSecret === undefined
+                  ? undefined
+                  : mask(command.replacementSecret),
+            },
+            ifMatch,
+          );
+        } catch (error) {
+          if (isUnique(error)) return { kind: AI_OUTCOMES.CONFLICT };
+          throw error;
+        }
+        if (!credential)
+          return (await this.store.find(c, workspaceId, id))
+            ? { kind: AI_OUTCOMES.PRECONDITION }
+            : { kind: AI_OUTCOMES.NOT_FOUND };
         if (
           !(await this.idempotency.write(
             c,

@@ -89,7 +89,7 @@ describe('PostgresAICredentialAdapter', () => {
     const updateSql = query.mock.calls[0]?.[0] as string;
     expect(updateSql).toContain('workspace_id=$1::uuid');
     expect(updateSql).toContain('id=$2::uuid');
-    expect(updateSql).toContain('version=$6');
+    expect(updateSql).toContain('version=$7');
     expect(updateSql).toContain("status<>'revoked'");
     await new PostgresAICredentialAdapter().revoke(
       { query } as never,
@@ -100,6 +100,35 @@ describe('PostgresAICredentialAdapter', () => {
     expect(revokeSql).toContain('workspace_id=$1::uuid');
     expect(revokeSql).toContain('id=$2::uuid');
     expect(revokeSql).toContain("status<>'revoked'");
+  });
+
+  it('sends explicit null as a clear-alias operation while omission preserves it', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [row] });
+    await new PostgresAICredentialAdapter().update(
+      { query } as never,
+      workspace,
+      id,
+      { alias: null },
+      7,
+    );
+    expect(query.mock.calls[0]?.[0]).toContain(
+      'case when $3 then $4 else alias end',
+    );
+    expect((query.mock.calls[0]?.[1] as unknown[]).slice(2, 4)).toEqual([
+      true,
+      null,
+    ]);
+    await new PostgresAICredentialAdapter().update(
+      { query } as never,
+      workspace,
+      id,
+      { status: 'disabled' },
+      7,
+    );
+    expect((query.mock.calls[1]?.[1] as unknown[]).slice(2, 4)).toEqual([
+      false,
+      null,
+    ]);
   });
 
   it('checks provider/workspace/active credential compatibility for defaults', async () => {

@@ -9,9 +9,10 @@ import type {
   SetDefaultModelCommand,
   UpdateCredentialCommand,
 } from './ai-credential.port.js';
+import { PROVIDERS as PROVIDER_CATALOGUE } from './ai-credential.service.js';
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const PROVIDERS = [
+const PROVIDER_IDS = [
   'openai',
   'anthropic',
   'google',
@@ -62,7 +63,7 @@ export function createCredentialCommand(
         'workspace');
   const providerId =
     typeof b.providerId === 'string' &&
-    (PROVIDERS as readonly string[]).includes(b.providerId)
+    (PROVIDER_IDS as readonly string[]).includes(b.providerId)
       ? b.providerId
       : (add(v, 'providerId', 'invalid-value', 'provider is not supported'),
         '');
@@ -78,6 +79,19 @@ export function createCredentialCommand(
         ),
         'api_key')
   ) as CreateCredentialCommand['credentialType'];
+  const provider = PROVIDER_CATALOGUE.find(
+    (item) => item.providerId === providerId,
+  );
+  const supported = provider?.credentialTypes.some(
+    (type) => type === credentialType,
+  );
+  if (provider && supported !== true)
+    add(
+      v,
+      'credentialType',
+      'invalid-value',
+      'credential type is not supported by this provider',
+    );
   const secret =
     typeof b.secret === 'string' && b.secret.length > 0
       ? b.secret

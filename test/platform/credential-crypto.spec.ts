@@ -34,4 +34,19 @@ describe('CredentialCrypto', () => {
       ),
     ).toThrow();
   });
+  it.each([
+    'a.b',
+    'a.b.c.d',
+    '.a.b',
+    `${Buffer.alloc(16, 1).toString('base64')}.${Buffer.alloc(16, 2).toString('base64')}.YQ==`,
+    `${Buffer.alloc(8, 1).toString('base64')}.${Buffer.alloc(16, 2).toString('base64')}.YQ==`,
+    `${Buffer.alloc(1, 1).toString('base64')}.${Buffer.alloc(16, 2).toString('base64')}.YQ==`,
+    `${Buffer.alloc(12, 1).toString('base64')}.${Buffer.alloc(8, 2).toString('base64')}.YQ==`,
+    `${Buffer.alloc(12, 1).toString('base64')}.${Buffer.alloc(32, 2).toString('base64')}.YQ==`,
+    `${Buffer.alloc(12, 1).toString('base64')}.${Buffer.alloc(16, 2).toString('base64')}.not-base64`,
+  ])('rejects non-canonical envelope %s', (payload) => {
+    expect(() => new CredentialCrypto(valid).decrypt(payload)).toThrow(
+      'Credential ciphertext authentication failed.',
+    );
+  });
 });

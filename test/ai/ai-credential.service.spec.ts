@@ -79,6 +79,7 @@ class FakeStore implements Store {
   public revokeResult = true;
   public setDefaultResult = true;
   public createError: unknown;
+  public updateError: unknown;
   public createId() {
     return metadata.id;
   }
@@ -93,6 +94,7 @@ class FakeStore implements Store {
     return undefined;
   }
   public async update() {
+    if (this.updateError) throw this.updateError;
     return this.updateResult;
   }
   public async revoke() {
@@ -196,6 +198,31 @@ describe('AICredentialService transaction semantics', () => {
     await expect(
       wrong.service.createCredential(subject, workspace, command, 'key'),
     ).rejects.toThrow('other unique');
+  });
+
+  it('maps only the named unique constraint to conflict during update', async () => {
+    const h = harness();
+    const store = new FakeStore();
+    store.updateError = Object.assign(new Error('duplicate'), {
+      code: '23505',
+      constraint: 'ai_credentials_unique_alias',
+    });
+    h.service = new AICredentialService(
+      h.tx as never,
+      store,
+      new CredentialCrypto(Buffer.alloc(32, 1).toString('base64')),
+      h.idempotency,
+    );
+    await expect(
+      h.service.updateCredential(
+        subject,
+        workspace,
+        metadata.id,
+        { alias: 'duplicate' },
+        'key',
+        7,
+      ),
+    ).resolves.toEqual({ kind: 'conflict' });
   });
 
   it.each([

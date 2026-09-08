@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { PROVIDERS } from '../../src/ai/ai-credential.service.js';
+import {
+  isProviderPolicyAllowed,
+  PROVIDERS,
+} from '../../src/ai/ai-credential.service.js';
 import {
   AICredentialValidationError,
   createCredentialCommand,
@@ -53,8 +56,11 @@ describe('AI credential command validation', () => {
   it('accepts every catalogue provider and rejects unknown providers', () => {
     for (const provider of PROVIDERS)
       expect(
-        createCredentialCommand({ ...base(), providerId: provider.providerId })
-          .providerId,
+        createCredentialCommand({
+          ...base(),
+          providerId: provider.providerId,
+          credentialType: provider.credentialTypes[0],
+        }).providerId,
       ).toBe(provider.providerId);
     assertViolation(
       () =>
@@ -64,20 +70,60 @@ describe('AI credential command validation', () => {
   });
 
   it('accepts all five creatable credential types and refuses oauth', () => {
-    for (const credentialType of [
-      'api_key',
-      'service_account',
-      'access_token',
-      'gateway_token',
-      'local_endpoint',
-    ])
+    for (const [providerId, credentialType] of [
+      ['openai', 'api_key'],
+      ['google', 'service_account'],
+      ['local', 'local_endpoint'],
+      ['openai-compatible', 'gateway_token'],
+      ['google', 'api_key'],
+    ] as const)
       expect(
-        createCredentialCommand({ ...base(), credentialType }).credentialType,
+        createCredentialCommand({ ...base(), providerId, credentialType })
+          .credentialType,
       ).toBe(credentialType);
     assertViolation(
       () => createCredentialCommand({ ...base(), credentialType: 'oauth' }),
       'credentialType',
     );
+  });
+
+  it('accepts every catalogue pair and rejects unsupported provider/type pairs', () => {
+    for (const provider of PROVIDERS)
+      for (const credentialType of provider.credentialTypes)
+        expect(
+          createCredentialCommand({
+            ...base(),
+            providerId: provider.providerId,
+            credentialType,
+          }),
+        ).toMatchObject({ providerId: provider.providerId, credentialType });
+    assertViolation(
+      () =>
+        createCredentialCommand({
+          ...base(),
+          providerId: 'openai',
+          credentialType: 'service_account',
+        }),
+      'credentialType',
+    );
+  });
+
+  it('allows approved and restricted policies but refuses disabled and pending review', () => {
+    expect(
+      isProviderPolicyAllowed({ ...PROVIDERS[0], policyStatus: 'approved' }),
+    ).toBe(true);
+    expect(
+      isProviderPolicyAllowed({ ...PROVIDERS[0], policyStatus: 'restricted' }),
+    ).toBe(true);
+    expect(
+      isProviderPolicyAllowed({ ...PROVIDERS[0], policyStatus: 'disabled' }),
+    ).toBe(false);
+    expect(
+      isProviderPolicyAllowed({
+        ...PROVIDERS[0],
+        policyStatus: 'pending_review',
+      }),
+    ).toBe(false);
   });
 
   it('requires a non-empty string secret without leaking it', () => {

@@ -212,6 +212,17 @@ describe('AI credentials over Fastify HTTP and disposable PostgreSQL', () => {
     );
     expect(updated.statusCode).toBe(200);
     expect(JSON.parse(updated.payload).maskedIdentifier).toBe('••••9999');
+    const cleared = await request(
+      'PATCH',
+      `/v1/ai/credentials/${metadata.id}`,
+      'owner',
+      key(),
+      { alias: null },
+      workspace,
+      '"1"',
+    );
+    expect(cleared.statusCode).toBe(200);
+    expect(JSON.parse(cleared.payload).alias).toBeNull();
     expect(
       (
         await request('PUT', '/v1/ai/default-model', 'owner', key(), {
@@ -268,6 +279,36 @@ describe('AI credentials over Fastify HTTP and disposable PostgreSQL', () => {
         ).payload,
       ),
     ).toEqual([]);
+  });
+  it('does not expose or update a user-owned credential to a second member', async () => {
+    const created = await request(
+      'POST',
+      '/v1/ai/credentials',
+      'owner',
+      key(),
+      createBody('owner-secret', { alias: 'private' }),
+    );
+    const id = JSON.parse(created.payload).id as string;
+    await admin.query(
+      "insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$2,'owner','active')",
+      [workspace, other],
+    );
+    expect(
+      JSON.parse((await request('GET', '/v1/ai/credentials', 'other')).payload),
+    ).toEqual([]);
+    expect(
+      (
+        await request(
+          'PATCH',
+          `/v1/ai/credentials/${id}`,
+          'other',
+          key(),
+          { alias: 'stolen' },
+          workspace,
+          '"0"',
+        )
+      ).statusCode,
+    ).toBe(404);
   });
   it('applies the same RLS boundary to workspace-owned credentials', async () => {
     const created = await request(
@@ -335,6 +376,34 @@ describe('AI credentials over Fastify HTTP and disposable PostgreSQL', () => {
         })
       ).statusCode,
     ).toBe(409);
+  });
+  it('maps a duplicate alias during update to 409', async () => {
+    const first = await request(
+      'POST',
+      '/v1/ai/credentials',
+      'owner',
+      key(),
+      createBody('first-secret', { alias: 'first' }),
+    );
+    expect(first.statusCode).toBe(201);
+    const second = await request(
+      'POST',
+      '/v1/ai/credentials',
+      'owner',
+      key(),
+      createBody('second-secret', { alias: 'second' }),
+    );
+    expect(second.statusCode).toBe(201);
+    const response = await request(
+      'PATCH',
+      `/v1/ai/credentials/${JSON.parse(second.payload).id}`,
+      'owner',
+      key(),
+      { alias: 'first' },
+      workspace,
+      '"0"',
+    );
+    expect(response.statusCode).toBe(409);
   });
   it('maps an AI write commit acknowledgement failure to declared 503', async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })

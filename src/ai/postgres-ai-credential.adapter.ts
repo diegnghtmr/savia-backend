@@ -46,7 +46,7 @@ export class PostgresAICredentialAdapter implements Store {
   ) {
     const masked = x.maskedIdentifier ?? '••••';
     const r = await c.query<Row>(
-      'insert into public.ai_credentials (id,workspace_id,owner_type,provider_id,credential_type,encrypted_secret,masked_identifier,alias,metadata) values ($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9) returning id,owner_type as "ownerType",provider_id as "providerId",credential_type as "credentialType",masked_identifier as "maskedIdentifier",alias,status,last_used_at as "lastUsedAt",expires_at as "expiresAt",created_at as "createdAt",version',
+      'insert into public.ai_credentials (id,workspace_id,owner_type,provider_id,credential_type,encrypted_secret,masked_identifier,alias,metadata,created_by_subject_id) values ($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9,nullif(current_setting(\'app.subject_id\', true), \'\')::uuid) returning id,owner_type as "ownerType",provider_id as "providerId",credential_type as "credentialType",masked_identifier as "maskedIdentifier",alias,status,last_used_at as "lastUsedAt",expires_at as "expiresAt",created_at as "createdAt",version',
       [
         id,
         w,
@@ -76,10 +76,11 @@ export class PostgresAICredentialAdapter implements Store {
     v: number,
   ) {
     const r = await c.query<Row>(
-      'update public.ai_credentials set alias=coalesce($3,alias),status=coalesce($4,status),encrypted_secret=coalesce($5,encrypted_secret),masked_identifier=coalesce($7,masked_identifier),version=version+1,updated_at=now() where workspace_id=$1::uuid and id=$2::uuid and version=$6 and status<>\'revoked\' returning id,owner_type as "ownerType",provider_id as "providerId",credential_type as "credentialType",masked_identifier as "maskedIdentifier",alias,status,last_used_at as "lastUsedAt",expires_at as "expiresAt",created_at as "createdAt",version',
+      'update public.ai_credentials set alias=case when $3 then $4 else alias end,status=coalesce($5,status),encrypted_secret=coalesce($6,encrypted_secret),masked_identifier=coalesce($8,masked_identifier),version=version+1,updated_at=now() where workspace_id=$1::uuid and id=$2::uuid and version=$7 and status<>\'revoked\' returning id,owner_type as "ownerType",provider_id as "providerId",credential_type as "credentialType",masked_identifier as "maskedIdentifier",alias,status,last_used_at as "lastUsedAt",expires_at as "expiresAt",created_at as "createdAt",version',
       [
         w,
         id,
+        'alias' in x,
         x.alias ?? null,
         x.status ?? null,
         x.replacementSecret ?? null,

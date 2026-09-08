@@ -107,13 +107,13 @@ export class AICredentialsController {
     const w = parseWorkspaceHeader(q.headers['x-workspace-id']);
     const k = validateIdempotencyKey(q.headers['idempotency-key']);
     const m = parseIfMatch(q.headers['if-match']);
-    if (
-      w.kind !== 'ok' ||
-      k.kind !== 'ok' ||
-      !isUuid(id) ||
-      m.kind !== 'versions' ||
-      m.versions.length !== 1
-    )
+    if (w.kind !== 'ok' || k.kind !== 'ok')
+      return sendProblem(r, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+    if (!isUuid(id) || m.kind !== 'versions' || m.versions.length !== 1)
       return sendProblem(r, {
         type: PROBLEM_TYPES.PRECONDITION_FAILED,
         title: 'Precondition failed',
@@ -150,7 +150,13 @@ export class AICredentialsController {
   ) {
     const w = parseWorkspaceHeader(q.headers['x-workspace-id']);
     const k = validateIdempotencyKey(q.headers['idempotency-key']);
-    if (w.kind !== 'ok' || k.kind !== 'ok' || !isUuid(id))
+    if (w.kind !== 'ok' || k.kind !== 'ok')
+      return sendProblem(r, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+    if (!isUuid(id))
       return sendProblem(r, {
         type: PROBLEM_TYPES.NOT_FOUND,
         title: 'Credential not found',
@@ -228,6 +234,12 @@ export class AICredentialsController {
         type: PROBLEM_TYPES.NOT_FOUND,
         title: 'Credential not found',
         status: 404,
+      });
+    if (o.kind === AI_OUTCOMES.FORBIDDEN)
+      return sendProblem(r, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Credential access forbidden',
+        status: 403,
       });
     if (o.kind === AI_OUTCOMES.PRECONDITION)
       return sendProblem(r, {
