@@ -3,6 +3,7 @@ import {
   CURRENCY_RATE_SELECTION_SQL,
   multiplyMinorByRate,
 } from '../platform/currency-conversion.js';
+import { negateAmountMinor } from '../platform/amount-minor.js';
 import { buildNativeBalanceSql } from '../platform/native-balance-query.js';
 import type {
   Account,
@@ -37,23 +38,6 @@ interface AccountRow extends Record<string, unknown> {
 // mints the external leg, and a caller that skipped validation would otherwise
 // hand PostgreSQL 9223372036854775808 and get SQLSTATE 22003 mid-write. Failing
 // here names the cause; failing there names a row.
-const INT8_MAX = 9223372036854775807n;
-
-export function negateAmountMinor(amountMinor: string): string {
-  if (amountMinor === '0' || amountMinor === '-0') {
-    return '0';
-  }
-  if (BigInt(amountMinor) < -INT8_MAX) {
-    throw new RangeError(
-      `amountMinor ${amountMinor} cannot be negated within int8; its counter-leg would overflow`,
-    );
-  }
-  if (amountMinor.startsWith('-')) {
-    return amountMinor.slice(1);
-  }
-  return `-${amountMinor}`;
-}
-
 export function toIso(value: unknown): string {
   if (value instanceof Date) {
     return value.toISOString();
