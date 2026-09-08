@@ -7,7 +7,7 @@ create table public.ai_credentials (
  constraint ai_credentials_owner_type_check check (owner_type in ('user','workspace')),
  constraint ai_credentials_type_check check (credential_type in ('api_key','service_account','access_token','gateway_token','local_endpoint','oauth')),
  constraint ai_credentials_status_check check (status in ('active','disabled','revoked')),
- constraint ai_credentials_alias_length_check check (alias is null or char_length(alias)<=120),
+ constraint ai_credentials_alias_length_check check (alias is null or char_length(alias)<=120)
  );
  create unique index ai_credentials_unique_alias on public.ai_credentials
    (workspace_id,owner_type,provider_id,credential_type,alias,
