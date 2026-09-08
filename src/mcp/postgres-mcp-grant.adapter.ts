@@ -39,7 +39,9 @@ function map(row: Row, now = new Date()): McpGrant {
         ? 'expired'
         : (row.status as McpGrant['status']),
     expiresAt: expiresAt?.toISOString() ?? null,
-    createdAt: new Date(row.createdAt).toISOString(),
+    createdAt: new Date(row.createdAt)
+      .toISOString()
+      .replace(/\.(\d{3})Z$/, '.$1000Z'),
   };
 }
 export class PostgresMcpGrantAdapter implements McpGrantStore {

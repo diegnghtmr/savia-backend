@@ -47,4 +47,5 @@ create policy mcp_grants_update_own on public.mcp_grants for update to savia_app
 -- Arrays cannot carry foreign keys. A future join table would preserve referential integrity when workspaces are deleted;
 -- this slice keeps the contract's capability record compact and reports the dangling-id tradeoff instead.
 revoke all on function public.mcp_array_is_unique(anyarray) from public;
+grant execute on function public.mcp_array_is_unique(anyarray) to savia_application;
 commit;
