@@ -10,6 +10,7 @@ import { PostgresPool } from './postgres-pool.js';
 import { PostgresIdempotencyAdapter } from './postgres-idempotency.adapter.js';
 import { ARTIFACT_STORAGE } from './artifact-storage.port.js';
 import { SupabaseStorageAdapter } from './supabase-storage.adapter.js';
+import { CredentialCrypto } from './credential-crypto.js';
 
 @Module({
   providers: [
@@ -48,6 +49,11 @@ import { SupabaseStorageAdapter } from './supabase-storage.adapter.js';
     PostgresIdempotencyAdapter,
     SupabaseStorageAdapter,
     {
+      provide: CredentialCrypto,
+      useFactory: (): CredentialCrypto =>
+        new CredentialCrypto(process.env.SAVIA_CREDENTIAL_KEY),
+    },
+    {
       provide: ARTIFACT_STORAGE,
       useExisting: SupabaseStorageAdapter,
     },
@@ -61,6 +67,7 @@ import { SupabaseStorageAdapter } from './supabase-storage.adapter.js';
     PostgresIdempotencyAdapter,
     SupabaseStorageAdapter,
     ARTIFACT_STORAGE,
+    CredentialCrypto,
   ],
 })
 export class PlatformModule {
