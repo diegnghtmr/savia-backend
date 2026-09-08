@@ -27,7 +27,11 @@ describe('PostgresAgentConversationAdapter', () => {
 
   it('applies workspace scoping and total ordering without a cursor', async () => {
     const query = vi.fn(async () => ({ rows: [] }));
-    await new PostgresAgentConversationAdapter().list({ query } as never, 'workspace', 3);
+    await new PostgresAgentConversationAdapter().list(
+      { query } as never,
+      'workspace',
+      3,
+    );
     const calls = query.mock.calls as unknown as unknown[][];
     const [sql, values] = calls[0] ?? [];
     expect(String(sql)).toContain('where workspace_id=$1::uuid');
@@ -39,14 +43,18 @@ describe('PostgresAgentConversationAdapter', () => {
     const query = vi.fn(async () => ({
       rows: [
         {
-          id: 'id', title: 'title', modelRef: null,
+          id: 'id',
+          title: 'title',
+          modelRef: null,
           createdAt: new Date('2026-01-01T00:00:00.123Z'),
           updatedAt: new Date('2026-01-01T00:00:00.456Z'),
         },
       ],
     }));
     const [row] = await new PostgresAgentConversationAdapter().list(
-      { query } as never, 'workspace', 1,
+      { query } as never,
+      'workspace',
+      1,
     );
     expect(row).toMatchObject({
       createdAt: '2026-01-01T00:00:00.123000Z',

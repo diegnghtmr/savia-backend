@@ -34,34 +34,49 @@ describe('AgentConversationsController', () => {
     for (const [kind, status] of outcomes) {
       const p = {
         createAgentConversation: vi.fn(async () =>
-          kind === 'created'
-            ? { kind, conversation: { id: 'x' } }
-            : { kind },
+          kind === 'created' ? { kind, conversation: { id: 'x' } } : { kind },
         ),
         listAgentConversations: vi.fn(),
       };
       const r = new Reply();
-      await new AgentConversationsController(p as never).create(request, {}, r as never);
+      await new AgentConversationsController(p as never).create(
+        request,
+        {},
+        r as never,
+      );
       expect(r.statusCode).toBe(status);
       if (status !== 201)
-        expect(r.body).toEqual(expect.objectContaining({ status, type: expect.any(String) }));
+        expect(r.body).toEqual(
+          expect.objectContaining({ status, type: expect.any(String) }),
+        );
     }
   });
 
   it('maps list success and forbidden outcomes to 200 and 403', async () => {
     const p = {
       createAgentConversation: vi.fn(),
-      listAgentConversations: vi.fn(async (): Promise<unknown> => ({
-        kind: 'ok',
-        page: { items: [], pageInfo: { hasNextPage: false, nextCursor: null } },
-      })),
+      listAgentConversations: vi.fn(
+        async (): Promise<unknown> => ({
+          kind: 'ok',
+          page: {
+            items: [],
+            pageInfo: { hasNextPage: false, nextCursor: null },
+          },
+        }),
+      ),
     };
     const r = new Reply();
-    await new AgentConversationsController(p as never).list(request, r as never);
+    await new AgentConversationsController(p as never).list(
+      request,
+      r as never,
+    );
     expect(r.statusCode).toBe(200);
     p.listAgentConversations.mockResolvedValue({ kind: 'forbidden' });
     const forbidden = new Reply();
-    await new AgentConversationsController(p as never).list(request, forbidden as never);
+    await new AgentConversationsController(p as never).list(
+      request,
+      forbidden as never,
+    );
     expect(forbidden.statusCode).toBe(403);
     expect(forbidden.body).toEqual(expect.objectContaining({ status: 403 }));
   });

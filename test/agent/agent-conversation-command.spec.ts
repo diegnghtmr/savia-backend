@@ -29,25 +29,32 @@ describe('agent conversation command', () => {
       'New conversation',
     );
     expect(createAgentConversationCommand({ title: '' }).title).toBe('');
-    expect(createAgentConversationCommand({ title: 'x'.repeat(120) }).title).toHaveLength(120);
+    expect(
+      createAgentConversationCommand({ title: 'x'.repeat(120) }).title,
+    ).toHaveLength(120);
     violation({ title: 'x'.repeat(121) }, 'title');
     violation({ title: 1 }, 'title');
   });
 
   it('accepts any modelRef string and null, and rejects other types', () => {
-    expect(createAgentConversationCommand({ modelRef: 'not a provider/ref' }).modelRef).toBe(
-      'not a provider/ref',
-    );
-    expect(createAgentConversationCommand({ modelRef: null }).modelRef).toBeNull();
+    expect(
+      createAgentConversationCommand({ modelRef: 'not a provider/ref' })
+        .modelRef,
+    ).toBe('not a provider/ref');
+    expect(
+      createAgentConversationCommand({ modelRef: null }).modelRef,
+    ).toBeNull();
     violation({ modelRef: 1 }, 'modelRef');
   });
 
   it('accepts UUID or null credentials and reports the credential field', () => {
     const id = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE';
-    expect(createAgentConversationCommand({ credentialId: id }).credentialId).toBe(
-      id.toLowerCase(),
-    );
-    expect(createAgentConversationCommand({ credentialId: null }).credentialId).toBeNull();
+    expect(
+      createAgentConversationCommand({ credentialId: id }).credentialId,
+    ).toBe(id.toLowerCase());
+    expect(
+      createAgentConversationCommand({ credentialId: null }).credentialId,
+    ).toBeNull();
     violation({ credentialId: 'not-a-uuid' }, 'credentialId');
     violation({ credentialId: 1 }, 'credentialId');
   });
