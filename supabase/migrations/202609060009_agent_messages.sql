@@ -2,7 +2,7 @@ begin;
 
 alter table public.agent_conversations add column if not exists updated_at timestamptz not null default now();
 grant update (updated_at) on public.agent_conversations to savia_application;
-create policy agent_conversations_update_workspace on public.agent_conversations for update to savia_application using (public.workspace_actor_active_role(workspace_id) in ('owner','administrator','editor','viewer')) with check (public.workspace_actor_active_role(workspace_id) in ('owner','administrator','editor','viewer'));
+create policy agent_conversations_update_workspace on public.agent_conversations for update to savia_application using (public.workspace_actor_active_role(workspace_id) in ('owner','administrator','editor')) with check (public.workspace_actor_active_role(workspace_id) in ('owner','administrator','editor'));
 
 create table public.agent_message_runs (
   id uuid primary key,
@@ -19,6 +19,7 @@ create table public.agent_message_idempotency (
   conversation_id uuid not null references public.agent_conversations(id) on delete cascade,
   idempotency_key text not null,
   request_fingerprint text not null,
+  run_id uuid not null,
   events jsonb not null,
   created_at timestamptz not null default now(),
   primary key (subject_id, workspace_id, conversation_id, idempotency_key)
@@ -32,7 +33,7 @@ create table public.agent_message_rate_limits (
   primary key (subject_id, workspace_id, conversation_id, window_start)
 );
 grant select, insert on public.agent_message_runs to savia_application;
-grant select, insert on public.agent_message_idempotency to savia_application;
+grant select, insert, update on public.agent_message_idempotency to savia_application;
 grant select, insert, update on public.agent_message_rate_limits to savia_application;
 alter table public.agent_message_runs enable row level security;
 alter table public.agent_message_runs force row level security;
@@ -47,7 +48,7 @@ create policy agent_message_rate_limit_subject on public.agent_message_rate_limi
 create or replace function public.consume_agent_message_rate_limit(p_subject uuid, p_workspace uuid, p_conversation uuid, p_now timestamptz)
 returns boolean language plpgsql security definer set search_path = public as $$
 declare
-  v_window timestamptz := date_trunc('minute', p_now);
+  v_window timestamptz := (date_trunc('minute', p_now at time zone 'UTC') at time zone 'UTC');
   v_count integer;
 begin
   insert into public.agent_message_rate_limits(subject_id,workspace_id,conversation_id,window_start,request_count)

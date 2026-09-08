@@ -1,4 +1,4 @@
-import { expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AgentMessageService } from '../../src/agent/agent-message.service.js';
 import type {
   AgentMessageStore,
@@ -29,6 +29,9 @@ function store(overrides: Partial<AgentMessageStore> = {}): AgentMessageStore {
     saveRun: vi.fn(async () => undefined),
     readRun: vi.fn(async () => undefined),
     saveIdempotency: vi.fn(async () => true),
+    reserveIdempotency: vi.fn(async () => true),
+    finalizeIdempotency: vi.fn(async () => undefined),
+    releaseIdempotency: vi.fn(async () => undefined),
     readIdempotency: vi.fn(async () => undefined),
     createId: vi.fn(() => conversation),
     ...overrides,
@@ -58,6 +61,7 @@ it('emits started, newline-safe text, and one terminal event', async () => {
     workspace,
     conversation,
     'key',
+    '44444444-4444-4444-8444-444444444444',
     { message: 'x', modelRef: null, credentialId: null },
     new AbortController().signal,
     (event) => events.push(event),
@@ -83,6 +87,7 @@ it('does not emit after a provider terminal event', async () => {
     workspace,
     conversation,
     'terminal-key',
+    '55555555-5555-4555-8555-555555555555',
     { message: 'x', modelRef: null, credentialId: null },
     new AbortController().signal,
     (event) => events.push(event),
@@ -91,4 +96,125 @@ it('does not emit after a provider terminal event', async () => {
     'run_started',
     'run_completed',
   ]);
+});
+
+describe('in-flight idempotency', () => {
+  it('allows only one overlapping request for the same key', async () => {
+    let releaseProvider!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    let providerRuns = 0;
+    const provider: AgentProviderPort = {
+      stream: async function* () {
+        providerRuns++;
+        await providerStarted;
+        yield { type: 'text_delta', data: { text: 'slow' } };
+      },
+    };
+    let reserved = false;
+    const service = new AgentMessageService(
+      new Tx(),
+      store({
+        reserveIdempotency: vi.fn(async () => {
+          if (reserved) return false;
+          reserved = true;
+          return true;
+        }),
+        readIdempotency: vi.fn(async () =>
+          reserved
+            ? {
+                fingerprint: 'not-the-fingerprint',
+                runId: '77777777-7777-4777-8777-777777777777',
+                events: [],
+              }
+            : undefined,
+        ),
+      }),
+      provider,
+    );
+    const command = { message: 'x', modelRef: null, credentialId: null };
+    const firstOutcome = await service.prepare(
+      subject,
+      workspace,
+      conversation,
+      'same-key',
+      command,
+    );
+    const firstExecution = service.execute(
+      subject,
+      workspace,
+      conversation,
+      'same-key',
+      firstOutcome.kind === 'ready'
+        ? firstOutcome.runId
+        : '66666666-6666-4666-8666-666666666666',
+      command,
+      new AbortController().signal,
+      () => undefined,
+    );
+    await new Promise<void>((resolve) => {
+      const poll = (): void => {
+        if (providerRuns === 1) resolve();
+        else setTimeout(poll, 0);
+      };
+      poll();
+    });
+    const secondOutcome = await service.prepare(
+      subject,
+      workspace,
+      conversation,
+      'same-key',
+      command,
+    );
+    expect([firstOutcome.kind, secondOutcome.kind].sort()).toEqual([
+      'conflict',
+      'ready',
+    ]);
+    expect(providerRuns).toBe(1);
+    releaseProvider();
+    await firstExecution;
+  });
+
+  it('closes a slow provider iterator and releases its reservation on abort', async () => {
+    const controller = new AbortController();
+    let closed = false;
+    const provider: AgentProviderPort = {
+      stream: async function* (_command, signal) {
+        void _command;
+        try {
+          yield { type: 'text_delta', data: { text: 'before abort' } };
+          await new Promise<void>((resolve) =>
+            signal.addEventListener('abort', () => resolve(), { once: true }),
+          );
+          yield { type: 'text_delta', data: { text: 'never emitted' } };
+        } finally {
+          closed = true;
+        }
+      },
+    };
+    const releaseIdempotency = vi.fn(async () => undefined);
+    const events: string[] = [];
+    const service = new AgentMessageService(
+      new Tx(),
+      store({ releaseIdempotency }),
+      provider,
+    );
+    const execution = service.execute(
+      subject,
+      workspace,
+      conversation,
+      'abort-key',
+      '88888888-8888-4888-8888-888888888888',
+      { message: 'x', modelRef: null, credentialId: null },
+      controller.signal,
+      (event) => events.push(event.type),
+    );
+    await vi.waitFor(() => expect(events).toEqual(['run_started', 'text_delta']));
+    controller.abort();
+    await execution;
+    expect(closed).toBe(true);
+    expect(releaseIdempotency).toHaveBeenCalledOnce();
+    expect(events).not.toContain('run_completed');
+  });
 });

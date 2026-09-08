@@ -63,7 +63,9 @@ export class AgentMessagesController {
       if (outcome.kind === AGENT_MESSAGE_OUTCOMES.CONFLICT)
         return sendProblem(reply, {
           type: PROBLEM_TYPES.CONFLICT,
-          title: 'Idempotency conflict',
+          title: 'Agent message already in flight',
+          detail:
+            'Retry after the existing run completes or use a new Idempotency-Key.',
           status: 409,
         });
       if (outcome.kind === AGENT_MESSAGE_OUTCOMES.RATE_LIMITED) {
@@ -104,6 +106,7 @@ export class AgentMessagesController {
         workspace.workspaceId,
         conversationId,
         key.key,
+        outcome.runId,
         command,
         controller.signal,
         write,

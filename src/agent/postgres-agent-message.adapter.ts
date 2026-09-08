@@ -75,6 +75,46 @@ export class PostgresAgentMessageAdapter implements AgentMessageStore {
     );
     return r.rows.length > 0;
   }
+  public async reserveIdempotency(
+    client: TransactionClient,
+    subject: string,
+    workspaceId: string,
+    conversationId: string,
+    key: string,
+    fingerprint: string,
+    runId: string,
+  ): Promise<boolean> {
+    const r = await client.query(
+      "insert into public.agent_message_idempotency(subject_id,workspace_id,conversation_id,idempotency_key,request_fingerprint,run_id,events) values ($1::uuid,$2::uuid,$3::uuid,$4,$5,$6::uuid,'[]'::jsonb) on conflict do nothing returning run_id",
+      [subject, workspaceId, conversationId, key, fingerprint, runId],
+    );
+    return r.rows.length > 0;
+  }
+  public async finalizeIdempotency(
+    client: TransactionClient,
+    subject: string,
+    workspaceId: string,
+    conversationId: string,
+    key: string,
+    events: readonly AgentEvent[],
+  ): Promise<void> {
+    await client.query(
+      'update public.agent_message_idempotency set events=$5::jsonb where subject_id=$1::uuid and workspace_id=$2::uuid and conversation_id=$3::uuid and idempotency_key=$4',
+      [subject, workspaceId, conversationId, key, JSON.stringify(events)],
+    );
+  }
+  public async releaseIdempotency(
+    client: TransactionClient,
+    subject: string,
+    workspaceId: string,
+    conversationId: string,
+    key: string,
+  ): Promise<void> {
+    await client.query(
+      'delete from public.agent_message_idempotency where subject_id=$1::uuid and workspace_id=$2::uuid and conversation_id=$3::uuid and idempotency_key=$4',
+      [subject, workspaceId, conversationId, key],
+    );
+  }
   public async readIdempotency(
     client: TransactionClient,
     subject: string,
@@ -82,13 +122,15 @@ export class PostgresAgentMessageAdapter implements AgentMessageStore {
     conversationId: string,
     key: string,
   ): Promise<
-    { fingerprint: string; events: readonly AgentEvent[] } | undefined
+    | { fingerprint: string; runId: string; events: readonly AgentEvent[] }
+    | undefined
   > {
     const r = await client.query<{
       fingerprint: string;
+      runId: string;
       events: readonly AgentEvent[];
     }>(
-      'select request_fingerprint as fingerprint,events from public.agent_message_idempotency where subject_id=$1::uuid and workspace_id=$2::uuid and conversation_id=$3::uuid and idempotency_key=$4',
+      'select request_fingerprint as fingerprint,run_id as "runId",events from public.agent_message_idempotency where subject_id=$1::uuid and workspace_id=$2::uuid and conversation_id=$3::uuid and idempotency_key=$4',
       [subject, workspaceId, conversationId, key],
     );
     return r.rows[0];

@@ -42,14 +42,18 @@ export class AgentMessageService implements AgentMessagePort {
         conversationId,
         key,
       );
-      if (existing)
-        return existing.fingerprint === fingerprint
-          ? {
-              kind: AGENT_MESSAGE_OUTCOMES.READY,
-              runId: existing.events[0]?.runId ?? randomUUID(),
-              replay: existing.events,
-            }
-          : { kind: AGENT_MESSAGE_OUTCOMES.CONFLICT };
+      if (existing) {
+        if (
+          existing.fingerprint !== fingerprint ||
+          existing.events.length === 0
+        )
+          return { kind: AGENT_MESSAGE_OUTCOMES.CONFLICT };
+        return {
+          kind: AGENT_MESSAGE_OUTCOMES.READY,
+          runId: existing.runId,
+          replay: existing.events,
+        };
+      }
       if (
         !(await this.store.consumeRateLimit(
           client,
@@ -60,7 +64,20 @@ export class AgentMessageService implements AgentMessagePort {
         ))
       )
         return { kind: AGENT_MESSAGE_OUTCOMES.RATE_LIMITED, retryAfter: 60 };
-      return { kind: AGENT_MESSAGE_OUTCOMES.READY, runId: randomUUID() };
+      const runId = randomUUID();
+      if (
+        !(await this.store.reserveIdempotency(
+          client,
+          subject,
+          workspaceId,
+          conversationId,
+          key,
+          fingerprint,
+          runId,
+        ))
+      )
+        return { kind: AGENT_MESSAGE_OUTCOMES.CONFLICT };
+      return { kind: AGENT_MESSAGE_OUTCOMES.READY, runId };
     });
   }
   public async execute(
@@ -68,6 +85,7 @@ export class AgentMessageService implements AgentMessagePort {
     workspaceId: string,
     conversationId: string,
     key: string,
+    runId: string,
     command: AgentMessageCommand,
     signal: AbortSignal,
     emit: (event: AgentEvent) => void,
@@ -77,7 +95,6 @@ export class AgentMessageService implements AgentMessagePort {
       for (const event of replay) emit(event);
       return;
     }
-    const runId = randomUUID();
     const events: AgentEvent[] = [];
     let terminal = false;
     const push = (type: AgentEvent['type'], data: Record<string, unknown>) => {
@@ -95,7 +112,7 @@ export class AgentMessageService implements AgentMessagePort {
     push(AGENT_EVENT_TYPES.RUN_STARTED, {});
     try {
       for await (const chunk of this.provider.stream(command, signal)) {
-        if (signal.aborted) return;
+        if (signal.aborted) break;
         push(chunk.type, chunk.data);
         if (terminal) break;
         if (
@@ -119,16 +136,25 @@ export class AgentMessageService implements AgentMessagePort {
             command.message,
             events,
           );
-          await this.store.saveIdempotency(
+          await this.store.finalizeIdempotency(
             client,
             subject,
             workspaceId,
             conversationId,
             key,
-            computeRequestFingerprint(command),
             events,
           );
         });
+      else
+        await this.tx.run(subject, (client) =>
+          this.store.releaseIdempotency(
+            client,
+            subject,
+            workspaceId,
+            conversationId,
+            key,
+          ),
+        );
     } catch (error) {
       if (!signal.aborted) {
         push(AGENT_EVENT_TYPES.RUN_FAILED, {
@@ -144,13 +170,12 @@ export class AgentMessageService implements AgentMessagePort {
             command.message,
             events,
           );
-          await this.store.saveIdempotency(
+          await this.store.finalizeIdempotency(
             client,
             subject,
             workspaceId,
             conversationId,
             key,
-            computeRequestFingerprint(command),
             events,
           );
         });

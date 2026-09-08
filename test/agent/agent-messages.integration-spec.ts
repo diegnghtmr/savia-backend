@@ -24,6 +24,7 @@ if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 
 const owner = '11111111-0000-4000-8000-000000000041';
 const member = '22222222-0000-4000-8000-000000000042';
+const editor = '33333333-0000-4000-8000-000000000043';
 
 interface AgentEvent {
   type: string;
@@ -125,12 +126,12 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
     });
     admin = new Pool({ connectionString: url });
     await admin.query(
-      "insert into auth.users (id,email) values ($1,'agent-message-owner@test'),($2,'agent-message-member@test') on conflict (id) do nothing",
-      [owner, member],
+      "insert into auth.users (id,email) values ($1,'agent-message-owner@test'),($2,'agent-message-member@test'),($3,'agent-message-editor@test') on conflict (id) do nothing",
+      [owner, member, editor],
     );
     await admin.query(
-      "insert into public.profiles (id,email,display_name,locale,country_code,timezone,date_format,week_starts_on,number_format,default_currency) values ($1,'agent-message-owner@test','Agent Message Owner','en','US','UTC','YYYY-MM-DD',1,'1,234.56','USD'),($2,'agent-message-member@test','Agent Message Member','en','US','UTC','YYYY-MM-DD',1,'1,234.56','USD') on conflict (id) do nothing",
-      [owner, member],
+      "insert into public.profiles (id,email,display_name,locale,country_code,timezone,date_format,week_starts_on,number_format,default_currency) values ($1,'agent-message-owner@test','Agent Message Owner','en','US','UTC','YYYY-MM-DD',1,'1,234.56','USD'),($2,'agent-message-member@test','Agent Message Member','en','US','UTC','YYYY-MM-DD',1,'1,234.56','USD'),($3,'agent-message-editor@test','Agent Message Editor','en','US','UTC','YYYY-MM-DD',1,'1,234.56','USD') on conflict (id) do nothing",
+      [owner, member, editor],
     );
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(JoseJwtVerifier)
@@ -159,8 +160,8 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
       [workspace, foreignWorkspace],
     );
     await admin.query(
-      "insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$3,'owner','active'),($1,$4,'viewer','active'),($2,$3,'owner','active')",
-      [workspace, foreignWorkspace, owner, member],
+      "insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$3,'owner','active'),($1,$4,'viewer','active'),($1,$5,'editor','active'),($2,$3,'owner','active')",
+      [workspace, foreignWorkspace, owner, member, editor],
     );
   });
 
@@ -181,9 +182,10 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
 
   afterAll(async () => {
     await app?.close();
-    await admin?.query('delete from auth.users where id in ($1,$2)', [
+    await admin?.query('delete from auth.users where id in ($1,$2,$3)', [
       owner,
       member,
+      editor,
     ]);
     await admin?.end();
   });
@@ -361,10 +363,11 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
       withCheck: expect.stringContaining('workspace_actor_active_role'),
     });
     await asApplication(member, async (pool) => {
-      await pool.query(
+      const viewerUpdate = await pool.query(
         'update public.agent_conversations set updated_at=now() where id=$1',
         [localConversation],
       );
+      expect(viewerUpdate.rowCount).toBe(0);
       const denied = await pool.query(
         'update public.agent_conversations set updated_at=now() where id=$1',
         [foreignConversation],
@@ -372,5 +375,39 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
       expect(denied.rowCount).toBe(0);
       return undefined;
     });
+    await asApplication(editor, async (pool) => {
+      const editorUpdate = await pool.query(
+        'update public.agent_conversations set updated_at=now() where id=$1',
+        [localConversation],
+      );
+      expect(editorUpdate.rowCount).toBe(1);
+      return undefined;
+    });
+  });
+
+  it('uses UTC minute windows under a non-UTC session timezone', async () => {
+    const conversationId = await createConversation();
+    const client = await admin.connect();
+    try {
+      await client.query("set time zone 'America/Los_Angeles'");
+      await client.query(
+        'select public.consume_agent_message_rate_limit($1,$2,$3,$4::timestamptz), public.consume_agent_message_rate_limit($1,$2,$3,$5::timestamptz)',
+        [
+          owner,
+          workspace,
+          conversationId,
+          '2026-01-01T00:00:59.000Z',
+          '2026-01-01T00:01:00.000Z',
+        ],
+      );
+      const rows = await client.query(
+        'select count(*)::int as count from public.agent_message_rate_limits where conversation_id=$1',
+        [conversationId],
+      );
+      expect(rows.rows[0]?.count).toBe(2);
+    } finally {
+      await client.query('reset time zone');
+      client.release();
+    }
   });
 });

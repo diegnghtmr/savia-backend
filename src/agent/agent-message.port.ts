@@ -84,6 +84,30 @@ export interface AgentMessageStore {
     fingerprint: string,
     events: readonly AgentEvent[],
   ): Promise<boolean>;
+  reserveIdempotency(
+    client: TransactionClient,
+    subject: string,
+    workspaceId: string,
+    conversationId: string,
+    key: string,
+    fingerprint: string,
+    runId: string,
+  ): Promise<boolean>;
+  finalizeIdempotency(
+    client: TransactionClient,
+    subject: string,
+    workspaceId: string,
+    conversationId: string,
+    key: string,
+    events: readonly AgentEvent[],
+  ): Promise<void>;
+  releaseIdempotency(
+    client: TransactionClient,
+    subject: string,
+    workspaceId: string,
+    conversationId: string,
+    key: string,
+  ): Promise<void>;
   readIdempotency(
     client: TransactionClient,
     subject: string,
@@ -91,7 +115,8 @@ export interface AgentMessageStore {
     conversationId: string,
     key: string,
   ): Promise<
-    { fingerprint: string; events: readonly AgentEvent[] } | undefined
+    | { fingerprint: string; runId: string; events: readonly AgentEvent[] }
+    | undefined
   >;
   createId(): string;
 }
@@ -114,6 +139,7 @@ export interface AgentMessagePort {
     workspaceId: string,
     conversationId: string,
     key: string,
+    runId: string,
     command: AgentMessageCommand,
     signal: AbortSignal,
     emit: (event: AgentEvent) => void,
