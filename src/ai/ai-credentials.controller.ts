@@ -22,6 +22,7 @@ import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import {
   isUuid,
   createCredentialCommand,
+  setDefaultModelCommand,
   updateCredentialCommand,
   AICredentialValidationError,
 } from './ai-credential-command.js';
@@ -182,37 +183,38 @@ export class AICredentialsController {
   ) {
     const w = parseWorkspaceHeader(q.headers['x-workspace-id']);
     const k = validateIdempotencyKey(q.headers['idempotency-key']);
-    if (w.kind !== 'ok' || k.kind !== 'ok' || !b || typeof b !== 'object')
+    if (w.kind !== 'ok' || k.kind !== 'ok')
       return sendProblem(r, {
-        type: PROBLEM_TYPES.UNPROCESSABLE,
-        title: 'Invalid default model',
-        status: 422,
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
       });
-    const x = b as Record<string, unknown>;
-    if (
-      typeof x.modelRef !== 'string' ||
-      !/^[a-z0-9][a-z0-9-]*:.+$/.test(x.modelRef) ||
-      (x.credentialId !== null && typeof x.credentialId !== 'string')
-    )
-      return sendProblem(r, {
-        type: PROBLEM_TYPES.UNPROCESSABLE,
-        title: 'Invalid default model',
-        status: 422,
-      });
-    const o = await this.service.setDefaultModel(
-      q.identity.subject,
-      w.workspaceId,
-      x.modelRef,
-      x.credentialId as string | null,
-      k.key,
-    );
-    return o.kind === AI_OUTCOMES.OK
-      ? void r.status(204).send()
-      : sendProblem(r, {
-          type: PROBLEM_TYPES.CONFLICT,
-          title: 'Default model conflicts with credential',
-          status: 409,
+    try {
+      const x = setDefaultModelCommand(b);
+      const o = await this.service.setDefaultModel(
+        q.identity.subject,
+        w.workspaceId,
+        x.modelRef,
+        x.credentialId,
+        k.key,
+      );
+      return o.kind === AI_OUTCOMES.OK
+        ? void r.status(204).send()
+        : sendProblem(r, {
+            type: PROBLEM_TYPES.CONFLICT,
+            title: 'Default model conflicts with credential',
+            status: 409,
+          });
+    } catch (e) {
+      if (e instanceof AICredentialValidationError)
+        return sendProblem(r, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Invalid default model',
+          status: 422,
+          errors: e.violations,
         });
+      throw e;
+    }
   }
   private send(
     r: FastifyReply,

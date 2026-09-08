@@ -6,6 +6,7 @@ import {
 } from '../platform/field-validation.js';
 import type {
   CreateCredentialCommand,
+  SetDefaultModelCommand,
   UpdateCredentialCommand,
 } from './ai-credential.port.js';
 const UUID =
@@ -84,8 +85,6 @@ export function createCredentialCommand(
   let alias: string | null = null;
   if (b.alias !== undefined && b.alias !== null)
     alias = nameValue(b.alias, 'alias', v, 120);
-  else if (b.alias !== undefined)
-    add(v, 'alias', 'invalid-type', 'must be a string or null');
   const metadata: Record<string, string> = {};
   if (
     b.metadata !== undefined &&
@@ -142,6 +141,36 @@ export function updateCredentialCommand(
   }
   if (v.length) fail(v);
   return result;
+}
+export function setDefaultModelCommand(input: unknown): SetDefaultModelCommand {
+  const v: FieldViolation[] = [];
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    add(v, 'body', 'invalid-type', 'must be an object');
+    return fail(v);
+  }
+  const b = input as Record<string, unknown>;
+  for (const key of Object.keys(b))
+    if (!['modelRef', 'credentialId'].includes(key))
+      add(v, key, 'not-allowed', 'is not allowed');
+  if (typeof b.modelRef !== 'string')
+    add(v, 'modelRef', 'required', 'must be a string');
+  else if (!/^[a-z0-9][a-z0-9-]*:.+$/.test(b.modelRef))
+    add(
+      v,
+      'modelRef',
+      'invalid-value',
+      'must match the model reference pattern',
+    );
+  let credentialId: string | null = null;
+  if (b.credentialId !== undefined && b.credentialId !== null) {
+    if (typeof b.credentialId !== 'string')
+      add(v, 'credentialId', 'invalid-type', 'must be a UUID or null');
+    else if (!isUuid(b.credentialId))
+      add(v, 'credentialId', 'invalid-value', 'must be a UUID or null');
+    else credentialId = b.credentialId;
+  }
+  if (v.length) fail(v);
+  return { modelRef: b.modelRef as string, credentialId };
 }
 export function isUuid(value: string): boolean {
   return UUID.test(value);

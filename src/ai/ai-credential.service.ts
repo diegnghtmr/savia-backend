@@ -295,7 +295,13 @@ export class AICredentialService implements AIServicePort {
   }
 }
 function isUnique(e: unknown): boolean {
-  return e instanceof Error && 'code' in e && String(e.code) === '23505';
+  return (
+    e instanceof Error &&
+    'code' in e &&
+    String(e.code) === '23505' &&
+    'constraint' in e &&
+    String(e.constraint) === 'ai_credentials_unique_alias'
+  );
 }
 export function fingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');

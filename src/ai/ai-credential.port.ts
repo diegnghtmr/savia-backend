@@ -57,6 +57,10 @@ export interface UpdateCredentialCommand {
   readonly replacementSecret?: string;
   readonly maskedIdentifier?: string;
 }
+export interface SetDefaultModelCommand {
+  readonly modelRef: string;
+  readonly credentialId: string | null;
+}
 export interface Store {
   createId(): string;
   list(
