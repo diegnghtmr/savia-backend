@@ -139,9 +139,15 @@ function harness(clock = () => new Date(0)) {
 describe('McpGrantService', () => {
   it('fingerprints different expiry strings differently', () => {
     expect(
-      computeRequestFingerprint({ ...command, expiresAt: '2026-01-01T00:00:00.000Z' }),
+      computeRequestFingerprint({
+        ...command,
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      }),
     ).not.toBe(
-      computeRequestFingerprint({ ...command, expiresAt: '2027-01-01T00:00:00.000Z' }),
+      computeRequestFingerprint({
+        ...command,
+        expiresAt: '2027-01-01T00:00:00.000Z',
+      }),
     );
   });
   it('creates and records idempotency after membership and account checks', async () => {

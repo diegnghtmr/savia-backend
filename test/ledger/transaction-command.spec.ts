@@ -264,6 +264,30 @@ describe('createTransactionCommand', () => {
     );
   });
 
+  it('accepts the negatable lower and true upper bounds and refuses one past each', () => {
+    for (const amountMinor of ['-9223372036854775807', '9223372036854775807']) {
+      expect(
+        createTransactionCommand({
+          ...validMinimal,
+          amount: { amountMinor, currency: 'USD' },
+        }).amount.amountMinor,
+      ).toBe(amountMinor);
+    }
+    for (const amountMinor of ['-9223372036854775808', '9223372036854775808']) {
+      expectViolations(
+        () =>
+          createTransactionCommand({
+            ...validMinimal,
+            amount: { amountMinor, currency: 'USD' },
+          }),
+        (violations) =>
+          expect(violations.map(({ field }) => field)).toContain(
+            'amount.amountMinor',
+          ),
+      );
+    }
+  });
+
   it('refuses invalid currency', () => {
     expectViolations(
       () =>
