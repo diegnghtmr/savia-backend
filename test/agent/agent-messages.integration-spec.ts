@@ -350,6 +350,13 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
   it('allows an active workspace member to update a conversation but denies another workspace', async () => {
     const localConversation = await createConversation();
     const foreignConversation = await createConversation(foreignWorkspace);
+    const policy = await admin.query<{ qual: string; withCheck: string }>(
+      "select qual, with_check as \"withCheck\" from pg_policies where schemaname='public' and tablename='agent_conversations' and policyname='agent_conversations_update_workspace'",
+    );
+    expect(policy.rows[0]).toEqual({
+      qual: expect.stringContaining('workspace_actor_active_role'),
+      withCheck: expect.stringContaining('workspace_actor_active_role'),
+    });
     await asApplication(member, async (pool) => {
       await pool.query(
         'update public.agent_conversations set updated_at=now() where id=$1',
