@@ -1,0 +1,2 @@
+$ node scripts/verify-openapi.mjs
+OpenAPI authority verified.

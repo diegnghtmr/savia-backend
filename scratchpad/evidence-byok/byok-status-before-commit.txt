@@ -1,0 +1,46 @@
+ M scratchpad/slice-byok-report.md
+ M src/ai/ai-credential.port.ts
+ M src/ai/ai-credential.service.ts
+ M src/ai/ai-credentials.controller.ts
+ M src/ai/ai-credentials.module.ts
+ M src/ai/postgres-ai-credential.adapter.ts
+ M supabase/migrations/202609060007_ai_credentials.sql
+ M test/ai/ai-credentials.integration-spec.ts
+?? scratchpad/evidence-byok/byok-depcruise-final.txt
+?? scratchpad/evidence-byok/byok-diff-check-final.txt
+?? scratchpad/evidence-byok/byok-diff-stat-final.txt
+?? scratchpad/evidence-byok/byok-final-ai-integration.txt
+?? scratchpad/evidence-byok/byok-final-format-controller.txt
+?? scratchpad/evidence-byok/byok-final-lint.txt
+?? scratchpad/evidence-byok/byok-final-tsc.txt
+?? scratchpad/evidence-byok/byok-final-unit-focused.txt
+?? scratchpad/evidence-byok/byok-format-continuation.txt
+?? scratchpad/evidence-byok/byok-format-http.txt
+?? scratchpad/evidence-byok/byok-format-proof.txt
+?? scratchpad/evidence-byok/byok-integration-ai-credentials-http.txt
+?? scratchpad/evidence-byok/byok-integration-ai-final.txt
+?? scratchpad/evidence-byok/byok-integration-http-rls.txt
+?? scratchpad/evidence-byok/byok-integration-mcp-final.txt
+?? scratchpad/evidence-byok/byok-lint-final.txt
+?? scratchpad/evidence-byok/byok-mutation-final.txt
+?? scratchpad/evidence-byok/byok-mutation-idempotency-killed.txt
+?? scratchpad/evidence-byok/byok-mutation-idempotency-stat.txt
+?? scratchpad/evidence-byok/byok-mutation-rls-killed.txt
+?? scratchpad/evidence-byok/byok-mutation-rls-stat.txt
+?? scratchpad/evidence-byok/byok-mutation-transaction.txt
+?? scratchpad/evidence-byok/byok-openapi-lint-final.txt
+?? scratchpad/evidence-byok/byok-openapi-verify-final.txt
+?? scratchpad/evidence-byok/byok-prettier-final.txt
+?? scratchpad/evidence-byok/byok-prettier-final2.txt
+?? scratchpad/evidence-byok/byok-prettier-final3.txt
+?? scratchpad/evidence-byok/byok-prettier-fix.txt
+?? scratchpad/evidence-byok/byok-report-format-final.txt
+?? scratchpad/evidence-byok/byok-service-proof.txt
+?? scratchpad/evidence-byok/byok-status-before-commit.txt
+?? scratchpad/evidence-byok/byok-test-final.txt
+?? scratchpad/evidence-byok/byok-transaction-resilience.txt
+?? scratchpad/evidence-byok/byok-tsc-continuation.txt
+?? scratchpad/evidence-byok/byok-tsc-final.txt
+?? scratchpad/evidence-byok/byok-tsc-http.txt
+?? scratchpad/evidence-byok/byok-tsc-proof.txt
+?? test/ai/ai-credential.service.spec.ts

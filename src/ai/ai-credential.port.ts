@@ -1,4 +1,5 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import type { IdempotencyStore } from '../platform/idempotency.port.js';
 
 export const AI_CREDENTIALS_PORT = Symbol('AI_CREDENTIALS_PORT');
 export const AI_OUTCOMES = {
@@ -8,6 +9,7 @@ export const AI_OUTCOMES = {
   NOT_FOUND: 'not_found',
   CONFLICT: 'conflict',
   INVALID: 'invalid',
+  PRECONDITION: 'precondition',
 } as const;
 export type OwnerType = 'user' | 'workspace';
 export type CredentialType =
@@ -47,11 +49,13 @@ export interface CreateCredentialCommand {
   readonly secret: string;
   readonly alias: string | null;
   readonly metadata: Readonly<Record<string, string>>;
+  readonly maskedIdentifier?: string;
 }
 export interface UpdateCredentialCommand {
   readonly alias?: string | null;
   readonly status?: 'active' | 'disabled';
   readonly replacementSecret?: string;
+  readonly maskedIdentifier?: string;
 }
 export interface Store {
   createId(): string;
@@ -125,6 +129,7 @@ export interface AIServicePort {
     key: string,
   ): Promise<Outcome>;
 }
+export type AIIdempotencyStore = IdempotencyStore;
 export type Outcome = {
   readonly kind: (typeof AI_OUTCOMES)[keyof typeof AI_OUTCOMES];
   readonly credential?: CredentialMetadata;

@@ -9,6 +9,7 @@ import {
   type ProviderDescriptor,
   type Store,
   type UpdateCredentialCommand,
+  type AIIdempotencyStore,
 } from './ai-credential.port.js';
 export const PROVIDERS: readonly ProviderDescriptor[] = Object.freeze([
   {
@@ -66,6 +67,7 @@ export class AICredentialService implements AIServicePort {
     private readonly tx: PgTransaction,
     private readonly store: Store,
     private readonly crypto: CredentialCrypto,
+    private readonly idempotency: AIIdempotencyStore,
   ) {}
   public listProviders(): readonly ProviderDescriptor[] {
     return PROVIDERS;
@@ -81,17 +83,49 @@ export class AICredentialService implements AIServicePort {
     command: CreateCredentialCommand,
     key: string,
   ): Promise<Outcome> {
-    void key;
+    const route = 'POST /v1/ai/credentials';
+    const requestFingerprint = fingerprint(command);
     try {
       return await this.tx.run(subject, async (c) => {
+        const existing = await this.idempotency.read(
+          c,
+          subject,
+          route,
+          key,
+          workspaceId,
+        );
+        if (existing)
+          return existing.requestFingerprint === requestFingerprint
+            ? {
+                kind: AI_OUTCOMES.CREATED,
+                credential: existing.responseBody as never,
+              }
+            : { kind: AI_OUTCOMES.CONFLICT };
         const id = this.store.createId();
         try {
+          const encrypted = this.crypto.encrypt(command.secret);
+          const credential = await this.store.create(c, workspaceId, id, {
+            ...command,
+            secret: encrypted,
+            maskedIdentifier: mask(command.secret),
+          });
+          if (
+            !(await this.idempotency.write(
+              c,
+              subject,
+              route,
+              key,
+              requestFingerprint,
+              201,
+              null,
+              credential,
+              workspaceId,
+            ))
+          )
+            throw new AIRollbackError(AI_OUTCOMES.CONFLICT);
           return {
             kind: AI_OUTCOMES.CREATED,
-            credential: await this.store.create(c, workspaceId, id, {
-              ...command,
-              secret: this.crypto.encrypt(command.secret),
-            }),
+            credential,
           };
         } catch (e) {
           if (isUnique(e)) return { kind: AI_OUTCOMES.CONFLICT };
@@ -111,10 +145,25 @@ export class AICredentialService implements AIServicePort {
     _key: string,
     ifMatch: number,
   ): Promise<Outcome> {
-    void _key;
-    return this.tx.run(subject, (c) =>
-      this.store
-        .update(
+    const route = 'PATCH /v1/ai/credentials/{credentialId}';
+    const requestFingerprint = fingerprint({ id, command, ifMatch });
+    return this.tx
+      .run(subject, async (c) => {
+        const existing = await this.idempotency.read(
+          c,
+          subject,
+          route,
+          _key,
+          workspaceId,
+        );
+        if (existing)
+          return existing.requestFingerprint === requestFingerprint
+            ? {
+                kind: AI_OUTCOMES.OK,
+                credential: existing.responseBody as never,
+              }
+            : { kind: AI_OUTCOMES.CONFLICT };
+        const credential = await this.store.update(
           c,
           workspaceId,
           id,
@@ -124,15 +173,34 @@ export class AICredentialService implements AIServicePort {
               command.replacementSecret === undefined
                 ? undefined
                 : this.crypto.encrypt(command.replacementSecret),
+            maskedIdentifier:
+              command.replacementSecret === undefined
+                ? undefined
+                : mask(command.replacementSecret),
           },
           ifMatch,
+        );
+        if (!credential) return { kind: AI_OUTCOMES.PRECONDITION };
+        if (
+          !(await this.idempotency.write(
+            c,
+            subject,
+            route,
+            _key,
+            requestFingerprint,
+            200,
+            null,
+            credential,
+            workspaceId,
+          ))
         )
-        .then((credential) =>
-          credential
-            ? { kind: AI_OUTCOMES.OK, credential }
-            : { kind: AI_OUTCOMES.NOT_FOUND },
-        ),
-    );
+          throw new AIRollbackError(AI_OUTCOMES.CONFLICT);
+        return { kind: AI_OUTCOMES.OK, credential };
+      })
+      .catch((error: unknown) => {
+        if (error instanceof AIRollbackError) return { kind: error.outcome };
+        throw error;
+      });
   }
   public async revokeCredential(
     subject: string,
@@ -140,14 +208,43 @@ export class AICredentialService implements AIServicePort {
     id: string,
     _key: string,
   ): Promise<Outcome> {
-    void _key;
-    return this.tx.run(subject, (c) =>
-      this.store
-        .revoke(c, workspaceId, id)
-        .then((ok) =>
-          ok ? { kind: AI_OUTCOMES.OK } : { kind: AI_OUTCOMES.NOT_FOUND },
-        ),
-    );
+    const route = 'DELETE /v1/ai/credentials/{credentialId}';
+    const requestFingerprint = fingerprint({ id });
+    return this.tx
+      .run(subject, async (c) => {
+        const existing = await this.idempotency.read(
+          c,
+          subject,
+          route,
+          _key,
+          workspaceId,
+        );
+        if (existing)
+          return existing.requestFingerprint === requestFingerprint
+            ? { kind: AI_OUTCOMES.OK }
+            : { kind: AI_OUTCOMES.CONFLICT };
+        if (!(await this.store.revoke(c, workspaceId, id)))
+          return { kind: AI_OUTCOMES.NOT_FOUND };
+        if (
+          !(await this.idempotency.write(
+            c,
+            subject,
+            route,
+            _key,
+            requestFingerprint,
+            204,
+            null,
+            null,
+            workspaceId,
+          ))
+        )
+          throw new AIRollbackError(AI_OUTCOMES.CONFLICT);
+        return { kind: AI_OUTCOMES.OK };
+      })
+      .catch((error: unknown) => {
+        if (error instanceof AIRollbackError) return { kind: error.outcome };
+        throw error;
+      });
   }
   public async setDefaultModel(
     subject: string,
@@ -156,17 +253,45 @@ export class AICredentialService implements AIServicePort {
     credentialId: string | null,
     _key: string,
   ): Promise<Outcome> {
-    void _key;
-    return this.tx.run(subject, async (c) => ({
-      kind: (await this.store.setDefault(
-        c,
-        workspaceId,
-        modelRef,
-        credentialId,
-      ))
-        ? AI_OUTCOMES.OK
-        : AI_OUTCOMES.CONFLICT,
-    }));
+    const route = 'PUT /v1/ai/default-model';
+    const requestFingerprint = fingerprint({ modelRef, credentialId });
+    return this.tx
+      .run(subject, async (c) => {
+        const existing = await this.idempotency.read(
+          c,
+          subject,
+          route,
+          _key,
+          workspaceId,
+        );
+        if (existing)
+          return existing.requestFingerprint === requestFingerprint
+            ? { kind: AI_OUTCOMES.OK }
+            : { kind: AI_OUTCOMES.CONFLICT };
+        if (
+          !(await this.store.setDefault(c, workspaceId, modelRef, credentialId))
+        )
+          return { kind: AI_OUTCOMES.CONFLICT };
+        if (
+          !(await this.idempotency.write(
+            c,
+            subject,
+            route,
+            _key,
+            requestFingerprint,
+            204,
+            null,
+            null,
+            workspaceId,
+          ))
+        )
+          throw new AIRollbackError(AI_OUTCOMES.CONFLICT);
+        return { kind: AI_OUTCOMES.OK };
+      })
+      .catch((error: unknown) => {
+        if (error instanceof AIRollbackError) return { kind: error.outcome };
+        throw error;
+      });
   }
 }
 function isUnique(e: unknown): boolean {
@@ -174,4 +299,7 @@ function isUnique(e: unknown): boolean {
 }
 export function fingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+function mask(secret: string): string {
+  return secret.length > 4 ? `••••${secret.slice(-4)}` : '••••';
 }

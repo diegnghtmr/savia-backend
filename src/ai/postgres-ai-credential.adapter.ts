@@ -44,7 +44,7 @@ export class PostgresAICredentialAdapter implements Store {
     id: string,
     x: CreateCredentialCommand,
   ) {
-    const masked = x.secret.length > 4 ? `••••${x.secret.slice(-4)}` : '••••';
+    const masked = x.maskedIdentifier ?? '••••';
     const r = await c.query<Row>(
       'insert into public.ai_credentials (id,workspace_id,owner_type,provider_id,credential_type,encrypted_secret,masked_identifier,alias,metadata) values ($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9) returning id,owner_type as "ownerType",provider_id as "providerId",credential_type as "credentialType",masked_identifier as "maskedIdentifier",alias,status,last_used_at as "lastUsedAt",expires_at as "expiresAt",created_at as "createdAt",version',
       [
@@ -76,7 +76,7 @@ export class PostgresAICredentialAdapter implements Store {
     v: number,
   ) {
     const r = await c.query<Row>(
-      'update public.ai_credentials set alias=coalesce($3,alias),status=coalesce($4,status),encrypted_secret=coalesce($5,encrypted_secret),version=version+1,updated_at=now() where workspace_id=$1::uuid and id=$2::uuid and version=$6 and status<>\'revoked\' returning id,owner_type as "ownerType",provider_id as "providerId",credential_type as "credentialType",masked_identifier as "maskedIdentifier",alias,status,last_used_at as "lastUsedAt",expires_at as "expiresAt",created_at as "createdAt",version',
+      'update public.ai_credentials set alias=coalesce($3,alias),status=coalesce($4,status),encrypted_secret=coalesce($5,encrypted_secret),masked_identifier=coalesce($7,masked_identifier),version=version+1,updated_at=now() where workspace_id=$1::uuid and id=$2::uuid and version=$6 and status<>\'revoked\' returning id,owner_type as "ownerType",provider_id as "providerId",credential_type as "credentialType",masked_identifier as "maskedIdentifier",alias,status,last_used_at as "lastUsedAt",expires_at as "expiresAt",created_at as "createdAt",version',
       [
         w,
         id,
@@ -84,6 +84,7 @@ export class PostgresAICredentialAdapter implements Store {
         x.status ?? null,
         x.replacementSecret ?? null,
         v,
+        x.maskedIdentifier ?? null,
       ],
     );
     return r.rows[0] ? map(r.rows[0]) : undefined;

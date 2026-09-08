@@ -164,9 +164,15 @@ export class AICredentialsController {
     return o.kind === AI_OUTCOMES.OK
       ? void r.status(204).send()
       : sendProblem(r, {
-          type: PROBLEM_TYPES.NOT_FOUND,
-          title: 'Credential not found',
-          status: 404,
+          type:
+            o.kind === AI_OUTCOMES.CONFLICT
+              ? PROBLEM_TYPES.CONFLICT
+              : PROBLEM_TYPES.NOT_FOUND,
+          title:
+            o.kind === AI_OUTCOMES.CONFLICT
+              ? 'Idempotency conflict'
+              : 'Credential not found',
+          status: o.kind === AI_OUTCOMES.CONFLICT ? 409 : 404,
         });
   }
   @Put('default-model') public async setDefault(
@@ -220,6 +226,12 @@ export class AICredentialsController {
         type: PROBLEM_TYPES.NOT_FOUND,
         title: 'Credential not found',
         status: 404,
+      });
+    if (o.kind === AI_OUTCOMES.PRECONDITION)
+      return sendProblem(r, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
       });
     return sendProblem(r, {
       type: PROBLEM_TYPES.CONFLICT,

@@ -8,7 +8,7 @@ create table public.ai_credentials (
  constraint ai_credentials_type_check check (credential_type in ('api_key','service_account','access_token','gateway_token','local_endpoint','oauth')),
  constraint ai_credentials_status_check check (status in ('active','disabled','revoked')),
  constraint ai_credentials_alias_length_check check (alias is null or char_length(alias)<=120),
- constraint ai_credentials_unique_alias unique (workspace_id,owner_type,provider_id,credential_type,alias)
+  constraint ai_credentials_unique_alias unique nulls not distinct (workspace_id,owner_type,provider_id,credential_type,alias)
 );
 create table public.ai_default_models (workspace_id uuid primary key references public.workspaces(id) on delete cascade, model_ref text not null, credential_id uuid, updated_at timestamptz not null default now());
 alter table public.ai_credentials enable row level security; alter table public.ai_credentials force row level security;
