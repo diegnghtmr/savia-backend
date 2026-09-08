@@ -22,6 +22,7 @@ import { ReportsModule } from './reports/reports.module.js';
 import { ApprovalsModule } from './approvals/approvals.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { ReceiptsModule } from './receipts/receipts.module.js';
+import { McpGrantsModule } from './mcp/mcp-grants.module.js';
 
 @Module({
   controllers: [HealthController],
@@ -47,6 +48,7 @@ import { ReceiptsModule } from './receipts/receipts.module.js';
     ApprovalsModule,
     NotificationsModule,
     ReceiptsModule,
+    McpGrantsModule,
   ],
 })
 export class AppModule {}
