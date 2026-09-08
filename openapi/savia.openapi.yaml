@@ -2459,6 +2459,36 @@ components:
         modelRef: { type: [string, 'null'] }
         credentialId: { type: [string, 'null'], format: uuid }
       additionalProperties: false
+    AgentMessageRequest:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string, minLength: 1, maxLength: 20000 }
+        modelRef: { type: [string, 'null'] }
+        credentialId: { type: [string, 'null'], format: uuid }
+      additionalProperties: false
+    AgentEvent:
+      type: object
+      required: [type, runId, timestamp, data]
+      properties:
+        type:
+          {
+            type: string,
+            enum:
+              [
+                run_started,
+                text_delta,
+                tool_proposed,
+                approval_required,
+                tool_completed,
+                run_completed,
+                run_failed,
+              ],
+          }
+        runId: { $ref: '#/components/schemas/Uuid' }
+        timestamp: { type: string, format: date-time }
+        data: { type: object, additionalProperties: true }
+      additionalProperties: false
     CreateMcpGrantRequest:
       type: object
       required: [clientName, scopes, workspaceIds]
@@ -8015,6 +8045,37 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /v1/agent/conversations/{conversationId}/messages:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/Uuid' }
+    post:
+      operationId: sendAgentMessage
+      summary: Send a message to an agent conversation
+      tags: [Agent]
+      parameters:
+        - { $ref: '#/components/parameters/WorkspaceIdHeader' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentMessageRequest' }
+      responses:
+        '200':
+          description: Agent run event stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { description: Rate limit exceeded. }
+        '503': { description: Provider unavailable. }
   /v1/mcp/grants:
     get:
       operationId: listMcpGrants
