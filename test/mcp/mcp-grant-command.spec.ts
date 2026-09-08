@@ -96,6 +96,34 @@ describe('MCP grant command', () => {
         },
       }).maxWriteAmount,
     ).toEqual({ amountMinor: '9007199254740993', currency: 'USD' });
+    expect(
+      createMcpGrantCommand({
+        ...base(),
+        maxWriteAmount: {
+          amountMinor: '-9223372036854775808',
+          currency: 'USD',
+        },
+      }).maxWriteAmount,
+    ).toEqual({ amountMinor: '-9223372036854775808', currency: 'USD' });
+    expect(
+      createMcpGrantCommand({
+        ...base(),
+        maxWriteAmount: {
+          amountMinor: '9223372036854775807',
+          currency: 'USD',
+        },
+      }).maxWriteAmount,
+    ).toEqual({ amountMinor: '9223372036854775807', currency: 'USD' });
+  });
+  it('accepts ISO date-time strings and rejects broader Date.parse inputs', () => {
+    expect(
+      createMcpGrantCommand({
+        ...base(),
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      }).expiresAt,
+    ).toBe('2026-01-01T00:00:00.000Z');
+    for (const expiresAt of ['2026-01-01', '2026-01-01T00:00', 'not-a-date'])
+      expect(fields({ ...base(), expiresAt })).toContain('expiresAt');
   });
   it('rejects invalid amountMinor values with its nested field name', () => {
     for (const amountMinor of [

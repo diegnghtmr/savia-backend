@@ -8,6 +8,7 @@ import {
   McpGrantService,
   type McpGrantTransaction,
 } from '../../src/mcp/mcp-grant.service.js';
+import { computeRequestFingerprint } from '../../src/platform/idempotency.service.js';
 import {
   MCP_GRANT_OUTCOMES,
   type McpGrant,
@@ -136,6 +137,13 @@ function harness(clock = () => new Date(0)) {
 }
 
 describe('McpGrantService', () => {
+  it('fingerprints different expiry strings differently', () => {
+    expect(
+      computeRequestFingerprint({ ...command, expiresAt: '2026-01-01T00:00:00.000Z' }),
+    ).not.toBe(
+      computeRequestFingerprint({ ...command, expiresAt: '2027-01-01T00:00:00.000Z' }),
+    );
+  });
   it('creates and records idempotency after membership and account checks', async () => {
     const h = harness();
     await expect(
@@ -176,6 +184,27 @@ describe('McpGrantService', () => {
       first.service.createMcpGrant(
         subject,
         { ...command, clientName: 'other' },
+        'key',
+      ),
+    ).resolves.toEqual({ kind: 'conflict' });
+  });
+  it('conflicts when only expiresAt changes under the same idempotency key', async () => {
+    const h = harness();
+    await h.service.createMcpGrant(
+      subject,
+      {
+        ...command,
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      },
+      'key',
+    );
+    await expect(
+      h.service.createMcpGrant(
+        subject,
+        {
+          ...command,
+          expiresAt: '2027-01-01T00:00:00.000Z',
+        },
         'key',
       ),
     ).resolves.toEqual({ kind: 'conflict' });

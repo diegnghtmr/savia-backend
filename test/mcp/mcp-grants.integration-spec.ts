@@ -213,6 +213,25 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
     ).items.find((candidate) => candidate.id === grant.id);
     expect(item?.maxWriteAmount.amountMinor).toBe(amountMinor);
   });
+  it('returns 409 when the same idempotency key changes only expiresAt', async () => {
+    const key = randomUUID();
+    expect(
+      (
+        await create(
+          body([workspace], { expiresAt: '2026-01-01T00:00:00.000Z' }),
+          key,
+        )
+      ).statusCode,
+    ).toBe(201);
+    expect(
+      (
+        await create(
+          body([workspace], { expiresAt: '2027-01-01T00:00:00.000Z' }),
+          key,
+        )
+      ).statusCode,
+    ).toBe(409);
+  });
   it('returns 404 for another subject list and revoke, not 403', async () => {
     const grant = await created();
     const list = await request('GET', '/v1/mcp/grants', 'other');

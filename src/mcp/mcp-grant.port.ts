@@ -28,7 +28,7 @@ export interface CreateMcpGrantCommand {
   readonly workspaceIds: readonly string[];
   readonly accountIds?: readonly string[];
   readonly maxWriteAmount: Money | null;
-  readonly expiresAt: Date | null;
+  readonly expiresAt: string | null;
 }
 export interface McpGrant {
   readonly id: string;

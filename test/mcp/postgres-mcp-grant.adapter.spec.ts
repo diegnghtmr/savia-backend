@@ -80,4 +80,37 @@ describe('PostgresMcpGrantAdapter', () => {
       maxWriteAmount: { amountMinor: '9007199254740993', currency: 'USD' },
     });
   });
+  it('converts the validated wire expiry string to a Date at the database boundary', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rows: [
+        {
+          id,
+          clientName: 'client',
+          scopes: ['accounts:read'],
+          workspaceIds: [subject],
+          accountIds: null,
+          maxWriteAmountMinor: null,
+          maxWriteCurrency: null,
+          status: 'active',
+          expiresAt: '2026-01-01T00:00:00Z',
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    await new PostgresMcpGrantAdapter().create(
+      { query } as never,
+      subject,
+      id,
+      {
+        clientName: 'client',
+        scopes: ['accounts:read'],
+        workspaceIds: [subject],
+        maxWriteAmount: null,
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      },
+    );
+    expect(query.mock.calls[0][1][8]).toEqual(
+      new Date('2026-01-01T00:00:00.000Z'),
+    );
+  });
 });

@@ -92,7 +92,7 @@ export class PostgresMcpGrantAdapter implements McpGrantStore {
         command.accountIds ?? null,
         command.maxWriteAmount?.amountMinor ?? null,
         command.maxWriteAmount?.currency ?? null,
-        command.expiresAt,
+        command.expiresAt === null ? null : new Date(command.expiresAt),
       ],
     );
     return map(r.rows[0]);

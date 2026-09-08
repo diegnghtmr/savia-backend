@@ -35,7 +35,9 @@ const FIELDS = [
 ] as const;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const BIGINT_MIN = -9223372036854775807n;
+const ISO_DATE_TIME_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/i;
+const BIGINT_MIN = -9223372036854775808n;
 const BIGINT_MAX = 9223372036854775807n;
 function uniqueIds(
   value: unknown,
@@ -183,10 +185,11 @@ export function createMcpGrantCommand(input: unknown): CreateMcpGrantCommand {
         maxWriteAmount = { amountMinor: validatedAmountMinor, currency };
     }
   }
-  let expiresAt: Date | null = null;
+  let expiresAt: string | null = null;
   if (body.expiresAt !== undefined && body.expiresAt !== null) {
     if (
       typeof body.expiresAt !== 'string' ||
+      !ISO_DATE_TIME_PATTERN.test(body.expiresAt) ||
       Number.isNaN(Date.parse(body.expiresAt))
     )
       add(
@@ -195,7 +198,7 @@ export function createMcpGrantCommand(input: unknown): CreateMcpGrantCommand {
         'invalid-value',
         'must be a date-time or null',
       );
-    else expiresAt = new Date(body.expiresAt);
+    else expiresAt = body.expiresAt;
   }
   if (violations.length)
     throw new McpGrantCommandValidationError(
