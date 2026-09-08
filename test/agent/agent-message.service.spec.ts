@@ -210,7 +210,9 @@ describe('in-flight idempotency', () => {
       controller.signal,
       (event) => events.push(event.type),
     );
-    await vi.waitFor(() => expect(events).toEqual(['run_started', 'text_delta']));
+    await vi.waitFor(() =>
+      expect(events).toEqual(['run_started', 'text_delta']),
+    );
     controller.abort();
     await execution;
     expect(closed).toBe(true);
