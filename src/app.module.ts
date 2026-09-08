@@ -24,6 +24,7 @@ import { NotificationsModule } from './notifications/notifications.module.js';
 import { ReceiptsModule } from './receipts/receipts.module.js';
 import { McpGrantsModule } from './mcp/mcp-grants.module.js';
 import { AICredentialsModule } from './ai/ai-credentials.module.js';
+import { AgentConversationsModule } from './agent/agent-conversations.module.js';
 
 @Module({
   controllers: [HealthController],
@@ -51,6 +52,7 @@ import { AICredentialsModule } from './ai/ai-credentials.module.js';
     ReceiptsModule,
     McpGrantsModule,
     AICredentialsModule,
+    AgentConversationsModule,
   ],
 })
 export class AppModule {}
