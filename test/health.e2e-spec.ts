@@ -13,6 +13,7 @@ const authEnvironment = {
   JWT_AUDIENCE: 'savia-api',
   JWT_JWKS_URI: 'https://issuer.example.test/jwks',
   JWT_ALGORITHMS: 'RS256',
+  SAVIA_CREDENTIAL_KEY: Buffer.alloc(32, 7).toString('base64'),
 };
 const authEnvironmentKeys = Object.keys(authEnvironment);
 let originalEnvironment: Record<string, string | undefined>;
@@ -163,6 +164,12 @@ describe('health endpoint', () => {
       'GET /v1/mcp/grants',
       'POST /v1/mcp/grants',
       'DELETE /v1/mcp/grants/:grantId',
+      'GET /v1/ai/providers',
+      'GET /v1/ai/credentials',
+      'POST /v1/ai/credentials',
+      'PATCH /v1/ai/credentials/:id',
+      'DELETE /v1/ai/credentials/:id',
+      'PUT /v1/ai/default-model',
     ]);
 
     await app.close();

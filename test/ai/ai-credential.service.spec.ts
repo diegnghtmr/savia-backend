@@ -1,0 +1,291 @@
+import { describe, expect, it } from 'vitest';
+import { CredentialCrypto } from '../../src/platform/credential-crypto.js';
+import {
+  CommitOutcomeUnknownError,
+  type TransactionClient,
+} from '../../src/platform/pg-transaction.js';
+import type {
+  IdempotencyRecord,
+  IdempotencyStore,
+} from '../../src/platform/idempotency.port.js';
+import { AICredentialService } from '../../src/ai/ai-credential.service.js';
+import type {
+  CreateCredentialCommand,
+  CredentialMetadata,
+  Store,
+  UpdateCredentialCommand,
+} from '../../src/ai/ai-credential.port.js';
+
+const subject = '11111111-1111-4111-8111-111111111111';
+const workspace = '22222222-2222-4222-8222-222222222222';
+const metadata: CredentialMetadata = {
+  id: '33333333-3333-4333-8333-333333333333',
+  ownerType: 'user',
+  providerId: 'openai',
+  credentialType: 'api_key',
+  maskedIdentifier: '••••1234',
+  alias: 'primary',
+  status: 'active',
+  lastUsedAt: null,
+  expiresAt: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+};
+const command: CreateCredentialCommand = {
+  ownerType: 'user',
+  providerId: 'openai',
+  credentialType: 'api_key',
+  secret: 'secret-1234',
+  alias: 'primary',
+  metadata: {},
+};
+
+class RecordingTransaction {
+  public committed = 0;
+  public rolledBack = 0;
+  public returned = 0;
+  public thrown = 0;
+  public commitError: Error | undefined;
+  public async run<T>(
+    _subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    try {
+      const result = this.commitError
+        ? undefined
+        : await callback({
+            query: async () => ({ rows: [], rowCount: 0 }),
+          } as never);
+      this.returned++;
+      this.committed++;
+      if (this.commitError) throw this.commitError;
+      return result as T;
+    } catch (error) {
+      this.thrown++;
+      if (!this.commitError) this.rolledBack++;
+      throw error;
+    }
+  }
+  public async runRead<T>(
+    _subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return callback({
+      query: async () => ({ rows: [], rowCount: 0 }),
+    } as never);
+  }
+}
+class FakeStore implements Store {
+  public updateResult: CredentialMetadata | undefined = metadata;
+  public revokeResult = true;
+  public setDefaultResult = true;
+  public createError: unknown;
+  public updateError: unknown;
+  public createId() {
+    return metadata.id;
+  }
+  public async list() {
+    return [];
+  }
+  public async create() {
+    if (this.createError) throw this.createError;
+    return metadata;
+  }
+  public async find() {
+    return undefined;
+  }
+  public async update() {
+    if (this.updateError) throw this.updateError;
+    return this.updateResult;
+  }
+  public async revoke() {
+    return this.revokeResult;
+  }
+  public async setDefault() {
+    return this.setDefaultResult;
+  }
+}
+class FakeIdempotency implements IdempotencyStore {
+  public record: IdempotencyRecord | undefined;
+  public writeResult = true;
+  public async read() {
+    return this.record;
+  }
+  public async write(
+    _client: TransactionClient,
+    _subject: string,
+    _route: string,
+    _key: string,
+    fingerprint: string,
+    status: number,
+    etag: string | null,
+    body: unknown,
+  ) {
+    if (this.writeResult)
+      this.record = {
+        requestFingerprint: fingerprint,
+        responseStatus: status,
+        responseEtag: etag,
+        responseBody: body,
+      };
+    return this.writeResult;
+  }
+}
+function harness() {
+  const tx = new RecordingTransaction();
+  const idempotency = new FakeIdempotency();
+  return {
+    tx,
+    idempotency,
+    service: new AICredentialService(
+      tx as never,
+      new FakeStore(),
+      new CredentialCrypto(Buffer.alloc(32, 1).toString('base64')),
+      idempotency,
+    ),
+  };
+}
+
+describe('AICredentialService transaction semantics', () => {
+  it('throws after a write when idempotency recording loses its race', async () => {
+    const h = harness();
+    h.idempotency.writeResult = false;
+    await expect(
+      h.service.createCredential(subject, workspace, command, 'key'),
+    ).resolves.toEqual({ kind: 'conflict' });
+    expect(h.tx.thrown).toBe(1);
+    expect(h.tx.returned).toBe(0);
+    expect(h.tx.rolledBack).toBe(1);
+  });
+  it('does not swallow commit outcome uncertainty', async () => {
+    const h = harness();
+    h.tx.commitError = new CommitOutcomeUnknownError(
+      new Error('connection reset by peer'),
+    );
+    await expect(
+      h.service.createCredential(subject, workspace, command, 'key'),
+    ).rejects.toBeInstanceOf(CommitOutcomeUnknownError);
+  });
+
+  it('maps only the named unique constraint to conflict', async () => {
+    const h = harness();
+    h.idempotency.writeResult = true;
+    h.service = new AICredentialService(
+      h.tx as never,
+      Object.assign(new FakeStore(), {
+        createError: Object.assign(new Error('duplicate'), {
+          code: '23505',
+          constraint: 'ai_credentials_unique_alias',
+        }),
+      }),
+      new CredentialCrypto(Buffer.alloc(32, 1).toString('base64')),
+      h.idempotency,
+    );
+    await expect(
+      h.service.createCredential(subject, workspace, command, 'key'),
+    ).resolves.toEqual({ kind: 'conflict' });
+    const wrong = harness();
+    wrong.service = new AICredentialService(
+      wrong.tx as never,
+      Object.assign(new FakeStore(), {
+        createError: Object.assign(new Error('other unique'), {
+          code: '23505',
+          constraint: 'other_constraint',
+        }),
+      }),
+      new CredentialCrypto(Buffer.alloc(32, 1).toString('base64')),
+      wrong.idempotency,
+    );
+    await expect(
+      wrong.service.createCredential(subject, workspace, command, 'key'),
+    ).rejects.toThrow('other unique');
+  });
+
+  it('maps only the named unique constraint to conflict during update', async () => {
+    const h = harness();
+    const store = new FakeStore();
+    store.updateError = Object.assign(new Error('duplicate'), {
+      code: '23505',
+      constraint: 'ai_credentials_unique_alias',
+    });
+    h.service = new AICredentialService(
+      h.tx as never,
+      store,
+      new CredentialCrypto(Buffer.alloc(32, 1).toString('base64')),
+      h.idempotency,
+    );
+    await expect(
+      h.service.updateCredential(
+        subject,
+        workspace,
+        metadata.id,
+        { alias: 'duplicate' },
+        'key',
+        7,
+      ),
+    ).resolves.toEqual({ kind: 'conflict' });
+  });
+
+  it.each([
+    [
+      'create',
+      (h: ReturnType<typeof harness>) =>
+        h.service.createCredential(subject, workspace, command, 'key'),
+    ],
+    [
+      'update',
+      (h: ReturnType<typeof harness>) =>
+        h.service.updateCredential(
+          subject,
+          workspace,
+          metadata.id,
+          { alias: 'new' } as UpdateCredentialCommand,
+          'key',
+          1,
+        ),
+    ],
+    [
+      'revoke',
+      (h: ReturnType<typeof harness>) =>
+        h.service.revokeCredential(subject, workspace, metadata.id, 'key'),
+    ],
+    [
+      'default',
+      (h: ReturnType<typeof harness>) =>
+        h.service.setDefaultModel(
+          subject,
+          workspace,
+          'openai:gpt-5',
+          null,
+          'key',
+        ),
+    ],
+  ])(
+    'rolls back after a %s write when idempotency recording fails',
+    async (_name, operation) => {
+      const h = harness();
+      h.idempotency.writeResult = false;
+      await expect(operation(h)).resolves.toEqual({ kind: 'conflict' });
+      expect(h.tx.returned).toBe(0);
+      expect(h.tx.thrown).toBe(1);
+      expect(h.tx.committed).toBe(0);
+      expect(h.tx.rolledBack).toBe(1);
+    },
+  );
+
+  it('rolls back when a post-write store failure throws', async () => {
+    const h = harness();
+    const store = new FakeStore();
+    store.createError = new Error('row write failed');
+    const service = new AICredentialService(
+      h.tx as never,
+      store,
+      new CredentialCrypto(Buffer.alloc(32, 1).toString('base64')),
+      h.idempotency,
+    );
+    await expect(
+      service.createCredential(subject, workspace, command, 'key'),
+    ).rejects.toThrow('row write failed');
+    expect(h.tx.rolledBack).toBe(1);
+    expect(h.tx.committed).toBe(0);
+  });
+});

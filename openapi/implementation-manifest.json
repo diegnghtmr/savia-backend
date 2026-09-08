@@ -416,6 +416,36 @@
       "operationId": "revokeMcpGrant",
       "method": "DELETE",
       "path": "/v1/mcp/grants/{grantId}"
+    },
+    {
+      "operationId": "listAIProviders",
+      "method": "GET",
+      "path": "/v1/ai/providers"
+    },
+    {
+      "operationId": "listAICredentials",
+      "method": "GET",
+      "path": "/v1/ai/credentials"
+    },
+    {
+      "operationId": "createAICredential",
+      "method": "POST",
+      "path": "/v1/ai/credentials"
+    },
+    {
+      "operationId": "updateAICredential",
+      "method": "PATCH",
+      "path": "/v1/ai/credentials/{credentialId}"
+    },
+    {
+      "operationId": "revokeAICredential",
+      "method": "DELETE",
+      "path": "/v1/ai/credentials/{credentialId}"
+    },
+    {
+      "operationId": "setDefaultAIModel",
+      "method": "PUT",
+      "path": "/v1/ai/default-model"
     }
   ]
 }
