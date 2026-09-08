@@ -65,7 +65,7 @@ describe('PostgresMcpGrantAdapter', () => {
           scopes: ['accounts:read'],
           workspaceIds: [subject],
           accountIds: null,
-          maxWriteAmountMinor: 10,
+          maxWriteAmountMinor: '9007199254740993',
           maxWriteCurrency: 'USD',
           status: 'active',
           expiresAt: null,
@@ -77,7 +77,7 @@ describe('PostgresMcpGrantAdapter', () => {
       new PostgresMcpGrantAdapter().find({ query } as never, subject, id),
     ).resolves.toMatchObject({
       id,
-      maxWriteAmount: { amountMinor: 10, currency: 'USD' },
+      maxWriteAmount: { amountMinor: '9007199254740993', currency: 'USD' },
     });
   });
 });

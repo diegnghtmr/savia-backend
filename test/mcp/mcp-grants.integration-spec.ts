@@ -187,6 +187,32 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
       expect.arrayContaining([expect.objectContaining({ field: 'unknown' })]),
     );
   });
+  it('round-trips a string amountMinor above JavaScript safe integer range', async () => {
+    const amountMinor = '9007199254740993';
+    const createdResponse = await create(
+      body([workspace], { maxWriteAmount: { amountMinor, currency: 'USD' } }),
+    );
+    expect(createdResponse.statusCode).toBe(201);
+    const grant = JSON.parse(createdResponse.payload) as {
+      id: string;
+      maxWriteAmount: { amountMinor: string; currency: string };
+    };
+    expect(grant.maxWriteAmount.amountMinor).toBe(amountMinor);
+    const raw = await admin.query<{ maxWriteAmountMinor: unknown }>(
+      'select max_write_amount_minor as "maxWriteAmountMinor" from public.mcp_grants where id = $1',
+      [grant.id],
+    );
+    process.stderr.write(
+      `PROBE postgres bigint typeof=${typeof raw.rows[0]?.maxWriteAmountMinor}`,
+    );
+    expect(typeof raw.rows[0]?.maxWriteAmountMinor).toBe('string');
+    const listed = await request('GET', '/v1/mcp/grants');
+    expect(listed.statusCode).toBe(200);
+    const item = (
+      JSON.parse(listed.payload) as { items: (typeof grant)[] }
+    ).items.find((candidate) => candidate.id === grant.id);
+    expect(item?.maxWriteAmount.amountMinor).toBe(amountMinor);
+  });
   it('returns 404 for another subject list and revoke, not 403', async () => {
     const grant = await created();
     const list = await request('GET', '/v1/mcp/grants', 'other');

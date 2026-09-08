@@ -11,7 +11,7 @@ interface Row extends Record<string, unknown> {
   scopes: string[];
   workspaceIds: string[];
   accountIds: string[] | null;
-  maxWriteAmountMinor: number | null;
+  maxWriteAmountMinor: string | null;
   maxWriteCurrency: string | null;
   status: string;
   expiresAt: Date | string | null;
