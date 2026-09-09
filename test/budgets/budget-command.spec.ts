@@ -90,6 +90,40 @@ describe('updateBudgetCommand', () => {
     });
   });
 
+  it('accepts exactly 120 astral characters at both name call sites', () => {
+    const name = '😀'.repeat(120);
+    expect(
+      createBudgetCommand({
+        name,
+        method: 'cash_flow',
+        periodStart: '2026-01-01',
+        periodEnd: '2026-01-02',
+      }).name,
+    ).toBe(name);
+    expect(updateBudgetCommand({ name }).name).toBe(name);
+  });
+
+  it('rejects 121 astral characters and empty names at both call sites', () => {
+    const name = '😀'.repeat(121);
+    expect(() =>
+      createBudgetCommand({
+        name,
+        method: 'cash_flow',
+        periodStart: '2026-01-01',
+        periodEnd: '2026-01-02',
+      }),
+    ).toThrow(BudgetCommandValidationError);
+    expect(() => updateBudgetCommand({ name })).toThrow(
+      BudgetCommandValidationError,
+    );
+    expect(() => createBudgetCommand({ name: '' })).toThrow(
+      BudgetCommandValidationError,
+    );
+    expect(() => updateBudgetCommand({ name: '' })).toThrow(
+      BudgetCommandValidationError,
+    );
+  });
+
   it('rejects empty object (minProperties: 1)', () => {
     expect(() => updateBudgetCommand({})).toThrow(BudgetCommandValidationError);
   });

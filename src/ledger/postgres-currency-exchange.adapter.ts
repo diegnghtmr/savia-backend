@@ -1,6 +1,7 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
-import { negateAmountMinor, toIso } from './postgres-transaction.adapter.js';
+import { negateAmountMinor } from '../platform/amount-minor.js';
+import { toIso } from './postgres-transaction.adapter.js';
 import type {
   CreateCurrencyExchangeCommand,
   Transfer,

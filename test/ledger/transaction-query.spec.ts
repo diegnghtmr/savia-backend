@@ -177,6 +177,19 @@ describe('createTransactionListQuery', () => {
     expect(result.query).toBe(exactQuery);
   });
 
+  it('counts astral query characters by code point', () => {
+    const exactQuery = '😀'.repeat(200);
+    expect(
+      createTransactionListQuery({ workspaceId, queryParam: exactQuery }).query,
+    ).toBe(exactQuery);
+    expect(() =>
+      createTransactionListQuery({
+        workspaceId,
+        queryParam: `${exactQuery}😀`,
+      }),
+    ).toThrow(TransactionQueryValidationError);
+  });
+
   it('accumulates multiple field violations together', () => {
     try {
       createTransactionListQuery({

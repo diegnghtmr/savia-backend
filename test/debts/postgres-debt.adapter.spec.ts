@@ -1,33 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
-  negateAmountMinor,
   toIso,
   PostgresDebtAdapter,
 } from '../../src/debts/postgres-debt.adapter.js';
 
 describe('PostgresDebtAdapter helpers', () => {
-  describe('negateAmountMinor', () => {
-    it('negates positive amount', () => {
-      expect(negateAmountMinor('5000')).toBe('-5000');
-    });
-
-    it('negates negative amount to positive', () => {
-      expect(negateAmountMinor('-5000')).toBe('5000');
-    });
-
-    it('handles zero cleanly', () => {
-      expect(negateAmountMinor('0')).toBe('0');
-      expect(negateAmountMinor('-0')).toBe('0');
-    });
-
-    it('throws RangeError when counter-leg would overflow int8', () => {
-      expect(() => negateAmountMinor('-9223372036854775809')).toThrow(
-        RangeError,
-      );
-    });
-  });
-
   describe('toIso', () => {
     it('formats Date to ISO string', () => {
       const date = new Date('2026-09-03T12:00:00Z');
