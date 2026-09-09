@@ -24,7 +24,10 @@ export function createCliDeviceAuthorizationCommand(
   for (const key of Object.keys(body))
     if (!FIELDS.includes(key as (typeof FIELDS)[number]))
       add(violations, key, 'not-allowed', 'is not allowed');
-  if (typeof body.clientId !== 'string' || body.clientId.length === 0)
+  if (
+    typeof body.clientId !== 'string' ||
+    [...body.clientId].length === 0
+  )
     add(
       violations,
       'clientId',
