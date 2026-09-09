@@ -175,4 +175,81 @@ describe('CLI device token database capability', () => {
       client.release();
     }
   });
+
+  it('does not verify an expired token', async () => {
+    const expiredHash = createHash('sha256')
+      .update('expired-token')
+      .digest('hex');
+    await pool.query(
+      `insert into public.cli_device_tokens
+       (token_hash, subject_id, device_code_hash, scopes, created_at, expires_at)
+       values ($1, $2, $3, $4, now() - interval '2 seconds', now() - interval '1 second')`,
+      [expiredHash, subject, deviceCodeHash, []],
+    );
+    const result = await pool.query(
+      'select * from public.verify_cli_device_token($1)',
+      [expiredHash],
+    );
+    expect(result.rows).toHaveLength(0);
+  });
+
+  it('keeps authorization rows unreadable to the pooled application role and binds approval in the policy', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await expect(
+        client.query('select * from public.cli_device_authorizations'),
+      ).rejects.toThrow();
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+    const policies = await pool.query<{ with_check: string }>(
+      `select with_check from pg_policies
+       where schemaname = 'public' and tablename = 'cli_device_authorizations'
+       and policyname = 'cli_device_authorizations_approve'`,
+    );
+    expect(policies.rows[0]?.with_check).toContain('approved_by_subject_id');
+    expect(policies.rows[0]?.with_check).toContain('app.subject_id');
+  });
+
+  it('allows only one of two concurrent redemptions', async () => {
+    const concurrentHash = createHash('sha256')
+      .update('concurrent-device')
+      .digest('hex');
+    await pool.query(
+      `insert into public.cli_device_authorizations
+       (device_code_hash, user_code, client_id, expires_at)
+       values ($1, $2, $3, now() + interval '10 minutes')`,
+      [concurrentHash, 'ABCD2346', clientId],
+    );
+    const approval = await pool.connect();
+    try {
+      await approval.query('begin');
+      await approval.query('set local role savia_application');
+      await approval.query("select set_config('app.subject_id', $1, true)", [
+        subject,
+      ]);
+      await approval.query(
+        'select public.approve_cli_device_authorization($1)',
+        ['ABCD2346'],
+      );
+      await approval.query('commit');
+    } finally {
+      approval.release();
+    }
+    const results = await Promise.all([
+      pool.query(
+        'select * from public.redeem_cli_device_authorization($1, $2, now())',
+        [concurrentHash, clientId],
+      ),
+      pool.query(
+        'select * from public.redeem_cli_device_authorization($1, $2, now())',
+        [concurrentHash, clientId],
+      ),
+    ]);
+    expect(results.filter(({ rows }) => rows.length === 1)).toHaveLength(1);
+    expect(results.filter(({ rows }) => rows.length === 0)).toHaveLength(1);
+  });
 });
