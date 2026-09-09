@@ -82,6 +82,27 @@ export class PgTransaction implements OnApplicationShutdown {
     }
   }
 
+  public async runAnonymous<T>(callback: (client: TransactionClient) => Promise<T>): Promise<T> {
+    const client = await this.acquire();
+    let began = false;
+    try {
+      await client.query('BEGIN');
+      began = true;
+      await client.query('SET LOCAL ROLE savia_application');
+      await this.configureTimeouts(client);
+      const result = await callback({
+        query: async <Row extends Record<string, unknown>>(text: string, values?: readonly unknown[]) => client.query<Row>(text, values),
+      });
+      await client.query('COMMIT');
+      client.release();
+      return result;
+    } catch (error) {
+      const rollbackError = began ? await client.query('ROLLBACK').catch(asError) : asError(error);
+      client.release(rollbackError instanceof Error ? rollbackError : undefined);
+      throw databaseTimeout(error);
+    }
+  }
+
   public async runRead<T>(subject: string, callback: (client: TransactionClient) => Promise<T>): Promise<T> {
     if (!UUID.test(subject)) throw new Error('subject must be a valid UUID.');
     const client = await this.acquire();
