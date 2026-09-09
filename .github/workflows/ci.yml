@@ -320,6 +320,9 @@ jobs:
       - name: CLI device integration
         shell: bash
         run: pnpm test:integration:cli-device
+      - name: CLI device token integration
+        shell: bash
+        run: pnpm test:integration:cli-token
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
