@@ -7,10 +7,14 @@ import {
 
 import type { AuthenticatedRequest } from './authenticated-request.js';
 import { JoseJwtVerifier } from './jose-jwt-verifier.js';
+import { CliTokenVerifier } from './cli-token-verifier.js';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  public constructor(private readonly verifier: JoseJwtVerifier) {}
+  public constructor(
+    private readonly verifier: JoseJwtVerifier,
+    private readonly cliTokenVerifier: CliTokenVerifier,
+  ) {}
 
   public async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -18,7 +22,9 @@ export class JwtAuthGuard implements CanActivate {
     if (token === undefined) throw new UnauthorizedException();
 
     try {
-      request.identity = await this.verifier.verify(token);
+      request.identity = await (token.startsWith('svt_')
+        ? this.cliTokenVerifier.verify(token)
+        : this.verifier.verify(token));
       return true;
     } catch {
       throw new UnauthorizedException();

@@ -21,6 +21,7 @@ describe('CliDeviceController', () => {
         expiresIn: 600,
         interval: 5,
       }),
+      poll: vi.fn(),
     };
     await new CliDeviceController(port).authorize(
       { clientId: 'cli' },
@@ -35,11 +36,10 @@ describe('CliDeviceController', () => {
   });
   it('maps validation to the declared 400 response', async () => {
     const r = reply();
-    await new CliDeviceController({ authorize: vi.fn() }).authorize(
-      {},
-      { ip: '127.0.0.1' } as never,
-      r as never,
-    );
+    await new CliDeviceController({
+      authorize: vi.fn(),
+      poll: vi.fn(),
+    }).authorize({}, { ip: '127.0.0.1' } as never, r as never);
     expect(r.status).toHaveBeenCalledWith(400);
   });
 });

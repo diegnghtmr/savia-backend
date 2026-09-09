@@ -3,6 +3,8 @@ import type { CliDeviceConfig } from './cli-device.config.js';
 import type {
   CliDeviceAuthorization,
   CliDeviceAuthorizationCommand,
+  CliDeviceTokenCommand,
+  CliDeviceTokenResponse,
   CliDevicePort,
   CliDeviceStore,
   CliDeviceTransaction,
@@ -72,6 +74,51 @@ export class CliDeviceService implements CliDevicePort {
       return {
         kind: 'rate_limited' as const,
         retryAfter: 60 - now.getUTCSeconds(),
+      };
+    });
+  }
+  public async poll(
+    command: CliDeviceTokenCommand,
+    ip: string,
+  ): Promise<
+    | CliDeviceTokenResponse
+    | { readonly kind: 'rate_limited' }
+    | { readonly kind: 'invalid' }
+  > {
+    const now = this.clock();
+    return this.tx.runAnonymous(async (client) => {
+      if (
+        !(await this.store.consumeRateLimit(client, command.clientId, ip, now))
+      )
+        return { kind: 'rate_limited' as const };
+      const deviceCodeHash = createHash('sha256')
+        .update(command.deviceCode)
+        .digest('hex');
+      const authorization = await this.store.redeem(
+        client,
+        deviceCodeHash,
+        command.clientId,
+        now,
+      );
+      if (authorization === undefined) return { kind: 'invalid' as const };
+      const accessToken = `svt_${randomBytes(32).toString('base64url')}`;
+      await this.store.createToken(client, {
+        tokenHash: createHash('sha256').update(accessToken).digest('hex'),
+        subjectId: authorization.subjectId,
+        scopes: authorization.scopes,
+        expiresAt: authorization.expiresAt,
+        deviceCodeHash,
+      });
+      return {
+        accessToken,
+        tokenType: 'Bearer' as const,
+        expiresIn: Math.max(
+          0,
+          Math.floor(
+            (authorization.expiresAt.getTime() - now.getTime()) / 1000,
+          ),
+        ),
+        scope: authorization.scopes.join(' '),
       };
     });
   }

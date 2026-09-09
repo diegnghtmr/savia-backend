@@ -11,6 +11,7 @@ import { PostgresIdempotencyAdapter } from './postgres-idempotency.adapter.js';
 import { ARTIFACT_STORAGE } from './artifact-storage.port.js';
 import { SupabaseStorageAdapter } from './supabase-storage.adapter.js';
 import { CredentialCrypto } from './credential-crypto.js';
+import { CliTokenVerifier } from './cli-token-verifier.js';
 
 @Module({
   providers: [
@@ -25,6 +26,12 @@ import { CredentialCrypto } from './credential-crypto.js';
         new JoseJwtVerifier(config),
     },
     JwtAuthGuard,
+    {
+      provide: CliTokenVerifier,
+      inject: [PgTransaction],
+      useFactory: (transaction: PgTransaction) =>
+        new CliTokenVerifier(transaction),
+    },
     {
       provide: PostgresPool,
       useFactory: (): PostgresPool =>
@@ -62,6 +69,7 @@ import { CredentialCrypto } from './credential-crypto.js';
     AuthConfig,
     JoseJwtVerifier,
     JwtAuthGuard,
+    CliTokenVerifier,
     PostgresPool,
     PgTransaction,
     PostgresIdempotencyAdapter,
