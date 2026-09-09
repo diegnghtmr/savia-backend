@@ -317,6 +317,9 @@ jobs:
       - name: Agent messages integration
         shell: bash
         run: pnpm test:integration:agent-messages
+      - name: CLI device integration
+        shell: bash
+        run: pnpm test:integration:cli-device
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

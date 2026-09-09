@@ -2459,6 +2459,24 @@ components:
         modelRef: { type: [string, 'null'] }
         credentialId: { type: [string, 'null'], format: uuid }
       additionalProperties: false
+    CliDeviceAuthorizationRequest:
+      type: object
+      required: [clientId]
+      properties:
+        clientId: { type: string }
+        scopes: { type: array, items: { type: string }, uniqueItems: true }
+      additionalProperties: false
+    CliDeviceAuthorization:
+      type: object
+      required: [deviceCode, userCode, verificationUri, expiresIn, interval]
+      properties:
+        deviceCode: { type: string }
+        userCode: { type: string }
+        verificationUri: { type: string, format: uri }
+        verificationUriComplete: { type: string, format: uri }
+        expiresIn: { type: integer, minimum: 1 }
+        interval: { type: integer, minimum: 1 }
+      additionalProperties: false
     AgentMessageRequest:
       type: object
       required: [message]
@@ -8076,6 +8094,30 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { description: Rate limit exceeded. }
         '503': { description: Provider unavailable. }
+  /v1/cli/device/authorize:
+    post:
+      operationId: startCliDeviceAuthorization
+      summary: Start CLI device authorization
+      tags: [CLI Auth]
+      responses:
+        '200':
+          description: Device authorization started.
+          content:
+            application/json:
+              {
+                schema: { $ref: '#/components/schemas/CliDeviceAuthorization' },
+              }
+        '400': { description: Malformed request. }
+        '429': { description: Rate limit exceeded. }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            {
+              schema:
+                { $ref: '#/components/schemas/CliDeviceAuthorizationRequest' },
+            }
+      security: []
   /v1/mcp/grants:
     get:
       operationId: listMcpGrants
