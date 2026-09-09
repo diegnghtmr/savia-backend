@@ -84,5 +84,94 @@ describe('CLI device token database capability', () => {
     } finally {
       unauthenticated.release();
     }
+    const authenticated = await pool.connect();
+    try {
+      await authenticated.query('begin');
+      await authenticated.query('set local role savia_application');
+      await authenticated.query(
+        "select set_config('app.subject_id', $1, true)",
+        [subject],
+      );
+      const approved = await authenticated.query<{ approved: boolean }>(
+        'select public.approve_cli_device_authorization($1) as approved',
+        ['ABCD2345'],
+      );
+      expect(approved.rows[0]?.approved).toBe(true);
+      const second = await authenticated.query<{ approved: boolean }>(
+        'select public.approve_cli_device_authorization($1) as approved',
+        ['ABCD2345'],
+      );
+      expect(second.rows[0]?.approved).toBe(false);
+      await authenticated.query('commit');
+    } finally {
+      authenticated.release();
+    }
+  });
+
+  it('atomically redeems a code once and checks token revocation at verification time', async () => {
+    const first = await pool.query(
+      'select * from public.redeem_cli_device_authorization($1, $2, now())',
+      [deviceCodeHash, clientId],
+    );
+    const second = await pool.query(
+      'select * from public.redeem_cli_device_authorization($1, $2, now())',
+      [deviceCodeHash, clientId],
+    );
+    expect(first.rows).toHaveLength(1);
+    expect(second.rows).toHaveLength(0);
+    const tokenHash = createHash('sha256').update('opaque-token').digest('hex');
+    await pool.query(
+      "select public.insert_cli_device_token($1, $2, $3, $4, now() + interval '10 minutes')",
+      [tokenHash, subject, deviceCodeHash, ['transactions:read']],
+    );
+    const active = await pool.query(
+      'select * from public.verify_cli_device_token($1)',
+      [tokenHash],
+    );
+    expect(active.rows).toHaveLength(1);
+    await pool.query(
+      "update public.cli_device_tokens set status = 'revoked' where token_hash = $1",
+      [tokenHash],
+    );
+    const revoked = await pool.query(
+      'select * from public.verify_cli_device_token($1)',
+      [tokenHash],
+    );
+    expect(revoked.rows).toHaveLength(0);
+  });
+
+  it('rejects approval at and beyond expiry while accepting an unexpired row', async () => {
+    const pastHash = createHash('sha256').update('past-device').digest('hex');
+    const futureHash = createHash('sha256')
+      .update('future-device')
+      .digest('hex');
+    await pool.query(
+      `insert into public.cli_device_authorizations
+       (device_code_hash, user_code, client_id, created_at, expires_at)
+       values ($1, $2, $3, now() - interval '2 seconds', now() - interval '1 second'),
+              ($4, $5, $3, now(), now() + interval '10 minutes')`,
+      [pastHash, 'PAST2345', clientId, futureHash, 'FUTR2345'],
+    );
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query("select set_config('app.subject_id', $1, true)", [
+        subject,
+      ]);
+      const past = await client.query(
+        'select public.approve_cli_device_authorization($1) as approved',
+        ['PAST2345'],
+      );
+      const future = await client.query(
+        'select public.approve_cli_device_authorization($1) as approved',
+        ['FUTR2345'],
+      );
+      expect(past.rows[0]?.approved).toBe(false);
+      expect(future.rows[0]?.approved).toBe(true);
+      await client.query('commit');
+    } finally {
+      client.release();
+    }
   });
 });
