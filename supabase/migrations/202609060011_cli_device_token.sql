@@ -4,7 +4,10 @@ alter table public.cli_device_authorizations
   add column approved_by_subject_id uuid references auth.users(id) on delete cascade,
   add column redeemed_at timestamptz;
 
-grant update (approved_at, approved_by_subject_id, redeemed_at) on public.cli_device_authorizations to savia_application;
+-- Approval and redemption updates are exposed only through the capability
+-- functions below. These policies remain defense-in-depth for any future
+-- invoker-owned path, but the pooled application role has no direct UPDATE
+-- privilege on authorization rows.
 create policy cli_device_authorizations_approve on public.cli_device_authorizations
   for update to savia_application
   using (

@@ -43,6 +43,53 @@ describe('CLI device token database capability', () => {
 
   it('allows only an authenticated subject to approve a pending unexpired code', async () => {
     await createAuthorization('2999-01-01T00:00:00Z');
+    const unrelatedHash = createHash('sha256')
+      .update('unrelated-device')
+      .digest('hex');
+    await pool.query(
+      `insert into public.cli_device_authorizations
+       (device_code_hash, user_code, client_id, expires_at)
+       values ($1, $2, $3, now() + interval '10 minutes')`,
+      [unrelatedHash, 'EFGH2345', clientId],
+    );
+    const direct = await pool.connect();
+    try {
+      await direct.query('begin');
+      await direct.query('set local role savia_application');
+      await direct.query("select set_config('app.subject_id', $1, true)", [
+        subject,
+      ]);
+      await expect(
+        direct.query(
+          `update public.cli_device_authorizations
+           set approved_at = now(), approved_by_subject_id = $1
+           where user_code = $2`,
+          [subject, 'EFGH2345'],
+        ),
+      ).rejects.toThrow();
+      await direct.query('rollback');
+    } finally {
+      direct.release();
+    }
+    const mismatched = await pool.connect();
+    try {
+      await mismatched.query('begin');
+      await mismatched.query('set local role savia_application');
+      await mismatched.query("select set_config('app.subject_id', $1, true)", [
+        subject,
+      ]);
+      await expect(
+        mismatched.query(
+          `update public.cli_device_authorizations
+           set approved_at = now(), approved_by_subject_id = $1
+           where user_code = $2`,
+          [otherSubject, 'ABCD2345'],
+        ),
+      ).rejects.toThrow();
+      await mismatched.query('rollback');
+    } finally {
+      mismatched.release();
+    }
     const client = await pool.connect();
     try {
       await client.query('begin');
