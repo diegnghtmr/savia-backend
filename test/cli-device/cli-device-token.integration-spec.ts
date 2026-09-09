@@ -120,9 +120,10 @@ describe('CLI device token database capability', () => {
     expect(first.rows).toHaveLength(1);
     expect(second.rows).toHaveLength(0);
     const tokenHash = createHash('sha256').update('opaque-token').digest('hex');
+    const expiresAt = first.rows[0]?.expires_at;
     await pool.query(
-      "select public.insert_cli_device_token($1, $2, $3, $4, now() + interval '10 minutes')",
-      [tokenHash, subject, deviceCodeHash, ['transactions:read']],
+      'select public.insert_cli_device_token($1, $2, $3, $4, $5)',
+      [tokenHash, subject, deviceCodeHash, first.rows[0]?.scopes, expiresAt],
     );
     const active = await pool.query(
       'select * from public.verify_cli_device_token($1)',

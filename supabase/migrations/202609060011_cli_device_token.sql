@@ -38,13 +38,23 @@ alter table public.cli_device_tokens force row level security;
 grant insert (token_hash, subject_id, device_code_hash, scopes, expires_at) on public.cli_device_tokens to savia_application;
 grant update (status) on public.cli_device_tokens to savia_application;
 create policy cli_device_tokens_insert on public.cli_device_tokens for insert to savia_application with check (false);
-create policy cli_device_tokens_update on public.cli_device_tokens for update to savia_application using (false) with check (false);
+create policy cli_device_tokens_update on public.cli_device_tokens
+  for update to savia_application
+  using (subject_id = nullif(current_setting('app.subject_id', true), '')::uuid)
+  with check (
+    subject_id = nullif(current_setting('app.subject_id', true), '')::uuid
+    and status in ('revoked', 'expired')
+  );
 
 create or replace function public.insert_cli_device_token(
   p_token_hash text, p_subject_id uuid, p_device_code_hash text, p_scopes text[], p_expires_at timestamptz
 ) returns void language sql security definer set search_path = public as $$
   insert into public.cli_device_tokens(token_hash, subject_id, device_code_hash, scopes, expires_at)
-  values (p_token_hash, p_subject_id, p_device_code_hash, p_scopes, p_expires_at);
+  select p_token_hash, approved_by_subject_id, device_code_hash, scopes, expires_at
+  from public.cli_device_authorizations
+  where device_code_hash = p_device_code_hash
+    and approved_by_subject_id = p_subject_id and redeemed_at is not null
+    and scopes = p_scopes and expires_at = p_expires_at;
 $$;
 create or replace function public.approve_cli_device_authorization(p_user_code text)
 returns boolean language plpgsql security definer set search_path = public as $$
