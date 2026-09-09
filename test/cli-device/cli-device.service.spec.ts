@@ -64,9 +64,7 @@ describe('CliDeviceService', () => {
       interval: 5,
     });
     expect(response).toHaveProperty('deviceCode');
-    expect(store.record?.deviceCodeHash as string).not.toBe(
-      response.deviceCode,
-    );
+    expect(store.record?.deviceCodeHash !== response.deviceCode).toBe(true);
     expect((store.record?.expiresAt as Date).toISOString()).toBe(
       '2026-01-01T00:10:00.000Z',
     );
