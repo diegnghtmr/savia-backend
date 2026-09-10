@@ -53,6 +53,15 @@ export interface UpdateBudgetRequest {
   readonly name?: string;
   readonly method?: BudgetMethod;
 }
+export interface BudgetAllocationRequest {
+  readonly categoryId: string;
+  readonly planned: Money;
+  readonly rolloverPolicy: RolloverPolicy;
+  readonly rolloverTargetId?: string | null;
+}
+export interface UpdateBudgetAllocationsRequest {
+  readonly allocations: readonly BudgetAllocationRequest[];
+}
 export interface BudgetListQuery {
   readonly workspaceId: string;
   readonly cursor?: Cursor;
@@ -103,6 +112,18 @@ export interface BudgetStore {
     command: UpdateBudgetRequest,
     expectedVersion?: number,
   ): Promise<Budget | undefined>;
+  findMissingAllocationReferences(
+    client: TransactionClient,
+    workspaceId: string,
+    allocations: readonly BudgetAllocationRequest[],
+  ): Promise<readonly string[]>;
+  replaceBudgetAllocations(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    allocations: readonly BudgetAllocationRequest[],
+    expectedVersion?: number,
+  ): Promise<Budget | undefined>;
   listBudgets(
     client: TransactionClient,
     query: BudgetListQuery,
@@ -116,11 +137,12 @@ export const BUDGET_OUTCOMES = {
   FORBIDDEN: 'forbidden',
   CONFLICT: 'conflict',
   INVALID_SOURCE: 'invalid-source',
-  TOO_MANY_ALLOCATIONS: 'too-many-allocations',
   FOUND: 'found',
   NOT_FOUND: 'not-found',
   PRECONDITION_FAILED: 'precondition-failed',
   CURRENCY_UNSUPPORTED: 'currency_unsupported',
+  INVALID_ALLOCATIONS: 'invalid-allocations',
+  TOO_MANY_ALLOCATIONS: 'too-many-allocations',
 } as const;
 export type BudgetCreateOutcome =
   | { readonly kind: typeof BUDGET_OUTCOMES.CREATED; readonly budget: Budget }
@@ -160,6 +182,23 @@ export type BudgetUpdateOutcome =
         | typeof BUDGET_OUTCOMES.PRECONDITION_FAILED
         | typeof BUDGET_OUTCOMES.CONFLICT;
     };
+export type BudgetAllocationsOutcome =
+  | { readonly kind: typeof BUDGET_OUTCOMES.UPDATED; readonly budget: Budget }
+  | {
+      readonly kind: typeof BUDGET_OUTCOMES.REPLAYED;
+      readonly status: number;
+      readonly etag: string | null;
+      readonly body: unknown;
+    }
+  | {
+      readonly kind:
+        | typeof BUDGET_OUTCOMES.FORBIDDEN
+        | typeof BUDGET_OUTCOMES.NOT_FOUND
+        | typeof BUDGET_OUTCOMES.PRECONDITION_FAILED
+        | typeof BUDGET_OUTCOMES.CONFLICT
+        | typeof BUDGET_OUTCOMES.INVALID_ALLOCATIONS
+        | typeof BUDGET_OUTCOMES.TOO_MANY_ALLOCATIONS;
+    };
 export type BudgetListOutcome =
   | {
       readonly kind: 'ok';
@@ -189,6 +228,14 @@ export interface BudgetsPort {
     key: string,
     ifMatch: import('../platform/if-match.js').IfMatchParse,
   ): Promise<BudgetUpdateOutcome>;
+  updateBudgetAllocations(
+    subject: string,
+    workspaceId: string,
+    id: string,
+    command: UpdateBudgetAllocationsRequest,
+    key: string,
+    ifMatch: import('../platform/if-match.js').IfMatchParse,
+  ): Promise<BudgetAllocationsOutcome>;
   listBudgets(
     subject: string,
     query: BudgetListQuery,

@@ -4,6 +4,7 @@ import {
   Inject,
   Param,
   Patch,
+  Put,
   Post,
   Query,
   Req,
@@ -25,6 +26,7 @@ import {
 import {
   createBudgetCommand,
   updateBudgetCommand,
+  updateBudgetAllocationsCommand,
   BudgetCommandValidationError,
 } from './budget-command.js';
 import {
@@ -297,5 +299,101 @@ export class BudgetsController {
     }
     if (o.kind !== BUDGET_OUTCOMES.UPDATED) return;
     void reply.status(200).send(o.budget);
+  }
+  @Put(':budgetId/allocations') public async updateAllocations(
+    @Param('budgetId') raw: string,
+    @Req() req: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const h = parseWorkspaceHeader(req.headers['x-workspace-id']);
+    if (h.kind !== 'ok')
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+    let id: string;
+    try {
+      id = validateBudgetId(raw);
+    } catch (e) {
+      if (e instanceof BudgetQueryValidationError)
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid budget identifier',
+          status: 400,
+          errors: e.violations,
+        });
+      throw e;
+    }
+    const k = validateIdempotencyKey(req.headers['idempotency-key']);
+    if (k.kind !== 'ok')
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid Idempotency-Key header',
+        detail: k.reason,
+        status: 400,
+      });
+    const ifMatch = parseIfMatch(req.headers['if-match']);
+    if (ifMatch.kind === 'malformed')
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid If-Match header',
+        status: 400,
+      });
+    let command;
+    try {
+      command = updateBudgetAllocationsCommand(req.body);
+    } catch (e) {
+      if (e instanceof BudgetCommandValidationError)
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.UNPROCESSABLE,
+          title: 'Budget allocation validation failed',
+          status: 422,
+          errors: e.violations,
+        });
+      throw e;
+    }
+    const o = await this.port.updateBudgetAllocations(
+      req.identity.subject,
+      h.workspaceId,
+      id,
+      command,
+      k.key,
+      ifMatch,
+    );
+    if (o.kind === BUDGET_OUTCOMES.FORBIDDEN)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+    if (o.kind === BUDGET_OUTCOMES.NOT_FOUND)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Budget not found',
+        status: 404,
+      });
+    if (o.kind === BUDGET_OUTCOMES.PRECONDITION_FAILED)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+    if (o.kind === BUDGET_OUTCOMES.CONFLICT)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Idempotency key reused with different payload',
+        status: 409,
+      });
+    if (o.kind === BUDGET_OUTCOMES.INVALID_ALLOCATIONS)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Budget allocations are invalid',
+        status: 422,
+      });
+    if (o.kind === BUDGET_OUTCOMES.REPLAYED)
+      return void reply.status(o.status).send(o.body);
+    if (o.kind === BUDGET_OUTCOMES.UPDATED)
+      void reply.status(200).send(o.budget);
   }
 }

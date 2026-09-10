@@ -13,6 +13,8 @@ import {
   type BudgetsPort,
   type CreateBudgetRequest,
   type UpdateBudgetRequest,
+  type UpdateBudgetAllocationsRequest,
+  type BudgetAllocationsOutcome,
 } from './budget.port.js';
 import type { IfMatchParse } from '../platform/if-match.js';
 import { MAX_BUDGET_ALLOCATION_COUNT } from './budget-limits.js';
@@ -313,6 +315,112 @@ export class BudgetService implements BudgetsPort {
             }
           : { kind: BUDGET_OUTCOMES.CONFLICT };
       }
+      throw error;
+    }
+  }
+  public async updateBudgetAllocations(
+    subject: string,
+    workspaceId: string,
+    id: string,
+    command: UpdateBudgetAllocationsRequest,
+    key: string,
+    ifMatch: IfMatchParse,
+  ): Promise<BudgetAllocationsOutcome> {
+    const route = 'PUT /v1/budgets/{budgetId}/allocations';
+    const fingerprint = computeRequestFingerprint({
+      budgetId: id,
+      ...command,
+      ifMatch: canonicalIfMatch(ifMatch),
+    });
+    try {
+      return await this.tx.run(subject, async (client) => {
+        const role = await this.store.readActiveRole(client, workspaceId);
+        if (!['owner', 'administrator', 'editor'].includes(role ?? ''))
+          return { kind: BUDGET_OUTCOMES.FORBIDDEN };
+        const existing = await this.idempotency.read(
+          client,
+          subject,
+          route,
+          key,
+          workspaceId,
+        );
+        if (existing)
+          return existing.requestFingerprint === fingerprint
+            ? {
+                kind: BUDGET_OUTCOMES.REPLAYED,
+                status: existing.responseStatus,
+                etag: existing.responseEtag,
+                body: existing.responseBody,
+              }
+            : { kind: BUDGET_OUTCOMES.CONFLICT };
+        const budget = await this.store.findBudget(client, workspaceId, id);
+        if (!budget) return { kind: BUDGET_OUTCOMES.NOT_FOUND };
+        if (
+          ifMatch.kind === 'versions' &&
+          !ifMatch.versions.includes(budget.version)
+        )
+          return { kind: BUDGET_OUTCOMES.PRECONDITION_FAILED };
+        for (const allocation of command.allocations)
+          if (allocation.planned.currency !== budget.currency)
+            return { kind: BUDGET_OUTCOMES.INVALID_ALLOCATIONS };
+        if (
+          (
+            await this.store.findMissingAllocationReferences(
+              client,
+              workspaceId,
+              command.allocations,
+            )
+          ).length > 0
+        )
+          return { kind: BUDGET_OUTCOMES.INVALID_ALLOCATIONS };
+        const updated = await this.store.replaceBudgetAllocations(
+          client,
+          workspaceId,
+          id,
+          command.allocations,
+          ifMatch.kind === 'versions' ? budget.version : undefined,
+        );
+        if (!updated) return { kind: BUDGET_OUTCOMES.PRECONDITION_FAILED };
+        const written = await this.idempotency.write(
+          client,
+          subject,
+          route,
+          key,
+          fingerprint,
+          200,
+          null,
+          updated,
+          workspaceId,
+        );
+        if (!written) {
+          const reread = await this.idempotency.read(
+            client,
+            subject,
+            route,
+            key,
+            workspaceId,
+          );
+          if (reread?.requestFingerprint === fingerprint)
+            throw new BudgetUpdateRollbackError(
+              'replayed',
+              reread.responseStatus,
+              reread.responseEtag,
+              reread.responseBody,
+            );
+          throw new BudgetUpdateRollbackError('conflict');
+        }
+        return { kind: BUDGET_OUTCOMES.UPDATED, budget: updated };
+      });
+    } catch (error) {
+      if (error instanceof BudgetUpdateRollbackError)
+        return error.outcome === 'replayed'
+          ? {
+              kind: BUDGET_OUTCOMES.REPLAYED,
+              status: error.status ?? 200,
+              etag: error.etag ?? null,
+              body: error.body,
+            }
+          : { kind: BUDGET_OUTCOMES.CONFLICT };
       throw error;
     }
   }

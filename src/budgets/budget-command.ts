@@ -1,5 +1,6 @@
 import {
   add,
+  currencyValue,
   sortViolations,
   type FieldViolation,
 } from '../platform/field-validation.js';
@@ -8,7 +9,10 @@ import {
   BUDGET_METHODS,
   type CreateBudgetRequest,
   type UpdateBudgetRequest,
+  type UpdateBudgetAllocationsRequest,
+  ROLLOVER_POLICIES,
 } from './budget.port.js';
+import { MAX_BUDGET_ALLOCATION_COUNT } from './budget-limits.js';
 
 export class BudgetCommandValidationError extends Error {
   public constructor(public readonly violations: readonly FieldViolation[]) {
@@ -162,4 +166,221 @@ export function updateBudgetCommand(input: unknown): UpdateBudgetRequest {
     result.method = body.method as UpdateBudgetRequest['method'];
   }
   return result;
+}
+
+const ALLOCATION_FIELDS = [
+  'categoryId',
+  'planned',
+  'rolloverPolicy',
+  'rolloverTargetId',
+] as const;
+const MONEY_FIELDS = ['amountMinor', 'currency'] as const;
+const INTEGER = /^-?[0-9]+$/;
+const INT64_MIN = -9223372036854775808n;
+const INT64_MAX = 9223372036854775807n;
+
+export function updateBudgetAllocationsCommand(
+  input: unknown,
+): UpdateBudgetAllocationsRequest {
+  const violations: FieldViolation[] = [];
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    add(violations, 'body', 'invalid-type', 'must be an object');
+    throw new BudgetCommandValidationError(
+      Object.freeze(sortViolations(violations)),
+    );
+  }
+  const body = input as Record<string, unknown>;
+  if (Object.keys(body).some((key) => key !== 'allocations'))
+    for (const key of Object.keys(body))
+      if (key !== 'allocations')
+        add(violations, key, 'not-allowed', 'is not allowed');
+  if (!Array.isArray(body.allocations)) {
+    add(violations, 'allocations', 'required', 'must be an array');
+  } else if (body.allocations.length > MAX_BUDGET_ALLOCATION_COUNT) {
+    add(
+      violations,
+      'allocations',
+      'max-items',
+      `must contain at most ${MAX_BUDGET_ALLOCATION_COUNT} items`,
+    );
+  }
+  const allocations: Array<
+    UpdateBudgetAllocationsRequest['allocations'][number]
+  > = [];
+  const seen = new Set<string>();
+  if (Array.isArray(body.allocations)) {
+    body.allocations.forEach((raw, index) => {
+      const field = `allocations[${index}]`;
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        add(violations, field, 'invalid-type', 'must be an object');
+        return;
+      }
+      const item = raw as Record<string, unknown>;
+      for (const key of Object.keys(item))
+        if (
+          !ALLOCATION_FIELDS.includes(key as (typeof ALLOCATION_FIELDS)[number])
+        )
+          add(violations, `${field}.${key}`, 'not-allowed', 'is not allowed');
+      const categoryId = item.categoryId;
+      if (typeof categoryId !== 'string' || !UUID_PATTERN.test(categoryId))
+        add(
+          violations,
+          `${field}.categoryId`,
+          'invalid-format',
+          'must be a valid UUID',
+        );
+      else if (seen.has(categoryId))
+        add(
+          violations,
+          `${field}.categoryId`,
+          'duplicate',
+          'must be unique within allocations',
+        );
+      else seen.add(categoryId);
+      const money = item.planned;
+      let amountMinor = '';
+      let currency = '';
+      if (typeof money !== 'object' || money === null || Array.isArray(money)) {
+        add(
+          violations,
+          `${field}.planned`,
+          'invalid-type',
+          'must be an object',
+        );
+      } else {
+        const m = money as Record<string, unknown>;
+        for (const key of Object.keys(m))
+          if (!MONEY_FIELDS.includes(key as (typeof MONEY_FIELDS)[number]))
+            add(
+              violations,
+              `${field}.planned.${key}`,
+              'not-allowed',
+              'is not allowed',
+            );
+        if (m.amountMinor === undefined)
+          add(
+            violations,
+            `${field}.planned.amountMinor`,
+            'required',
+            'must be a non-empty string',
+          );
+        else if (typeof m.amountMinor !== 'string')
+          add(
+            violations,
+            `${field}.planned.amountMinor`,
+            'invalid-type',
+            'must be a string',
+          );
+        else if (m.amountMinor.includes('\0'))
+          add(
+            violations,
+            `${field}.planned.amountMinor`,
+            'invalid-characters',
+            'must not contain null characters',
+          );
+        else {
+          const trimmed = m.amountMinor.trim();
+          if (!trimmed)
+            add(
+              violations,
+              `${field}.planned.amountMinor`,
+              'required',
+              'must be a non-empty string',
+            );
+          else if (!INTEGER.test(trimmed))
+            add(
+              violations,
+              `${field}.planned.amountMinor`,
+              'invalid-format',
+              'must be an integer minor-unit amount string',
+            );
+          else {
+            const value = BigInt(trimmed);
+            if (value < INT64_MIN || value > INT64_MAX)
+              add(
+                violations,
+                `${field}.planned.amountMinor`,
+                'invalid-range',
+                'must be within 64-bit signed integer range',
+              );
+            else amountMinor = trimmed;
+          }
+        }
+        currency = currencyValue(
+          m.currency,
+          `${field}.planned.currency`,
+          violations,
+        );
+      }
+      const policy = item.rolloverPolicy;
+      const policies = Object.values(ROLLOVER_POLICIES);
+      if (typeof policy !== 'string' || !policies.includes(policy as never))
+        add(
+          violations,
+          `${field}.rolloverPolicy`,
+          'unsupported',
+          'must be a supported rollover policy',
+        );
+      const target = item.rolloverTargetId;
+      if (
+        target !== undefined &&
+        target !== null &&
+        (typeof target !== 'string' || !UUID_PATTERN.test(target))
+      )
+        add(
+          violations,
+          `${field}.rolloverTargetId`,
+          'invalid-format',
+          'must be a valid UUID or null',
+        );
+      if (policy === 'to_category' && (target === undefined || target === null))
+        add(
+          violations,
+          `${field}.rolloverTargetId`,
+          'required',
+          'is required for to_category',
+        );
+      if (policy === 'to_fund')
+        add(
+          violations,
+          `${field}.rolloverTargetId`,
+          'unsupported',
+          'fund targets are not yet available',
+        );
+      if (
+        ['none', 'surplus', 'deficit', 'both', 'to_savings'].includes(
+          policy as string,
+        ) &&
+        target !== undefined &&
+        target !== null
+      )
+        add(
+          violations,
+          `${field}.rolloverTargetId`,
+          'not-allowed',
+          'must be null or absent for this rollover policy',
+        );
+      if (
+        typeof categoryId === 'string' &&
+        UUID_PATTERN.test(categoryId) &&
+        typeof policy === 'string' &&
+        policies.includes(policy as never) &&
+        typeof money === 'object' &&
+        money !== null
+      )
+        allocations.push({
+          categoryId,
+          planned: { amountMinor, currency },
+          rolloverPolicy: policy as never,
+          ...(target !== undefined
+            ? { rolloverTargetId: target as string | null }
+            : {}),
+        });
+    });
+  }
+  if (violations.length)
+    throw new BudgetCommandValidationError(
+      Object.freeze(sortViolations(violations)),
+    );
+  return { allocations };
 }

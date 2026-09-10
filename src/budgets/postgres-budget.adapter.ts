@@ -12,6 +12,7 @@ import type {
   BudgetStore,
   CreateBudgetRequest,
   UpdateBudgetRequest,
+  BudgetAllocationRequest,
   RolloverPolicy,
 } from './budget.port.js';
 export const BUDGET_ALLOCATION_PARAMETERS_PER_ROW = 6;
@@ -258,6 +259,71 @@ export class PostgresBudgetAdapter implements BudgetStore {
       `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor,rollover_policy,rollover_target_id) values ${rows.join(',')}`,
       values,
     );
+  }
+  public async findMissingAllocationReferences(
+    c: TransactionClient,
+    w: string,
+    allocations: readonly BudgetAllocationRequest[],
+  ): Promise<readonly string[]> {
+    const ids = [
+      ...new Set(
+        allocations.flatMap((a) => [
+          a.categoryId,
+          ...(a.rolloverTargetId ? [a.rolloverTargetId] : []),
+        ]),
+      ),
+    ];
+    if (ids.length === 0) return [];
+    const result = await c.query<{ id: string }>(
+      'select id::text from public.categories where workspace_id=$1::uuid and id = any($2::uuid[])',
+      [w, ids],
+    );
+    const present = new Set(result.rows.map((row) => row.id));
+    return ids.filter((value) => !present.has(value));
+  }
+  public async replaceBudgetAllocations(
+    c: TransactionClient,
+    w: string,
+    id: string,
+    allocations: readonly BudgetAllocationRequest[],
+    expectedVersion?: number,
+  ): Promise<Budget | undefined> {
+    const params: unknown[] = [w, id];
+    let sql =
+      'update public.budgets set version=version+1,updated_at=now() where workspace_id=$1::uuid and id=$2::uuid';
+    if (expectedVersion !== undefined) {
+      params.push(expectedVersion);
+      sql += ` and version=$${params.length}::integer`;
+    }
+    sql += ` returning id::text,name,method,to_char(period_start,'YYYY-MM-DD') as "periodStart",to_char(period_end,'YYYY-MM-DD') as "periodEnd",currency,version`;
+    const result = await c.query<Row>(sql, params);
+    if (result.rowCount !== 1) return undefined;
+    const row = result.rows[0];
+    if (!row) throw new Error('Budget allocation update returned no row.');
+    await c.query(
+      'delete from public.budget_allocations where workspace_id=$1::uuid and budget_id=$2::uuid',
+      [w, id],
+    );
+    if (allocations.length > 0) {
+      const values: unknown[] = [];
+      const rows = allocations.map((a, index) => {
+        const base = index * BUDGET_ALLOCATION_PARAMETERS_PER_ROW;
+        values.push(
+          w,
+          id,
+          a.categoryId,
+          a.planned.amountMinor,
+          a.rolloverPolicy,
+          a.rolloverTargetId ?? null,
+        );
+        return `($${base + 1}::uuid,$${base + 2}::uuid,$${base + 3}::uuid,$${base + 4}::bigint,$${base + 5},$${base + 6}::uuid)`;
+      });
+      await c.query(
+        `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor,rollover_policy,rollover_target_id) values ${rows.join(',')}`,
+        values,
+      );
+    }
+    return map(row, await this.readAllocations(c, w, id));
   }
   public async listBudgets(
     c: TransactionClient,

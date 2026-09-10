@@ -23,6 +23,11 @@
       "path": "/v1/budgets/{budgetId}"
     },
     {
+      "operationId": "upsertBudgetAllocations",
+      "method": "PUT",
+      "path": "/v1/budgets/{budgetId}/allocations"
+    },
+    {
       "operationId": "getHealth",
       "method": "GET",
       "path": "/health"

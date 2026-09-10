@@ -38,6 +38,8 @@ function fakeStore(role = 'owner'): BudgetStore {
     findBudget: vi.fn(),
     findSourceAllocations: vi.fn().mockResolvedValue([]),
     insertCopiedAllocations: vi.fn().mockResolvedValue(undefined),
+    findMissingAllocationReferences: vi.fn().mockResolvedValue([]),
+    replaceBudgetAllocations: vi.fn(),
     listBudgets: vi.fn().mockResolvedValue([]),
   };
 }

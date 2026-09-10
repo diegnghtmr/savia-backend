@@ -1,4 +1,4 @@
-// Migrations under test: 202609020001_budgets.sql, 202609020002_budgets_created_at_index.sql, 202609020004_budgets_update.sql
+// Migrations under test: 202609020001_budgets.sql, 202609020002_budgets_created_at_index.sql, 202609020004_budgets_update.sql, 202609020005_budgets_allocations_update.sql
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { fixture, IDS, command } from '../budgets/budget-fixtures.js';
@@ -23,7 +23,7 @@ describe('budgets schema', () => {
     expect(r.rows).toHaveLength(2);
     expect(r.rows.every((x) => x.rls && x.force)).toBe(true);
     const c = await pool.query<{ conname: string }>(
-      `select conname from pg_constraint where conname in ('budgets_method_check','budgets_currency_check','budgets_name_length_check','budgets_period_order_check','budgets_period_span_check','budgets_version_check','budget_allocations_rollover_policy_check','budget_allocations_category_workspace_fkey')`,
+      `select conname from pg_constraint where conname in ('budgets_method_check','budgets_currency_check','budgets_name_length_check','budgets_period_order_check','budgets_period_span_check','budgets_version_check','budget_allocations_rollover_policy_check','budget_allocations_category_workspace_fkey','budget_allocations_rollover_target_category_workspace_fkey')`,
     );
     expect(c.rows.map((x) => x.conname)).toEqual(
       expect.arrayContaining([
@@ -199,6 +199,7 @@ describe('budgets schema', () => {
       [
         'budget_allocations.budget_allocations_budget_workspace_fkey',
         'budget_allocations.budget_allocations_category_workspace_fkey',
+        'budget_allocations.budget_allocations_rollover_target_category_workspace_fkey',
         'budget_allocations.budget_allocations_pkey',
         'budget_allocations.budget_allocations_rollover_policy_check',
         'budget_allocations.budget_allocations_workspace_budget_category_key',
@@ -222,6 +223,8 @@ describe('budgets schema', () => {
         'foreign key (workspace_id, budget_id) references budgets(workspace_id, id) on delete cascade',
       budget_allocations_category_workspace_fkey:
         'foreign key (workspace_id, category_id) references categories(workspace_id, id) on delete restrict',
+      budget_allocations_rollover_target_category_workspace_fkey:
+        'foreign key (workspace_id, rollover_target_id) references categories(workspace_id, id) on delete restrict',
       budget_allocations_pkey: 'primary key (id)',
       budget_allocations_rollover_policy_check:
         "check ((rollover_policy = any (array['none'::text, 'surplus'::text, 'deficit'::text, 'both'::text, 'to_savings'::text, 'to_fund'::text, 'to_category'::text])))",
@@ -269,6 +272,11 @@ describe('budgets schema', () => {
         delete_action: 'RESTRICT',
       },
       {
+        conname: 'budget_allocations_rollover_target_category_workspace_fkey',
+        columns: ['workspace_id', 'rollover_target_id'],
+        delete_action: 'RESTRICT',
+      },
+      {
         conname: 'budgets_created_by_fkey',
         columns: ['created_by'],
         delete_action: 'RESTRICT',
@@ -291,6 +299,7 @@ describe('budgets schema', () => {
     expect(
       policies.rows.map((x) => `${x.tablename}.${x.policyname}.${x.cmd}`),
     ).toEqual([
+      'budget_allocations.application_deletes_workspace_budget_allocations.DELETE',
       'budget_allocations.application_inserts_workspace_budget_allocations.INSERT',
       'budget_allocations.application_reads_workspace_budget_allocations.SELECT',
       'budgets.application_inserts_workspace_budgets.INSERT',
@@ -307,6 +316,13 @@ describe('budgets schema', () => {
         with_check: normalizeSql(x.with_check),
       })),
     ).toEqual([
+      {
+        tablename: 'budget_allocations',
+        policyname: 'application_deletes_workspace_budget_allocations',
+        cmd: 'DELETE',
+        qual: "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text]))",
+        with_check: null,
+      },
       {
         tablename: 'budget_allocations',
         policyname: 'application_inserts_workspace_budget_allocations',
@@ -417,7 +433,7 @@ describe('budgets schema', () => {
         selectable: true,
         insertable: false,
         updatable: false,
-        deletable: false,
+        deletable: true,
         truncatable: false,
         referenceable: false,
         triggerable: false,
