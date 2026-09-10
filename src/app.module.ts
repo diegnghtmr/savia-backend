@@ -13,6 +13,7 @@ import { ReconciliationsModule } from './reconciliations/reconciliations.module.
 import { ExportsModule } from './exports/exports.module.js';
 import { ImportsModule } from './imports/imports.module.js';
 import { BudgetsModule } from './budgets/budgets.module.js';
+import { FundsModule } from './funds/funds.module.js';
 
 @Module({
   controllers: [HealthController],
@@ -29,6 +30,7 @@ import { BudgetsModule } from './budgets/budgets.module.js';
     ExportsModule,
     ImportsModule,
     BudgetsModule,
+    FundsModule,
   ],
 })
 export class AppModule {}
