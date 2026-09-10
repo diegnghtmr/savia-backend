@@ -192,10 +192,9 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
     });
 
     it('keeps the database dimension allow-list synchronized with the report contract', () => {
-      const root = resolve(import.meta.dirname, '../..');
       const migration = readFileSync(
         resolve(
-          root,
+          process.cwd(),
           'supabase/migrations/202609060013_report_definitions_dimensions.sql',
         ),
         'utf8',
@@ -221,8 +220,8 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
     it('migration refuses dirty report definitions with count and remediation', async () => {
       const migrationSql = readFileSync(
         resolve(
-          import.meta.dirname,
-          '../../supabase/migrations/202609060013_report_definitions_dimensions.sql',
+          process.cwd(),
+          'supabase/migrations/202609060013_report_definitions_dimensions.sql',
         ),
         'utf8',
       );
