@@ -17,19 +17,34 @@ describe('PostgresMcpGrantAdapter', () => {
       2,
     ]);
   });
-  it('checks every workspace membership', async () => {
-    const query = vi
-      .fn()
-      .mockResolvedValueOnce({ rows: [{ role: 'owner' }] })
-      .mockResolvedValueOnce({ rows: [{ role: null }] });
+  it('returns the database minting decision for every workspace', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ allowed: false }] });
     await expect(
-      new PostgresMcpGrantAdapter().hasActiveMemberships(
+      new PostgresMcpGrantAdapter().canMint(
         { query } as never,
         subject,
+        ['accounts:read'],
         [id, subject],
       ),
     ).resolves.toBe(false);
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+  it('asks PostgreSQL whether the requested grant fits every minter role', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ allowed: false }] });
+
+    await expect(
+      new PostgresMcpGrantAdapter().canMint(
+        { query } as never,
+        subject,
+        ['accounts:write'],
+        [id],
+      ),
+    ).resolves.toBe(false);
+
+    expect(query).toHaveBeenCalledWith(
+      'select public.mcp_grant_within_minter_role($1::text[], $2::uuid[]) as allowed',
+      [['accounts:write'], [id]],
+    );
   });
   it('uses all revoke preconditions and returns row-count success', async () => {
     const query = vi.fn().mockResolvedValue({ rowCount: 1 });

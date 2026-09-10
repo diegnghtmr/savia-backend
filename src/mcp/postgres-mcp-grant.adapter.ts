@@ -48,21 +48,17 @@ export class PostgresMcpGrantAdapter implements McpGrantStore {
   public createId(): string {
     return crypto.randomUUID();
   }
-  public async hasActiveMemberships(
+  public async canMint(
     client: TransactionClient,
     _subject: string,
+    scopes: readonly string[],
     workspaceIds: readonly string[],
   ): Promise<boolean> {
-    const roles = await Promise.all(
-      workspaceIds.map(async (workspaceId) => {
-        const result = await client.query<{ role: string | null }>(
-          'select public.workspace_actor_active_role($1::uuid) as role',
-          [workspaceId],
-        );
-        return result.rows[0]?.role;
-      }),
+    const result = await client.query<{ allowed: boolean }>(
+      'select public.mcp_grant_within_minter_role($1::text[], $2::uuid[]) as allowed',
+      [scopes, workspaceIds],
     );
-    return roles.every((role) => role !== null && role !== undefined);
+    return result.rows[0]?.allowed === true;
   }
   public async accountsBelongToWorkspaces(
     client: TransactionClient,

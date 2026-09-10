@@ -61,9 +61,10 @@ export type McpGrantOutcome =
   | { readonly kind: typeof MCP_GRANT_OUTCOMES.INVALID };
 export interface McpGrantStore {
   createId(): string;
-  hasActiveMemberships(
+  canMint(
     client: TransactionClient,
     subject: string,
+    scopes: readonly string[],
     workspaceIds: readonly string[],
   ): Promise<boolean>;
   accountsBelongToWorkspaces(
