@@ -20,11 +20,7 @@ if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 class TestStorage implements ArtifactStorage {
   public failSigning = false;
 
-  public async upload(
-    _path: string,
-    _content: Buffer,
-    _contentType: string,
-  ): Promise<void> {}
+  public async upload(): Promise<void> {}
 
   public async sign(
     path: string,
@@ -34,7 +30,7 @@ class TestStorage implements ArtifactStorage {
     return { url: `https://storage.example.test/${path}`, expiresAt };
   }
 
-  public async remove(_path: string): Promise<void> {}
+  public async remove(): Promise<void> {}
 }
 
 describe('export completion over Fastify HTTP and disposable PostgreSQL', () => {
@@ -108,7 +104,9 @@ describe('export completion over Fastify HTTP and disposable PostgreSQL', () => 
 
   afterAll(async () => {
     await app?.close();
-    await admin?.query('delete from public.workspaces where id=$1', [workspace]);
+    await admin?.query('delete from public.workspaces where id=$1', [
+      workspace,
+    ]);
     await admin?.query('delete from auth.users where id=$1', [subject]);
     await admin?.end();
   });
