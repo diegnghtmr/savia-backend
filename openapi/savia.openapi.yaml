@@ -115,6 +115,13 @@ components:
       headers:
         Retry-After:
           $ref: '#/components/headers/RetryAfter'
+    InternalServerError:
+      description: An unexpected error occurred.
+      content:
+        {
+          application/problem+json:
+            { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+        }
   schemas:
     OnboardingRequest:
       type: object
