@@ -94,11 +94,9 @@ project_id="savia-postgres-pool-${CI_RUN_ID:-local}-$$"
 diagnostic_dir=""
 source_config_hash="$(sha256sum supabase/config.toml)"
 redact() { perl -0pe 's{postgres(?:ql)?://\S+}{postgresql://[REDACTED]}ig; s{\beyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){1,2}\b}{[REDACTED_JWT]}g; s{\bsb_secret_[A-Za-z0-9_-]+}{[REDACTED_SECRET]}ig; s{-----BEGIN [^-]+-----.*?-----END [^-]+-----}{[REDACTED_KEY]}gs; s{(?i)\b([A-Z_]*(?:PASSWORD|SECRET|TOKEN|KEY)[A-Z_]*=)\S+}{$1[REDACTED]}g; s{(?i)\b(authorization:\s*)\S+}{$1[REDACTED]}g'; }
-retain_errors() { grep -Eim 40 'error|fail|fatal|unique|reset|migration|realtime' || true; }
-# grep exits 0 on match, 1 on no match, and >1 when the scan itself fails. Only
-# an explicit "no match" may be trusted; an execution error must read as "may
-# contain credentials" so a scan that never ran cannot cause unscanned
-# diagnostics to be retained.
+ source "$(dirname "$0")/retain-disposable-database-errors.sh"
+# The credential scan below remains deliberately independent of diagnostic
+# retention: a failed scan still means the diagnostics may contain credentials.
 has_credentials() { local status=0; grep -R -Eiqi 'eyJ[A-Za-z0-9_-]+\.|sb_secret_|-----BEGIN |postgres(ql)?://[^[:space:]\[]|(password|secret|token|key)=[^[]' "$diagnostic_dir" || status=$?; (( status != 1 )); }
 owned_realtime_running() { docker ps --filter "label=com.supabase.cli.project=$project_id" --format '{{.Names}} {{.Label "com.supabase.cli.service"}}' | grep -Eq "^supabase_realtime_${project_id} |^[^[:space:]]+ realtime$"; }
 cleanup() {
