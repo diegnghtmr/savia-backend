@@ -14,6 +14,7 @@ import { ExportsModule } from './exports/exports.module.js';
 import { ImportsModule } from './imports/imports.module.js';
 import { BudgetsModule } from './budgets/budgets.module.js';
 import { FundsModule } from './funds/funds.module.js';
+import { DebtsModule } from './debts/debts.module.js';
 
 @Module({
   controllers: [HealthController],
@@ -31,6 +32,7 @@ import { FundsModule } from './funds/funds.module.js';
     ImportsModule,
     BudgetsModule,
     FundsModule,
+    DebtsModule,
   ],
 })
 export class AppModule {}

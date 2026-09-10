@@ -272,6 +272,9 @@ jobs:
       - name: funds integration
         shell: bash
         run: pnpm test:integration:funds
+      - name: debts integration
+        shell: bash
+        run: pnpm test:integration:debts
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
