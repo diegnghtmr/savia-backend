@@ -84,7 +84,6 @@ describe('executable OpenAPI authority', () => {
         health.replace(
           "        '503':\n          description: Reserved for an actual unavailable state; this service does not simulate it.",
           "        '500':\n          description: Injected bare 500.\n        '503':\n          $ref: '#/components/responses/ServiceUnavailable'",
-          1,
         ),
     );
 
