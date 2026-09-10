@@ -234,6 +234,54 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
       client.release();
     }
   });
+  it.each([
+    ['an account from a workspace outside the grant', outsideAccount],
+    ['an account that does not exist', randomUUID()],
+  ])(
+    'rejects a direct RLS insert naming %s',
+    async (_description, accountId) => {
+      const client = await admin.connect();
+      try {
+        await client.query('begin');
+        await client.query('set local role savia_application');
+        await client.query('select set_config($1, $2, true)', [
+          'app.subject_id',
+          owner,
+        ]);
+        await expect(
+          client.query(
+            `insert into public.mcp_grants (subject_id,client_name,scopes,workspace_ids,account_ids) values ($1,'direct-account',array['accounts:read'],array[$2::uuid],array[$3::uuid])`,
+            [owner, workspace, accountId],
+          ),
+        ).rejects.toMatchObject({ code: '42501' });
+        await client.query('rollback');
+      } finally {
+        client.release();
+      }
+    },
+  );
+  it('allows direct RLS inserts with null or empty account restrictions', async () => {
+    const client = await admin.connect();
+    try {
+      for (const accountIds of ['null', 'array[]::uuid[]']) {
+        await client.query('begin');
+        await client.query('set local role savia_application');
+        await client.query('select set_config($1, $2, true)', [
+          'app.subject_id',
+          owner,
+        ]);
+        await expect(
+          client.query(
+            `insert into public.mcp_grants (subject_id,client_name,scopes,workspace_ids,account_ids) values ($1,'direct-no-account',array['accounts:read'],array[$2::uuid],${accountIds})`,
+            [owner, workspace],
+          ),
+        ).resolves.toMatchObject({ rowCount: 1 });
+        await client.query('rollback');
+      }
+    } finally {
+      client.release();
+    }
+  });
   it('reproduces the migration dirty-data refusal when the harness cannot seed before migrations', async () => {
     await admin.query(
       `update public.workspace_memberships set role = 'viewer' where workspace_id = $1 and profile_id = $2`,
@@ -262,6 +310,40 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
                and grant_row.status = 'active'
                and (grant_row.expires_at is null or grant_row.expires_at > now())
                and not public.mcp_grant_within_minter_role(grant_row.scopes, grant_row.workspace_ids);
+            if violating_count > 0 then
+              raise exception 'mcp grant minting policy refused to install: % active unexpired grant(s); revoke offending grants before retrying', violating_count;
+            end if;
+          end $$;
+        `),
+      ).rejects.toThrow(/refused to install: 1 active unexpired grant/);
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+  it('counts an active grant with an outside account in the migration dirty-data refusal', async () => {
+    await admin.query(
+      `insert into public.mcp_grants (subject_id,client_name,scopes,workspace_ids,account_ids) values ($1,'dirty-account',array['accounts:read'],array[$2::uuid],array[$3::uuid])`,
+      [owner, workspace, outsideAccount],
+    );
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query('select set_config($1, $2, true)', [
+        'app.subject_id',
+        owner,
+      ]);
+      await expect(
+        client.query(`
+          do $$
+          declare violating_count bigint;
+          begin
+            select count(*) into violating_count
+              from public.mcp_grants grant_row
+             where grant_row.status = 'active'
+               and (grant_row.expires_at is null or grant_row.expires_at > now())
+               and not public.mcp_grant_accounts_within_workspaces(grant_row.account_ids, grant_row.workspace_ids);
             if violating_count > 0 then
               raise exception 'mcp grant minting policy refused to install: % active unexpired grant(s); revoke offending grants before retrying', violating_count;
             end if;

@@ -59,17 +59,49 @@ as $$
     );
 $$;
 
+create function public.mcp_grant_accounts_within_workspaces(
+  account_ids uuid[],
+  workspace_ids uuid[]
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select account_ids is null
+    or cardinality(account_ids) = 0
+    or (
+      cardinality(workspace_ids) > 0
+      and not exists (
+        select 1
+        from unnest(account_ids) as requested(account_id)
+        where not exists (
+          select 1
+          from public.accounts account
+          where account.id = requested.account_id
+            and account.workspace_id = any(workspace_ids)
+        )
+      )
+    );
+$$;
+
 grant usage, create on schema public to savia_elevated;
 
 alter function public.mcp_scope_allowed_for_role(text, text)
   owner to savia_elevated;
 alter function public.mcp_grant_within_minter_role(text[], uuid[])
   owner to savia_elevated;
+alter function public.mcp_grant_accounts_within_workspaces(uuid[], uuid[])
+  owner to savia_elevated;
 
 revoke create on schema public from savia_elevated;
 revoke all on function public.mcp_scope_allowed_for_role(text, text) from public;
 revoke all on function public.mcp_grant_within_minter_role(text[], uuid[]) from public;
+revoke all on function public.mcp_grant_accounts_within_workspaces(uuid[], uuid[]) from public;
 grant execute on function public.mcp_grant_within_minter_role(text[], uuid[])
+  to savia_application;
+grant execute on function public.mcp_grant_accounts_within_workspaces(uuid[], uuid[])
   to savia_application;
 
 do $$
@@ -79,16 +111,17 @@ declare
 begin
   violating_count := 0;
   for grant_row in
-    select subject_id, scopes, workspace_ids
+    select subject_id, scopes, workspace_ids, account_ids
       from public.mcp_grants
      where status = 'active'
        and (expires_at is null or expires_at > now())
   loop
     perform set_config('app.subject_id', grant_row.subject_id::text, true);
-    if not public.mcp_grant_within_minter_role(
-      grant_row.scopes,
-      grant_row.workspace_ids
-    ) then
+    if not public.mcp_grant_within_minter_role(grant_row.scopes, grant_row.workspace_ids)
+       or not public.mcp_grant_accounts_within_workspaces(
+         grant_row.account_ids,
+         grant_row.workspace_ids
+       ) then
       violating_count := violating_count + 1;
     end if;
   end loop;
@@ -110,6 +143,7 @@ create policy mcp_grants_insert_own
   with check (
     subject_id = nullif(current_setting('app.subject_id', true), '')::uuid
     and public.mcp_grant_within_minter_role(scopes, workspace_ids)
+    and public.mcp_grant_accounts_within_workspaces(account_ids, workspace_ids)
   );
 
 commit;

@@ -46,6 +46,22 @@ describe('PostgresMcpGrantAdapter', () => {
       [['accounts:write'], [id]],
     );
   });
+  it('asks PostgreSQL whether every requested account fits the named workspaces', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ allowed: false }] });
+
+    await expect(
+      new PostgresMcpGrantAdapter().accountsBelongToWorkspaces(
+        { query } as never,
+        [id],
+        [subject],
+      ),
+    ).resolves.toBe(false);
+
+    expect(query).toHaveBeenCalledWith(
+      'select public.mcp_grant_accounts_within_workspaces($1::uuid[], $2::uuid[]) as allowed',
+      [[id], [subject]],
+    );
+  });
   it('uses all revoke preconditions and returns row-count success', async () => {
     const query = vi.fn().mockResolvedValue({ rowCount: 1 });
     await expect(
