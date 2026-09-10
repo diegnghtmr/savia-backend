@@ -6929,8 +6929,6 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
       parameters:
         - $ref: '#/components/parameters/WorkspaceIdHeader'
         - $ref: '#/components/parameters/IdempotencyKey'
