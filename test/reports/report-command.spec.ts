@@ -297,8 +297,8 @@ describe('createReportDefinitionCommand', () => {
           expect(e.violations).toContainEqual(
             expect.objectContaining({
               field: 'dimensions.1',
-               code: 'invalid',
-               message: 'must be a supported report dimension',
+              code: 'invalid',
+              message: 'must be a supported report dimension',
             }),
           );
         }
