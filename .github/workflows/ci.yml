@@ -248,6 +248,9 @@ jobs:
       - name: exports security integration
         shell: bash
         run: pnpm test:integration:exports-security
+      - name: exports completion integration
+        shell: bash
+        run: pnpm test:integration:exports-completion
       - name: imports integration
         shell: bash
         run: pnpm test:integration:imports
