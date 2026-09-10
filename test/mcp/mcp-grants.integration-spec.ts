@@ -123,7 +123,7 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
       [workspace, foreignWorkspace],
     );
     await admin.query(
-      `insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$3,'owner','active'),($2,$4,'owner','active')`,
+      `insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$3,'owner','active'),($1,$4,'owner','active'),($2,$4,'owner','active')`,
       [workspace, foreignWorkspace, owner, other],
     );
     await admin.query(

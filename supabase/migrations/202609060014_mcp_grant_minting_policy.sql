@@ -59,11 +59,14 @@ as $$
     );
 $$;
 
+grant usage, create on schema public to savia_elevated;
+
 alter function public.mcp_scope_allowed_for_role(text, text)
   owner to savia_elevated;
 alter function public.mcp_grant_within_minter_role(text[], uuid[])
   owner to savia_elevated;
 
+revoke create on schema public from savia_elevated;
 revoke all on function public.mcp_scope_allowed_for_role(text, text) from public;
 revoke all on function public.mcp_grant_within_minter_role(text[], uuid[]) from public;
 grant execute on function public.mcp_grant_within_minter_role(text[], uuid[])
