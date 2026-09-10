@@ -173,8 +173,8 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
           'report_definitions_name_length_check',
           'report_definitions_visualization_check',
           'report_definitions_version_check',
-           'report_definitions_dimensions_is_array_check',
-           'report_definitions_dimensions_allowed_check',
+          'report_definitions_dimensions_is_array_check',
+          'report_definitions_dimensions_allowed_check',
           'report_definitions_measures_is_array_check',
           'report_definitions_measures_non_empty_check',
           'report_definitions_filters_is_object_check',
@@ -199,9 +199,7 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
         ),
         'utf8',
       );
-      const match = migration.match(
-        /dimensions\s+<@\s+'(\[[^']*\])'::jsonb/,
-      );
+      const match = migration.match(/dimensions\s+<@\s+'(\[[^']*\])'::jsonb/);
       expect(match?.[1]).toBeDefined();
       expect(JSON.parse(match?.[1] ?? '')).toEqual([...REPORT_DIMENSIONS]);
     });
