@@ -134,8 +134,8 @@ export class ReceiptsController {
       if (error instanceof ArtifactStorageUnavailableError) {
         void reply.header('retry-after', '5');
         return sendProblem(reply, {
-          type: PROBLEM_TYPES.OUTCOME_UNKNOWN,
-          title: 'Operation outcome is unknown',
+          type: PROBLEM_TYPES.DEPENDENCY_UNAVAILABLE,
+          title: 'Artifact storage is temporarily unavailable',
           status: 503,
         });
       }

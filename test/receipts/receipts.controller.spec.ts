@@ -208,7 +208,11 @@ describe('ReceiptsController', () => {
 
       expect(reply.statusCode).toBe(503);
       expect(reply.headers['retry-after']).toBe('5');
-      expect(reply.sentBody).toMatchObject({ status: 503 });
+      expect(reply.sentBody).toMatchObject({
+        type: 'https://savia.app/problems/dependency-unavailable',
+        title: 'Artifact storage is temporarily unavailable',
+        status: 503,
+      });
     });
 
     it('returns 400 when x-workspace-id header is missing or invalid', async () => {
