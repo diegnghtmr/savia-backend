@@ -39,6 +39,10 @@ export interface AnalyticsTransactionRunner {
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T>;
+  runRead<T>(
+    subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T>;
 }
 
 function serializeData(val: unknown): unknown {
@@ -69,7 +73,7 @@ export class AnalyticsService implements AnalyticsPort {
     subject: string,
     query: AnalyticsSummaryQuery,
   ): Promise<AnalyticsSummaryOutcome> {
-    return this.tx.run(subject, async (client) => {
+    return this.tx.runRead(subject, async (client) => {
       // 6. Authorization: 401 handled by guard; 403 for non-member. Viewer MAY read.
       const role = await this.store.readActiveRole(client, query.workspaceId);
       if (
@@ -293,7 +297,7 @@ export class AnalyticsService implements AnalyticsPort {
     subject: string,
     query: CashFlowAnalyticsQuery,
   ): Promise<CashFlowAnalyticsOutcome> {
-    return this.tx.run(subject, async (client) => {
+    return this.tx.runRead(subject, async (client) => {
       // 6. Authorization check
       const role = await this.store.readActiveRole(client, query.workspaceId);
       if (
@@ -494,7 +498,7 @@ export class AnalyticsService implements AnalyticsPort {
     subject: string,
     query: AdvancedAnalyticsQuery,
   ): Promise<AdvancedAnalyticsOutcome> {
-    return this.tx.run(subject, async (client) => {
+    return this.tx.runRead(subject, async (client) => {
       const role = await this.store.readActiveRole(client, query.workspaceId);
       if (
         !['owner', 'administrator', 'editor', 'viewer'].includes(role ?? '')

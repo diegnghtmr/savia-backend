@@ -43,6 +43,10 @@ export interface DebtTransactionRunner {
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T>;
+  runRead<T>(
+    subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T>;
 }
 
 export class DebtService implements DebtsPort {
@@ -148,7 +152,7 @@ export class DebtService implements DebtsPort {
     subject: string,
     query: DebtListQuery,
   ): Promise<DebtListOutcome> {
-    return this.tx.run(subject, async (client) => {
+    return this.tx.runRead(subject, async (client) => {
       const role = await this.store.readActiveRole(client, query.workspaceId);
       if (
         !['owner', 'administrator', 'editor', 'viewer'].includes(role ?? '')

@@ -48,7 +48,7 @@ export class OnboardingProblemFilter implements ExceptionFilter {
         .switchToHttp()
         .getRequest<AuthenticatedRequest>().identity;
       this.logger.error(
-        `Onboarding commit outcome is unknown for subject ${subject}.`,
+        `Operation commit outcome is unknown for subject ${subject}.`,
         exception.cause instanceof Error
           ? exception.cause.stack
           : String(exception.cause),
@@ -56,7 +56,7 @@ export class OnboardingProblemFilter implements ExceptionFilter {
       void reply.header('retry-after', String(RETRY_AFTER_SECONDS));
       return sendProblem(reply, {
         type: PROBLEM_TYPES.OUTCOME_UNKNOWN,
-        title: 'Onboarding outcome is unknown',
+        title: 'Operation outcome is unknown',
         status: 503,
       });
     }

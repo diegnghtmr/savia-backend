@@ -29,12 +29,7 @@ import { registerProblemFilter } from '../src/identity/onboarding-problem.filter
 
 interface OpenApiOperation {
   operationId?: string;
-  responses?: Record<
-    string,
-    {
-      content?: Record<string, { schema?: Record<string, unknown> }>;
-    }
-  >;
+  responses?: Record<string, OpenApiResponse>;
 }
 
 interface OpenApiDocument {
@@ -42,7 +37,13 @@ interface OpenApiDocument {
   paths?: Record<string, Record<string, OpenApiOperation>>;
   components?: {
     schemas?: Record<string, Record<string, unknown>>;
+    responses?: Record<string, OpenApiResponse>;
   };
+}
+
+interface OpenApiResponse {
+  $ref?: string;
+  content?: Record<string, { schema?: Record<string, unknown> }>;
 }
 
 const TEST_SUBJECT = '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d';
@@ -135,7 +136,10 @@ function compileResponseValidator(
 
   const operation = document.paths?.[path]?.[method.toLowerCase()];
   const response = operation?.responses?.[statusCode];
-  const schema = response?.content?.[contentType]?.schema;
+  const resolvedResponse = response?.$ref?.startsWith('#/components/responses/')
+    ? document.components?.responses?.[response.$ref.split('/').pop() ?? '']
+    : response;
+  const schema = resolvedResponse?.content?.[contentType]?.schema;
 
   if (schema === undefined) {
     throw new Error(
@@ -474,11 +478,7 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
         authorization: `Bearer ${TEST_TOKEN}`,
         'idempotency-key': '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb01',
       },
-      payload: {
-        name: 'Invalid',
-        kind: 'personal',
-        baseCurrency: 'USD',
-      },
+      payload: {},
     });
 
     expect(response.statusCode).toBe(422);
@@ -486,6 +486,36 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
 
     const isValid = validateUnprocessable(payload);
     expect(validateUnprocessable.errors).toBeNull();
+    expect(isValid).toBe(true);
+  });
+
+  it('validates live POST /v1/workspaces 400 response body against its declared ProblemDetails schema', async () => {
+    const document = loadBundledContract();
+    const validateBadRequest = compileResponseValidator(
+      document,
+      '/v1/workspaces',
+      'POST',
+      '400',
+      'application/problem+json',
+    );
+
+    app = await createApplication();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces',
+      headers: {
+        authorization: `Bearer ${TEST_TOKEN}`,
+        'idempotency-key': '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb01',
+        'content-type': 'application/json',
+      },
+      payload: '{ not valid json',
+    });
+
+    expect(response.statusCode).toBe(400);
+    const payload = JSON.parse(response.payload);
+
+    const isValid = validateBadRequest(payload);
+    expect(validateBadRequest.errors).toBeNull();
     expect(isValid).toBe(true);
   });
 
