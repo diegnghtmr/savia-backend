@@ -316,7 +316,7 @@ describe('POST /v1/onboarding', () => {
     expect(String(response.headers['retry-after'])).toMatch(/^\d+$/);
     expect(JSON.parse(response.payload)).toEqual({
       type: 'https://savia.app/problems/outcome-unknown',
-      title: 'Onboarding outcome is unknown',
+      title: 'Operation outcome is unknown',
       status: 503,
       code: 'outcome-unknown',
       traceId: expect.stringMatching(/.+/),

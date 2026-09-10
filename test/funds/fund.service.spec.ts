@@ -19,6 +19,7 @@ describe('FundService', () => {
   const mockClient = {} as TransactionClient;
   const mockTx: FundTransactionRunner = {
     run: vi.fn(async (_subject, callback) => callback(mockClient)),
+    runRead: vi.fn(async (_subject, callback) => callback(mockClient)),
   };
 
   const dummyFund: Fund = {
@@ -176,6 +177,7 @@ describe('FundService', () => {
         limit: 20,
       });
       expect(result.kind).toBe(FUND_OUTCOMES.FORBIDDEN);
+      expect(mockTx.runRead).toHaveBeenCalled();
     });
 
     it('returns ok with page of funds', async () => {
@@ -188,6 +190,7 @@ describe('FundService', () => {
         limit: 20,
       });
       expect(result.kind).toBe('ok');
+      expect(mockTx.runRead).toHaveBeenCalled();
       if (result.kind === 'ok') {
         expect(result.page.items).toHaveLength(1);
         expect(result.page.items[0].id).toBe(dummyFund.id);
