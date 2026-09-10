@@ -82,7 +82,7 @@ describe('executable OpenAPI authority', () => {
       contract,
       source.slice(0, healthStart) +
         health.replace(
-          "        '503':\n          description: Reserved for an actual unavailable state; this service does not simulate it.",
+          "        '503':\n          $ref: '#/components/responses/ServiceUnavailable'",
           "        '500':\n          description: Injected bare 500.\n        '503':\n          $ref: '#/components/responses/ServiceUnavailable'",
         ),
     );
