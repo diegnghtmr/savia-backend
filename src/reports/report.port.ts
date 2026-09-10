@@ -20,7 +20,6 @@ export interface ReportSourceRow {
   readonly tags: readonly string[];
   readonly payee: string | null;
   readonly memberId: string;
-  readonly variability: 'fixed' | 'variable' | null;
 }
 
 export const REPORTS_PORT = Symbol('ReportsPort');
@@ -41,7 +40,6 @@ export const REPORT_DIMENSION = {
   MEMBER: 'member',
   STATUS: 'status',
   TRANSACTION_TYPE: 'transaction_type',
-  VARIABILITY: 'variability',
 } as const;
 
 export type ReportDimension =
