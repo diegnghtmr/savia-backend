@@ -12,7 +12,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT verified against the configured issuer, audience, and JWKS.
+      description: Supabase Auth session JWT.
     mcpOAuth:
       type: oauth2
       description: OAuth 2.1 authorization used by remote MCP clients. The MCP transport itself is not described by this OpenAPI document.
@@ -22,6 +22,7 @@ components:
           tokenUrl: https://api.savia.app/oauth/token
           scopes:
             accounts:read: Read accounts and balances.
+            accounts:write: Create and modify accounts.
             transactions:read: Read financial transactions.
             transactions:write: Create and modify financial transactions.
             budgets:read: Read budgets.
@@ -51,6 +52,11 @@ components:
       required: false
       schema: { type: string, examples: ['"7"'] }
   responses:
+    BadRequest:
+      description: Bad request.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetails' }
     Unauthorized:
       description: Unauthorized.
       content:
@@ -443,6 +449,8 @@ components:
     CurrencyCode:
       type: string
       pattern: '^[A-Z]{3}$'
+      description: Must be an active ISO 4217 currency code; the server answers 422 otherwise.
+      examples: [COP, USD, EUR]
     Account:
       type: object
       additionalProperties: false
@@ -2624,14 +2632,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
         '503':
           description: >-
             The transaction outcome is unknown. The request is idempotent per
@@ -2668,14 +2668,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Profile not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -2720,12 +2712,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '404':
-          description: Profile not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
         '412':
           description: Precondition failed
           content:
@@ -2734,29 +2720,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
           description: Unprocessable entity
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '503':
-          description: >-
-            The transaction outcome is unknown. The request is idempotent per
-            subject, so it is safe to retry after the indicated delay.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying.
-              required: true
-              schema:
-                type: integer
-                minimum: 0
           content:
             application/problem+json:
               schema:
@@ -2807,14 +2770,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Workspace not found.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -2891,29 +2846,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '503':
-          description: >-
-            The transaction outcome is unknown. The request is idempotent per
-            subject, so it is safe to retry after the indicated delay.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying.
-              required: true
-              schema:
-                type: integer
-                minimum: 0
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
     delete:
       operationId: deleteWorkspace
       tags:
@@ -2975,29 +2907,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '503':
-          description: >-
-            The transaction outcome is unknown. The request is idempotent per
-            subject, so it is safe to retry after the indicated delay.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying.
-              required: true
-              schema:
-                type: integer
-                minimum: 0
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
   /v1/workspaces:
     post:
       operationId: createWorkspace
@@ -3049,35 +2958,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '422':
-          description: Unprocessable entity
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '503':
-          description: >-
-            The transaction outcome is unknown. The request is idempotent per
-            subject, so it is safe to retry after the indicated delay.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying.
-              required: true
-              schema:
-                type: integer
-                minimum: 0
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
     get:
       operationId: listWorkspaces
       tags:
@@ -3123,14 +3003,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: The bearer token is missing or unusable.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -3199,14 +3071,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Workspace not found.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -3296,29 +3160,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '503':
-          description: >-
-            The transaction outcome is unknown. The request is idempotent per
-            subject, so it is safe to retry after the indicated delay.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying.
-              required: true
-              schema:
-                type: integer
-                minimum: 0
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
     delete:
       operationId: removeWorkspaceMember
       tags:
@@ -3373,29 +3214,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '409':
           description: Workspace member removal conflict or idempotency key reused with different payload.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '503':
-          description: >-
-            The transaction outcome is unknown. The request is idempotent per
-            subject, so it is safe to retry after the indicated delay.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying.
-              required: true
-              schema:
-                type: integer
-                minimum: 0
           content:
             application/problem+json:
               schema:
@@ -3468,14 +3286,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createWorkspaceInvitation
       tags:
@@ -3544,14 +3354,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
   /v1/workspaces/{workspaceId}/invitations/{invitationId}/revoke:
     post:
       operationId: revokeWorkspaceInvitation
@@ -3579,6 +3381,8 @@ paths:
             format: uuid
             maxLength: 255
       responses:
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
         '200':
           description: Invitation revoked.
           content:
@@ -3611,14 +3415,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '409':
           description: Workspace invitation is not pending or idempotency key reused with different payload.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -3692,14 +3488,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: list_accounts
+        riskClass: read
+        requiresApproval: false
+        requiredScopes:
+          - accounts:read
     post:
       operationId: createAccount
       tags:
@@ -3770,14 +3564,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: create_account
+        riskClass: administrative
+        requiresApproval: true
+        requiredScopes:
+          - accounts:write
   /v1/accounts/{accountId}:
     get:
       operationId: getAccount
@@ -3831,14 +3623,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Account not found.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -3922,14 +3706,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
   /v1/accounts/{accountId}/balance:
     get:
       operationId: getAccountBalance
@@ -3985,14 +3761,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Account not found.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -4081,14 +3849,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
           description: Unprocessable entity.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -4189,14 +3949,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
       x-savia-mcp-tool:
         name: search_transactions
         riskClass: read
@@ -4273,14 +4025,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
       x-savia-mcp-tool:
         name: create_transaction
         riskClass: financial_write
@@ -4341,14 +4085,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Transaction not found.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -4442,14 +4178,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
           description: Validation failed or transaction splits unsupported.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -4549,14 +4277,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
       x-savia-mcp-tool:
         name: void_transaction
         riskClass: destructive
@@ -4625,14 +4345,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
           description: Validation failed or business invariant violated.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -4709,14 +4421,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
       x-savia-mcp-tool:
         name: create_cross_currency_transfer
         riskClass: financial_write
@@ -4785,14 +4489,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createManualExchangeRate
       tags:
@@ -4857,20 +4553,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-      x-savia-mcp-tool:
-        name: create_manual_exchange_rate
-        riskClass: financial_write
-        requiresApproval: true
-        requiredScopes:
-          - currencies:write
       x-idempotency-required: true
   /v1/categories:
     get:
@@ -4935,14 +4617,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createCategory
       tags:
@@ -5002,14 +4676,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
           description: Validation failed or business invariant violated.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -5078,14 +4744,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createTag
       tags:
@@ -5145,14 +4803,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
           description: Validation failed or business invariant violated.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -5221,14 +4871,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createPayee
       tags:
@@ -5288,14 +4930,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
           description: Validation failed or business invariant violated.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -5364,14 +4998,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createRecurringRule
       tags:
@@ -5431,14 +5057,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
           description: Validation failed or business invariant violated.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -5508,14 +5126,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '403':
           description: Workspace access is forbidden. An absent workspace is indistinguishable from a denied one; no 404 is declared.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -5594,15 +5204,6 @@ paths:
                   { schema: { $ref: '#/components/schemas/ProblemDetails' } },
               },
           }
-        '500':
-          {
-            description: Internal failure.,
-            content:
-              {
-                application/problem+json:
-                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-          }
       x-idempotency-required: true
   /v1/export-jobs/{exportJobId}:
     get:
@@ -5658,15 +5259,6 @@ paths:
         '404':
           {
             description: Export job not found.,
-            content:
-              {
-                application/problem+json:
-                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-          }
-        '500':
-          {
-            description: Internal failure.,
             content:
               {
                 application/problem+json:
@@ -5761,15 +5353,6 @@ paths:
                   { schema: { $ref: '#/components/schemas/ProblemDetails' } },
               },
           }
-        '500':
-          {
-            description: Internal failure.,
-            content:
-              {
-                application/problem+json:
-                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-          }
       x-idempotency-required: true
   /v1/import-jobs/{importJobId}:
     get:
@@ -5835,15 +5418,6 @@ paths:
                   { schema: { $ref: '#/components/schemas/ProblemDetails' } },
               },
           }
-        '500':
-          {
-            description: Internal failure.,
-            content:
-              {
-                application/problem+json:
-                  { schema: { $ref: '#/components/schemas/ProblemDetails' } },
-              },
-          }
   /v1/import-jobs/{importJobId}/commit:
     post:
       operationId: commitImportJob
@@ -5900,7 +5474,6 @@ paths:
         '404': { description: Import job or account not found. }
         '409': { description: Import state conflict. }
         '422': { description: Invalid mapping or account. }
-        '500': { description: Internal failure. }
       x-idempotency-required: true
   /v1/import-jobs/{importJobId}/rollback:
     post:
@@ -5942,7 +5515,6 @@ paths:
         '404': { description: Import job not found. }
         '409': { description: Import state or reconciliation conflict. }
         '422': { description: Invalid import state. }
-        '500': { description: Internal failure. }
       x-idempotency-required: true
   /v1/budgets:
     get:
@@ -5985,7 +5557,6 @@ paths:
         '400': { description: Malformed request. }
         '401': { description: Unauthorized. }
         '403': { description: Forbidden. }
-        '500': { description: Internal failure. }
     post:
       operationId: createBudget
       summary: Create budget
@@ -6025,7 +5596,6 @@ paths:
         '403': { description: Forbidden. }
         '409': { description: Conflict. }
         '422': { description: Unprocessable entity. }
-        '500': { description: Internal failure. }
       x-savia-mcp-tool:
         {
           name: create_budget,
@@ -6069,7 +5639,6 @@ paths:
         '401': { description: Unauthorized. }
         '403': { description: Forbidden. }
         '404': { description: Not found. }
-        '500': { description: Internal failure. }
       x-savia-mcp-tool:
         {
           name: get_budget_status,
@@ -6122,7 +5691,6 @@ paths:
         '409': { description: Conflict. }
         '412': { description: Precondition failed. }
         '422': { description: Unprocessable entity. }
-        '500': { description: Internal failure. }
       x-savia-mcp-tool:
         {
           name: update_budget,
@@ -6180,7 +5748,6 @@ paths:
         '409': { description: Conflict. }
         '412': { description: Precondition failed. }
         '422': { description: Unprocessable entity. }
-        '500': { description: Internal failure. }
       x-savia-mcp-tool:
         {
           name: update_budget_allocations,
@@ -6208,6 +5775,8 @@ paths:
             schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Fund page.
           content:
@@ -6257,6 +5826,8 @@ paths:
             },
         }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           description: Fund created.
           content:
@@ -6330,6 +5901,8 @@ paths:
             },
         }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           description: Contribution recorded.
           content:
@@ -6388,6 +5961,8 @@ paths:
             schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Debt page.
           content:
@@ -6437,6 +6012,8 @@ paths:
             },
         }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           description: Debt created.
           content:
@@ -6501,6 +6078,8 @@ paths:
             },
         }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           description: Debt payment recorded.
           content:
@@ -6583,14 +6162,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
   /v1/reconciliations:
     post:
       operationId: createReconciliation
@@ -6651,14 +6222,6 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '422':
           description: Validation failed or business invariant violated.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
           content:
             application/problem+json:
               schema:
@@ -6739,14 +6302,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
       x-idempotency-required: true
   /v1/reconciliations/{reconciliationId}:
     get:
@@ -6799,14 +6354,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '500':
-          description: >-
-            An internal failure the client cannot act on. The cause is recorded
-            server side and deliberately absent from this body.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
   /v1/analytics/summary:
     get:
       operationId: getAnalyticsSummary
@@ -6836,6 +6383,8 @@ paths:
           schema:
             $ref: '#/components/schemas/CurrencyCode'
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Financial summary.
           content:
@@ -6894,6 +6443,8 @@ paths:
               - month
               - quarter
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Cash flow analytics.
           content:
@@ -6950,6 +6501,8 @@ paths:
           schema:
             $ref: '#/components/schemas/Date'
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Advanced analytic result.
           content:
@@ -7002,6 +6555,8 @@ paths:
             maximum: 200
             default: 50
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Scenario page.
           content:
@@ -7057,6 +6612,8 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateScenarioRequest'
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           description: Scenario created.
           content:
@@ -7114,6 +6671,8 @@ paths:
             format: uuid
             maxLength: 255
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Scenario result.
           content:
@@ -7184,6 +6743,8 @@ paths:
             schema:
               $ref: '#/components/schemas/ForecastRequest'
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '202':
           description: Forecast job accepted.
           content:
@@ -7215,7 +6776,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
       x-savia-mcp-tool:
-        name: get_forecast
+        name: create_forecast
         riskClass: read
         requiresApproval: false
         requiredScopes:
@@ -7240,6 +6801,8 @@ paths:
       tags:
         - Forecasts
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Forecast.
           content:
@@ -7276,6 +6839,8 @@ paths:
       summary: Upload receipt or invoice
       tags: [Receipts]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '202':
           description: Receipt processing accepted.
           content:
@@ -7320,6 +6885,8 @@ paths:
       summary: Get receipt and OCR result
       tags: [Receipts]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Receipt.
           content:
@@ -7340,6 +6907,8 @@ paths:
       summary: Confirm OCR and create transaction
       tags: [Receipts]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           description: Transaction created from receipt.
           content:
@@ -7385,6 +6954,8 @@ paths:
             maximum: 200
             default: 50
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Report definition page.
           content:
@@ -7440,6 +7011,8 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateReportDefinitionRequest'
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           description: Report definition created.
           content:
@@ -7482,6 +7055,8 @@ paths:
       summary: Run preset or custom report
       tags: [Reports]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '202':
           description: Report run accepted.
           content:
@@ -7557,6 +7132,8 @@ paths:
       summary: Get report run
       tags: [Reports]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Report run.
           content:
@@ -7587,6 +7164,8 @@ paths:
       summary: List supported AI providers
       tags: [AI Providers]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           {
             description: Provider descriptors.,
@@ -7606,12 +7185,20 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
       parameters: [{ $ref: '#/components/parameters/WorkspaceIdHeader' }]
+      x-savia-mcp-tool:
+        name: list_ai_providers
+        riskClass: read
+        requiresApproval: false
+        requiredScopes:
+          - workspace:admin
   /v1/ai/credentials:
     get:
       operationId: listAICredentials
       summary: List masked AI credential metadata
       tags: [AI Providers]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           {
             description: Credential metadata.,
@@ -7636,6 +7223,8 @@ paths:
       summary: Register provider-specific credential
       tags: [AI Providers]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           {
             description: Credential registered.,
@@ -7684,6 +7273,8 @@ paths:
       summary: Update, disable or rotate AI credential
       tags: [AI Providers]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           {
             description: Credential updated.,
@@ -7725,6 +7316,8 @@ paths:
       summary: Revoke AI credential
       tags: [AI Providers]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '204': { description: Credential revoked. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -7737,6 +7330,8 @@ paths:
       summary: Set default provider and model
       tags: [AI Providers]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '204': { description: Default model updated. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -7778,6 +7373,8 @@ paths:
       summary: Get approval request
       tags: [Approvals]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Approval request.
           content:
@@ -7821,6 +7418,8 @@ paths:
       summary: Approve exact tool arguments
       tags: [Approvals]
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Approval confirmed.
           content:
@@ -7890,6 +7489,10 @@ paths:
       summary: Reject pending action
       tags: [Approvals]
       responses:
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Approval rejected.
           content:
@@ -7960,6 +7563,8 @@ paths:
             type: boolean
             default: false
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Notification page.
           content:
@@ -8003,6 +7608,8 @@ paths:
             format: uuid
             maxLength: 255
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '204':
           description: Notification marked as read.
         '401':
@@ -8039,6 +7646,8 @@ paths:
           required: false
           schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Conversation page.
           content:
@@ -8071,6 +7680,8 @@ paths:
                 { $ref: '#/components/schemas/CreateAgentConversationRequest' },
             }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           description: Conversation created.
           content:
@@ -8099,6 +7710,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/AgentMessageRequest' }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Agent run event stream.
           content:
@@ -8169,6 +7782,8 @@ paths:
           required: false
           schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: MCP grant page.
           content:
@@ -8204,6 +7819,8 @@ paths:
               },
           }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           description: MCP grant created.
           content:
@@ -8231,6 +7848,8 @@ paths:
           required: true
           schema: { type: string, format: uuid, maxLength: 255 }
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '204': { description: MCP grant revoked. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
