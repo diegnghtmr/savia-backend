@@ -301,11 +301,11 @@ if (
 }
 const source = provenance.planningSource;
 if (
-   source?.revision !== 'ff4b1906773bce22ef762065201e63d45d9f34ac' ||
+  source?.revision !== 'ff4b1906773bce22ef762065201e63d45d9f34ac' ||
   source.path !== 'docs/savia-openapi.yaml' ||
   source.sha256 !== planningSourceSha256 ||
-   source.bytes !== 179348 ||
-   source.operationCount !== 95
+  source.bytes !== 179348 ||
+  source.operationCount !== 95
 ) {
   fail('planning-source constants drifted');
 }
