@@ -7937,7 +7937,11 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/McpGrant' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403':
+          description: The requested grant scopes exceed the minter's role in at least one named workspace. Owners and administrators may grant all nine scopes; editors may grant all except workspace:admin; viewers may grant only *:read scopes.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '503':
