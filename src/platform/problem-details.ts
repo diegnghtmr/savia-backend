@@ -14,6 +14,7 @@ export const PROBLEM_TYPES = {
   CONFLICT: `${BASE_URI}/conflict`,
   INTERNAL: `${BASE_URI}/internal`,
   OUTCOME_UNKNOWN: `${BASE_URI}/outcome-unknown`,
+  DEPENDENCY_UNAVAILABLE: `${BASE_URI}/dependency-unavailable`,
   BAD_REQUEST: `${BASE_URI}/bad-request`,
   NOT_FOUND: `${BASE_URI}/not-found`,
   UNPROCESSABLE: `${BASE_URI}/unprocessable`,

@@ -218,7 +218,6 @@ describe('createReportDefinitionCommand', () => {
       'member',
       'status',
       'transaction_type',
-      'variability',
     ] as const;
 
     const AUTHORITY_MEASURES = [
@@ -249,7 +248,7 @@ describe('createReportDefinitionCommand', () => {
     ] as const;
 
     it('asserts authority enum counts and exact member parity', () => {
-      expect(REPORT_DIMENSIONS).toHaveLength(16);
+      expect(REPORT_DIMENSIONS).toHaveLength(15);
       expect(REPORT_MEASURES).toHaveLength(12);
       expect(REPORT_VISUALIZATIONS).toHaveLength(9);
       expect([...REPORT_DIMENSIONS].sort()).toEqual(
@@ -264,7 +263,7 @@ describe('createReportDefinitionCommand', () => {
     });
 
     describe('dimensions acceptance', () => {
-      it.each(AUTHORITY_DIMENSIONS.filter((d) => d !== 'variability'))(
+      it.each(AUTHORITY_DIMENSIONS)(
         'accepts authority dimension: %s',
         (dimension) => {
           const result = createReportDefinitionCommand({
@@ -275,7 +274,7 @@ describe('createReportDefinitionCommand', () => {
         },
       );
 
-      it.each(REPORT_DIMENSIONS.filter((d) => d !== 'variability'))(
+      it.each(REPORT_DIMENSIONS)(
         'accepts exported dimension: %s',
         (dimension) => {
           const result = createReportDefinitionCommand({
@@ -286,7 +285,7 @@ describe('createReportDefinitionCommand', () => {
         },
       );
 
-      it('rejects variability dimension with unsupported code and explanation', () => {
+      it('rejects variability dimension as an invalid enum value', () => {
         try {
           createReportDefinitionCommand({
             ...validPayload,
@@ -298,9 +297,8 @@ describe('createReportDefinitionCommand', () => {
           expect(e.violations).toContainEqual(
             expect.objectContaining({
               field: 'dimensions.1',
-              code: 'unsupported',
-              message:
-                "variability dimension is not supported by this deployment's data model",
+              code: 'invalid',
+              message: 'must be a supported report dimension',
             }),
           );
         }

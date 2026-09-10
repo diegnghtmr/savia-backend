@@ -1,4 +1,7 @@
-import type { ArtifactStorage } from './artifact-storage.port.js';
+import {
+  ArtifactStorageUnavailableError,
+  type ArtifactStorage,
+} from './artifact-storage.port.js';
 interface StorageConfig {
   readonly url: string;
   readonly key: string;
@@ -32,20 +35,35 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
     contentType: string,
   ): Promise<void> {
     const c = this.getConfig();
-    const response = await fetch(
-      `${c.url}/storage/v1/object/${encodeURIComponent('exports')}/${path.split('/').map(encodeURIComponent).join('/')}`,
-      {
-        method: 'POST',
-        headers: {
-          ...this.headers(),
-          'content-type': contentType,
-          'x-upsert': 'false',
+    let response: Response;
+    try {
+      response = await fetch(
+        `${c.url}/storage/v1/object/${encodeURIComponent('exports')}/${path.split('/').map(encodeURIComponent).join('/')}`,
+        {
+          method: 'POST',
+          headers: {
+            ...this.headers(),
+            'content-type': contentType,
+            'x-upsert': 'false',
+          },
+          body: new Uint8Array(content),
         },
-        body: new Uint8Array(content),
-      },
-    );
+      );
+    } catch (error) {
+      throw new ArtifactStorageUnavailableError(
+        'Storage upload failed.',
+        error,
+      );
+    }
     if (!response.ok)
-      throw new Error(`Storage upload failed with status ${response.status}.`);
+      if (response.status >= 500)
+        throw new ArtifactStorageUnavailableError(
+          `Storage upload failed with status ${response.status}.`,
+        );
+      else
+        throw new Error(
+          `Storage upload failed with status ${response.status}.`,
+        );
   }
   public async sign(
     path: string,
@@ -56,16 +74,31 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
       1,
       Math.ceil((expiresAt.getTime() - Date.now()) / 1000),
     );
-    const response = await fetch(
-      `${c.url}/storage/v1/object/sign/exports/${path.split('/').map(encodeURIComponent).join('/')}`,
-      {
-        method: 'POST',
-        headers: { ...this.headers(), 'content-type': 'application/json' },
-        body: JSON.stringify({ expiresIn: seconds }),
-      },
-    );
+    let response: Response;
+    try {
+      response = await fetch(
+        `${c.url}/storage/v1/object/sign/exports/${path.split('/').map(encodeURIComponent).join('/')}`,
+        {
+          method: 'POST',
+          headers: { ...this.headers(), 'content-type': 'application/json' },
+          body: JSON.stringify({ expiresIn: seconds }),
+        },
+      );
+    } catch (error) {
+      throw new ArtifactStorageUnavailableError(
+        'Storage signing failed.',
+        error,
+      );
+    }
     if (!response.ok)
-      throw new Error(`Storage signing failed with status ${response.status}.`);
+      if (response.status >= 500)
+        throw new ArtifactStorageUnavailableError(
+          `Storage signing failed with status ${response.status}.`,
+        );
+      else
+        throw new Error(
+          `Storage signing failed with status ${response.status}.`,
+        );
     const body = (await response.json()) as {
       signedURL?: string;
       expiresAt?: string;
@@ -88,12 +121,27 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
   }
   public async remove(path: string): Promise<void> {
     const c = this.getConfig();
-    const response = await fetch(
-      `${c.url}/storage/v1/object/exports/${path.split('/').map(encodeURIComponent).join('/')}`,
-      { method: 'DELETE', headers: this.headers() },
-    );
+    let response: Response;
+    try {
+      response = await fetch(
+        `${c.url}/storage/v1/object/exports/${path.split('/').map(encodeURIComponent).join('/')}`,
+        { method: 'DELETE', headers: this.headers() },
+      );
+    } catch (error) {
+      throw new ArtifactStorageUnavailableError(
+        'Storage removal failed.',
+        error,
+      );
+    }
     if (!response.ok)
-      throw new Error(`Storage removal failed with status ${response.status}.`);
+      if (response.status >= 500)
+        throw new ArtifactStorageUnavailableError(
+          `Storage removal failed with status ${response.status}.`,
+        );
+      else
+        throw new Error(
+          `Storage removal failed with status ${response.status}.`,
+        );
   }
 }
 
