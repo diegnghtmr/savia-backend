@@ -32,7 +32,7 @@ describe('export OpenAPI transport contract', () => {
       };
       expect(
         Object.keys(document.paths['/v1/export-jobs'].post!.responses).sort(),
-      ).toEqual(['202', '400', '401', '403', '409', '422']);
+      ).toEqual(['202', '400', '401', '403', '409', '422', '503']);
       expect(
         Object.keys(
           document.paths['/v1/export-jobs/{exportJobId}'].get!.responses,

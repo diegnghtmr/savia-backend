@@ -160,7 +160,16 @@ describe('executable OpenAPI authority', () => {
     const codes = [...operation.matchAll(/^( {8})'(\d{3})':/gm)].map(
       (match) => match[2],
     );
-    expect(codes).toEqual(['200', '400', '401', '403', '404', '409', '422']);
+    expect(codes).toEqual([
+      '200',
+      '400',
+      '401',
+      '403',
+      '404',
+      '409',
+      '422',
+      '503',
+    ]);
   });
 
   it.skipIf(!authorityAvailable)(

@@ -1,9 +1,9 @@
 {
   "planningSource": {
-    "revision": "ff4b1906773bce22ef762065201e63d45d9f34ac",
+    "revision": "03a8d8c2aeab711dc1c27d2c13e508c006491563",
     "path": "docs/savia-openapi.yaml",
-    "sha256": "3767493cfcdeb072b5997b61f5eb95dd43d4d3dfabd6170d8d2bf2d9429068ed",
-    "bytes": 179348,
+    "sha256": "c8172a1ec54fc1ee3329cb51e3991ecf60616d748c846cd5446d00b7626fb1d6",
+    "bytes": 183089,
     "operationCount": 95
   },
   "backendCi": {
@@ -11,7 +11,7 @@
   },
   "executableContract": {
     "path": "openapi/savia.openapi.yaml",
-    "sha256": "b5128e733f3dda261aef300f7aa75ff76474cf5658e6da74967bdb1e881e7a1e",
+    "sha256": "92d2222281175b1faae2d780cc13f0351f40a0b7f26966a4b8c2a55e5c27643e",
     "operationCount": 94
   }
 }
