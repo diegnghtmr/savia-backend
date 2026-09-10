@@ -245,10 +245,13 @@ describe('CLI device token database capability', () => {
     try {
       await client.query('begin');
       await client.query('set local role savia_application');
-      await expect(
-        client.query('select * from public.cli_device_authorizations'),
-      ).rejects.toThrow();
-      await client.query('rollback');
+      try {
+        await expect(
+          client.query('select * from public.cli_device_authorizations'),
+        ).rejects.toThrow();
+      } finally {
+        await client.query('rollback');
+      }
     } finally {
       client.release();
     }
@@ -259,6 +262,76 @@ describe('CLI device token database capability', () => {
     );
     expect(policies.rows[0]?.with_check).toContain('approved_by_subject_id');
     expect(policies.rows[0]?.with_check).toContain('app.subject_id');
+  });
+
+  it('refuses direct approval and redemption updates by the pooled application role', async () => {
+    const directUpdateHash = createHash('sha256')
+      .update('direct-update-device')
+      .digest('hex');
+    await pool.query(
+      'delete from public.cli_device_authorizations where device_code_hash = $1',
+      [directUpdateHash],
+    );
+    await pool.query(
+      `insert into public.cli_device_authorizations
+       (device_code_hash, user_code, client_id, expires_at)
+       values ($1, $2, $3, now() + interval '10 minutes')`,
+      [directUpdateHash, 'UPDT2345', clientId],
+    );
+
+    const approval = await pool.connect();
+    try {
+      await approval.query('begin');
+      await approval.query('set local role savia_application');
+      await approval.query("select set_config('app.subject_id', $1, true)", [
+        subject,
+      ]);
+      await expect(
+        approval.query(
+          `update public.cli_device_authorizations
+           set approved_at = now(), approved_by_subject_id = $1`,
+          [subject],
+        ),
+      ).rejects.toThrow();
+      await approval.query('rollback');
+    } finally {
+      approval.release();
+    }
+
+    const afterApproval = await pool.query<{
+      approved_at: string | null;
+      approved_by_subject_id: string | null;
+    }>(
+      `select approved_at, approved_by_subject_id
+       from public.cli_device_authorizations where device_code_hash = $1`,
+      [directUpdateHash],
+    );
+    expect(afterApproval.rows[0]?.approved_at).toBeNull();
+    expect(afterApproval.rows[0]?.approved_by_subject_id).toBeNull();
+
+    const redemption = await pool.connect();
+    try {
+      await redemption.query('begin');
+      await redemption.query('set local role savia_application');
+      await redemption.query("select set_config('app.subject_id', $1, true)", [
+        subject,
+      ]);
+      await expect(
+        redemption.query(
+          `update public.cli_device_authorizations
+           set redeemed_at = now()`,
+        ),
+      ).rejects.toThrow();
+      await redemption.query('rollback');
+    } finally {
+      redemption.release();
+    }
+
+    const afterRedemption = await pool.query<{ redeemed_at: string | null }>(
+      'select redeemed_at from public.cli_device_authorizations where device_code_hash = $1',
+      [directUpdateHash],
+    );
+    expect(afterRedemption.rows[0]?.redeemed_at).toBeNull();
   });
 
   it('allows only one of two concurrent redemptions', async () => {
