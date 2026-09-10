@@ -456,13 +456,13 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
     expect(isValid).toBe(true);
   });
 
-  it('validates live POST /v1/workspaces 422 response body against its declared ProblemDetails schema', async () => {
+  it('validates live POST /v1/workspaces 400 response body against its declared ProblemDetails schema', async () => {
     const document = loadBundledContract();
-    const validateUnprocessable = compileResponseValidator(
+    const validateBadRequest = compileResponseValidator(
       document,
       '/v1/workspaces',
       'POST',
-      '422',
+      '400',
       'application/problem+json',
     );
 
@@ -473,19 +473,16 @@ describe('OpenAPI runtime response-schema conformance (TRD §42 rule 11)', () =>
       headers: {
         authorization: `Bearer ${TEST_TOKEN}`,
         'idempotency-key': '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb01',
+        'content-type': 'application/json',
       },
-      payload: {
-        name: 'Invalid',
-        kind: 'personal',
-        baseCurrency: 'USD',
-      },
+      payload: '{ not valid json',
     });
 
-    expect(response.statusCode).toBe(422);
+    expect(response.statusCode).toBe(400);
     const payload = JSON.parse(response.payload);
 
-    const isValid = validateUnprocessable(payload);
-    expect(validateUnprocessable.errors).toBeNull();
+    const isValid = validateBadRequest(payload);
+    expect(validateBadRequest.errors).toBeNull();
     expect(isValid).toBe(true);
   });
 

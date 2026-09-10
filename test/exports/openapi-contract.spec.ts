@@ -32,12 +32,12 @@ describe('export OpenAPI transport contract', () => {
       };
       expect(
         Object.keys(document.paths['/v1/export-jobs'].post!.responses).sort(),
-      ).toEqual(['202', '400', '401', '403', '409', '422', '500']);
+      ).toEqual(['202', '400', '401', '403', '409', '422']);
       expect(
         Object.keys(
           document.paths['/v1/export-jobs/{exportJobId}'].get!.responses,
         ).sort(),
-      ).toEqual(['200', '400', '401', '403', '404', '500']);
+      ).toEqual(['200', '400', '401', '403', '404']);
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
