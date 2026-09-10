@@ -34,6 +34,7 @@ function fakeStore(role = 'owner'): BudgetStore {
     readActiveRole: vi.fn().mockResolvedValue(role),
     readWorkspaceCurrency: vi.fn().mockResolvedValue('USD'),
     createBudget: vi.fn(),
+    updateBudget: vi.fn(),
     findBudget: vi.fn(),
     findSourceAllocations: vi.fn().mockResolvedValue([]),
     insertCopiedAllocations: vi.fn().mockResolvedValue(undefined),
@@ -114,5 +115,125 @@ describe('BudgetService.createBudget', () => {
         IDEMPOTENCY_KEY,
       ),
     ).rejects.toThrow('some other check failed');
+  });
+});
+
+describe('BudgetService.updateBudget', () => {
+  const BUDGET_ID = '00000000-0000-0000-0000-000000000123';
+  const EXISTING_BUDGET = {
+    id: BUDGET_ID,
+    name: 'Old Name',
+    method: 'envelope' as const,
+    periodStart: '2026-01-01',
+    periodEnd: '2026-02-01',
+    currency: 'USD',
+    allocations: [],
+    version: 1,
+  };
+
+  it('returns forbidden if caller has non-editor/admin/owner role', async () => {
+    const store = fakeStore('viewer');
+    const service = new BudgetService(
+      new FakeTransaction(),
+      store,
+      fakeIdempotencyStore(),
+    );
+    const outcome = await service.updateBudget(
+      SUBJECT,
+      WORKSPACE_ID,
+      BUDGET_ID,
+      { name: 'New Name' },
+      IDEMPOTENCY_KEY,
+      { kind: 'absent' },
+    );
+    expect(outcome.kind).toBe(BUDGET_OUTCOMES.FORBIDDEN);
+  });
+
+  it('returns not-found if budget does not exist in workspace', async () => {
+    const store = fakeStore('owner');
+    store.findBudget = vi.fn().mockResolvedValue(undefined);
+    const service = new BudgetService(
+      new FakeTransaction(),
+      store,
+      fakeIdempotencyStore(),
+    );
+    const outcome = await service.updateBudget(
+      SUBJECT,
+      WORKSPACE_ID,
+      BUDGET_ID,
+      { name: 'New Name' },
+      IDEMPOTENCY_KEY,
+      { kind: 'absent' },
+    );
+    expect(outcome.kind).toBe(BUDGET_OUTCOMES.NOT_FOUND);
+  });
+
+  it('returns precondition-failed when If-Match version does not match existing version', async () => {
+    const store = fakeStore('owner');
+    store.findBudget = vi.fn().mockResolvedValue(EXISTING_BUDGET);
+    const service = new BudgetService(
+      new FakeTransaction(),
+      store,
+      fakeIdempotencyStore(),
+    );
+    const outcome = await service.updateBudget(
+      SUBJECT,
+      WORKSPACE_ID,
+      BUDGET_ID,
+      { name: 'New Name' },
+      IDEMPOTENCY_KEY,
+      { kind: 'versions', versions: [2, 3] },
+    );
+    expect(outcome.kind).toBe('precondition-failed');
+  });
+
+  it('updates budget successfully when If-Match matches existing version', async () => {
+    const store = fakeStore('owner');
+    store.findBudget = vi.fn().mockResolvedValue(EXISTING_BUDGET);
+    const updated = { ...EXISTING_BUDGET, name: 'New Name', version: 2 };
+    store.updateBudget = vi.fn().mockResolvedValue(updated);
+    const service = new BudgetService(
+      new FakeTransaction(),
+      store,
+      fakeIdempotencyStore(),
+    );
+    const outcome = await service.updateBudget(
+      SUBJECT,
+      WORKSPACE_ID,
+      BUDGET_ID,
+      { name: 'New Name' },
+      IDEMPOTENCY_KEY,
+      { kind: 'versions', versions: [1] },
+    );
+    expect(outcome.kind).toBe('updated');
+    if (outcome.kind === 'updated') {
+      expect(outcome.budget.name).toBe('New Name');
+      expect(outcome.budget.version).toBe(2);
+    }
+  });
+
+  it('updates budget successfully on unconditional path (absent If-Match)', async () => {
+    const store = fakeStore('owner');
+    store.findBudget = vi.fn().mockResolvedValue(EXISTING_BUDGET);
+    const updated = { ...EXISTING_BUDGET, name: 'Unconditional', version: 2 };
+    store.updateBudget = vi.fn().mockResolvedValue(updated);
+    const service = new BudgetService(
+      new FakeTransaction(),
+      store,
+      fakeIdempotencyStore(),
+    );
+    const outcome = await service.updateBudget(
+      SUBJECT,
+      WORKSPACE_ID,
+      BUDGET_ID,
+      { name: 'Unconditional' },
+      IDEMPOTENCY_KEY,
+      { kind: 'absent' },
+    );
+    expect(outcome.kind).toBe('updated');
+    if (outcome.kind === 'updated') {
+      expect(outcome.budget.name).toBe('Unconditional');
+      expect(outcome.budget.version).toBe(2);
+    }
   });
 });

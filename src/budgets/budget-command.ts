@@ -4,7 +4,11 @@ import {
   type FieldViolation,
 } from '../platform/field-validation.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
-import { BUDGET_METHODS, type CreateBudgetRequest } from './budget.port.js';
+import {
+  BUDGET_METHODS,
+  type CreateBudgetRequest,
+  type UpdateBudgetRequest,
+} from './budget.port.js';
 
 export class BudgetCommandValidationError extends Error {
   public constructor(public readonly violations: readonly FieldViolation[]) {
@@ -99,4 +103,63 @@ export function createBudgetCommand(input: unknown): CreateBudgetRequest {
       ? { copyFromBudgetId: body.copyFromBudgetId as string | null }
       : {}),
   };
+}
+
+const UPDATE_FIELDS = ['name', 'method'] as const;
+export function updateBudgetCommand(input: unknown): UpdateBudgetRequest {
+  const violations: FieldViolation[] = [];
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    add(violations, 'body', 'invalid-type', 'must be an object');
+    throw new BudgetCommandValidationError(
+      Object.freeze(sortViolations(violations)),
+    );
+  }
+  const body = input as Record<string, unknown>;
+  const keys = Object.keys(body);
+  if (keys.length === 0) {
+    add(
+      violations,
+      'body',
+      'min-properties',
+      'must have at least one property',
+    );
+  }
+  keys.forEach((key) => {
+    if (!UPDATE_FIELDS.includes(key as (typeof UPDATE_FIELDS)[number])) {
+      add(violations, key, 'not-allowed', 'is not allowed');
+    }
+  });
+  if (body.name !== undefined) {
+    const name = body.name;
+    if (typeof name !== 'string' || name.length < 1 || name.length > 120) {
+      add(
+        violations,
+        'name',
+        'invalid',
+        'must be between 1 and 120 characters',
+      );
+    }
+  }
+  if (body.method !== undefined) {
+    const methods = Object.values(BUDGET_METHODS);
+    if (
+      typeof body.method !== 'string' ||
+      !methods.includes(body.method as never)
+    ) {
+      add(violations, 'method', 'invalid', 'must be a supported budget method');
+    }
+  }
+  if (violations.length) {
+    throw new BudgetCommandValidationError(
+      Object.freeze(sortViolations(violations)),
+    );
+  }
+  const result: { name?: string; method?: UpdateBudgetRequest['method'] } = {};
+  if (body.name !== undefined) {
+    result.name = body.name as string;
+  }
+  if (body.method !== undefined) {
+    result.method = body.method as UpdateBudgetRequest['method'];
+  }
+  return result;
 }

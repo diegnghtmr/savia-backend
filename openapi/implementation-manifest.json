@@ -18,6 +18,11 @@
       "path": "/v1/budgets/{budgetId}"
     },
     {
+      "operationId": "updateBudget",
+      "method": "PATCH",
+      "path": "/v1/budgets/{budgetId}"
+    },
+    {
       "operationId": "getHealth",
       "method": "GET",
       "path": "/health"

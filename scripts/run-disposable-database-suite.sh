@@ -62,6 +62,7 @@ case "$spec" in
   test/budgets/budgets-create.integration-spec.ts) ;;
   test/budgets/budgets-get.integration-spec.ts) ;;
   test/budgets/budgets-list.integration-spec.ts) ;;
+  test/budgets/budgets-update.integration-spec.ts) ;;
   test/exports/export-security.integration-spec.ts) ;;
   test/imports/imports.integration-spec.ts) ;;
   test/imports/import-commit-rollback.integration-spec.ts) ;;
