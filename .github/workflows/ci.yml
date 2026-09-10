@@ -251,6 +251,18 @@ jobs:
       - name: import commit rollback integration
         shell: bash
         run: pnpm test:integration:import-commit-rollback
+      - name: budgets schema integration
+        shell: bash
+        run: pnpm test:integration:budgets-schema
+      - name: budgets create integration
+        shell: bash
+        run: pnpm test:integration:budgets-create
+      - name: budgets get integration
+        shell: bash
+        run: pnpm test:integration:budgets-get
+      - name: budgets list integration
+        shell: bash
+        run: pnpm test:integration:budgets-list
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

@@ -529,21 +529,27 @@ export class AccountsService implements AccountsPort {
 }
 
 /**
- * The account currency invariant moved into the database in
- * 202608290001_relax_account_currency_invariant.sql. Its trigger raises
- * check_violation carrying an explicit constraint name, so this matches on that
- * name rather than on the SQLSTATE alone: a bare 23514 check would also swallow
- * any unrelated check violation on public.accounts and mislabel it as a currency
- * problem.
+ * The account currency invariants live in the database:
+ * - 202608290001_relax_account_currency_invariant.sql: accounts_currency_requires_exchange_rate
+ * - 202609020003_budget_currency_invariant.sql: accounts_currency_requires_budget_exchange_rates
+ * Their triggers raise check_violation carrying explicit constraint names, so
+ * this matches on those exact names rather than on the SQLSTATE alone: a bare
+ * 23514 check would also swallow any unrelated check violation on public.accounts
+ * and mislabel it as a currency problem.
  */
 function isMissingExchangeRateViolation(error: unknown): boolean {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    !('code' in error) ||
+    String((error as { code: unknown }).code) !== '23514' ||
+    !('constraint' in error)
+  ) {
+    return false;
+  }
+  const constraint = String((error as { constraint: unknown }).constraint);
   return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    String((error as { code: unknown }).code) === '23514' &&
-    'constraint' in error &&
-    String((error as { constraint: unknown }).constraint) ===
-      'accounts_currency_requires_exchange_rate'
+    constraint === 'accounts_currency_requires_exchange_rate' ||
+    constraint === 'accounts_currency_requires_budget_exchange_rates'
   );
 }

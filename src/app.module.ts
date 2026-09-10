@@ -12,6 +12,7 @@ import { RecurringModule } from './recurring/recurring.module.js';
 import { ReconciliationsModule } from './reconciliations/reconciliations.module.js';
 import { ExportsModule } from './exports/exports.module.js';
 import { ImportsModule } from './imports/imports.module.js';
+import { BudgetsModule } from './budgets/budgets.module.js';
 
 @Module({
   controllers: [HealthController],
@@ -27,6 +28,7 @@ import { ImportsModule } from './imports/imports.module.js';
     ReconciliationsModule,
     ExportsModule,
     ImportsModule,
+    BudgetsModule,
   ],
 })
 export class AppModule {}

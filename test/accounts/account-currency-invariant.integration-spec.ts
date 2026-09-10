@@ -1,6 +1,17 @@
-// Migrations under test: 202608240006_account_currency_invariant.sql, 202608290001_relax_account_currency_invariant.sql
+// Migrations under test: 202608240006_account_currency_invariant.sql, 202608290001_relax_account_currency_invariant.sql, 202609020003_budget_currency_invariant.sql
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import {
+  FastifyAdapter,
+  type NestFastifyApplication,
+} from '@nestjs/platform-fastify';
+import { Test } from '@nestjs/testing';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { AccountsModule } from '../../src/accounts/accounts.module.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
+import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { PROBLEM_TYPES } from '../../src/platform/problem-details.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -8,7 +19,11 @@ if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 const subject = (number: number) =>
   `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
 
-type CapturedPgError = { code?: string; message?: string };
+type CapturedPgError = {
+  code?: string;
+  message?: string;
+  constraint?: string;
+};
 
 async function capturePgError(
   run: () => Promise<unknown>,
@@ -186,6 +201,117 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
   });
 
   describe('Structure and Catalog metadata', () => {
+    it('enforce_budget_currency_has_exchange_rates_trigger exists on public.budgets with full catalog definition', async () => {
+      const budgetTrigRes = await admin.query<{
+        tgname: string;
+        tgtype: number;
+        tgenabled: string;
+        proname: string;
+        prosecdef: boolean;
+        proowner: string;
+        proconfig: string[] | null;
+      }>(
+        `select t.tgname,
+                t.tgtype,
+                t.tgenabled,
+                p.proname::text as proname,
+                p.prosecdef,
+                p.proowner::regrole::text as proowner,
+                p.proconfig
+           from pg_trigger t
+           join pg_proc p on p.oid = t.tgfoid
+          where t.tgrelid = 'public.budgets'::regclass
+            and t.tgname = 'enforce_budget_currency_has_exchange_rates_trigger'`,
+      );
+      expect(budgetTrigRes.rows).toHaveLength(1);
+      const bTrig = budgetTrigRes.rows[0];
+      expect(bTrig.proname).toBe('enforce_budget_currency_has_exchange_rates');
+      expect(bTrig.prosecdef).toBe(true);
+      expect(bTrig.proowner).toBe('savia_elevated');
+      expect(bTrig.proconfig).toEqual(['search_path=pg_catalog, public']);
+      // tgenabled: 'O' = origin/local (enabled). Ensures the trigger is active and not disabled ('D').
+      expect(bTrig.tgenabled).toBe('O');
+      // Exact tgtype mask: ROW (1) + BEFORE (2) + INSERT (4) + UPDATE (16) = 23
+      // Explicitly verifies absence of DELETE (8) and TRUNCATE (32).
+      // A bitwise AND check (& 1, & 2, & 4, & 16) would silently pass an expanded mask (e.g. tgtype = 31 with OR DELETE).
+      expect(bTrig.tgtype).toBe(23);
+
+      const budgetColsRes = await admin.query<{ col_name: string }>(
+        `select a.attname::text as col_name
+           from pg_trigger t
+           join pg_attribute a
+             on a.attrelid = t.tgrelid
+            and a.attnum = any(string_to_array(t.tgattr::text, ' ')::int2[])
+          where t.tgrelid = 'public.budgets'::regclass
+            and t.tgname = 'enforce_budget_currency_has_exchange_rates_trigger'
+          order by a.attname`,
+      );
+      expect(budgetColsRes.rows.map((r) => r.col_name)).toEqual([
+        'currency',
+        'workspace_id',
+      ]);
+
+      const privRes = await admin.query<{ public_exec_fn: boolean }>(
+        `select has_function_privilege('public', 'public.enforce_budget_currency_has_exchange_rates()', 'execute') as public_exec_fn`,
+      );
+      expect(privRes.rows[0].public_exec_fn).toBe(false);
+    });
+
+    it('enforce_account_currency_has_budget_rates_trigger exists on public.accounts with full catalog definition', async () => {
+      const accBudgetTrigRes = await admin.query<{
+        tgname: string;
+        tgtype: number;
+        tgenabled: string;
+        proname: string;
+        prosecdef: boolean;
+        proowner: string;
+        proconfig: string[] | null;
+      }>(
+        `select t.tgname,
+                t.tgtype,
+                t.tgenabled,
+                p.proname::text as proname,
+                p.prosecdef,
+                p.proowner::regrole::text as proowner,
+                p.proconfig
+           from pg_trigger t
+           join pg_proc p on p.oid = t.tgfoid
+          where t.tgrelid = 'public.accounts'::regclass
+            and t.tgname = 'enforce_account_currency_has_budget_rates_trigger'`,
+      );
+      expect(accBudgetTrigRes.rows).toHaveLength(1);
+      const abTrig = accBudgetTrigRes.rows[0];
+      expect(abTrig.proname).toBe('enforce_account_currency_has_budget_rates');
+      expect(abTrig.prosecdef).toBe(true);
+      expect(abTrig.proowner).toBe('savia_elevated');
+      expect(abTrig.proconfig).toEqual(['search_path=pg_catalog, public']);
+      // tgenabled: 'O' = origin/local (enabled). Ensures the trigger is active and not disabled ('D').
+      expect(abTrig.tgenabled).toBe('O');
+      // Exact tgtype mask: ROW (1) + BEFORE (2) + INSERT (4) + UPDATE (16) = 23
+      // Explicitly verifies absence of DELETE (8) and TRUNCATE (32).
+      // A bitwise AND check (& 1, & 2, & 4, & 16) would silently pass an expanded mask (e.g. tgtype = 31 with OR DELETE).
+      expect(abTrig.tgtype).toBe(23);
+
+      const accBudgetColsRes = await admin.query<{ col_name: string }>(
+        `select a.attname::text as col_name
+           from pg_trigger t
+           join pg_attribute a
+             on a.attrelid = t.tgrelid
+            and a.attnum = any(string_to_array(t.tgattr::text, ' ')::int2[])
+          where t.tgrelid = 'public.accounts'::regclass
+            and t.tgname = 'enforce_account_currency_has_budget_rates_trigger'
+          order by a.attname`,
+      );
+      expect(accBudgetColsRes.rows.map((r) => r.col_name)).toEqual([
+        'currency',
+        'workspace_id',
+      ]);
+
+      const privRes = await admin.query<{ public_exec_fn: boolean }>(
+        `select has_function_privilege('public', 'public.enforce_account_currency_has_budget_rates()', 'execute') as public_exec_fn`,
+      );
+      expect(privRes.rows[0].public_exec_fn).toBe(false);
+    });
     it('1. Trigger exists on public.accounts, fires row-level BEFORE insert or update, executes security definer function owned by savia_elevated with search_path pg_catalog, public', async () => {
       const accountsTrigRes = await admin.query<{
         tgname: string;
@@ -259,6 +385,58 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
   });
 
   describe('Invariant Enforcement (behavioral live proofs)', () => {
+    it('budget creation refuses when an existing account lacks a rate to the frozen budget currency', async () => {
+      const budgetId = subject(699);
+      const accountId = subject(698);
+      await admin.query(
+        `insert into public.accounts (id,workspace_id,name,type,currency,created_by) values ($1,$2,'GBP Budget Account','cash','GBP',$3)`,
+        [accountId, ws1Id, ownerA],
+      );
+      const err = await capturePgError(() =>
+        admin.query(
+          `insert into public.budgets (id,workspace_id,name,method,period_start,period_end,currency,created_by) values ($1,$2,'Unrated Budget','envelope','2026-01-01','2026-02-01','EUR',$3)`,
+          [budgetId, ws1Id, ownerA],
+        ),
+      );
+      expect(err.code).toBe('23514');
+      expect(err.constraint).toBe(
+        'budgets_currency_requires_account_exchange_rates',
+      );
+      expect(err.message ?? '').toContain(
+        'budget currency requires exchange rates for all account currencies',
+      );
+      await admin.query('delete from public.accounts where id=$1', [accountId]);
+    });
+
+    it('account introduction refuses when an existing frozen budget lacks a rate to its currency', async () => {
+      const budgetId = subject(697);
+      const accountId = subject(696);
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id,base_currency,quote_currency,rate,effective_at,source,created_by) values ($1,'EUR','USD',1.1,'2026-01-01','test',$2)`,
+        [emptyWsId, ownerA],
+      );
+      await admin.query(
+        `insert into public.budgets (id,workspace_id,name,method,period_start,period_end,currency,created_by) values ($1,$2,'COP Budget','envelope','2026-01-01','2026-02-01','COP',$3)`,
+        [budgetId, emptyWsId, ownerA],
+      );
+      try {
+        const err = await capturePgError(() =>
+          admin.query(
+            `insert into public.accounts (id,workspace_id,name,type,currency,created_by) values ($1,$2,'EUR Account','cash','EUR',$3)`,
+            [accountId, emptyWsId, ownerA],
+          ),
+        );
+        expect(err.code).toBe('23514');
+        expect(err.constraint).toBe(
+          'accounts_currency_requires_budget_exchange_rates',
+        );
+        expect(err.message ?? '').toContain(
+          'account currency requires exchange rates for all budget currencies',
+        );
+      } finally {
+        await admin.query('delete from public.budgets where id=$1', [budgetId]);
+      }
+    });
     it('a. A direct privileged insert of an account whose currency differs from workspace base currency with NO exchange rate raises SQLSTATE 23514 (check_violation)', async () => {
       const err = await capturePgError(() =>
         admin.query(
@@ -268,6 +446,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
         ),
       );
       expect(err.code).toBe('23514');
+      expect(err.constraint).toBe('accounts_currency_requires_exchange_rate');
       expect(err.message ?? '').toContain(
         'exchange rate required for account currency differing from workspace base currency',
       );
@@ -340,6 +519,9 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
           ),
         );
         expect(err.code).toBe('23514');
+        expect(err.constraint).toBe(
+          'workspace_base_currency_keeps_accounts_convertible',
+        );
         expect(err.message ?? '').toContain(
           'workspace base currency cannot change while accounts would be left without an exchange rate',
         );
@@ -403,6 +585,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
           ),
         );
         expect(err.code).toBe('23514');
+        expect(err.constraint).toBe('accounts_currency_requires_exchange_rate');
         expect(err.message ?? '').toContain(
           'exchange rate required for account currency differing from workspace base currency',
         );
@@ -435,6 +618,9 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       );
 
       expect(blindErr.code).toBe('23514');
+      expect(blindErr.constraint).toBe(
+        'accounts_currency_requires_exchange_rate',
+      );
       expect(blindErr.message ?? '').toContain(
         'exchange rate required for account currency differing from workspace base currency',
       );
@@ -481,6 +667,7 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
           ),
         );
         expect(err.code).toBe('23514');
+        expect(err.constraint).toBe('accounts_currency_requires_exchange_rate');
         expect(err.message ?? '').toContain(
           'exchange rate required for account currency differing from workspace base currency',
         );
@@ -493,6 +680,264 @@ describe('Account currency workspace invariant, triggers, RLS, and security defi
       } finally {
         if (accId) await deleteAccount(accId);
       }
+    });
+  });
+
+  describe('Migration 202609020003 Upgrade Path (pre-migration validation)', () => {
+    const wsUpgradeId = subject(655);
+    const memWsUpgradeOwnerAId = subject(618);
+    const upgradeAccountId = subject(695);
+    const upgradeBudgetId = subject(694);
+
+    beforeAll(async () => {
+      await admin.query(
+        `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+         values ($1, 'Upgrade Path Workspace', 'shared', 'COP', null, $2)`,
+        [wsUpgradeId, ownerA],
+      );
+      await admin.query(
+        `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'owner', 'active')`,
+        [memWsUpgradeOwnerAId, wsUpgradeId, ownerA],
+      );
+      // EUR -> COP rate satisfies 202608290001
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+         values ($1, 'EUR', 'COP', 4500.0, '2026-01-01T00:00:00.000Z', 'manual', $2)`,
+        [wsUpgradeId, ownerA],
+      );
+    });
+
+    afterAll(async () => {
+      const migrationSql = readFileSync(
+        resolve(
+          process.cwd(),
+          'supabase/migrations/202609020003_budget_currency_invariant.sql',
+        ),
+        'utf-8',
+      );
+      await admin.query(
+        `drop trigger if exists enforce_account_currency_has_budget_rates_trigger on public.accounts;
+         drop trigger if exists enforce_budget_currency_has_exchange_rates_trigger on public.budgets;
+         drop function if exists public.enforce_account_currency_has_budget_rates();
+         drop function if exists public.enforce_budget_currency_has_exchange_rates();
+         drop policy if exists elevated_reads_budgets on public.budgets;`,
+      );
+      await admin
+        .query(
+          'delete from public.budget_allocations where workspace_id = $1::uuid',
+          [wsUpgradeId],
+        )
+        .catch(() => {});
+      await admin
+        .query('delete from public.budgets where workspace_id = $1::uuid', [
+          wsUpgradeId,
+        ])
+        .catch(() => {});
+      await admin
+        .query('delete from public.accounts where workspace_id = $1::uuid', [
+          wsUpgradeId,
+        ])
+        .catch(() => {});
+      await admin
+        .query(
+          'delete from public.exchange_rates where workspace_id = $1::uuid',
+          [wsUpgradeId],
+        )
+        .catch(() => {});
+      await admin
+        .query(
+          'delete from public.workspace_memberships where workspace_id = $1::uuid',
+          [wsUpgradeId],
+        )
+        .catch(() => {});
+      await admin
+        .query('delete from public.workspaces where id = $1::uuid', [
+          wsUpgradeId,
+        ])
+        .catch(() => {});
+      await admin.query(migrationSql);
+    });
+
+    it('refuses to apply migration 202609020003 against dirty pre-migration data and accepts clean data', async () => {
+      // 1. Revert schema to pre-202609020003 state (i.e. post-202609020002)
+      await admin.query(
+        `drop trigger if exists enforce_account_currency_has_budget_rates_trigger on public.accounts;
+         drop trigger if exists enforce_budget_currency_has_exchange_rates_trigger on public.budgets;
+         drop function if exists public.enforce_account_currency_has_budget_rates();
+         drop function if exists public.enforce_budget_currency_has_exchange_rates();
+         drop policy if exists elevated_reads_budgets on public.budgets;`,
+      );
+
+      // 2. Build the dirty pre-migration state:
+      // Workspace base_currency: COP
+      // Account currency: EUR (has EUR->COP rate)
+      // Budget currency: USD (frozen)
+      // EUR->USD rate: ABSENT
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, created_by)
+         values ($1, $2, 'Pre-migration EUR Account', 'cash', 'EUR', $3)`,
+        [upgradeAccountId, wsUpgradeId, ownerA],
+      );
+      await admin.query(
+        `insert into public.budgets (id, workspace_id, name, method, period_start, period_end, currency, created_by)
+         values ($1, $2, 'Pre-migration USD Budget', 'envelope', '2026-01-01', '2026-02-01', 'USD', $3)`,
+        [upgradeBudgetId, wsUpgradeId, ownerA],
+      );
+
+      const migrationSql = readFileSync(
+        resolve(
+          process.cwd(),
+          'supabase/migrations/202609020003_budget_currency_invariant.sql',
+        ),
+        'utf-8',
+      );
+
+      // 3. Applying the migration over dirty data must throw the named diagnostic
+      const err = await capturePgError(() => admin.query(migrationSql));
+      expect(err.message ?? '').toContain(
+        'existing account currency violates budget exchange rate invariant',
+      );
+
+      // Verify that no triggers were installed (transaction rolled back)
+      const trigCheck = await admin.query<{ count: number }>(
+        `select count(*)::int as count from pg_trigger where tgname in ('enforce_account_currency_has_budget_rates_trigger', 'enforce_budget_currency_has_exchange_rates_trigger')`,
+      );
+      expect(trigCheck.rows[0].count).toBe(0);
+
+      // 4. Clean path: provide the missing EUR -> USD exchange rate
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+         values ($1, 'EUR', 'USD', 1.08, '2026-01-01T00:00:00.000Z', 'manual', $2)`,
+        [wsUpgradeId, ownerA],
+      );
+
+      // 5. Applying migration over clean data now succeeds
+      await expect(admin.query(migrationSql)).resolves.toBeDefined();
+
+      // Verify triggers are now installed
+      const trigCheckClean = await admin.query<{ count: number }>(
+        `select count(*)::int as count from pg_trigger where tgname in ('enforce_account_currency_has_budget_rates_trigger', 'enforce_budget_currency_has_exchange_rates_trigger')`,
+      );
+      expect(trigCheckClean.rows[0].count).toBe(2);
+    });
+  });
+
+  describe('HTTP Account Creation Constraint Translation (H2)', () => {
+    let httpApp: NestFastifyApplication | undefined;
+    const wsHttpId = subject(656);
+    const memWsHttpOwnerAId = subject(619);
+    const httpBudgetId = subject(693);
+
+    beforeAll(async () => {
+      Object.assign(process.env, {
+        JWT_ISSUER: 'https://issuer.example.test',
+        JWT_AUDIENCE: 'savia-api',
+        JWT_JWKS_URI: 'https://issuer.example.test/jwks',
+        JWT_ALGORITHMS: 'RS256',
+      });
+
+      await admin.query(
+        `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by)
+         values ($1, 'HTTP Test Workspace', 'shared', 'COP', null, $2)`,
+        [wsHttpId, ownerA],
+      );
+      await admin.query(
+        `insert into public.workspace_memberships (id, workspace_id, profile_id, role, status)
+         values ($1, $2, $3, 'owner', 'active')`,
+        [memWsHttpOwnerAId, wsHttpId, ownerA],
+      );
+      // EUR -> COP rate satisfies accounts_currency_requires_exchange_rate
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+         values ($1, 'EUR', 'COP', 4500.0, '2026-01-01T00:00:00.000Z', 'manual', $2)`,
+        [wsHttpId, ownerA],
+      );
+      // Frozen USD budget exists in this workspace
+      await admin.query(
+        `insert into public.budgets (id, workspace_id, name, method, period_start, period_end, currency, created_by)
+         values ($1, $2, 'HTTP Test Budget', 'envelope', '2026-01-01', '2026-02-01', 'USD', $3)`,
+        [httpBudgetId, wsHttpId, ownerA],
+      );
+
+      const moduleRef = await Test.createTestingModule({
+        imports: [AccountsModule],
+      })
+        .overrideProvider(JoseJwtVerifier)
+        .useValue({
+          verify: async (token: string) => {
+            if (token === 'owner-token') return { subject: ownerA };
+            throw new Error('token rejected');
+          },
+        })
+        .compile();
+
+      httpApp = moduleRef.createNestApplication<NestFastifyApplication>(
+        new FastifyAdapter({ exposeHeadRoutes: false }),
+      );
+      registerProblemFilter(httpApp);
+      await httpApp.init();
+      await httpApp.getHttpAdapter().getInstance().ready();
+    });
+
+    afterAll(async () => {
+      if (httpApp) {
+        await httpApp.close();
+      }
+      await admin
+        .query('delete from public.budgets where workspace_id = $1::uuid', [
+          wsHttpId,
+        ])
+        .catch(() => {});
+      await admin
+        .query('delete from public.accounts where workspace_id = $1::uuid', [
+          wsHttpId,
+        ])
+        .catch(() => {});
+      await admin
+        .query(
+          'delete from public.exchange_rates where workspace_id = $1::uuid',
+          [wsHttpId],
+        )
+        .catch(() => {});
+      await admin
+        .query(
+          'delete from public.workspace_memberships where workspace_id = $1::uuid',
+          [wsHttpId],
+        )
+        .catch(() => {});
+      await admin
+        .query('delete from public.workspaces where id = $1::uuid', [wsHttpId])
+        .catch(() => {});
+    });
+
+    it('POST /v1/accounts returns 422 (not 500) when account currency lacks exchange rate to existing budget currency', async () => {
+      if (!httpApp) throw new Error('HTTP app not initialized');
+
+      const response = await httpApp.inject({
+        method: 'POST',
+        url: '/v1/accounts',
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': wsHttpId,
+          'idempotency-key': '00000000-0000-0000-0000-000000000888',
+          'content-type': 'application/json',
+        },
+        payload: {
+          name: 'Unrated EUR Account',
+          type: 'checking',
+          currency: 'EUR',
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(response.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      const body = JSON.parse(response.payload);
+      expect(body.type).toBe(PROBLEM_TYPES.ACCOUNT_CURRENCY_UNSUPPORTED);
+      expect(body.status).toBe(422);
+      expect(body.title).toBe('Account currency unsupported');
     });
   });
 });
