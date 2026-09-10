@@ -21,6 +21,7 @@ describe('CliDeviceController', () => {
         expiresIn: 600,
         interval: 5,
       }),
+      poll: vi.fn(),
     };
     await new CliDeviceController(port).authorize(
       { clientId: 'cli' },
@@ -35,11 +36,29 @@ describe('CliDeviceController', () => {
   });
   it('maps validation to the declared 400 response', async () => {
     const r = reply();
-    await new CliDeviceController({ authorize: vi.fn() }).authorize(
-      {},
+    await new CliDeviceController({
+      authorize: vi.fn(),
+      poll: vi.fn(),
+    }).authorize({}, { ip: '127.0.0.1' } as never, r as never);
+    expect(r.status).toHaveBeenCalledWith(400);
+  });
+  it('does not distinguish an invalid poll from any authorization state', async () => {
+    const r = reply();
+    const port = {
+      authorize: vi.fn(),
+      poll: vi.fn().mockResolvedValue({ kind: 'invalid' as const }),
+    };
+    await new CliDeviceController(port).token(
+      { clientId: 'client', deviceCode: 'code' },
       { ip: '127.0.0.1' } as never,
       r as never,
     );
     expect(r.status).toHaveBeenCalledWith(400);
+    expect(r.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Authorization is pending, denied or expired.',
+        status: 400,
+      }),
+    );
   });
 });

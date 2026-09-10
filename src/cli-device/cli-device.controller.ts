@@ -5,6 +5,10 @@ import {
   CliDeviceCommandValidationError,
   createCliDeviceAuthorizationCommand,
 } from './cli-device-command.js';
+import {
+  CliDeviceTokenCommandValidationError,
+  createCliDeviceTokenCommand,
+} from './cli-device-token-command.js';
 import { CLI_DEVICE_PORT, type CliDevicePort } from './cli-device.port.js';
 
 @Controller('v1/cli/device')
@@ -37,6 +41,43 @@ export class CliDeviceController {
         return sendProblem(reply, {
           type: PROBLEM_TYPES.BAD_REQUEST,
           title: 'CLI device authorization validation failed',
+          status: 400,
+          errors: error.violations,
+        });
+      throw error;
+    }
+  }
+  @Post('token')
+  public async token(
+    @Body() body: unknown,
+    @Req() request: FastifyRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    try {
+      const result = await this.port.poll(
+        createCliDeviceTokenCommand(body),
+        request.ip,
+      );
+      if ('kind' in result && result.kind === 'rate_limited') {
+        reply.header('Retry-After', 5);
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Rate limit exceeded',
+          status: 429,
+        });
+      }
+      if ('kind' in result && result.kind === 'invalid')
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Authorization is pending, denied or expired.',
+          status: 400,
+        });
+      await reply.status(200).send(result);
+    } catch (error) {
+      if (error instanceof CliDeviceTokenCommandValidationError)
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'CLI device token validation failed',
           status: 400,
           errors: error.violations,
         });

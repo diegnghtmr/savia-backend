@@ -32,6 +32,33 @@ export interface CliDeviceStore {
       readonly expiresAt: Date;
     },
   ): Promise<void>;
+  redeem(
+    client: TransactionClient,
+    deviceCodeHash: string,
+    clientId: string,
+    now: Date,
+  ): Promise<
+    | {
+        readonly subjectId: string;
+        readonly scopes: readonly string[];
+        readonly expiresAt: Date;
+      }
+    | undefined
+  >;
+  createToken(
+    client: TransactionClient,
+    record: {
+      readonly tokenHash: string;
+      readonly subjectId: string;
+      readonly scopes: readonly string[];
+      readonly expiresAt: Date;
+      readonly deviceCodeHash: string;
+    },
+  ): Promise<void>;
+  verifyToken(
+    client: TransactionClient,
+    tokenHash: string,
+  ): Promise<{ readonly subjectId: string } | undefined>;
 }
 
 export interface CliDeviceTransaction {
@@ -48,4 +75,24 @@ export interface CliDevicePort {
     | CliDeviceAuthorization
     | { readonly kind: 'rate_limited'; readonly retryAfter: number }
   >;
+  poll(
+    command: CliDeviceTokenCommand,
+    ip: string,
+  ): Promise<
+    | CliDeviceTokenResponse
+    | { readonly kind: 'rate_limited' }
+    | { readonly kind: 'invalid' }
+  >;
+}
+
+export interface CliDeviceTokenCommand {
+  readonly clientId: string;
+  readonly deviceCode: string;
+}
+
+export interface CliDeviceTokenResponse {
+  readonly accessToken: string;
+  readonly tokenType: 'Bearer';
+  readonly expiresIn: number;
+  readonly scope: string;
 }

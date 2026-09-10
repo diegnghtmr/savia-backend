@@ -35,4 +35,57 @@ export class PostgresCliDeviceAdapter implements CliDeviceStore {
       ],
     );
   }
+  public async redeem(
+    client: TransactionClient,
+    deviceCodeHash: string,
+    clientId: string,
+    now: Date,
+  ) {
+    const result = await client.query<{
+      subject_id: string;
+      scopes: string[];
+      expires_at: Date;
+    }>(
+      `select subject_id, scopes, expires_at
+       from public.redeem_cli_device_authorization($1, $2, $3)`,
+      [deviceCodeHash, clientId, now],
+    );
+    const row = result.rows[0];
+    return row === undefined
+      ? undefined
+      : {
+          subjectId: row.subject_id,
+          scopes: row.scopes,
+          expiresAt: row.expires_at,
+        };
+  }
+  public async createToken(
+    client: TransactionClient,
+    record: {
+      readonly tokenHash: string;
+      readonly subjectId: string;
+      readonly scopes: readonly string[];
+      readonly expiresAt: Date;
+      readonly deviceCodeHash: string;
+    },
+  ): Promise<void> {
+    await client.query(
+      `select public.insert_cli_device_token($1, $2, $3, $4, $5)`,
+      [
+        record.tokenHash,
+        record.subjectId,
+        record.scopes,
+        record.expiresAt,
+        record.deviceCodeHash,
+      ],
+    );
+  }
+  public async verifyToken(client: TransactionClient, tokenHash: string) {
+    const result = await client.query<{ subject_id: string }>(
+      'select subject_id from public.verify_cli_device_token($1)',
+      [tokenHash],
+    );
+    const row = result.rows[0];
+    return row === undefined ? undefined : { subjectId: row.subject_id };
+  }
 }
