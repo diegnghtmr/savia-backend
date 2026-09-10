@@ -15,6 +15,7 @@ import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
+import { ArtifactStorageUnavailableError } from '../platform/artifact-storage.port.js';
 import {
   createTransactionCommand,
   TransactionCommandValidationError,
@@ -23,6 +24,7 @@ import {
   RECEIPT_OUTCOMES,
   RECEIPT_PROCESSING_PREFERENCES,
   RECEIPTS_PORT,
+  type ReceiptCreateOutcome,
   type ReceiptsPort,
 } from './receipt.port.js';
 import {
@@ -114,18 +116,31 @@ export class ReceiptsController {
         detail: error instanceof Error ? error.message : undefined,
       });
     }
-    const outcome = await this.port.createReceipt(
-      request.identity.subject,
-      header.workspaceId,
-      {
-        fileName,
-        contentType,
-        bytes,
-        processingPreference: parsedPreference,
-        deviceOcrResult: parsedOcr,
-      },
-      key.key,
-    );
+    let outcome: ReceiptCreateOutcome;
+    try {
+      outcome = await this.port.createReceipt(
+        request.identity.subject,
+        header.workspaceId,
+        {
+          fileName,
+          contentType,
+          bytes,
+          processingPreference: parsedPreference,
+          deviceOcrResult: parsedOcr,
+        },
+        key.key,
+      );
+    } catch (error) {
+      if (error instanceof ArtifactStorageUnavailableError) {
+        void reply.header('retry-after', '5');
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.OUTCOME_UNKNOWN,
+          title: 'Operation outcome is unknown',
+          status: 503,
+        });
+      }
+      throw error;
+    }
     if (outcome.kind === RECEIPT_OUTCOMES.FORBIDDEN)
       return sendProblem(reply, {
         type: PROBLEM_TYPES.FORBIDDEN,

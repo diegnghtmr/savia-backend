@@ -507,9 +507,8 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
       expect(body.errors).toContainEqual(
         expect.objectContaining({
           field: 'dimensions.0',
-          code: 'unsupported',
-          message:
-            "variability dimension is not supported by this deployment's data model",
+          code: 'invalid',
+          message: 'must be a supported report dimension',
         }),
       );
     });

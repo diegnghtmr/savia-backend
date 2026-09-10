@@ -21,6 +21,7 @@ import { AppModule } from '../../src/app.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import {
   ARTIFACT_STORAGE,
+  ArtifactStorageUnavailableError,
   type ArtifactStorage,
 } from '../../src/platform/artifact-storage.port.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
@@ -34,7 +35,10 @@ process.env.JWT_ALGORITHMS = 'RS256';
 
 class MemoryStorage implements ArtifactStorage {
   public readonly paths: string[] = [];
+  public unavailable = false;
   public async upload(path: string): Promise<void> {
+    if (this.unavailable)
+      throw new ArtifactStorageUnavailableError('Storage upload failed.');
     this.paths.push(path);
   }
   public async sign(
@@ -79,6 +83,7 @@ describe('receipts over Fastify multipart HTTP', () => {
   let workspace: string;
   let account: string;
   let foreignWorkspace: string;
+  let storage: MemoryStorage;
 
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
@@ -90,6 +95,7 @@ describe('receipts over Fastify multipart HTTP', () => {
       `insert into public.profiles (id,email,display_name,locale,country_code,timezone,date_format,week_starts_on,number_format,default_currency) values ($1,'receipt-owner@test','Receipt Owner','en','US','UTC','YYYY-MM-DD',1,'1,234.56','USD'),($2,'receipt-viewer@test','Receipt Viewer','en','US','UTC','YYYY-MM-DD',1,'1,234.56','USD') on conflict (id) do nothing`,
       [subject, viewer],
     );
+    storage = new MemoryStorage();
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(JoseJwtVerifier)
       .useValue({
@@ -101,7 +107,7 @@ describe('receipts over Fastify multipart HTTP', () => {
               : Promise.reject(new Error('rejected')),
       })
       .overrideProvider(ARTIFACT_STORAGE)
-      .useValue(new MemoryStorage())
+      .useValue(storage)
       .compile();
     app = moduleRef.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter({ exposeHeadRoutes: false }),
@@ -119,6 +125,7 @@ describe('receipts over Fastify multipart HTTP', () => {
   });
 
   beforeEach(async () => {
+    storage.unavailable = false;
     workspace = randomUUID();
     foreignWorkspace = randomUUID();
     account = randomUUID();
@@ -236,6 +243,25 @@ describe('receipts over Fastify multipart HTTP', () => {
         })
       ).statusCode,
     ).toBe(422);
+  });
+  it('returns 503 and leaves no receipt or idempotency row when storage fails', async () => {
+    storage.unavailable = true;
+    const key = randomUUID();
+
+    const response = await upload(key);
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers['retry-after']).toBe('5');
+    const receiptRows = await admin.query(
+      'select count(*)::text as count from public.receipts where workspace_id = $1',
+      [workspace],
+    );
+    expect(receiptRows.rows[0].count).toBe('0');
+    const idempotencyRows = await admin.query(
+      'select count(*)::text as count from public.command_idempotency_records where subject_id = $1 and route = $2 and idempotency_key = $3 and workspace_id = $4',
+      [subject, 'POST /v1/receipts', key, workspace],
+    );
+    expect(idempotencyRows.rows[0].count).toBe('0');
   });
   it('rejects invalid confidence and accepts unknown OCR fields', async () => {
     expect(
