@@ -235,31 +235,29 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
     }
   });
   it.each([
-    ['an account from a workspace outside the grant', outsideAccount],
-    ['an account that does not exist', randomUUID()],
-  ])(
-    'rejects a direct RLS insert naming %s',
-    async (_description, accountId) => {
-      const client = await admin.connect();
-      try {
-        await client.query('begin');
-        await client.query('set local role savia_application');
-        await client.query('select set_config($1, $2, true)', [
-          'app.subject_id',
-          owner,
-        ]);
-        await expect(
-          client.query(
-            `insert into public.mcp_grants (subject_id,client_name,scopes,workspace_ids,account_ids) values ($1,'direct-account',array['accounts:read'],array[$2::uuid],array[$3::uuid])`,
-            [owner, workspace, accountId],
-          ),
-        ).rejects.toMatchObject({ code: '42501' });
-        await client.query('rollback');
-      } finally {
-        client.release();
-      }
-    },
-  );
+    ['an account from a workspace outside the grant', 'outside'],
+    ['an account that does not exist', 'unknown'],
+  ])('rejects a direct RLS insert naming %s', async (_description, kind) => {
+    const accountId = kind === 'outside' ? outsideAccount : randomUUID();
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query('select set_config($1, $2, true)', [
+        'app.subject_id',
+        owner,
+      ]);
+      await expect(
+        client.query(
+          `insert into public.mcp_grants (subject_id,client_name,scopes,workspace_ids,account_ids) values ($1,'direct-account',array['accounts:read'],array[$2::uuid],array[$3::uuid])`,
+          [owner, workspace, accountId],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
   it('allows direct RLS inserts with null or empty account restrictions', async () => {
     const client = await admin.connect();
     try {
