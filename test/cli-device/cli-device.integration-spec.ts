@@ -81,7 +81,7 @@ describe('CLI device authorization', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/cli/device/authorize',
-      payload: authorizationPayload('integration-cli-hash', ['read']),
+      payload: authorizationPayload('integration-cli-hash', ['accounts:read']),
     });
     expect(response.statusCode).toBe(200);
     const body = decode(response) as {
