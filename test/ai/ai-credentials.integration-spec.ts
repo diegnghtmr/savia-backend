@@ -1,4 +1,4 @@
-// Migration under test: 202609060007_ai_credentials.sql
+// Migrations under test: 202609060007_ai_credentials.sql, 202609060015_ai_credential_owner_required.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -154,7 +154,7 @@ describe('AI credentials over Fastify HTTP and disposable PostgreSQL', () => {
     expect(credentials.statusCode).toBe(200);
     expect(JSON.parse(credentials.payload)).toEqual([]);
   });
-  it('creates, replays, updates, revokes, and sets a default without returning plaintext', async () => {
+  it('creates, replays, updates, revokes, and returns creator ownership without plaintext', async () => {
     const secret = 'sk-secret-1234';
     const createKey = key();
     const created = await request(
@@ -168,8 +168,10 @@ describe('AI credentials over Fastify HTTP and disposable PostgreSQL', () => {
     const metadata = JSON.parse(created.payload) as {
       id: string;
       maskedIdentifier: string;
+      ownerSubjectId: string | null;
     };
     expect(metadata.maskedIdentifier).toBe('••••1234');
+    expect(metadata.ownerSubjectId).toBe(owner);
     expect(created.payload).not.toContain(secret);
     const replay = await request(
       'POST',
@@ -230,7 +232,7 @@ describe('AI credentials over Fastify HTTP and disposable PostgreSQL', () => {
           credentialId: metadata.id,
         })
       ).statusCode,
-    ).toBe(204);
+    ).toBe(409);
     expect(
       (
         await request(
@@ -309,6 +311,30 @@ describe('AI credentials over Fastify HTTP and disposable PostgreSQL', () => {
         )
       ).statusCode,
     ).toBe(404);
+    expect(
+      (
+        await request(
+          'PATCH',
+          `/v1/ai/credentials/${id}`,
+          'other',
+          key(),
+          { replacementSecret: 'stolen-secret' },
+          workspace,
+          '"0"',
+        )
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (await request('DELETE', `/v1/ai/credentials/${id}`, 'other')).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await request('PUT', '/v1/ai/default-model', 'other', key(), {
+          modelRef: 'openai:gpt-5',
+          credentialId: id,
+        })
+      ).statusCode,
+    ).toBe(409);
   });
   it('applies the same RLS boundary to workspace-owned credentials', async () => {
     const created = await request(
@@ -326,7 +352,17 @@ describe('AI credentials over Fastify HTTP and disposable PostgreSQL', () => {
     expect(created.statusCode).toBe(201);
     expect(
       JSON.parse((await request('GET', '/v1/ai/credentials')).payload),
-    ).toEqual([expect.objectContaining({ ownerType: 'workspace' })]);
+    ).toEqual([
+      expect.objectContaining({ ownerType: 'workspace', ownerSubjectId: null }),
+    ]);
+    expect(
+      (
+        await request('PUT', '/v1/ai/default-model', 'owner', key(), {
+          modelRef: 'openai-compatible:gpt-5',
+          credentialId: JSON.parse(created.payload).id,
+        })
+      ).statusCode,
+    ).toBe(204);
     expect(
       JSON.parse(
         (
@@ -376,6 +412,18 @@ describe('AI credentials over Fastify HTTP and disposable PostgreSQL', () => {
         })
       ).statusCode,
     ).toBe(409);
+  });
+
+  it('rejects orphaned user credentials at the database constraint', async () => {
+    await expect(
+      admin.query(
+        "insert into public.ai_credentials (id,workspace_id,owner_type,provider_id,credential_type,encrypted_secret,masked_identifier) values ($1,$2,'user','openai','api_key','cipher','••••')",
+        [randomUUID(), workspace],
+      ),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'ai_credentials_owner_required',
+    });
   });
   it('maps a duplicate alias during update to 409', async () => {
     const first = await request(
