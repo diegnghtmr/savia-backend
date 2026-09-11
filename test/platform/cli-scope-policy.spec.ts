@@ -20,6 +20,7 @@ const root = process.cwd();
 const authority = resolve(root, '../../docs/savia-openapi.yaml');
 const mirror = resolve(root, 'openapi/savia.openapi.yaml');
 const validScopes = new Set(Object.values(SAVIA_SCOPES));
+type PolicyEntry = [string, readonly SaviaScope[]];
 const routeEnvironment = {
   JWT_ISSUER: 'https://issuer.example.test',
   JWT_AUDIENCE: 'savia-api',
@@ -81,20 +82,20 @@ describe('CLI scope policy parity', () => {
   it('matches every CLI security requirement in the authority', () => {
     const authorityOperations = cliOperations(bundle(authority));
     const mirrorOperations = cliOperations(bundle(mirror));
-    const expected = authorityOperations
-      .map(({ method, path, scopes }) => [
-        `${method} ${fastifyPath(path)}`,
-        scopes,
-      ])
+    const expected: PolicyEntry[] = authorityOperations
+      .map(
+        ({ method, path, scopes }) =>
+          [`${method} ${fastifyPath(path)}`, scopes] as PolicyEntry,
+      )
       .sort(([left], [right]) => left.localeCompare(right));
-    const mirrored = mirrorOperations
-      .map(({ method, path, scopes }) => [
-        `${method} ${fastifyPath(path)}`,
-        scopes,
-      ])
+    const mirrored: PolicyEntry[] = mirrorOperations
+      .map(
+        ({ method, path, scopes }) =>
+          [`${method} ${fastifyPath(path)}`, scopes] as PolicyEntry,
+      )
       .sort(([left], [right]) => left.localeCompare(right));
-    const actual = [...CLI_SCOPE_POLICY.entries()]
-      .map(([key, scopes]) => [key, [...scopes]])
+    const actual: PolicyEntry[] = [...CLI_SCOPE_POLICY.entries()]
+      .map(([key, scopes]) => [key, [...scopes]] as PolicyEntry)
       .sort(([left], [right]) => left.localeCompare(right));
 
     expect(actual).toEqual(expected);

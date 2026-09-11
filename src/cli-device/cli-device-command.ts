@@ -7,7 +7,7 @@ import { SAVIA_SCOPES } from '../platform/savia-scopes.js';
 import type { CliDeviceAuthorizationCommand } from './cli-device.port.js';
 
 const FIELDS = ['clientId', 'scopes'] as const;
-const VALID_SCOPES = new Set(Object.values(SAVIA_SCOPES));
+const VALID_SCOPES: ReadonlySet<string> = new Set(Object.values(SAVIA_SCOPES));
 export class CliDeviceCommandValidationError extends Error {
   public constructor(public readonly violations: readonly FieldViolation[]) {
     super('CLI device authorization validation failed.');
