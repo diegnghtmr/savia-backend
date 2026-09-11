@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 
 describe('CliTokenVerifier', () => {
+  // Covers migration 202609100014_cli_token_scopes.sql.
   it('returns the subject and scopes from the active token record', async () => {
     const query = vi.fn().mockResolvedValue({
       rows: [{ subject_id: 'subject', scopes: ['accounts:read'] }],

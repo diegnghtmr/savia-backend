@@ -56,6 +56,7 @@ describe('JoseJwtVerifier', () => {
     const verifier = await verifierFor([await publicJwk(signingKey, 'key-1')]);
     await expect(verifier.verify(await token(signingKey))).resolves.toEqual({
       subject: 'subject-123',
+      authMethod: 'session',
     });
     await expectUnauthorized(verifier.verify('not-a-jwt'));
   });
