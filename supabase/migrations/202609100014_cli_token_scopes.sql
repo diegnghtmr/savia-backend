@@ -15,8 +15,7 @@ language sql security definer set search_path = pg_catalog, public as $$
 $$;
 
 alter function public.verify_cli_device_token(text) owner to savia_elevated;
-revoke all on public.cli_device_tokens from savia_elevated;
-grant select (token_hash, subject_id, scopes, status, expires_at)
+grant select (scopes)
   on public.cli_device_tokens to savia_elevated;
 
 revoke all on function public.verify_cli_device_token(text) from public;
