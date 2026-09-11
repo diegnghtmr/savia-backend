@@ -69,11 +69,16 @@ stable
 security definer
 set search_path = pg_catalog, public
 as $$
-  select account_ids is null
-    or cardinality(account_ids) = 0
-    or (
-      cardinality(workspace_ids) > 0
-      and not exists (
+  select coalesce(cardinality(workspace_ids), 0) > 0
+    and not exists (
+      select 1
+      from unnest(workspace_ids) as requested(workspace_id)
+      where public.workspace_actor_active_role(requested.workspace_id) is null
+    )
+    and (
+      account_ids is null
+      or cardinality(account_ids) = 0
+      or not exists (
         select 1
         from unnest(account_ids) as requested(account_id)
         where not exists (

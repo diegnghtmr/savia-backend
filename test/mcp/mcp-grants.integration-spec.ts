@@ -234,6 +234,25 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
       client.release();
     }
   });
+  it('hides a foreign account from a direct application predicate call', async () => {
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query('select set_config($1, $2, true)', [
+        'app.subject_id',
+        owner,
+      ]);
+      const result = await client.query<{ allowed: boolean }>(
+        'select public.mcp_grant_accounts_within_workspaces($1::uuid[], $2::uuid[]) as allowed',
+        [[outsideAccount], [foreignWorkspace]],
+      );
+      expect(result.rows[0]?.allowed).toBe(false);
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
+  });
   it.each([
     ['an account from a workspace outside the grant', 'outside'],
     ['an account that does not exist', 'unknown'],
