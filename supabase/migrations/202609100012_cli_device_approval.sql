@@ -87,9 +87,6 @@ create policy cli_device_authorizations_approve on public.cli_device_authorizati
   );
 
 grant usage, create on schema public to savia_elevated;
-alter function public.insert_cli_device_token(text, uuid, text, text[], timestamptz) owner to postgres;
-alter function public.consume_cli_device_approval_rate_limit(timestamptz) owner to postgres;
-alter function public.approve_cli_device_authorization(text) owner to postgres;
 revoke create on schema public from savia_elevated;
 
 revoke all on function public.consume_cli_device_approval_rate_limit(timestamptz) from public;

@@ -1,4 +1,4 @@
-// Migrations under test: 202609060011_cli_device_token.sql, 202609100012_cli_device_approval.sql
+// Migrations under test: 202609060011_cli_device_token.sql, 202609100012_cli_device_approval.sql, 202609100013_cli_device_elevated_ownership.sql
 import { createHash } from 'node:crypto';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -40,6 +40,73 @@ describe('CLI device token database capability', () => {
       [deviceCodeHash, 'ABCD2345', clientId, expiresAt],
     );
   }
+
+  it('keeps every CLI security-definer function on the non-bypassing owner', async () => {
+    const result = await pool.query<{
+      proname: string;
+      owner: string;
+      rolbypassrls: boolean;
+      rolsuper: boolean;
+    }>(`
+      select procedure.proname,
+             owner.rolname as owner,
+             owner.rolbypassrls,
+             owner.rolsuper
+      from pg_proc procedure
+      join pg_namespace namespace on namespace.oid = procedure.pronamespace
+      join pg_roles owner on owner.oid = procedure.proowner
+      where namespace.nspname = 'public'
+        and procedure.prosecdef
+        and procedure.proname in (
+          'consume_cli_device_rate_limit',
+          'insert_cli_device_token',
+          'approve_cli_device_authorization',
+          'redeem_cli_device_authorization',
+          'verify_cli_device_token',
+          'consume_cli_device_approval_rate_limit'
+        )
+      order by procedure.proname
+    `);
+
+    expect(result.rows).toEqual([
+      {
+        proname: 'approve_cli_device_authorization',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+      {
+        proname: 'consume_cli_device_approval_rate_limit',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+      {
+        proname: 'consume_cli_device_rate_limit',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+      {
+        proname: 'insert_cli_device_token',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+      {
+        proname: 'redeem_cli_device_authorization',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+      {
+        proname: 'verify_cli_device_token',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+    ]);
+  });
 
   it('allows only an authenticated subject to approve a pending unexpired code', async () => {
     await createAuthorization('2999-01-01T00:00:00Z');
