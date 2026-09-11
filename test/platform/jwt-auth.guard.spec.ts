@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { JwtAuthGuard } from '../../src/platform/jwt-auth.guard.js';
 
-function context(authorization: string) {
-  const request = { headers: { authorization } } as {
+function context(
+  authorization: string,
+  route = '/v1/accounts',
+  method = 'GET',
+) {
+  const request = {
+    headers: { authorization },
+    method,
+    routeOptions: { url: route },
+  } as {
     headers: { authorization: string };
+    method: string;
+    routeOptions: { url: string };
     identity?: unknown;
   };
   return {
@@ -40,15 +50,46 @@ describe('JwtAuthGuard additive CLI scheme', () => {
       verify: vi.fn().mockResolvedValue({
         subject: 'cli-subject',
         authMethod: 'cli_token',
+        scopes: [],
       }),
     };
     const guard = new JwtAuthGuard(jwt as never, cli as never);
     const pair = context('Bearer svt_opaque');
-    await expect(guard.canActivate(pair.context as never)).resolves.toBe(true);
+    await expect(
+      guard.canActivate(pair.context as never),
+    ).rejects.toBeInstanceOf(ForbiddenException);
     expect(pair.request.identity).toEqual({
       subject: 'cli-subject',
       authMethod: 'cli_token',
+      scopes: [],
     });
     expect(jwt.verify).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for a CLI token on an unmapped route', async () => {
+    const jwt = { verify: vi.fn() };
+    const cli = {
+      verify: vi.fn().mockResolvedValue({
+        subject: 'cli-subject',
+        authMethod: 'cli_token',
+        scopes: [],
+      }),
+    };
+    const guard = new JwtAuthGuard(jwt as never, cli as never);
+
+    await expect(
+      guard.canActivate(context('Bearer svt_opaque').context as never),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(jwt.verify).not.toHaveBeenCalled();
+  });
+
+  it('keeps revoked or expired CLI tokens as unauthorized', async () => {
+    const jwt = { verify: vi.fn() };
+    const cli = { verify: vi.fn().mockRejectedValue(new Error('revoked')) };
+    const guard = new JwtAuthGuard(jwt as never, cli as never);
+
+    await expect(
+      guard.canActivate(context('Bearer svt_revoked').context as never),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 });

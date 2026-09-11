@@ -13,6 +13,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Supabase Auth session JWT.
+    cliTokenAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: svt_opaque
+      description: Savia-issued opaque CLI access token, prefixed svt_, scoped, revocable, expiring and stored as a SHA-256 hash.
     mcpOAuth:
       type: oauth2
       description: OAuth 2.1 authorization used by remote MCP clients. The MCP transport itself is not described by this OpenAPI document.
