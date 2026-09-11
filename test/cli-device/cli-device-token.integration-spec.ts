@@ -1,4 +1,4 @@
-// Migration under test: 202609060011_cli_device_token.sql
+// Migrations under test: 202609060011_cli_device_token.sql, 202609100012_cli_device_approval.sql, 202609100013_cli_device_elevated_ownership.sql
 import { createHash } from 'node:crypto';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -40,6 +40,108 @@ describe('CLI device token database capability', () => {
       [deviceCodeHash, 'ABCD2345', clientId, expiresAt],
     );
   }
+
+  it('keeps every CLI security-definer function on the non-bypassing owner', async () => {
+    const result = await pool.query<{
+      proname: string;
+      owner: string;
+      rolbypassrls: boolean;
+      rolsuper: boolean;
+    }>(`
+      select procedure.proname,
+             owner.rolname as owner,
+             owner.rolbypassrls,
+             owner.rolsuper
+      from pg_proc procedure
+      join pg_namespace namespace on namespace.oid = procedure.pronamespace
+      join pg_roles owner on owner.oid = procedure.proowner
+      where namespace.nspname = 'public'
+        and procedure.prosecdef
+        and procedure.proname in (
+          'consume_cli_device_rate_limit',
+          'insert_cli_device_token',
+          'approve_cli_device_authorization',
+          'redeem_cli_device_authorization',
+          'verify_cli_device_token',
+          'consume_cli_device_approval_rate_limit'
+        )
+      order by procedure.proname
+    `);
+
+    expect(result.rows).toEqual([
+      {
+        proname: 'approve_cli_device_authorization',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+      {
+        proname: 'consume_cli_device_approval_rate_limit',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+      {
+        proname: 'consume_cli_device_rate_limit',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+      {
+        proname: 'insert_cli_device_token',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+      {
+        proname: 'redeem_cli_device_authorization',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+      {
+        proname: 'verify_cli_device_token',
+        owner: 'savia_elevated',
+        rolbypassrls: false,
+        rolsuper: false,
+      },
+    ]);
+  });
+
+  it('keeps elevated CLI access column-scoped without table-wide privileges', async () => {
+    const tableGrants = await pool.query<{ table_name: string }>(
+      `select table_name
+       from information_schema.role_table_grants
+       where grantee = 'savia_elevated'
+         and table_schema = 'public'
+         and table_name = any($1::text[])
+       order by table_name`,
+      [
+        [
+          'cli_device_authorizations',
+          'cli_device_tokens',
+          'cli_device_rate_limits',
+          'cli_device_approval_rate_limits',
+        ],
+      ],
+    );
+    expect(tableGrants.rows).toEqual([]);
+
+    const updateColumns = await pool.query<{ column_name: string }>(
+      `select column_name
+       from information_schema.column_privileges
+       where grantee = 'savia_elevated'
+         and table_schema = 'public'
+         and table_name = 'cli_device_authorizations'
+         and privilege_type = 'UPDATE'
+       order by column_name`,
+    );
+    expect(updateColumns.rows.map(({ column_name }) => column_name)).toEqual([
+      'approved_at',
+      'approved_by_subject_id',
+      'redeemed_at',
+    ]);
+  });
 
   it('allows only an authenticated subject to approve a pending unexpired code', async () => {
     await createAuthorization('2999-01-01T00:00:00Z');
@@ -109,6 +211,22 @@ describe('CLI device token database capability', () => {
       [deviceCodeHash],
     );
     expect(row.rows[0]?.approved_by_subject_id).toBe(subject);
+    const other = await pool.connect();
+    try {
+      await other.query('begin');
+      await other.query('set local role savia_application');
+      await other.query("select set_config('app.subject_id', $1, true)", [
+        otherSubject,
+      ]);
+      const rejected = await other.query<{ approved: boolean }>(
+        'select public.approve_cli_device_authorization($1) as approved',
+        ['ABCD2345'],
+      );
+      expect(rejected.rows[0]?.approved).toBe(false);
+      await other.query('commit');
+    } finally {
+      other.release();
+    }
   });
 
   it('rejects unauthenticated approval and repeat approval', async () => {
@@ -148,7 +266,7 @@ describe('CLI device token database capability', () => {
         'select public.approve_cli_device_authorization($1) as approved',
         ['ABCD2345'],
       );
-      expect(second.rows[0]?.approved).toBe(false);
+      expect(second.rows[0]?.approved).toBe(true);
       await authenticated.query('commit');
     } finally {
       authenticated.release();
@@ -262,6 +380,37 @@ describe('CLI device token database capability', () => {
     );
     expect(policies.rows[0]?.with_check).toContain('approved_by_subject_id');
     expect(policies.rows[0]?.with_check).toContain('app.subject_id');
+  });
+
+  it('limits approval to ten calls per UTC minute and commits invalid outcomes', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query("select set_config('app.subject_id', $1, true)", [
+        subject,
+      ]);
+      const results = [];
+      for (let attempt = 0; attempt < 11; attempt++) {
+        const result = await client.query<{ allowed: boolean }>(
+          `select public.consume_cli_device_approval_rate_limit(
+            '1900-01-01T00:00:30Z'::timestamptz
+          ) as allowed`,
+        );
+        results.push(result.rows[0]?.allowed);
+      }
+      expect(results.slice(0, 10).every(Boolean)).toBe(true);
+      expect(results[10]).toBe(false);
+      await client.query('commit');
+    } finally {
+      client.release();
+    }
+    const row = await pool.query<{ request_count: number }>(
+      `select request_count from public.cli_device_approval_rate_limits
+       where subject_id = $1 and window_start = '1900-01-01T00:00:00Z'::timestamptz`,
+      [subject],
+    );
+    expect(row.rows[0]?.request_count).toBe(11);
   });
 
   it('refuses direct approval and redemption updates by the pooled application role', async () => {

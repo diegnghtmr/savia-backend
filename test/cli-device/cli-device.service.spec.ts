@@ -10,6 +10,12 @@ import type {
 class Tx implements CliDeviceTransaction {
   public returned = 0;
   public thrown = 0;
+  public async run<T>(
+    _subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.runAnonymous(callback);
+  }
   public async runAnonymous<T>(
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T> {
@@ -35,6 +41,8 @@ class Store implements CliDeviceStore {
     | { subjectId: string; scopes: readonly string[]; expiresAt: Date }
     | undefined;
   public tokenRecord: Record<string, unknown> | undefined;
+  public approval = true;
+  public approvalRateLimit = true;
   public async redeem(): Promise<typeof this.redemption> {
     return this.redemption;
   }
@@ -46,6 +54,12 @@ class Store implements CliDeviceStore {
   }
   public async verifyToken(): Promise<undefined> {
     return undefined;
+  }
+  public async consumeApprovalRateLimit(): Promise<boolean> {
+    return this.approvalRateLimit;
+  }
+  public async approve(): Promise<boolean> {
+    return this.approval;
   }
   public async consumeRateLimit(): Promise<boolean> {
     this.rateLimitCalls++;
@@ -203,7 +217,7 @@ describe('CliDeviceService', () => {
     if ('kind' in result) throw new Error('unexpected poll outcome');
     expect(result).toMatchObject({
       tokenType: 'Bearer',
-      expiresIn: 600,
+      expiresIn: 2592000,
       scope: 'transactions:read',
     });
     expect(result.accessToken.startsWith('svt_')).toBe(true);
@@ -225,5 +239,45 @@ describe('CliDeviceService', () => {
     ).resolves.toEqual({ kind: 'invalid' });
     expect(tx.returned).toBe(1);
     expect(tx.thrown).toBe(0);
+  });
+  it('returns a committed invalid approval so the rate-limit charge persists', async () => {
+    const tx = new Tx();
+    const store = new Store();
+    store.approval = false;
+    const service = new CliDeviceService(
+      tx,
+      store,
+      CliDeviceConfig.fromEnvironment({
+        CLI_DEVICE_VERIFICATION_URI: 'https://app.test/device',
+      }),
+    );
+    await expect(
+      service.approve('00000000-0000-0000-0000-000000000001', {
+        userCode: 'ABCD2345',
+      }),
+    ).resolves.toEqual({ kind: 'invalid' });
+    expect(tx.returned).toBe(1);
+    expect(tx.thrown).toBe(0);
+  });
+  it('issues tokens for exactly 30 days from issuance, not device-code expiry', async () => {
+    const tx = new Tx();
+    const store = new Store();
+    store.redemption = {
+      subjectId: 'subject',
+      scopes: [],
+      expiresAt: new Date('2026-01-01T00:10:00Z'),
+    };
+    const service = new CliDeviceService(
+      tx,
+      store,
+      CliDeviceConfig.fromEnvironment({
+        CLI_DEVICE_VERIFICATION_URI: 'https://app.test/device',
+      }),
+      () => new Date('2026-01-01T00:00:00Z'),
+    );
+    await service.poll({ clientId: 'cli', deviceCode: 'device-secret' }, 'ip');
+    expect(store.tokenRecord?.expiresAt).toEqual(
+      new Date('2026-01-31T00:00:00Z'),
+    );
   });
 });

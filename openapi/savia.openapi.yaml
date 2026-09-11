@@ -2511,6 +2511,17 @@ components:
         clientId: { type: string }
         scopes: { type: array, items: { type: string }, uniqueItems: true }
       additionalProperties: false
+    CliDeviceApprovalRequest:
+      type: object
+      required: [userCode]
+      properties:
+        userCode:
+          {
+            type: string,
+            maxLength: 16,
+            description: 'Device user code. Case, hyphens and whitespace are ignored; it normalizes to 8 characters from ABCDEFGHJKLMNPQRSTUVWXYZ23456789.',
+          }
+      additionalProperties: false
     CliDeviceAuthorization:
       type: object
       required: [deviceCode, userCode, verificationUri, expiresIn, interval]
@@ -2535,9 +2546,13 @@ components:
       properties:
         accessToken: { type: string }
         tokenType: { type: string, const: Bearer }
-        expiresIn: { type: integer, minimum: 1 }
+        expiresIn:
+          {
+            type: integer,
+            minimum: 1,
+            description: '30 days (2592000 seconds) from issuance, independent of the 10-minute device-code lifetime; no refresh token is issued.',
+          }
         scope: { type: string }
-        refreshToken: { type: string }
       additionalProperties: false
     AgentMessageRequest:
       type: object
@@ -7889,6 +7904,32 @@ paths:
         '400': { description: 'Authorization is pending, denied or expired.' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
       security: []
+  /v1/cli/device/approve:
+    post:
+      operationId: approveCliDeviceAuthorization
+      summary: Approve CLI device authorization
+      description: Approve a pending CLI device authorization using the authenticated session subject. Re-approval by the same subject also succeeds with 204. This endpoint is limited to 10 attempts per minute per subject.
+      tags: [CLI Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CliDeviceApprovalRequest' }
+      responses:
+        '204':
+          description: Device authorization approved, including re-approval by the same subject.
+        '400':
+          description: One fixed, indistinguishable outcome for an unknown, expired, already-approved-by-another or redeemed code, or for invalid request-body shape.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: A CLI token can never approve a device authorization.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /v1/mcp/grants:
     get:
       operationId: listMcpGrants

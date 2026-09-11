@@ -14,6 +14,26 @@ export class PostgresCliDeviceAdapter implements CliDeviceStore {
     );
     return result.rows[0]?.allowed ?? false;
   }
+  public async consumeApprovalRateLimit(
+    client: TransactionClient,
+    now: Date,
+  ): Promise<boolean> {
+    const result = await client.query<{ allowed: boolean }>(
+      'select public.consume_cli_device_approval_rate_limit($1) as allowed',
+      [now],
+    );
+    return result.rows[0]?.allowed ?? false;
+  }
+  public async approve(
+    client: TransactionClient,
+    userCode: string,
+  ): Promise<boolean> {
+    const result = await client.query<{ approved: boolean }>(
+      'select public.approve_cli_device_authorization($1) as approved',
+      [userCode],
+    );
+    return result.rows[0]?.approved ?? false;
+  }
   public async create(
     client: TransactionClient,
     record: {
@@ -74,9 +94,9 @@ export class PostgresCliDeviceAdapter implements CliDeviceStore {
       [
         record.tokenHash,
         record.subjectId,
+        record.deviceCodeHash,
         record.scopes,
         record.expiresAt,
-        record.deviceCodeHash,
       ],
     );
   }

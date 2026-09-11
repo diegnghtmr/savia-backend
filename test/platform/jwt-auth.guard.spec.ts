@@ -37,12 +37,18 @@ describe('JwtAuthGuard additive CLI scheme', () => {
   it('uses the opaque scheme only for the recognizable prefix', async () => {
     const jwt = { verify: vi.fn() };
     const cli = {
-      verify: vi.fn().mockResolvedValue({ subject: 'cli-subject' }),
+      verify: vi.fn().mockResolvedValue({
+        subject: 'cli-subject',
+        authMethod: 'cli_token',
+      }),
     };
     const guard = new JwtAuthGuard(jwt as never, cli as never);
     const pair = context('Bearer svt_opaque');
     await expect(guard.canActivate(pair.context as never)).resolves.toBe(true);
-    expect(pair.request.identity).toEqual({ subject: 'cli-subject' });
+    expect(pair.request.identity).toEqual({
+      subject: 'cli-subject',
+      authMethod: 'cli_token',
+    });
     expect(jwt.verify).not.toHaveBeenCalled();
   });
 });

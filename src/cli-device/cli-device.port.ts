@@ -7,6 +7,10 @@ export interface CliDeviceAuthorizationCommand {
   readonly scopes: readonly string[];
 }
 
+export interface CliDeviceApprovalCommand {
+  readonly userCode: string;
+}
+
 export interface CliDeviceAuthorization {
   readonly deviceCode: string;
   readonly userCode: string;
@@ -22,6 +26,11 @@ export interface CliDeviceStore {
     ip: string,
     now: Date,
   ): Promise<boolean>;
+  consumeApprovalRateLimit(
+    client: TransactionClient,
+    now: Date,
+  ): Promise<boolean>;
+  approve(client: TransactionClient, userCode: string): Promise<boolean>;
   create(
     client: TransactionClient,
     record: {
@@ -62,6 +71,10 @@ export interface CliDeviceStore {
 }
 
 export interface CliDeviceTransaction {
+  run<T>(
+    subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T>;
   runAnonymous<T>(
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T>;
@@ -73,6 +86,14 @@ export interface CliDevicePort {
     ip: string,
   ): Promise<
     | CliDeviceAuthorization
+    | { readonly kind: 'rate_limited'; readonly retryAfter: number }
+  >;
+  approve(
+    subject: string,
+    command: CliDeviceApprovalCommand,
+  ): Promise<
+    | { readonly kind: 'approved' }
+    | { readonly kind: 'invalid' }
     | { readonly kind: 'rate_limited'; readonly retryAfter: number }
   >;
   poll(
