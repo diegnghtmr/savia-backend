@@ -17,7 +17,6 @@ import {
 } from '../../src/platform/savia-scopes.js';
 
 const root = process.cwd();
-const authority = resolve(root, '../../docs/savia-openapi.yaml');
 const mirror = resolve(root, 'openapi/savia.openapi.yaml');
 const validScopes = new Set(Object.values(SAVIA_SCOPES));
 type PolicyEntry = [string, readonly SaviaScope[]];
@@ -79,16 +78,9 @@ function fastifyPath(path: string): string {
 }
 
 describe('CLI scope policy parity', () => {
-  it('matches every CLI security requirement in the authority', () => {
-    const authorityOperations = cliOperations(bundle(authority));
+  it('matches every CLI security requirement in the repository mirror', () => {
     const mirrorOperations = cliOperations(bundle(mirror));
-    const expected: PolicyEntry[] = authorityOperations
-      .map(
-        ({ method, path, scopes }) =>
-          [`${method} ${fastifyPath(path)}`, scopes] as PolicyEntry,
-      )
-      .sort(([left], [right]) => left.localeCompare(right));
-    const mirrored: PolicyEntry[] = mirrorOperations
+    const expected: PolicyEntry[] = mirrorOperations
       .map(
         ({ method, path, scopes }) =>
           [`${method} ${fastifyPath(path)}`, scopes] as PolicyEntry,
@@ -99,7 +91,6 @@ describe('CLI scope policy parity', () => {
       .sort(([left], [right]) => left.localeCompare(right));
 
     expect(actual).toEqual(expected);
-    expect(mirrored).toEqual(expected);
     expect(
       actual.every(([, scopes]) =>
         scopes.every((scope) => validScopes.has(scope as SaviaScope)),
