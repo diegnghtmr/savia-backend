@@ -14,6 +14,6 @@ export class CliTokenVerifier {
       return rows.rows[0]?.subject_id;
     });
     if (result === undefined) throw new Error('Invalid CLI token.');
-    return { subject: result };
+    return { subject: result, authMethod: 'cli_token' };
   }
 }

@@ -1,4 +1,4 @@
-// Migration under test: 202609060011_cli_device_token.sql
+// Migrations under test: 202609060011_cli_device_token.sql, 202609100012_cli_device_approval.sql
 import { createHash } from 'node:crypto';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -109,6 +109,22 @@ describe('CLI device token database capability', () => {
       [deviceCodeHash],
     );
     expect(row.rows[0]?.approved_by_subject_id).toBe(subject);
+    const other = await pool.connect();
+    try {
+      await other.query('begin');
+      await other.query('set local role savia_application');
+      await other.query("select set_config('app.subject_id', $1, true)", [
+        otherSubject,
+      ]);
+      const rejected = await other.query<{ approved: boolean }>(
+        'select public.approve_cli_device_authorization($1) as approved',
+        ['ABCD2345'],
+      );
+      expect(rejected.rows[0]?.approved).toBe(false);
+      await other.query('commit');
+    } finally {
+      other.release();
+    }
   });
 
   it('rejects unauthenticated approval and repeat approval', async () => {
@@ -148,7 +164,7 @@ describe('CLI device token database capability', () => {
         'select public.approve_cli_device_authorization($1) as approved',
         ['ABCD2345'],
       );
-      expect(second.rows[0]?.approved).toBe(false);
+      expect(second.rows[0]?.approved).toBe(true);
       await authenticated.query('commit');
     } finally {
       authenticated.release();
@@ -262,6 +278,37 @@ describe('CLI device token database capability', () => {
     );
     expect(policies.rows[0]?.with_check).toContain('approved_by_subject_id');
     expect(policies.rows[0]?.with_check).toContain('app.subject_id');
+  });
+
+  it('limits approval to ten calls per UTC minute and commits invalid outcomes', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query("select set_config('app.subject_id', $1, true)", [
+        subject,
+      ]);
+      const results = [];
+      for (let attempt = 0; attempt < 11; attempt++) {
+        const result = await client.query<{ allowed: boolean }>(
+          `select public.consume_cli_device_approval_rate_limit(
+            '1900-01-01T00:00:30Z'::timestamptz
+          ) as allowed`,
+        );
+        results.push(result.rows[0]?.allowed);
+      }
+      expect(results.slice(0, 10).every(Boolean)).toBe(true);
+      expect(results[10]).toBe(false);
+      await client.query('commit');
+    } finally {
+      client.release();
+    }
+    const row = await pool.query<{ request_count: number }>(
+      `select request_count from public.cli_device_approval_rate_limits
+       where subject_id = $1 and window_start = '1900-01-01T00:00:00Z'::timestamptz`,
+      [subject],
+    );
+    expect(row.rows[0]?.request_count).toBe(11);
   });
 
   it('refuses direct approval and redemption updates by the pooled application role', async () => {

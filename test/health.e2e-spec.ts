@@ -176,6 +176,7 @@ describe('health endpoint', () => {
       'POST /v1/agent/conversations/:conversationId/messages',
       'POST /v1/cli/device/authorize',
       'POST /v1/cli/device/token',
+      'POST /v1/cli/device/approve',
     ]);
 
     await app.close();

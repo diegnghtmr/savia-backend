@@ -3,6 +3,7 @@ import {
   createCliDeviceAuthorizationCommand,
   CliDeviceCommandValidationError,
 } from '../../src/cli-device/cli-device-command.js';
+import { createCliDeviceApprovalCommand } from '../../src/cli-device/cli-device-approval-command.js';
 
 describe('CLI device command', () => {
   it('accepts optional unique scopes and rejects unknown fields', () => {
@@ -26,5 +27,10 @@ describe('CLI device command', () => {
         scopes: ['read', 'read'],
       }),
     ).toThrowError(/validation/);
+  });
+  it('normalizes approval codes by ignoring case, hyphens, and whitespace', () => {
+    expect(createCliDeviceApprovalCommand({ userCode: ' abcd-2345 ' })).toEqual(
+      { userCode: 'ABCD2345' },
+    );
   });
 });

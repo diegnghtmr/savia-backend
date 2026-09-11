@@ -1,4 +1,13 @@
-import { Body, Controller, Inject, Post, Req, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Inject,
+  Post,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import {
@@ -10,6 +19,12 @@ import {
   createCliDeviceTokenCommand,
 } from './cli-device-token-command.js';
 import { CLI_DEVICE_PORT, type CliDevicePort } from './cli-device.port.js';
+import {
+  CliDeviceApprovalCommandValidationError,
+  createCliDeviceApprovalCommand,
+} from './cli-device-approval-command.js';
+import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 
 @Controller('v1/cli/device')
 export class CliDeviceController {
@@ -78,6 +93,46 @@ export class CliDeviceController {
         return sendProblem(reply, {
           type: PROBLEM_TYPES.BAD_REQUEST,
           title: 'CLI device token validation failed',
+          status: 400,
+          errors: error.violations,
+        });
+      throw error;
+    }
+  }
+  @Post('approve')
+  @UseGuards(JwtAuthGuard)
+  public async approve(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    if (request.identity.authMethod === 'cli_token')
+      throw new ForbiddenException();
+    try {
+      const result = await this.port.approve(
+        request.identity.subject,
+        createCliDeviceApprovalCommand(body),
+      );
+      if (result.kind === 'rate_limited') {
+        reply.header('Retry-After', result.retryAfter);
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Rate limit exceeded',
+          status: 429,
+        });
+      }
+      if (result.kind === 'invalid')
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'The user code is invalid or expired.',
+          status: 400,
+        });
+      await reply.status(204).send();
+    } catch (error) {
+      if (error instanceof CliDeviceApprovalCommandValidationError)
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'CLI device approval validation failed',
           status: 400,
           errors: error.violations,
         });

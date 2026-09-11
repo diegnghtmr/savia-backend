@@ -6,15 +6,18 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
+const subject = '00000000-0000-0000-0000-000000000201';
 describe('CLI device authorization', () => {
   let pool: Pool;
   let app: NestFastifyApplication;
+  const jwtVerifier = { verify: vi.fn() };
   beforeAll(async () => {
     Object.assign(process.env, {
       JWT_ISSUER: 'https://issuer.example.test',
@@ -25,9 +28,17 @@ describe('CLI device authorization', () => {
       CLI_DEVICE_VERIFICATION_URI: 'https://app.example.test/device',
     });
     pool = new Pool({ connectionString: url });
+    await pool.query(
+      `insert into auth.users (id, email) values ($1, $2)
+       on conflict (id) do nothing`,
+      [subject, 'cli-approval@example.test'],
+    );
     const ref = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(JoseJwtVerifier)
+      .useValue(jwtVerifier)
+      .compile();
     app = ref.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter({ exposeHeadRoutes: false }),
     );
@@ -224,4 +235,51 @@ describe('CLI device authorization', () => {
       client.release();
     }
   });
+
+  it('approves a device with a session, supports same-subject replay, and issues a token', async () => {
+    jwtVerifier.verify.mockReset().mockResolvedValue({
+      subject,
+      authMethod: 'session',
+    });
+    const authorization = decode(
+      await authorize('integration-cli-approval'),
+    ) as {
+      deviceCode: string;
+      userCode: string;
+    };
+    const approved = await app.inject({
+      method: 'POST',
+      url: '/v1/cli/device/approve',
+      headers: { authorization: 'Bearer session-token' },
+      payload: { userCode: authorization.userCode.toLowerCase() },
+    });
+    expect(approved.statusCode).toBe(204);
+    const replay = await app.inject({
+      method: 'POST',
+      url: '/v1/cli/device/approve',
+      headers: { authorization: 'Bearer session-token' },
+      payload: { userCode: authorization.userCode },
+    });
+    expect(replay.statusCode).toBe(204);
+    const token = await app.inject({
+      method: 'POST',
+      url: '/v1/cli/device/token',
+      payload: {
+        clientId: 'integration-cli-approval',
+        deviceCode: authorization.deviceCode,
+      },
+    });
+    expect(token.statusCode).toBe(200);
+    expect(decode(token).expiresIn).toBe(2592000);
+    const cliApproval = await app.inject({
+      method: 'POST',
+      url: '/v1/cli/device/approve',
+      headers: {
+        authorization: `Bearer ${decode(token).accessToken as string}`,
+      },
+      payload: { userCode: authorization.userCode },
+    });
+    expect(cliApproval.statusCode).toBe(403);
+  });
+
 });
