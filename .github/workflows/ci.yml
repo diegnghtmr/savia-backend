@@ -275,6 +275,9 @@ jobs:
       - name: debts integration
         shell: bash
         run: pnpm test:integration:debts
+      - name: analytics integration
+        shell: bash
+        run: pnpm test:integration:analytics
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

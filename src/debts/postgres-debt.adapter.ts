@@ -1,3 +1,4 @@
+import { DEBT_OUTSTANDING_BALANCE_EXPRESSION } from '../platform/debt-balance-query.js';
 import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
@@ -238,24 +239,7 @@ select
   d.version,
   d.created_at as "createdAt",
   d.updated_at as "updatedAt",
-  greatest(
-    0,
-    d.principal_minor - coalesce(
-      (
-        select sum(dp.principal_minor)
-        from public.debt_payments dp
-        join public.ledger_postings p
-          on p.workspace_id = dp.workspace_id
-         and p.transaction_id = dp.transaction_id
-        where dp.workspace_id = d.workspace_id
-          and dp.debt_id = d.id
-          and p.account_id is not null
-          and p.currency = d.currency
-          and p.status in ('confirmed', 'reconciled')
-      ),
-      0
-    )
-  )::text as "outstandingBalanceMinor"
+  ${DEBT_OUTSTANDING_BALANCE_EXPRESSION}::text as "outstandingBalanceMinor"
 from public.debts d
 where d.workspace_id = $1::uuid
   and d.id = $2::uuid`;
@@ -291,24 +275,7 @@ select
   d.created_at as "createdAt",
   d.updated_at as "updatedAt",
   to_char(d.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt",
-  greatest(
-    0,
-    d.principal_minor - coalesce(
-      (
-        select sum(dp.principal_minor)
-        from public.debt_payments dp
-        join public.ledger_postings p
-          on p.workspace_id = dp.workspace_id
-         and p.transaction_id = dp.transaction_id
-        where dp.workspace_id = d.workspace_id
-          and dp.debt_id = d.id
-          and p.account_id is not null
-          and p.currency = d.currency
-          and p.status in ('confirmed', 'reconciled')
-      ),
-      0
-    )
-  )::text as "outstandingBalanceMinor"
+  ${DEBT_OUTSTANDING_BALANCE_EXPRESSION}::text as "outstandingBalanceMinor"
 from public.debts d
 where d.workspace_id = $1::uuid
   and ($2::timestamptz is null or (d.created_at, d.id) > ($2::timestamptz, $3::uuid))
