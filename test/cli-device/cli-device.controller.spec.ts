@@ -84,6 +84,27 @@ describe('CliDeviceController', () => {
     });
     expect(r.status).toHaveBeenCalledWith(204);
   });
+  it('uses one fixed problem for invalid approval outcomes', async () => {
+    const r = reply();
+    await new CliDeviceController({
+      authorize: vi.fn(),
+      poll: vi.fn(),
+      approve: vi.fn().mockResolvedValue({ kind: 'invalid' as const }),
+    }).approve(
+      { userCode: 'ABCD2345' },
+      {
+        ip: '127.0.0.1',
+        identity: { subject: 'subject', authMethod: 'session' },
+      } as never,
+      r as never,
+    );
+    expect(r.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'The user code is invalid or expired.',
+        status: 400,
+      }),
+    );
+  });
   it('rejects a CLI token from approving a device', async () => {
     const r = reply();
     await expect(
