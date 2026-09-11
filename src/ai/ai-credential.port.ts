@@ -21,6 +21,7 @@ export type CredentialType =
 export interface CredentialMetadata {
   readonly id: string;
   readonly ownerType: OwnerType;
+  readonly ownerSubjectId: string | null;
   readonly providerId: string;
   readonly credentialType: CredentialType | 'oauth';
   readonly maskedIdentifier: string;

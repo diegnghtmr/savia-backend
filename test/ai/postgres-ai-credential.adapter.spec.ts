@@ -6,6 +6,7 @@ const id = '22222222-2222-4222-8222-222222222222';
 const row = {
   id,
   ownerType: 'user' as const,
+  ownerSubjectId: '33333333-3333-4333-8333-333333333333',
   providerId: 'openai',
   credentialType: 'api_key',
   maskedIdentifier: '••••1234',
@@ -96,7 +97,9 @@ describe('PostgresAICredentialAdapter', () => {
       workspace,
       id,
     );
-    const revokeSql = query.mock.calls[1]?.[0] as string;
+    const clearDefaultSql = query.mock.calls[1]?.[0] as string;
+    expect(clearDefaultSql).toContain('delete from public.ai_default_models');
+    const revokeSql = query.mock.calls[2]?.[0] as string;
     expect(revokeSql).toContain('workspace_id=$1::uuid');
     expect(revokeSql).toContain('id=$2::uuid');
     expect(revokeSql).toContain("status<>'revoked'");
@@ -145,6 +148,22 @@ describe('PostgresAICredentialAdapter', () => {
     expect(sql).toContain('workspace_id=$1::uuid');
     expect(sql).toContain('provider_id=$4');
     expect(sql).toContain("status='active'");
+    expect(sql).toContain("owner_type='workspace'");
     expect(values).toEqual([workspace, 'openai:gpt-5', id, 'openai']);
+  });
+
+  it('projects the owner subject only for user-owned credentials', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rows: [{ ...row, ownerSubjectId: row.ownerSubjectId }],
+    });
+    const result = await new PostgresAICredentialAdapter().find(
+      { query } as never,
+      workspace,
+      id,
+    );
+    expect(result?.ownerSubjectId).toBe(row.ownerSubjectId);
+    expect(query.mock.calls[0]?.[0]).toContain(
+      'case when owner_type = \'user\' then created_by_subject_id end as "ownerSubjectId"',
+    );
   });
 });

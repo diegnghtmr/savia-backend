@@ -2170,11 +2170,23 @@ components:
           credentialType,
           maskedIdentifier,
           status,
+          ownerSubjectId,
           createdAt,
         ]
       properties:
         id: { $ref: '#/components/schemas/Uuid' }
         ownerType: { type: string, enum: [user, workspace] }
+        ownerSubjectId:
+          type: [string, 'null']
+          format: uuid
+          readOnly: true
+          description: >-
+            Creator subject ID for ownerType user, or null for ownerType
+            workspace. A user-owned credential is visible and manageable only
+            by its creator; other subjects receive 404. Only workspace-owned
+            credentials can become the workspace default model;
+            setDefaultAIModel answers 409 when an ineligible credential is
+            supplied, matching the backend validation path.
         providerId: { type: string }
         credentialType:
           {

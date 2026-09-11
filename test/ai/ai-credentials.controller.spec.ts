@@ -12,6 +12,7 @@ const key = '44444444-4444-4444-8444-444444444444';
 const credential = {
   id: credentialId,
   ownerType: 'user' as const,
+  ownerSubjectId: subject,
   providerId: 'openai',
   credentialType: 'api_key' as const,
   maskedIdentifier: '••••1234',
