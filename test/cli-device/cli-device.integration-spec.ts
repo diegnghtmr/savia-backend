@@ -281,5 +281,4 @@ describe('CLI device authorization', () => {
     });
     expect(cliApproval.statusCode).toBe(403);
   });
-
 });
