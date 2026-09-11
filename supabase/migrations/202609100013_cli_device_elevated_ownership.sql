@@ -5,6 +5,11 @@ begin;
 -- function reads or writes; savia_application's policies are unchanged.
 grant usage, create on schema public to savia_elevated;
 
+revoke all on public.cli_device_authorizations from savia_elevated;
+revoke all on public.cli_device_tokens from savia_elevated;
+revoke all on public.cli_device_rate_limits from savia_elevated;
+revoke all on public.cli_device_approval_rate_limits from savia_elevated;
+
 grant insert (client_id, ip, window_start, request_count)
   on public.cli_device_rate_limits to savia_elevated;
 grant update (request_count) on public.cli_device_rate_limits to savia_elevated;

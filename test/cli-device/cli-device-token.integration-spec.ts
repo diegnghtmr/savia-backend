@@ -108,6 +108,41 @@ describe('CLI device token database capability', () => {
     ]);
   });
 
+  it('keeps elevated CLI access column-scoped without table-wide privileges', async () => {
+    const tableGrants = await pool.query<{ table_name: string }>(
+      `select table_name
+       from information_schema.role_table_grants
+       where grantee = 'savia_elevated'
+         and table_schema = 'public'
+         and table_name = any($1::text[])
+       order by table_name`,
+      [
+        [
+          'cli_device_authorizations',
+          'cli_device_tokens',
+          'cli_device_rate_limits',
+          'cli_device_approval_rate_limits',
+        ],
+      ],
+    );
+    expect(tableGrants.rows).toEqual([]);
+
+    const updateColumns = await pool.query<{ column_name: string }>(
+      `select column_name
+       from information_schema.column_privileges
+       where grantee = 'savia_elevated'
+         and table_schema = 'public'
+         and table_name = 'cli_device_authorizations'
+         and privilege_type = 'UPDATE'
+       order by column_name`,
+    );
+    expect(updateColumns.rows.map(({ column_name }) => column_name)).toEqual([
+      'approved_at',
+      'approved_by_subject_id',
+      'redeemed_at',
+    ]);
+  });
+
   it('allows only an authenticated subject to approve a pending unexpired code', async () => {
     await createAuthorization('2999-01-01T00:00:00Z');
     const unrelatedHash = createHash('sha256')
