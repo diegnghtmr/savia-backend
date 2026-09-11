@@ -55,6 +55,42 @@ export interface CashFlowAnalytics {
   readonly categories: readonly CategoryBreakdownItem[];
 }
 
+export interface ConvertedFlowRow {
+  readonly type: 'income' | 'expense' | 'refund';
+  readonly amountMinor: bigint;
+  readonly occurredAt: Date;
+}
+
+export interface MonthlyCapacityPoint {
+  readonly month: string;
+  readonly incomeMinor: bigint;
+  readonly expensesMinor: bigint;
+  readonly savingsCapacityMinor: bigint;
+}
+
+export interface IncomeStability {
+  readonly monthsCounted: number;
+  readonly meanMonthlyIncomeMinor: bigint;
+  readonly minMonthlyIncomeMinor: bigint;
+  readonly maxMonthlyIncomeMinor: bigint;
+  readonly coefficientOfVariationPercent: number | null;
+}
+
+export interface QuarterlyAveragePoint {
+  readonly quarter: string;
+  readonly monthsCounted: number;
+  readonly averageMonthlyIncomeMinor: bigint;
+  readonly averageMonthlyExpensesMinor: bigint;
+  readonly averageMonthlySavingsCapacityMinor: bigint;
+  readonly savingsCapacityDeltaPercentVsPreviousQuarter: number | null;
+}
+
+export interface WeekdayHeatmapPoint {
+  readonly weekday: number;
+  readonly transactionCount: number;
+  readonly totalMinor: bigint;
+}
+
 export interface AnalyticsSummaryQuery {
   readonly workspaceId: string;
   readonly from: string;
