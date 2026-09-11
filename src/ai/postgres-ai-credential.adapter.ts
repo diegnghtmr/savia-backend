@@ -92,6 +92,10 @@ export class PostgresAICredentialAdapter implements Store {
     return r.rows[0] ? map(r.rows[0]) : undefined;
   }
   public async revoke(c: TransactionClient, w: string, id: string) {
+    await c.query(
+      'delete from public.ai_default_models where workspace_id=$1::uuid and credential_id=$2::uuid',
+      [w, id],
+    );
     const r = await c.query(
       "update public.ai_credentials set status='revoked',version=version+1,updated_at=now() where workspace_id=$1::uuid and id=$2::uuid and status<>'revoked'",
       [w, id],

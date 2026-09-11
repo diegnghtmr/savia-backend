@@ -97,7 +97,9 @@ describe('PostgresAICredentialAdapter', () => {
       workspace,
       id,
     );
-    const revokeSql = query.mock.calls[1]?.[0] as string;
+    const clearDefaultSql = query.mock.calls[1]?.[0] as string;
+    expect(clearDefaultSql).toContain('delete from public.ai_default_models');
+    const revokeSql = query.mock.calls[2]?.[0] as string;
     expect(revokeSql).toContain('workspace_id=$1::uuid');
     expect(revokeSql).toContain('id=$2::uuid');
     expect(revokeSql).toContain("status<>'revoked'");

@@ -392,6 +392,176 @@ describe('AI credentials over Fastify HTTP and disposable PostgreSQL', () => {
       ),
     ).toEqual([]);
   });
+
+  it('rejects direct defaults for user-owned and foreign-workspace credentials', async () => {
+    const userCredential = randomUUID();
+    const foreignCredential = randomUUID();
+    await admin.query(
+      "insert into public.ai_credentials (id,workspace_id,owner_type,provider_id,credential_type,encrypted_secret,masked_identifier,created_by_subject_id) values ($1,$2,'user','openai','api_key','cipher','••••',$4),($3,$5,'workspace','openai','api_key','cipher','••••',null)",
+      [userCredential, workspace, foreignCredential, owner, foreignWorkspace],
+    );
+    await expect(
+      admin.query(
+        "insert into public.ai_default_models (workspace_id,model_ref,credential_id) values ($1,'openai:gpt-5',$2)",
+        [workspace, userCredential],
+      ),
+    ).rejects.toMatchObject({ code: '23503' });
+    await expect(
+      admin.query(
+        "insert into public.ai_default_models (workspace_id,model_ref,credential_id) values ($1,'openai:gpt-5',$2)",
+        [workspace, foreignCredential],
+      ),
+    ).rejects.toMatchObject({ code: '23503' });
+  });
+
+  it('clears the current default when its credential is revoked', async () => {
+    const created = await request(
+      'POST',
+      '/v1/ai/credentials',
+      'owner',
+      key(),
+      createBody('workspace-secret', {
+        ownerType: 'workspace',
+        alias: 'current',
+      }),
+    );
+    const credentialId = JSON.parse(created.payload).id as string;
+    expect(
+      (
+        await request('PUT', '/v1/ai/default-model', 'owner', key(), {
+          modelRef: 'openai:gpt-5',
+          credentialId,
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(
+      (
+        await admin.query(
+          'select credential_id from public.ai_default_models where workspace_id=$1',
+          [workspace],
+        )
+      ).rows[0].credential_id,
+    ).toBe(credentialId);
+    expect(
+      (await request('DELETE', `/v1/ai/credentials/${credentialId}`, 'owner'))
+        .statusCode,
+    ).toBe(204);
+    expect(
+      (
+        await admin.query(
+          'select credential_id from public.ai_default_models where workspace_id=$1',
+          [workspace],
+        )
+      ).rowCount,
+    ).toBe(0);
+  });
+
+  it('leaves a different current default untouched when another credential is revoked', async () => {
+    const first = await request(
+      'POST',
+      '/v1/ai/credentials',
+      'owner',
+      key(),
+      createBody('first-workspace-secret', {
+        ownerType: 'workspace',
+        alias: 'first',
+      }),
+    );
+    const second = await request(
+      'POST',
+      '/v1/ai/credentials',
+      'owner',
+      key(),
+      createBody('second-workspace-secret', {
+        ownerType: 'workspace',
+        alias: 'second',
+      }),
+    );
+    const firstId = JSON.parse(first.payload).id as string;
+    const secondId = JSON.parse(second.payload).id as string;
+    expect(
+      (
+        await request('PUT', '/v1/ai/default-model', 'owner', key(), {
+          modelRef: 'openai:gpt-5',
+          credentialId: firstId,
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(
+      (await request('DELETE', `/v1/ai/credentials/${secondId}`, 'owner'))
+        .statusCode,
+    ).toBe(204);
+    expect(
+      (
+        await admin.query(
+          'select credential_id from public.ai_default_models where workspace_id=$1',
+          [workspace],
+        )
+      ).rows[0].credential_id,
+    ).toBe(firstId);
+  });
+
+  it('refuses every invalid legacy default category in the migration check', async () => {
+    const { readFileSync } = await import('node:fs');
+    const migration = readFileSync(
+      'supabase/migrations/202609060015_ai_credential_owner_required.sql',
+      'utf8',
+    );
+    const check = migration.match(/do \$\$[\s\S]*?\$\$;/)?.[0];
+    expect(check).toBeDefined();
+    const cases = [
+      { name: 'missing', credentialId: randomUUID(), workspaceId: workspace },
+      {
+        name: 'user-owned',
+        credentialId: randomUUID(),
+        workspaceId: workspace,
+      },
+      { name: 'revoked', credentialId: randomUUID(), workspaceId: workspace },
+      {
+        name: 'foreign workspace',
+        credentialId: randomUUID(),
+        workspaceId: foreignWorkspace,
+      },
+    ];
+    for (const item of cases) {
+      await admin.query('begin');
+      try {
+        await admin.query(
+          'drop trigger enforce_ai_default_active_credential_trigger on public.ai_default_models',
+        );
+        await admin.query(
+          'drop trigger prevent_ai_credential_deactivation_with_default_trigger on public.ai_credentials',
+        );
+        await admin.query(
+          'alter table public.ai_default_models drop constraint if exists ai_default_models_credential_workspace_owner_fkey',
+        );
+        await admin.query(
+          'alter table public.ai_default_models drop constraint if exists ai_default_models_credential_owner_type_check',
+        );
+        if (item.name !== 'missing') {
+          await admin.query(
+            "insert into public.ai_credentials (id,workspace_id,owner_type,provider_id,credential_type,encrypted_secret,masked_identifier,created_by_subject_id,status) values ($1,$2,$3,'openai','api_key','cipher','••••',$4,$5)",
+            [
+              item.credentialId,
+              item.workspaceId,
+              item.name === 'user-owned' ? 'user' : 'workspace',
+              item.name === 'user-owned' ? owner : null,
+              item.name === 'revoked' ? 'revoked' : 'active',
+            ],
+          );
+        }
+        await admin.query(
+          "insert into public.ai_default_models (workspace_id,model_ref,credential_id) values ($1,'openai:gpt-5',$2)",
+          [workspace, item.credentialId],
+        );
+        await expect(admin.query(check as string)).rejects.toThrow(
+          /refused to install: 1 invalid default row/,
+        );
+      } finally {
+        await admin.query('rollback');
+      }
+    }
+  });
   it('reaches declared validation and conflict statuses', async () => {
     expect(
       (
