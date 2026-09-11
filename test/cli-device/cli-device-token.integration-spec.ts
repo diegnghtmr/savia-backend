@@ -1,4 +1,4 @@
-// Migrations under test: 202609060011_cli_device_token.sql, 202609100012_cli_device_approval.sql, 202609100013_cli_device_elevated_ownership.sql
+// Migrations under test: 202609060011_cli_device_token.sql, 202609100012_cli_device_approval.sql, 202609100013_cli_device_elevated_ownership.sql, 202609100015_cli_scope_vocabulary.sql
 import { createHash } from 'node:crypto';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -141,6 +141,36 @@ describe('CLI device token database capability', () => {
       'approved_by_subject_id',
       'redeemed_at',
     ]);
+  });
+
+  it('restricts authorization and token scopes to the Savia vocabulary', async () => {
+    await expect(
+      pool.query(
+        `insert into public.cli_device_authorizations
+         (device_code_hash, user_code, client_id, scopes, expires_at)
+         values ($1, $2, $3, $4, now() + interval '10 minutes')`,
+        [
+          createHash('sha256').update('invalid-auth-scope').digest('hex'),
+          'EFGH2345',
+          clientId,
+          ['unknown:scope'],
+        ],
+      ),
+    ).rejects.toThrow();
+
+    await expect(
+      pool.query(
+        `insert into public.cli_device_tokens
+         (token_hash, subject_id, device_code_hash, scopes, expires_at)
+         values ($1, $2, $3, $4, now() + interval '10 minutes')`,
+        [
+          createHash('sha256').update('invalid-token-scope').digest('hex'),
+          subject,
+          createHash('sha256').update('invalid-token-device').digest('hex'),
+          ['unknown:scope'],
+        ],
+      ),
+    ).rejects.toThrow();
   });
 
   it('allows only an authenticated subject to approve a pending unexpired code', async () => {

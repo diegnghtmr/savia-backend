@@ -3,9 +3,11 @@ import {
   sortViolations,
   type FieldViolation,
 } from '../platform/field-validation.js';
+import { SAVIA_SCOPES } from '../platform/savia-scopes.js';
 import type { CliDeviceAuthorizationCommand } from './cli-device.port.js';
 
 const FIELDS = ['clientId', 'scopes'] as const;
+const VALID_SCOPES = new Set(Object.values(SAVIA_SCOPES));
 export class CliDeviceCommandValidationError extends Error {
   public constructor(public readonly violations: readonly FieldViolation[]) {
     super('CLI device authorization validation failed.');
@@ -47,6 +49,15 @@ export function createCliDeviceAuthorizationCommand(
     add(violations, 'scopes', 'invalid-items', 'must be an array of strings');
   if (new Set(scopes).size !== scopes.length)
     add(violations, 'scopes', 'unique-items', 'must not contain duplicates');
+  scopes.forEach((scope, index) => {
+    if (!VALID_SCOPES.has(scope))
+      add(
+        violations,
+        `scopes[${index}]`,
+        'invalid-value',
+        'must be a valid Savia scope',
+      );
+  });
   if (violations.length)
     throw new CliDeviceCommandValidationError(
       Object.freeze(sortViolations(violations)),

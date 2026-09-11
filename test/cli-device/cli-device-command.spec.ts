@@ -4,15 +4,16 @@ import {
   CliDeviceCommandValidationError,
 } from '../../src/cli-device/cli-device-command.js';
 import { createCliDeviceApprovalCommand } from '../../src/cli-device/cli-device-approval-command.js';
+import { SAVIA_SCOPES } from '../../src/platform/savia-scopes.js';
 
 describe('CLI device command', () => {
   it('accepts optional unique scopes and rejects unknown fields', () => {
     expect(
       createCliDeviceAuthorizationCommand({
         clientId: 'cli',
-        scopes: ['read'],
+        scopes: [SAVIA_SCOPES.ACCOUNTS_READ],
       }),
-    ).toEqual({ clientId: 'cli', scopes: ['read'] });
+    ).toEqual({ clientId: 'cli', scopes: [SAVIA_SCOPES.ACCOUNTS_READ] });
     expect(() =>
       createCliDeviceAuthorizationCommand({ clientId: 'cli', extra: true }),
     ).toThrow(CliDeviceCommandValidationError);
@@ -25,6 +26,12 @@ describe('CLI device command', () => {
       createCliDeviceAuthorizationCommand({
         clientId: 'cli',
         scopes: ['read', 'read'],
+      }),
+    ).toThrowError(/validation/);
+    expect(() =>
+      createCliDeviceAuthorizationCommand({
+        clientId: 'cli',
+        scopes: ['unknown:scope'],
       }),
     ).toThrowError(/validation/);
   });
