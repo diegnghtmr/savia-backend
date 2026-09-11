@@ -2519,8 +2519,7 @@ components:
           {
             type: string,
             maxLength: 16,
-            description: Device user code. Case,
-            hyphens and whitespace are ignored; it normalizes to 8 characters from ABCDEFGHJKLMNPQRSTUVWXYZ23456789.,
+            description: 'Device user code. Case, hyphens and whitespace are ignored; it normalizes to 8 characters from ABCDEFGHJKLMNPQRSTUVWXYZ23456789.',
           }
       additionalProperties: false
     CliDeviceAuthorization:
@@ -2551,8 +2550,7 @@ components:
           {
             type: integer,
             minimum: 1,
-            description: 30 days (2592000 seconds) from issuance,
-            independent of the 10-minute device-code lifetime; no refresh token is issued.,
+            description: '30 days (2592000 seconds) from issuance, independent of the 10-minute device-code lifetime; no refresh token is issued.',
           }
         scope: { type: string }
       additionalProperties: false
