@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { JobExecutionContext, JobHandler } from './job-handler.port.js';
 import {
   JOB_QUEUE,
@@ -22,7 +22,9 @@ interface JobCheckRow extends Record<string, unknown> {
 
 @Injectable()
 export class JobRunner {
+  private readonly logger = new Logger(JobRunner.name);
   private readonly handlerMap = new Map<string, JobHandler>();
+
   private isRunning = false;
   private pollTimer?: NodeJS.Timeout;
   private activeJobsCount = 0;
@@ -107,7 +109,10 @@ export class JobRunner {
   public async processMessage(message: QueueMessage): Promise<boolean> {
     const envelope = message.message;
     if (!envelope || typeof envelope !== 'object') {
-      await this.queue.ack(message.msgId);
+      this.logger.error(
+        `Claimed message ${message.msgId} is malformed: missing envelope or not an object`,
+      );
+      await this.queue.archive(message.msgId);
       return false;
     }
 
@@ -118,19 +123,26 @@ export class JobRunner {
     } = envelope;
 
     if (
-      !jobId ||
-      !UUID_PATTERN.test(jobId) ||
-      !workspaceId ||
-      !UUID_PATTERN.test(workspaceId) ||
       !actorId ||
+      typeof actorId !== 'string' ||
       !UUID_PATTERN.test(actorId)
     ) {
-      if (
-        jobId &&
-        UUID_PATTERN.test(jobId) &&
-        actorId &&
-        UUID_PATTERN.test(actorId)
-      ) {
+      this.logger.error(
+        `Claimed message ${message.msgId} is malformed: actor_id is missing or not a valid UUID`,
+      );
+      await this.queue.archive(message.msgId);
+      return false;
+    }
+
+    if (
+      !jobId ||
+      typeof jobId !== 'string' ||
+      !UUID_PATTERN.test(jobId) ||
+      !workspaceId ||
+      typeof workspaceId !== 'string' ||
+      !UUID_PATTERN.test(workspaceId)
+    ) {
+      if (typeof jobId === 'string' && UUID_PATTERN.test(jobId)) {
         await this.queue.failOrphanedJob(jobId, actorId);
       }
       await this.queue.ack(message.msgId);

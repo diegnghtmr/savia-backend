@@ -1,4 +1,4 @@
-// Migrations under test: 202609100016_job_queue.sql
+// Migrations under test: 202609100016_job_queue.sql, 202609100017_job_queue_actor_envelope.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -403,6 +403,12 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
         workspace_id: ws1Id,
         actor_id: ownerA,
       });
+      expect(msgRes.rows[0].message.actor_id).toBe(ownerA);
+      expect(Object.keys(msgRes.rows[0].message).sort()).toEqual([
+        'actor_id',
+        'job_id',
+        'workspace_id',
+      ]);
       expect(msgRes.rows[0].message).not.toHaveProperty('payload');
       expect(msgRes.rows[0].message).not.toHaveProperty('secret');
     });

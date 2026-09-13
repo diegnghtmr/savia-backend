@@ -364,4 +364,63 @@ describe('JobRunner unit spec (S2)', () => {
     expect(callLog).toContain('onFailure');
     expect(callLog).not.toContain('ack:101');
   });
+
+  it('archives the message, logs an error, and does not run domain work when actor_id is missing', async () => {
+    const { runner, mockQueue, mockJobWriter, probeHandler, callLog } =
+      createTestHarness({
+        claimedMessages: [
+          {
+            msgId: '201',
+            readCt: 1,
+            enqueuedAt: new Date().toISOString(),
+            vt: new Date().toISOString(),
+            message: {
+              job_id: jobId,
+              workspace_id: wsId,
+            },
+          },
+        ],
+      });
+
+    const processed = await runner.runOnce();
+    expect(processed).toBe(1);
+
+    expect(mockQueue.archive).toHaveBeenCalledWith('201');
+    expect(mockQueue.ack).not.toHaveBeenCalled();
+    expect(mockQueue.failOrphanedJob).not.toHaveBeenCalled();
+    expect(mockJobWriter.transitionToProcessing).not.toHaveBeenCalled();
+    expect(probeHandler.compute).not.toHaveBeenCalled();
+    expect(probeHandler.persist).not.toHaveBeenCalled();
+    expect(callLog).toEqual(['claim', 'archive:201']);
+  });
+
+  it('archives the message, logs an error, and does not run domain work when actor_id is not a valid uuid', async () => {
+    const { runner, mockQueue, mockJobWriter, probeHandler, callLog } =
+      createTestHarness({
+        claimedMessages: [
+          {
+            msgId: '202',
+            readCt: 1,
+            enqueuedAt: new Date().toISOString(),
+            vt: new Date().toISOString(),
+            message: {
+              job_id: jobId,
+              workspace_id: wsId,
+              actor_id: 'not-a-valid-uuid',
+            },
+          },
+        ],
+      });
+
+    const processed = await runner.runOnce();
+    expect(processed).toBe(1);
+
+    expect(mockQueue.archive).toHaveBeenCalledWith('202');
+    expect(mockQueue.ack).not.toHaveBeenCalled();
+    expect(mockQueue.failOrphanedJob).not.toHaveBeenCalled();
+    expect(mockJobWriter.transitionToProcessing).not.toHaveBeenCalled();
+    expect(probeHandler.compute).not.toHaveBeenCalled();
+    expect(probeHandler.persist).not.toHaveBeenCalled();
+    expect(callLog).toEqual(['claim', 'archive:202']);
+  });
 });
