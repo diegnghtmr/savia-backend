@@ -110,33 +110,21 @@ export class PostgresJobsAdapter implements JobStore, JobWriter {
     jobId: string,
     attemptCount?: number,
   ): Promise<Job> {
-    const result = await client.query<JobRow>(
-      `update public.jobs
-          set status = 'processing',
-              started_at = coalesce(started_at, now()),
-              attempt_count = coalesce($3, attempt_count + 1)
-        where workspace_id = $1::uuid
-          and id = $2::uuid
-          and status in ('queued', 'processing')
-       returning id::text, type, status, progress_percent, result_resource_id::text as result_resource_id, error, created_at, started_at, completed_at`,
-      [workspaceId, jobId, attemptCount ?? null],
-    );
-    const row = result.rows[0];
-    if (!row) {
+    await client.query('set local role savia_worker');
+    try {
+      await client.query(`select public.start_job($1::uuid, $2::integer)`, [
+        jobId,
+        attemptCount ?? null,
+      ]);
+    } finally {
+      await client.query('set local role savia_application');
+    }
+
+    const job = await this.findJobById(client, workspaceId, jobId);
+    if (!job) {
       throw new Error(`Job ${jobId} could not be transitioned to processing.`);
     }
-    return {
-      id: row.id,
-      type: row.type,
-      status: row.status,
-      progressPercent:
-        row.progress_percent !== null ? Number(row.progress_percent) : null,
-      resultResourceId: row.result_resource_id ?? null,
-      error: row.error ?? null,
-      createdAt: toIso(row.created_at),
-      startedAt: row.started_at ? toIso(row.started_at) : null,
-      completedAt: row.completed_at ? toIso(row.completed_at) : null,
-    };
+    return job;
   }
 
   public async readActiveRole(

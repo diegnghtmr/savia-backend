@@ -72,11 +72,11 @@ begin
 
   -- Legal status moves
   if old.status = 'queued' then
-    if new.status not in ('queued', 'processing', 'completed', 'failed', 'cancelled') then
+    if new.status not in ('queued', 'processing', 'failed') then
       raise exception 'Illegal status transition from queued to % for job %', new.status, old.id;
     end if;
   elsif old.status = 'processing' then
-    if new.status not in ('processing', 'completed', 'failed', 'cancelled', 'dead_letter') then
+    if new.status not in ('processing', 'completed', 'failed') then
       raise exception 'Illegal status transition from processing to % for job %', new.status, old.id;
     end if;
   else
@@ -93,39 +93,12 @@ create trigger enforce_job_status_transition
   execute function public.enforce_job_status_transition();
 
 -- 5. Grants and policies on public.jobs
+-- Request role keeps only what it had before S1 plus insert of payload and attempt_count
 grant insert (payload, attempt_count) on public.jobs to savia_application;
 
-grant update (
-  status,
-  progress_percent,
-  result_resource_id,
-  error,
-  started_at,
-  completed_at,
-  attempt_count
-) on public.jobs to savia_application;
-
-create policy application_updates_own_nonterminal_jobs
-  on public.jobs
-  for update
-  to savia_application
-  using (
-    public.workspace_actor_active_role(jobs.workspace_id)
-      in ('owner', 'administrator', 'editor')
-    and jobs.created_by
-          = nullif(current_setting('app.subject_id', true), '')::uuid
-    and jobs.status in ('queued', 'processing')
-  )
-  with check (
-    public.workspace_actor_active_role(jobs.workspace_id)
-      in ('owner', 'administrator', 'editor')
-    and jobs.created_by
-          = nullif(current_setting('app.subject_id', true), '')::uuid
-  );
-
 -- Column-scoped grants and policies for savia_elevated
-grant select (id, workspace_id, created_by, status, queue_message_id) on public.jobs to savia_elevated;
-grant update (status, started_at, completed_at, error, queue_message_id) on public.jobs to savia_elevated;
+grant select (id, workspace_id, created_by, status, queue_message_id, started_at, attempt_count) on public.jobs to savia_elevated;
+grant update (status, started_at, completed_at, error, queue_message_id, attempt_count, progress_percent, result_resource_id) on public.jobs to savia_elevated;
 
 create policy jobs_elevated_select
   on public.jobs
@@ -287,6 +260,115 @@ begin
 end;
 $$;
 
+-- start_job (granted to savia_worker)
+create or replace function public.start_job(p_job_id uuid, p_attempt integer default null)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_status text;
+  v_started_at timestamptz;
+  v_attempt_count integer;
+begin
+  select status, started_at, attempt_count
+    into v_status, v_started_at, v_attempt_count
+    from public.jobs
+   where id = p_job_id
+     for update;
+
+  if not found then
+    raise exception 'Job % not found', p_job_id;
+  end if;
+
+  if v_status not in ('queued', 'processing') then
+    raise exception 'Cannot start job %: expected status queued or processing, got %', p_job_id, v_status;
+  end if;
+
+  update public.jobs
+     set status = 'processing',
+         started_at = coalesce(v_started_at, clock_timestamp()),
+         attempt_count = coalesce(p_attempt, v_attempt_count + 1)
+   where id = p_job_id;
+
+  return true;
+end;
+$$;
+
+-- complete_job (granted to savia_worker)
+create or replace function public.complete_job(p_job_id uuid, p_result_resource_id uuid default null)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_status text;
+begin
+  select status
+    into v_status
+    from public.jobs
+   where id = p_job_id
+     for update;
+
+  if not found then
+    raise exception 'Job % not found', p_job_id;
+  end if;
+
+  if v_status <> 'processing' then
+    raise exception 'Cannot complete job %: expected status processing, got %', p_job_id, v_status;
+  end if;
+
+  update public.jobs
+     set status = 'completed',
+         progress_percent = 100,
+         completed_at = clock_timestamp(),
+         result_resource_id = p_result_resource_id
+   where id = p_job_id;
+
+  return true;
+end;
+$$;
+
+-- fail_job (granted to savia_worker)
+create or replace function public.fail_job(p_job_id uuid, p_error jsonb)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_status text;
+begin
+  select status
+    into v_status
+    from public.jobs
+   where id = p_job_id
+     for update;
+
+  if not found then
+    raise exception 'Job % not found', p_job_id;
+  end if;
+
+  if v_status <> 'processing' then
+    raise exception 'Cannot fail job %: expected status processing, got %', p_job_id, v_status;
+  end if;
+
+  if p_error is null then
+    raise exception 'Cannot fail job % without an error', p_job_id;
+  end if;
+
+  update public.jobs
+     set status = 'failed',
+         completed_at = clock_timestamp(),
+         error = p_error
+   where id = p_job_id;
+
+  return true;
+end;
+$$;
+
 -- 7. Revoke EXECUTE from public, grant to roles
 revoke all on function public.enqueue_job(uuid) from public;
 revoke all on function public.claim_jobs(integer, integer) from public;
@@ -294,6 +376,9 @@ revoke all on function public.ack_job(bigint) from public;
 revoke all on function public.archive_job(bigint) from public;
 revoke all on function public.defer_job(bigint, integer) from public;
 revoke all on function public.fail_orphaned_job(uuid, uuid) from public;
+revoke all on function public.start_job(uuid, integer) from public;
+revoke all on function public.complete_job(uuid, uuid) from public;
+revoke all on function public.fail_job(uuid, jsonb) from public;
 revoke all on function public.enforce_job_status_transition() from public;
 
 grant execute on function public.enqueue_job(uuid) to savia_application;
@@ -302,6 +387,9 @@ grant execute on function public.ack_job(bigint) to savia_worker;
 grant execute on function public.archive_job(bigint) to savia_worker;
 grant execute on function public.defer_job(bigint, integer) to savia_worker;
 grant execute on function public.fail_orphaned_job(uuid, uuid) to savia_worker;
+grant execute on function public.start_job(uuid, integer) to savia_worker;
+grant execute on function public.complete_job(uuid, uuid) to savia_worker;
+grant execute on function public.fail_job(uuid, jsonb) to savia_worker;
 
 -- 8. Ownership to savia_elevated (RULING 13 pattern)
 grant usage, create on schema public to savia_elevated;
@@ -312,6 +400,9 @@ alter function public.ack_job(bigint) owner to savia_elevated;
 alter function public.archive_job(bigint) owner to savia_elevated;
 alter function public.defer_job(bigint, integer) owner to savia_elevated;
 alter function public.fail_orphaned_job(uuid, uuid) owner to savia_elevated;
+alter function public.start_job(uuid, integer) owner to savia_elevated;
+alter function public.complete_job(uuid, uuid) owner to savia_elevated;
+alter function public.fail_job(uuid, jsonb) owner to savia_elevated;
 alter function public.enforce_job_status_transition() owner to savia_elevated;
 
 revoke create on schema public from savia_elevated;

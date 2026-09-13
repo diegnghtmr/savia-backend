@@ -181,14 +181,17 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
           from pg_proc procedure
           join pg_namespace namespace on namespace.oid = procedure.pronamespace
           join pg_roles owner on owner.oid = procedure.proowner
-         where namespace.nspname = 'public'
+          where namespace.nspname = 'public'
            and procedure.proname in (
              'enqueue_job',
              'claim_jobs',
              'ack_job',
              'archive_job',
              'defer_job',
-             'fail_orphaned_job'
+             'fail_orphaned_job',
+             'start_job',
+             'complete_job',
+             'fail_job'
            )
          order by procedure.proname
       `);
@@ -219,6 +222,14 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
           proconfig: ['search_path=pg_catalog, public'],
         },
         {
+          proname: 'complete_job',
+          owner: 'savia_elevated',
+          rolbypassrls: false,
+          rolsuper: false,
+          prosecdef: true,
+          proconfig: ['search_path=pg_catalog, public'],
+        },
+        {
           proname: 'defer_job',
           owner: 'savia_elevated',
           rolbypassrls: false,
@@ -235,7 +246,23 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
           proconfig: ['search_path=pg_catalog, public'],
         },
         {
+          proname: 'fail_job',
+          owner: 'savia_elevated',
+          rolbypassrls: false,
+          rolsuper: false,
+          prosecdef: true,
+          proconfig: ['search_path=pg_catalog, public'],
+        },
+        {
           proname: 'fail_orphaned_job',
+          owner: 'savia_elevated',
+          rolbypassrls: false,
+          rolsuper: false,
+          prosecdef: true,
+          proconfig: ['search_path=pg_catalog, public'],
+        },
+        {
+          proname: 'start_job',
           owner: 'savia_elevated',
           rolbypassrls: false,
           rolsuper: false,
@@ -254,6 +281,9 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
         'archive_job(bigint)',
         'defer_job(bigint,integer)',
         'fail_orphaned_job(uuid,uuid)',
+        'start_job(uuid,integer)',
+        'complete_job(uuid,uuid)',
+        'fail_job(uuid,jsonb)',
       ]) {
         const publicExec = await admin.query<{ has: boolean }>(
           `select has_function_privilege('public', 'public.' || $1, 'execute') as has`,
@@ -268,10 +298,18 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
       );
       expect(appEnqueue.rows[0].has).toBe(true);
 
-      const appClaim = await admin.query<{ has: boolean }>(
-        `select has_function_privilege('savia_application', 'public.claim_jobs(integer,integer)', 'execute') as has`,
-      );
-      expect(appClaim.rows[0].has).toBe(false);
+      for (const fn of [
+        'public.claim_jobs(integer,integer)',
+        'public.start_job(uuid,integer)',
+        'public.complete_job(uuid,uuid)',
+        'public.fail_job(uuid,jsonb)',
+      ]) {
+        const appCheck = await admin.query<{ has: boolean }>(
+          `select has_function_privilege('savia_application', $1, 'execute') as has`,
+          [fn],
+        );
+        expect(appCheck.rows[0].has).toBe(false);
+      }
 
       // savia_worker can execute worker functions but not enqueue_job
       const workerEnqueue = await admin.query<{ has: boolean }>(
@@ -279,10 +317,22 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
       );
       expect(workerEnqueue.rows[0].has).toBe(false);
 
-      const workerClaim = await admin.query<{ has: boolean }>(
-        `select has_function_privilege('savia_worker', 'public.claim_jobs(integer,integer)', 'execute') as has`,
-      );
-      expect(workerClaim.rows[0].has).toBe(true);
+      for (const fn of [
+        'public.claim_jobs(integer,integer)',
+        'public.ack_job(bigint)',
+        'public.archive_job(bigint)',
+        'public.defer_job(bigint,integer)',
+        'public.fail_orphaned_job(uuid,uuid)',
+        'public.start_job(uuid,integer)',
+        'public.complete_job(uuid,uuid)',
+        'public.fail_job(uuid,jsonb)',
+      ]) {
+        const workerCheck = await admin.query<{ has: boolean }>(
+          `select has_function_privilege('savia_worker', $1, 'execute') as has`,
+          [fn],
+        );
+        expect(workerCheck.rows[0].has).toBe(true);
+      }
     });
 
     it('rejects direct pgmq table queries from savia_application with 42501', async () => {
@@ -554,6 +604,342 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
         }),
       );
       expect(insertErr.code).toBe('42501');
+    });
+  });
+
+  describe('Finding 2: Worker-only job status transitions and transition wrappers', () => {
+    it('rejects a plain UPDATE of status from savia_application with 42501', async () => {
+      const insertRes = await admin.query<{ id: string }>(
+        `insert into public.jobs (workspace_id, type, status, created_by)
+         values ($1, 'balance_forecast', 'queued', $2)
+         returning id::text`,
+        [ws1Id, ownerA],
+      );
+      const jobId = insertRes.rows[0].id;
+
+      const updateErr = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `update public.jobs set status = 'completed' where id = $1::uuid`,
+            [jobId],
+          );
+        }),
+      );
+      expect(updateErr.code).toBe('42501');
+    });
+
+    it('rejects savia_application executing start_job, complete_job, and fail_job with 42501', async () => {
+      const insertRes = await admin.query<{ id: string }>(
+        `insert into public.jobs (workspace_id, type, status, created_by)
+         values ($1, 'balance_forecast', 'queued', $2)
+         returning id::text`,
+        [ws1Id, ownerA],
+      );
+      const jobId = insertRes.rows[0].id;
+
+      const startErr = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(`select public.start_job($1::uuid, 1)`, [jobId]);
+        }),
+      );
+      expect(startErr.code).toBe('42501');
+
+      const completeErr = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(`select public.complete_job($1::uuid, null)`, [
+            jobId,
+          ]);
+        }),
+      );
+      expect(completeErr.code).toBe('42501');
+
+      const failErr = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(`select public.fail_job($1::uuid, $2::jsonb)`, [
+            jobId,
+            JSON.stringify({
+              type: 'https://savia.app/problems/internal',
+              title: 'Internal error',
+              status: 500,
+              code: 'internal_error',
+              traceId: '00000000-0000-0000-0000-000000000001',
+            }),
+          ]);
+        }),
+      );
+      expect(failErr.code).toBe('42501');
+    });
+
+    it('as savia_worker: refuses queued -> completed via any path and complete_job on a queued row', async () => {
+      const insertRes = await admin.query<{ id: string }>(
+        `insert into public.jobs (workspace_id, type, status, created_by)
+         values ($1, 'balance_forecast', 'queued', $2)
+         returning id::text`,
+        [ws1Id, ownerA],
+      );
+      const jobId = insertRes.rows[0].id;
+
+      const client = await admin.connect();
+      try {
+        await client.query('begin');
+        await client.query('set local role savia_worker');
+
+        // complete_job on queued row is refused
+        const completeErr = await capturePgError(async () => {
+          await client.query(`select public.complete_job($1::uuid, null)`, [
+            jobId,
+          ]);
+        });
+        expect(completeErr.message).toMatch(
+          /Cannot complete job.*expected status processing/i,
+        );
+
+        await client.query('rollback');
+      } finally {
+        client.release();
+      }
+
+      // direct transition queued -> completed is refused by trigger
+      const triggerErr = await capturePgError(async () => {
+        await admin.query(
+          `update public.jobs set status = 'completed', started_at = now(), completed_at = now(), progress_percent = 100 where id = $1::uuid`,
+          [jobId],
+        );
+      });
+      expect(triggerErr.message).toMatch(
+        /Illegal status transition from queued to completed/i,
+      );
+    });
+
+    it('as savia_worker: start_job then complete_job succeeds', async () => {
+      const insertRes = await admin.query<{ id: string }>(
+        `insert into public.jobs (workspace_id, type, status, created_by)
+         values ($1, 'balance_forecast', 'queued', $2)
+         returning id::text`,
+        [ws1Id, ownerA],
+      );
+      const jobId = insertRes.rows[0].id;
+      const resultResourceId = '00000000-0000-0000-0000-000000008888';
+
+      const client = await admin.connect();
+      try {
+        await client.query('begin');
+        await client.query('set local role savia_worker');
+
+        await client.query(`select public.start_job($1::uuid, 1)`, [jobId]);
+
+        await client.query(`select public.complete_job($1::uuid, $2::uuid)`, [
+          jobId,
+          resultResourceId,
+        ]);
+
+        await client.query('commit');
+
+        const completed = await admin.query<{
+          status: string;
+          progress_percent: number;
+          completed_at: Date;
+          result_resource_id: string;
+        }>(
+          `select status, progress_percent, completed_at, result_resource_id::text from public.jobs where id = $1::uuid`,
+          [jobId],
+        );
+        expect(completed.rows[0].status).toBe('completed');
+        expect(completed.rows[0].progress_percent).toBe(100);
+        expect(completed.rows[0].completed_at).toBeDefined();
+        expect(completed.rows[0].result_resource_id).toBe(resultResourceId);
+      } finally {
+        await client.query('rollback').catch(() => {});
+        client.release();
+      }
+    });
+
+    it('as savia_worker: a terminal row cannot be changed by any wrapper', async () => {
+      const insertRes = await admin.query<{ id: string }>(
+        `insert into public.jobs (workspace_id, type, status, created_by, started_at, completed_at, progress_percent)
+         values ($1, 'balance_forecast', 'completed', $2, now(), now(), 100)
+         returning id::text`,
+        [ws1Id, ownerA],
+      );
+      const jobId = insertRes.rows[0].id;
+
+      const runAsWorker = async <T>(fn: (client: PoolClient) => Promise<T>) => {
+        const client = await admin.connect();
+        try {
+          await client.query('begin');
+          await client.query('set local role savia_worker');
+          return await fn(client);
+        } finally {
+          await client.query('rollback').catch(() => {});
+          client.release();
+        }
+      };
+
+      const startErr = await capturePgError(() =>
+        runAsWorker((client) =>
+          client.query(`select public.start_job($1::uuid, 1)`, [jobId]),
+        ),
+      );
+      expect(startErr.message).toMatch(/Cannot start job|Terminal job/i);
+
+      const completeErr = await capturePgError(() =>
+        runAsWorker((client) =>
+          client.query(`select public.complete_job($1::uuid, null)`, [jobId]),
+        ),
+      );
+      expect(completeErr.message).toMatch(/Cannot complete job|Terminal job/i);
+
+      const failErr = await capturePgError(() =>
+        runAsWorker((client) =>
+          client.query(`select public.fail_job($1::uuid, $2::jsonb)`, [
+            jobId,
+            JSON.stringify({
+              type: 'https://savia.app/problems/internal',
+              title: 'Internal error',
+              status: 500,
+              code: 'internal_error',
+              traceId: '00000000-0000-0000-0000-000000000002',
+            }),
+          ]),
+        ),
+      );
+      expect(failErr.message).toMatch(/Cannot fail job|Terminal job/i);
+    });
+
+    it('proves same-transaction role switch mechanics: domain write as savia_application, transition as savia_worker, atomic commit/rollback', async () => {
+      // 1. Commit scenario: domain write + complete_job inside one transaction
+      const queuedRes = await admin.query<{ id: string }>(
+        `insert into public.jobs (workspace_id, type, status, created_by, started_at)
+         values ($1, 'balance_forecast', 'processing', $2, now())
+         returning id::text`,
+        [ws1Id, ownerA],
+      );
+      const jobId = queuedRes.rows[0].id;
+      let createdAccountId: string | undefined;
+
+      const client1 = await admin.connect();
+      try {
+        await client1.query('begin');
+
+        // Step A: savia_application runs domain persistence
+        await client1.query('set local role savia_application');
+        await client1.query("select set_config('app.subject_id', $1, true)", [
+          ownerA,
+        ]);
+
+        const accRes = await client1.query<{ id: string }>(
+          `insert into public.accounts (workspace_id, name, type, currency, created_by)
+           values ($1, 'Worker Domain Account', 'checking', 'USD', $2)
+           returning id::text`,
+          [ws1Id, ownerA],
+        );
+        createdAccountId = accRes.rows[0].id;
+
+        // Step B: worker switches to savia_worker in the same transaction to transition job
+        await client1.query('set local role savia_worker');
+        await client1.query(`select public.complete_job($1::uuid, null)`, [
+          jobId,
+        ]);
+
+        await client1.query('commit');
+      } finally {
+        await client1.query('rollback').catch(() => {});
+        client1.release();
+      }
+
+      // Both effects persist
+      const checkAcc = await admin.query(
+        `select id from public.accounts where id = $1::uuid`,
+        [createdAccountId],
+      );
+      expect(checkAcc.rows).toHaveLength(1);
+
+      const checkJob = await admin.query<{ status: string }>(
+        `select status from public.jobs where id = $1::uuid`,
+        [jobId],
+      );
+      expect(checkJob.rows[0].status).toBe('completed');
+
+      // 2. Rollback scenario: rollback after complete_job leaves NEITHER effect
+      const queuedRes2 = await admin.query<{ id: string }>(
+        `insert into public.jobs (workspace_id, type, status, created_by, started_at)
+         values ($1, 'balance_forecast', 'processing', $2, now())
+         returning id::text`,
+        [ws1Id, ownerA],
+      );
+      const jobId2 = queuedRes2.rows[0].id;
+      let abortedAccountId: string | undefined;
+
+      const client2 = await admin.connect();
+      try {
+        await client2.query('begin');
+
+        await client2.query('set local role savia_application');
+        await client2.query("select set_config('app.subject_id', $1, true)", [
+          ownerA,
+        ]);
+
+        const accRes = await client2.query<{ id: string }>(
+          `insert into public.accounts (workspace_id, name, type, currency, created_by)
+           values ($1, 'Aborted Domain Account', 'checking', 'USD', $2)
+           returning id::text`,
+          [ws1Id, ownerA],
+        );
+        abortedAccountId = accRes.rows[0].id;
+
+        await client2.query('set local role savia_worker');
+        await client2.query(`select public.complete_job($1::uuid, null)`, [
+          jobId2,
+        ]);
+
+        // Intentional rollback
+        await client2.query('rollback');
+      } finally {
+        await client2.query('rollback').catch(() => {});
+        client2.release();
+      }
+
+      // Neither effect persists
+      const checkAbortedAcc = await admin.query(
+        `select id from public.accounts where id = $1::uuid`,
+        [abortedAccountId],
+      );
+      expect(checkAbortedAcc.rows).toHaveLength(0);
+
+      const checkAbortedJob = await admin.query<{ status: string }>(
+        `select status from public.jobs where id = $1::uuid`,
+        [jobId2],
+      );
+      expect(checkAbortedJob.rows[0].status).toBe('processing');
+    });
+
+    it('transitions to processing via adapter.transitionToProcessing using role switch transparently', async () => {
+      const createdJob = await transaction.run(ownerA, async (client) => {
+        return adapter.createQueuedJob(
+          client,
+          ws1Id,
+          ownerA,
+          'balance_forecast',
+          { adapterTest: true },
+        );
+      });
+
+      const processedJob = await transaction.run(ownerA, async (client) => {
+        return adapter.transitionToProcessing(client, ws1Id, createdJob.id, 1);
+      });
+
+      expect(processedJob.id).toBe(createdJob.id);
+      expect(processedJob.status).toBe('processing');
+      expect(processedJob.startedAt).toBeDefined();
+
+      const jobRow = await admin.query<{
+        status: string;
+        attempt_count: number;
+      }>(`select status, attempt_count from public.jobs where id = $1::uuid`, [
+        createdJob.id,
+      ]);
+      expect(jobRow.rows[0].status).toBe('processing');
+      expect(jobRow.rows[0].attempt_count).toBe(1);
     });
   });
 });

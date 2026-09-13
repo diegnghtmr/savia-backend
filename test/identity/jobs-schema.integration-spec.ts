@@ -331,15 +331,7 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
       const updatable = result.rows
         .filter((r) => r.updatable)
         .map((r) => r.column_name);
-      expect(updatable).toEqual([
-        'attempt_count',
-        'completed_at',
-        'error',
-        'progress_percent',
-        'result_resource_id',
-        'started_at',
-        'status',
-      ]);
+      expect(updatable).toEqual([]);
 
       const referenceable = result.rows
         .filter((r) => r.referenceable)
@@ -426,16 +418,6 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
           polwithcheck: null,
         },
         {
-          polname: 'application_updates_own_nonterminal_jobs',
-          polcmd: 'w',
-          polpermissive: true,
-          roles: ['savia_application'],
-          polqual:
-            "((workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text])) AND (created_by = (NULLIF(current_setting('app.subject_id'::text, true), ''::text))::uuid) AND (status = ANY (ARRAY['queued'::text, 'processing'::text])))",
-          polwithcheck:
-            "((workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text])) AND (created_by = (NULLIF(current_setting('app.subject_id'::text, true), ''::text))::uuid))",
-        },
-        {
           polname: 'jobs_elevated_select',
           polcmd: 'r',
           polpermissive: true,
@@ -452,6 +434,81 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
           polwithcheck: 'true',
         },
       ]);
+    });
+
+    it('pins worker transition wrappers: owned by savia_elevated, security definer, search_path, executable only by savia_worker', async () => {
+      const res = await admin.query<{
+        proname: string;
+        owner: string;
+        rolbypassrls: boolean;
+        rolsuper: boolean;
+        prosecdef: boolean;
+        proconfig: string[] | null;
+      }>(`
+        select p.proname,
+               r.rolname as owner,
+               r.rolbypassrls,
+               r.rolsuper,
+               p.prosecdef,
+               p.proconfig
+          from pg_proc p
+          join pg_namespace n on n.oid = p.pronamespace
+          join pg_roles r on r.oid = p.proowner
+         where n.nspname = 'public'
+           and p.proname in ('start_job', 'complete_job', 'fail_job')
+         order by p.proname
+      `);
+
+      expect(res.rows).toEqual([
+        {
+          proname: 'complete_job',
+          owner: 'savia_elevated',
+          rolbypassrls: false,
+          rolsuper: false,
+          prosecdef: true,
+          proconfig: ['search_path=pg_catalog, public'],
+        },
+        {
+          proname: 'fail_job',
+          owner: 'savia_elevated',
+          rolbypassrls: false,
+          rolsuper: false,
+          prosecdef: true,
+          proconfig: ['search_path=pg_catalog, public'],
+        },
+        {
+          proname: 'start_job',
+          owner: 'savia_elevated',
+          rolbypassrls: false,
+          rolsuper: false,
+          prosecdef: true,
+          proconfig: ['search_path=pg_catalog, public'],
+        },
+      ]);
+
+      for (const fn of [
+        'public.start_job(uuid,integer)',
+        'public.complete_job(uuid,uuid)',
+        'public.fail_job(uuid,jsonb)',
+      ]) {
+        const pubPriv = await admin.query<{ has: boolean }>(
+          `select has_function_privilege('public', $1, 'execute') as has`,
+          [fn],
+        );
+        expect(pubPriv.rows[0].has).toBe(false);
+
+        const appPriv = await admin.query<{ has: boolean }>(
+          `select has_function_privilege('savia_application', $1, 'execute') as has`,
+          [fn],
+        );
+        expect(appPriv.rows[0].has).toBe(false);
+
+        const workerPriv = await admin.query<{ has: boolean }>(
+          `select has_function_privilege('savia_worker', $1, 'execute') as has`,
+          [fn],
+        );
+        expect(workerPriv.rows[0].has).toBe(true);
+      }
     });
   });
 
