@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
@@ -18,6 +18,7 @@ describe('CLI scope policy HTTP boundary', () => {
   let application: NestFastifyApplication;
   const ownerId = '11111111-0000-4000-8000-000000000901';
   const viewerId = '22222222-0000-4000-8000-000000000901';
+  const editorId = '33333333-0000-4000-8000-000000000901';
   const workspaceId = 'aaaaaaaa-0000-4000-8000-000000000901';
   const accountId = 'cccccccc-0000-4000-8000-000000000901';
   const debtId = 'dddddddd-0000-4000-8000-000000000901';
@@ -29,6 +30,28 @@ describe('CLI scope policy HTTP boundary', () => {
     any: 'svt_cli_scope_any',
   } as const;
 
+  async function asSubject<T>(
+    subjectId: string,
+    fn: (client: PoolClient) => Promise<T>,
+  ): Promise<T> {
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query("select set_config('app.subject_id', $1, true)", [
+        subjectId,
+      ]);
+      const result = await fn(client);
+      await client.query('commit');
+      return result;
+    } catch (error) {
+      await client.query('rollback').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   beforeAll(async () => {
     Object.assign(process.env, {
       JWT_ISSUER: 'https://issuer.example.test',
@@ -39,17 +62,20 @@ describe('CLI scope policy HTTP boundary', () => {
     });
     admin = new Pool({ connectionString: url });
     await admin.query(
-      `insert into auth.users (id, email) values ($1, $2), ($3, $4)`,
+      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6)`,
       [
         ownerId,
         'cli-scope-owner@example.test',
         viewerId,
         'cli-scope-viewer@example.test',
+        editorId,
+        'cli-scope-editor@example.test',
       ],
     );
     for (const [id, email, name] of [
       [ownerId, 'cli-scope-owner@example.test', 'CLI Scope Owner'],
       [viewerId, 'cli-scope-viewer@example.test', 'CLI Scope Viewer'],
+      [editorId, 'cli-scope-editor@example.test', 'CLI Scope Editor'],
     ] as const) {
       await admin.query(
         `insert into public.profiles
@@ -67,8 +93,8 @@ describe('CLI scope policy HTTP boundary', () => {
     );
     await admin.query(
       `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
-       values ($1, $2, 'owner', 'active'), ($1, $3, 'viewer', 'active')`,
-      [workspaceId, ownerId, viewerId],
+       values ($1, $2, 'owner', 'active'), ($1, $3, 'viewer', 'active'), ($1, $4, 'editor', 'active')`,
+      [workspaceId, ownerId, viewerId, editorId],
     );
     await admin.query(
       `insert into public.accounts
@@ -220,6 +246,11 @@ describe('CLI scope policy HTTP boundary', () => {
       headers: headers('session-owner'),
     });
     expect(session.statusCode).toBe(200);
+
+    const beforeCount = await admin.query<{ count: string }>(
+      'select count(*)::int as count from public.accounts',
+    );
+
     const viewerWrite = await application.inject({
       method: 'POST',
       url: '/v1/accounts',
@@ -230,6 +261,67 @@ describe('CLI scope policy HTTP boundary', () => {
         currency: 'USD',
       },
     });
-    expect([403, 404]).toContain(viewerWrite.statusCode);
+    expect(viewerWrite.statusCode).toBe(403);
+
+    const afterCount = await admin.query<{ count: string }>(
+      'select count(*)::int as count from public.accounts',
+    );
+    expect(afterCount.rows[0]?.count).toBe(beforeCount.rows[0]?.count);
+  });
+
+  it('enforces accounts INSERT RLS directly at database boundary for viewers with positive editor control', async () => {
+    const beforeCount = await admin.query<{ count: string }>(
+      'select count(*)::int as count from public.accounts',
+    );
+
+    let viewerErr: { code?: string; message?: string } | undefined;
+    try {
+      await asSubject(viewerId, (client) =>
+        client.query(
+          `insert into public.accounts (workspace_id, name, type, currency, created_by)
+           values ($1, 'Viewer DB Account', 'checking', 'USD', $2)`,
+          [workspaceId, viewerId],
+        ),
+      );
+    } catch (error: unknown) {
+      viewerErr = error as { code?: string; message?: string };
+    }
+
+    expect(viewerErr?.code).toBe('42501');
+    expect(viewerErr?.message ?? '').toContain(
+      'new row violates row-level security policy',
+    );
+
+    const afterViewerCount = await admin.query<{ count: string }>(
+      'select count(*)::int as count from public.accounts',
+    );
+    expect(afterViewerCount.rows[0]?.count).toBe(beforeCount.rows[0]?.count);
+
+    let insertedEditorAccountId: string | undefined;
+    try {
+      const editorResult = await asSubject(editorId, (client) =>
+        client.query(
+          `insert into public.accounts (workspace_id, name, type, currency, created_by)
+           values ($1, 'Editor DB Account', 'checking', 'USD', $2)
+           returning id`,
+          [workspaceId, editorId],
+        ),
+      );
+      insertedEditorAccountId = editorResult.rows[0]?.id;
+      expect(insertedEditorAccountId).toBeDefined();
+
+      const afterEditorCount = await admin.query<{ count: string }>(
+        'select count(*)::int as count from public.accounts',
+      );
+      expect(Number(afterEditorCount.rows[0]?.count)).toBe(
+        Number(beforeCount.rows[0]?.count) + 1,
+      );
+    } finally {
+      if (insertedEditorAccountId) {
+        await admin.query('delete from public.accounts where id = $1', [
+          insertedEditorAccountId,
+        ]);
+      }
+    }
   });
 });
