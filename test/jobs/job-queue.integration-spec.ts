@@ -413,4 +413,147 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
       );
     });
   });
+
+  describe('Finding 1: Idempotent publication and single publication per job', () => {
+    it('returns the same message id and publishes exactly once when enqueue_job is called twice for the same job', async () => {
+      const insertRes = await admin.query<{ id: string }>(
+        `insert into public.jobs (workspace_id, type, status, created_by)
+         values ($1, 'balance_forecast', 'queued', $2)
+         returning id::text`,
+        [ws1Id, ownerA],
+      );
+      const jobId = insertRes.rows[0].id;
+
+      const firstCall = await asSubject(ownerA, async (client) => {
+        const res = await client.query<{ msg_id: string }>(
+          `select public.enqueue_job($1::uuid) as msg_id`,
+          [jobId],
+        );
+        return res.rows[0].msg_id;
+      });
+
+      const secondCall = await asSubject(ownerA, async (client) => {
+        const res = await client.query<{ msg_id: string }>(
+          `select public.enqueue_job($1::uuid) as msg_id`,
+          [jobId],
+        );
+        return res.rows[0].msg_id;
+      });
+
+      expect(firstCall).toBeDefined();
+      expect(secondCall).toBe(firstCall);
+
+      const msgRes = await admin.query<{ msg_id: string }>(
+        `select msg_id::text from pgmq.q_savia_jobs where message->>'job_id' = $1`,
+        [jobId],
+      );
+      expect(msgRes.rows).toHaveLength(1);
+      expect(msgRes.rows[0].msg_id).toBe(String(firstCall));
+    });
+
+    it('publishes exactly one message when two concurrent connections call enqueue_job for the same job', async () => {
+      const insertRes = await admin.query<{ id: string }>(
+        `insert into public.jobs (workspace_id, type, status, created_by)
+         values ($1, 'balance_forecast', 'queued', $2)
+         returning id::text`,
+        [ws1Id, ownerA],
+      );
+      const jobId = insertRes.rows[0].id;
+
+      const client1 = await admin.connect();
+      const client2 = await admin.connect();
+
+      try {
+        await client1.query('begin');
+        await client1.query('set local role savia_application');
+        await client1.query("select set_config('app.subject_id', $1, true)", [
+          ownerA,
+        ]);
+
+        await client2.query('begin');
+        await client2.query('set local role savia_application');
+        await client2.query("select set_config('app.subject_id', $1, true)", [
+          ownerA,
+        ]);
+
+        let firstFinished: 'client1' | 'client2' | undefined;
+        const p1 = client1
+          .query<{
+            msg_id: string;
+          }>(`select public.enqueue_job($1::uuid) as msg_id`, [jobId])
+          .then((res) => {
+            firstFinished = firstFinished ?? 'client1';
+            return res;
+          });
+
+        const p2 = client2
+          .query<{
+            msg_id: string;
+          }>(`select public.enqueue_job($1::uuid) as msg_id`, [jobId])
+          .then((res) => {
+            firstFinished = firstFinished ?? 'client2';
+            return res;
+          });
+
+        // The client that acquires the row lock finishes enqueue_job first.
+        // It must commit to release the lock so the blocked client can inspect the committed marker.
+        await Promise.race([p1, p2]);
+
+        if (firstFinished === 'client1') {
+          await client1.query('commit');
+          await p2;
+          await client2.query('commit');
+        } else {
+          await client2.query('commit');
+          await p1;
+          await client1.query('commit');
+        }
+
+        const [res1, res2] = await Promise.all([p1, p2]);
+
+        expect(res1.rows[0].msg_id).toBeDefined();
+        expect(res2.rows[0].msg_id).toBe(res1.rows[0].msg_id);
+
+        const msgRes = await admin.query<{ msg_id: string }>(
+          `select msg_id::text from pgmq.q_savia_jobs where message->>'job_id' = $1`,
+          [jobId],
+        );
+        expect(msgRes.rows).toHaveLength(1);
+      } finally {
+        client1.release();
+        client2.release();
+      }
+    });
+
+    it('rejects savia_application writing the marker column queue_message_id with 42501', async () => {
+      const insertRes = await admin.query<{ id: string }>(
+        `insert into public.jobs (workspace_id, type, status, created_by)
+         values ($1, 'balance_forecast', 'queued', $2)
+         returning id::text`,
+        [ws1Id, ownerA],
+      );
+      const jobId = insertRes.rows[0].id;
+
+      const updateErr = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `update public.jobs set queue_message_id = 12345 where id = $1::uuid`,
+            [jobId],
+          );
+        }),
+      );
+      expect(updateErr.code).toBe('42501');
+
+      const insertErr = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `insert into public.jobs (workspace_id, type, status, created_by, queue_message_id)
+             values ($1, 'balance_forecast', 'queued', $2, 12345)`,
+            [ws1Id, ownerA],
+          );
+        }),
+      );
+      expect(insertErr.code).toBe('42501');
+    });
+  });
 });

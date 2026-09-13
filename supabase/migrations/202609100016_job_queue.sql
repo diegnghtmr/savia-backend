@@ -43,6 +43,10 @@ alter table public.jobs
   add column if not exists attempt_count integer not null default 0
     constraint jobs_attempt_count_check check (attempt_count >= 0);
 
+alter table public.jobs
+  add column if not exists queue_message_id bigint
+    constraint jobs_queue_message_id_key unique;
+
 -- Legality trigger: enforce legal status moves; terminal rows never change
 create or replace function public.enforce_job_status_transition()
 returns trigger
@@ -120,8 +124,8 @@ create policy application_updates_own_nonterminal_jobs
   );
 
 -- Column-scoped grants and policies for savia_elevated
-grant select (id, workspace_id, created_by, status) on public.jobs to savia_elevated;
-grant update (status, started_at, completed_at, error) on public.jobs to savia_elevated;
+grant select (id, workspace_id, created_by, status, queue_message_id) on public.jobs to savia_elevated;
+grant update (status, started_at, completed_at, error, queue_message_id) on public.jobs to savia_elevated;
 
 create policy jobs_elevated_select
   on public.jobs
@@ -149,6 +153,7 @@ declare
   v_workspace_id uuid;
   v_created_by uuid;
   v_status text;
+  v_queue_message_id bigint;
   v_msg_id bigint;
 begin
   v_subject := nullif(current_setting('app.subject_id', true), '')::uuid;
@@ -156,10 +161,11 @@ begin
     raise exception 'Missing app.subject_id context';
   end if;
 
-  select j.workspace_id, j.created_by, j.status
-    into v_workspace_id, v_created_by, v_status
+  select j.workspace_id, j.created_by, j.status, j.queue_message_id
+    into v_workspace_id, v_created_by, v_status, v_queue_message_id
     from public.jobs j
-   where j.id = p_job_id;
+   where j.id = p_job_id
+     for update;
 
   if not found then
     raise exception 'Job % not found', p_job_id;
@@ -177,6 +183,10 @@ begin
     raise exception 'Caller lacks active write role in job workspace';
   end if;
 
+  if v_queue_message_id is not null then
+    return v_queue_message_id;
+  end if;
+
   v_msg_id := pgmq.send(
     'savia_jobs',
     jsonb_build_object(
@@ -184,6 +194,10 @@ begin
       'workspace_id', v_workspace_id
     )
   );
+
+  update public.jobs
+     set queue_message_id = v_msg_id
+   where id = p_job_id;
 
   return v_msg_id;
 end;

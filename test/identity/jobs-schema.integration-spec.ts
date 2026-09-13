@@ -238,6 +238,12 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
           nullable: false,
           hasDefault: true,
         },
+        {
+          name: 'queue_message_id',
+          type: 'bigint',
+          nullable: true,
+          hasDefault: false,
+        },
       ]);
     });
 
@@ -270,6 +276,7 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
         'jobs_result_only_when_completed_check',
       );
       expect(constraintNames).toContain('jobs_attempt_count_check');
+      expect(constraintNames).toContain('jobs_queue_message_id_key');
     });
 
     it('enforces RLS and force row level security on public.jobs', async () => {
