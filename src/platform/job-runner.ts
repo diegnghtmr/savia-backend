@@ -57,18 +57,18 @@ export class JobRunner implements BeforeApplicationShutdown {
       this.config.batchSize,
     );
 
-    let processedCount = 0;
-    for (const message of messages) {
-      this.activeJobsCount++;
-      try {
-        await this.processMessage(message);
-        processedCount++;
-      } finally {
-        this.activeJobsCount--;
-      }
-    }
+    const results = await Promise.allSettled(
+      messages.map(async (message) => {
+        this.activeJobsCount++;
+        try {
+          return await this.processMessage(message);
+        } finally {
+          this.activeJobsCount--;
+        }
+      }),
+    );
 
-    return processedCount;
+    return results.filter((r) => r.status === 'fulfilled').length;
   }
 
   public async drainOnce(): Promise<number> {

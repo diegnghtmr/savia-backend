@@ -45,4 +45,19 @@ describe('WorkerConfig', () => {
       }),
     ).toThrow(WorkerConfigurationError);
   });
+
+  it('rejects batchSize greater than 10', () => {
+    expect(() =>
+      WorkerConfig.fromEnvironment({ SAVIA_WORKER_BATCH_SIZE: '11' }),
+    ).toThrow(WorkerConfigurationError);
+  });
+
+  it('rejects pool size smaller than batchSize + 1', () => {
+    expect(() =>
+      WorkerConfig.fromEnvironment({
+        SAVIA_WORKER_BATCH_SIZE: '4',
+        DATABASE_POOL_MAX: '4',
+      }),
+    ).toThrow(WorkerConfigurationError);
+  });
 });

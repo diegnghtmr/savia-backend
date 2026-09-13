@@ -34,6 +34,8 @@ describe('JobRunner unit spec (S2)', () => {
         role: string | null;
       } | null;
       computeThrows?: boolean;
+      config?: WorkerConfig;
+      batchSize?: number;
     } = {},
   ) {
     const callLog: string[] = [];
@@ -214,7 +216,8 @@ describe('JobRunner unit spec (S2)', () => {
       }),
     };
 
-    const config = new WorkerConfig(1, 300, 1000, 30);
+    const config =
+      options.config ?? new WorkerConfig(options.batchSize ?? 1, 300, 1000, 30);
     const runner = new JobRunner(
       mockQueue,
       mockTransaction as PgTransaction,
@@ -422,5 +425,79 @@ describe('JobRunner unit spec (S2)', () => {
     expect(probeHandler.compute).not.toHaveBeenCalled();
     expect(probeHandler.persist).not.toHaveBeenCalled();
     expect(callLog).toEqual(['claim', 'archive:202']);
+  });
+
+  it('processes claimed messages concurrently within a batch, proving both start before either finishes', async () => {
+    vi.useFakeTimers();
+    try {
+      const startLog: string[] = [];
+      const finishLog: string[] = [];
+
+      const jobId1 = '00000000-0000-0000-0000-000000000002';
+      const jobId2 = '00000000-0000-0000-0000-000000000022';
+
+      const messages: QueueMessage[] = [
+        {
+          msgId: '101',
+          readCt: 1,
+          enqueuedAt: new Date().toISOString(),
+          vt: new Date().toISOString(),
+          message: {
+            job_id: jobId1,
+            workspace_id: wsId,
+            actor_id: actorId,
+          },
+        },
+        {
+          msgId: '102',
+          readCt: 1,
+          enqueuedAt: new Date().toISOString(),
+          vt: new Date().toISOString(),
+          message: {
+            job_id: jobId2,
+            workspace_id: wsId,
+            actor_id: actorId,
+          },
+        },
+      ];
+
+      const { runner, probeHandler, mockQueue } = createTestHarness({
+        claimedMessages: messages,
+        config: new WorkerConfig(2, 300, 1000, 30),
+      });
+
+      probeHandler.compute = vi.fn(
+        async (ctx: JobExecutionContext<{ value: number }>) => {
+          startLog.push(`start:${ctx.jobId}`);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          finishLog.push(`finish:${ctx.jobId}`);
+          return { result: 84 };
+        },
+      );
+
+      const runPromise = runner.runOnce();
+
+      // Flush microtasks to allow synchronous start and transition of both jobs
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Both jobs must have started before either finishes
+      expect(startLog).toContain(`start:${jobId1}`);
+      expect(startLog).toContain(`start:${jobId2}`);
+      expect(finishLog).toHaveLength(0);
+
+      // Advance clock past compute duration
+      await vi.advanceTimersByTimeAsync(100);
+
+      const processedCount = await runPromise;
+      expect(processedCount).toBe(2);
+
+      // Both jobs must have finished
+      expect(finishLog).toContain(`finish:${jobId1}`);
+      expect(finishLog).toContain(`finish:${jobId2}`);
+      expect(mockQueue.ack).toHaveBeenCalledWith('101');
+      expect(mockQueue.ack).toHaveBeenCalledWith('102');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

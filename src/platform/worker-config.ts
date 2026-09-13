@@ -11,18 +11,43 @@ export class WorkerConfig {
     public readonly visibilityTimeoutSeconds: number,
     public readonly pollIntervalMs: number,
     public readonly drainTimeoutSeconds: number,
-  ) {}
+    public readonly poolSize?: number,
+  ) {
+    if (batchSize > 10) {
+      throw new WorkerConfigurationError('batchSize must not exceed 10.');
+    }
+    if (poolSize !== undefined && poolSize < batchSize + 1) {
+      throw new WorkerConfigurationError(
+        `poolSize (${poolSize}) must be at least batchSize + 1 (${batchSize + 1}).`,
+      );
+    }
+  }
 
   public static fromEnvironment(
     environment: NodeJS.ProcessEnv = process.env,
   ): WorkerConfig {
+    const batchSize = readPositiveInteger(
+      environment.SAVIA_WORKER_BATCH_SIZE,
+      1,
+      'SAVIA_WORKER_BATCH_SIZE',
+      10,
+    );
+    const poolSize =
+      environment.DATABASE_POOL_MAX !== undefined
+        ? readPositiveInteger(
+            environment.DATABASE_POOL_MAX,
+            4,
+            'DATABASE_POOL_MAX',
+            32,
+          )
+        : undefined;
+    if (poolSize !== undefined && poolSize < batchSize + 1) {
+      throw new WorkerConfigurationError(
+        `DATABASE_POOL_MAX (${poolSize}) must be at least SAVIA_WORKER_BATCH_SIZE + 1 (${batchSize + 1}).`,
+      );
+    }
     return new WorkerConfig(
-      readPositiveInteger(
-        environment.SAVIA_WORKER_BATCH_SIZE,
-        1,
-        'SAVIA_WORKER_BATCH_SIZE',
-        100,
-      ),
+      batchSize,
       readPositiveInteger(
         environment.SAVIA_WORKER_VT_SECONDS,
         300,
@@ -41,6 +66,7 @@ export class WorkerConfig {
         'SAVIA_WORKER_DRAIN_TIMEOUT_SECONDS',
         120,
       ),
+      poolSize,
     );
   }
 }
