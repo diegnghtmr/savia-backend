@@ -18,6 +18,8 @@ export const JOB_TYPES = [
   'import_commit',
   'import_rollback',
   'balance_forecast',
+  'report_run',
+  'export_job',
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];
 
@@ -80,6 +82,21 @@ export interface JobWriter {
     status: Extract<JobStatus, 'completed' | 'failed'>,
     resultResourceId: string | null,
     error: Record<string, unknown> | null,
+  ): Promise<Job>;
+
+  createQueuedJob(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    type: JobType,
+    payload?: Record<string, unknown> | null,
+  ): Promise<Job>;
+
+  transitionToProcessing(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    attemptCount?: number,
   ): Promise<Job>;
 }
 

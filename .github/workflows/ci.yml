@@ -233,6 +233,9 @@ jobs:
       - name: jobs read integration
         shell: bash
         run: pnpm test:integration:jobs-read
+      - name: job queue integration
+        shell: bash
+        run: pnpm test:integration:job-queue
       - name: reconciliations schema integration
         shell: bash
         run: pnpm test:integration:reconciliations-schema

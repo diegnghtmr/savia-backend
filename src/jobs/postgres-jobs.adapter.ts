@@ -71,6 +71,74 @@ export class PostgresJobsAdapter implements JobStore, JobWriter {
       completedAt: toIso(row.completed_at),
     };
   }
+
+  public async createQueuedJob(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    type: JobType,
+    payload?: Record<string, unknown> | null,
+  ): Promise<Job> {
+    const result = await client.query<JobRow>(
+      `insert into public.jobs (workspace_id, type, status, payload, created_by)
+       values ($1::uuid, $2, 'queued', $3::jsonb, $4::uuid)
+       returning id::text, type, status, progress_percent, result_resource_id::text as result_resource_id, error, created_at, started_at, completed_at`,
+      [workspaceId, type, payload ? JSON.stringify(payload) : null, subject],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error('Queued job was not created.');
+
+    await client.query(`select public.enqueue_job($1::uuid)`, [row.id]);
+
+    return {
+      id: row.id,
+      type: row.type,
+      status: row.status,
+      progressPercent:
+        row.progress_percent !== null ? Number(row.progress_percent) : null,
+      resultResourceId: row.result_resource_id ?? null,
+      error: row.error ?? null,
+      createdAt: toIso(row.created_at),
+      startedAt: row.started_at ? toIso(row.started_at) : null,
+      completedAt: row.completed_at ? toIso(row.completed_at) : null,
+    };
+  }
+
+  public async transitionToProcessing(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    attemptCount?: number,
+  ): Promise<Job> {
+    const result = await client.query<JobRow>(
+      `update public.jobs
+          set status = 'processing',
+              started_at = coalesce(started_at, now()),
+              attempt_count = coalesce($3, attempt_count + 1)
+        where workspace_id = $1::uuid
+          and id = $2::uuid
+          and status in ('queued', 'processing')
+       returning id::text, type, status, progress_percent, result_resource_id::text as result_resource_id, error, created_at, started_at, completed_at`,
+      [workspaceId, jobId, attemptCount ?? null],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(`Job ${jobId} could not be transitioned to processing.`);
+    }
+    return {
+      id: row.id,
+      type: row.type,
+      status: row.status,
+      progressPercent:
+        row.progress_percent !== null ? Number(row.progress_percent) : null,
+      resultResourceId: row.result_resource_id ?? null,
+      error: row.error ?? null,
+      createdAt: toIso(row.created_at),
+      startedAt: row.started_at ? toIso(row.started_at) : null,
+      completedAt: row.completed_at ? toIso(row.completed_at) : null,
+    };
+  }
+
   public async readActiveRole(
     client: TransactionClient,
     workspaceId: string,

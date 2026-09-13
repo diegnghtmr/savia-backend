@@ -1,0 +1,305 @@
+begin;
+
+-- Epica 8 / S1: Supabase Queues with pgmq 1.5.1 and transactional outbox.
+-- ADR-0020: Asynchronous jobs through Supabase Queues with a least-privilege worker.
+
+-- 1. pgmq extension and queue creation
+create extension if not exists pgmq;
+select pgmq.create('savia_jobs');
+
+-- 2. Worker role (nologin, nobypassrls, no table grants)
+do $$
+begin
+  if not exists (select from pg_roles where rolname = 'savia_worker') then
+    create role savia_worker
+      nologin
+      nosuperuser
+      nocreatedb
+      nocreaterole
+      noinherit
+      nobypassrls;
+  end if;
+end
+$$;
+grant savia_worker to postgres;
+grant usage on schema public to savia_worker;
+
+-- 3. Revoke pgmq from public and grant only to savia_elevated
+revoke all on schema pgmq from public;
+revoke all on all tables in schema pgmq from public;
+revoke all on all functions in schema pgmq from public;
+revoke all on all sequences in schema pgmq from public;
+
+grant usage on schema pgmq to savia_elevated;
+grant all on all tables in schema pgmq to savia_elevated;
+grant execute on all functions in schema pgmq to savia_elevated;
+grant all on all sequences in schema pgmq to savia_elevated;
+
+-- 4. Extend jobs table: payload (frozen input + asOf) and attempt_count (default 0)
+alter table public.jobs
+  add column if not exists payload jsonb;
+
+alter table public.jobs
+  add column if not exists attempt_count integer not null default 0
+    constraint jobs_attempt_count_check check (attempt_count >= 0);
+
+-- Legality trigger: enforce legal status moves; terminal rows never change
+create or replace function public.enforce_job_status_transition()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  -- Terminal rows never change
+  if old.status in ('completed', 'failed', 'cancelled', 'dead_letter') then
+    raise exception 'Terminal job % with status % cannot be modified', old.id, old.status;
+  end if;
+
+  -- Immutable columns
+  if new.id <> old.id
+     or new.workspace_id <> old.workspace_id
+     or new.created_by <> old.created_by
+     or new.created_at <> old.created_at
+     or new.type <> old.type
+     or new.payload is distinct from old.payload then
+    raise exception 'Immutable job columns cannot be updated on job %', old.id;
+  end if;
+
+  -- Legal status moves
+  if old.status = 'queued' then
+    if new.status not in ('queued', 'processing', 'completed', 'failed', 'cancelled') then
+      raise exception 'Illegal status transition from queued to % for job %', new.status, old.id;
+    end if;
+  elsif old.status = 'processing' then
+    if new.status not in ('processing', 'completed', 'failed', 'cancelled', 'dead_letter') then
+      raise exception 'Illegal status transition from processing to % for job %', new.status, old.id;
+    end if;
+  else
+    raise exception 'Unexpected initial status % for job %', old.status, old.id;
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger enforce_job_status_transition
+  before update on public.jobs
+  for each row
+  execute function public.enforce_job_status_transition();
+
+-- 5. Grants and policies on public.jobs
+grant insert (payload, attempt_count) on public.jobs to savia_application;
+
+grant update (
+  status,
+  progress_percent,
+  result_resource_id,
+  error,
+  started_at,
+  completed_at,
+  attempt_count
+) on public.jobs to savia_application;
+
+create policy application_updates_own_nonterminal_jobs
+  on public.jobs
+  for update
+  to savia_application
+  using (
+    public.workspace_actor_active_role(jobs.workspace_id)
+      in ('owner', 'administrator', 'editor')
+    and jobs.created_by
+          = nullif(current_setting('app.subject_id', true), '')::uuid
+    and jobs.status in ('queued', 'processing')
+  )
+  with check (
+    public.workspace_actor_active_role(jobs.workspace_id)
+      in ('owner', 'administrator', 'editor')
+    and jobs.created_by
+          = nullif(current_setting('app.subject_id', true), '')::uuid
+  );
+
+-- Column-scoped grants and policies for savia_elevated
+grant select (id, workspace_id, created_by, status) on public.jobs to savia_elevated;
+grant update (status, started_at, completed_at, error) on public.jobs to savia_elevated;
+
+create policy jobs_elevated_select
+  on public.jobs
+  for select
+  to savia_elevated
+  using (true);
+
+create policy jobs_elevated_update
+  on public.jobs
+  for update
+  to savia_elevated
+  using (true)
+  with check (true);
+
+-- 6. Security definer wrappers
+-- enqueue_job (granted to savia_application)
+create or replace function public.enqueue_job(p_job_id uuid)
+returns bigint
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_subject uuid;
+  v_workspace_id uuid;
+  v_created_by uuid;
+  v_status text;
+  v_msg_id bigint;
+begin
+  v_subject := nullif(current_setting('app.subject_id', true), '')::uuid;
+  if v_subject is null then
+    raise exception 'Missing app.subject_id context';
+  end if;
+
+  select j.workspace_id, j.created_by, j.status
+    into v_workspace_id, v_created_by, v_status
+    from public.jobs j
+   where j.id = p_job_id;
+
+  if not found then
+    raise exception 'Job % not found', p_job_id;
+  end if;
+
+  if v_status <> 'queued' then
+    raise exception 'Only queued jobs can be enqueued, current status: %', v_status;
+  end if;
+
+  if v_created_by <> v_subject then
+    raise exception 'Cannot enqueue job created by another subject';
+  end if;
+
+  if public.workspace_actor_active_role(v_workspace_id) not in ('owner', 'administrator', 'editor') then
+    raise exception 'Caller lacks active write role in job workspace';
+  end if;
+
+  v_msg_id := pgmq.send(
+    'savia_jobs',
+    jsonb_build_object(
+      'job_id', p_job_id,
+      'workspace_id', v_workspace_id
+    )
+  );
+
+  return v_msg_id;
+end;
+$$;
+
+-- claim_jobs (granted to savia_worker)
+create or replace function public.claim_jobs(p_vt integer, p_limit integer)
+returns table (
+  msg_id bigint,
+  read_ct integer,
+  enqueued_at timestamptz,
+  vt timestamptz,
+  message jsonb
+)
+language sql
+security definer
+set search_path = pg_catalog, public
+as $$
+  select msg_id, read_ct, enqueued_at, vt, message
+    from pgmq.read('savia_jobs', p_vt, p_limit);
+$$;
+
+-- ack_job (granted to savia_worker)
+create or replace function public.ack_job(p_msg_id bigint)
+returns boolean
+language sql
+security definer
+set search_path = pg_catalog, public
+as $$
+  select pgmq.delete('savia_jobs', p_msg_id);
+$$;
+
+-- archive_job (granted to savia_worker)
+create or replace function public.archive_job(p_msg_id bigint)
+returns boolean
+language sql
+security definer
+set search_path = pg_catalog, public
+as $$
+  select pgmq.archive('savia_jobs', p_msg_id);
+$$;
+
+-- defer_job (granted to savia_worker)
+create or replace function public.defer_job(p_msg_id bigint, p_vt_offset integer)
+returns table (
+  msg_id bigint,
+  read_ct integer,
+  enqueued_at timestamptz,
+  vt timestamptz,
+  message jsonb
+)
+language sql
+security definer
+set search_path = pg_catalog, public
+as $$
+  select msg_id, read_ct, enqueued_at, vt, message
+    from pgmq.set_vt('savia_jobs', p_msg_id, p_vt_offset);
+$$;
+
+-- fail_orphaned_job (granted to savia_worker)
+create or replace function public.fail_orphaned_job(p_job_id uuid, p_actor_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_updated integer;
+begin
+  update public.jobs
+     set status = 'failed',
+         started_at = coalesce(started_at, clock_timestamp()),
+         completed_at = clock_timestamp(),
+         error = jsonb_build_object(
+           'type', 'https://savia.app/problems/forbidden',
+           'title', 'Forbidden',
+           'status', 403,
+           'code', 'forbidden',
+           'traceId', gen_random_uuid()::text
+         )
+   where id = p_job_id
+     and created_by = p_actor_id
+     and status in ('queued', 'processing');
+
+  get diagnostics v_updated = row_count;
+  return v_updated > 0;
+end;
+$$;
+
+-- 7. Revoke EXECUTE from public, grant to roles
+revoke all on function public.enqueue_job(uuid) from public;
+revoke all on function public.claim_jobs(integer, integer) from public;
+revoke all on function public.ack_job(bigint) from public;
+revoke all on function public.archive_job(bigint) from public;
+revoke all on function public.defer_job(bigint, integer) from public;
+revoke all on function public.fail_orphaned_job(uuid, uuid) from public;
+revoke all on function public.enforce_job_status_transition() from public;
+
+grant execute on function public.enqueue_job(uuid) to savia_application;
+grant execute on function public.claim_jobs(integer, integer) to savia_worker;
+grant execute on function public.ack_job(bigint) to savia_worker;
+grant execute on function public.archive_job(bigint) to savia_worker;
+grant execute on function public.defer_job(bigint, integer) to savia_worker;
+grant execute on function public.fail_orphaned_job(uuid, uuid) to savia_worker;
+
+-- 8. Ownership to savia_elevated (RULING 13 pattern)
+grant usage, create on schema public to savia_elevated;
+
+alter function public.enqueue_job(uuid) owner to savia_elevated;
+alter function public.claim_jobs(integer, integer) owner to savia_elevated;
+alter function public.ack_job(bigint) owner to savia_elevated;
+alter function public.archive_job(bigint) owner to savia_elevated;
+alter function public.defer_job(bigint, integer) owner to savia_elevated;
+alter function public.fail_orphaned_job(uuid, uuid) owner to savia_elevated;
+alter function public.enforce_job_status_transition() owner to savia_elevated;
+
+revoke create on schema public from savia_elevated;
+
+commit;
