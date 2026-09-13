@@ -1,4 +1,4 @@
-// Migrations under test: 202608310001_jobs.sql
+// Migrations under test: 202608310001_jobs.sql, 202609100016_job_queue.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -226,6 +226,24 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
           nullable: true,
           hasDefault: false,
         },
+        {
+          name: 'payload',
+          type: 'jsonb',
+          nullable: true,
+          hasDefault: false,
+        },
+        {
+          name: 'attempt_count',
+          type: 'integer',
+          nullable: false,
+          hasDefault: true,
+        },
+        {
+          name: 'queue_message_id',
+          type: 'bigint',
+          nullable: true,
+          hasDefault: false,
+        },
       ]);
     });
 
@@ -257,6 +275,8 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
       expect(constraintNames).toContain(
         'jobs_result_only_when_completed_check',
       );
+      expect(constraintNames).toContain('jobs_attempt_count_check');
+      expect(constraintNames).toContain('jobs_queue_message_id_key');
     });
 
     it('enforces RLS and force row level security on public.jobs', async () => {
@@ -295,9 +315,11 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
         .filter((r) => r.insertable)
         .map((r) => r.column_name);
       expect(insertable).toEqual([
+        'attempt_count',
         'completed_at',
         'created_by',
         'error',
+        'payload',
         'progress_percent',
         'result_resource_id',
         'started_at',
@@ -342,11 +364,11 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
       );
       expect(deleteErr.code).toBe('42501');
 
-      // Direct UPDATE attempt as savia_application is rejected with 42501
+      // Direct UPDATE attempt on ungranted column (workspace_id) as savia_application is rejected with 42501
       const updateErr = await capturePgError(() =>
         asSubject(ownerA, (client) =>
           client.query(
-            `update public.jobs set status = 'processing' where id = '00000000-0000-0000-0000-000000000000'`,
+            `update public.jobs set workspace_id = '00000000-0000-0000-0000-000000000000'`,
           ),
         ),
       );
@@ -395,7 +417,98 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
             "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text, 'viewer'::text]))",
           polwithcheck: null,
         },
+        {
+          polname: 'jobs_elevated_select',
+          polcmd: 'r',
+          polpermissive: true,
+          roles: ['savia_elevated'],
+          polqual: 'true',
+          polwithcheck: null,
+        },
+        {
+          polname: 'jobs_elevated_update',
+          polcmd: 'w',
+          polpermissive: true,
+          roles: ['savia_elevated'],
+          polqual: 'true',
+          polwithcheck: 'true',
+        },
       ]);
+    });
+
+    it('pins worker transition wrappers: owned by savia_elevated, security definer, search_path, executable only by savia_worker', async () => {
+      const res = await admin.query<{
+        proname: string;
+        owner: string;
+        rolbypassrls: boolean;
+        rolsuper: boolean;
+        prosecdef: boolean;
+        proconfig: string[] | null;
+      }>(`
+        select p.proname,
+               r.rolname as owner,
+               r.rolbypassrls,
+               r.rolsuper,
+               p.prosecdef,
+               p.proconfig
+          from pg_proc p
+          join pg_namespace n on n.oid = p.pronamespace
+          join pg_roles r on r.oid = p.proowner
+         where n.nspname = 'public'
+           and p.proname in ('start_job', 'complete_job', 'fail_job')
+         order by p.proname
+      `);
+
+      expect(res.rows).toEqual([
+        {
+          proname: 'complete_job',
+          owner: 'savia_elevated',
+          rolbypassrls: false,
+          rolsuper: false,
+          prosecdef: true,
+          proconfig: ['search_path=pg_catalog, public'],
+        },
+        {
+          proname: 'fail_job',
+          owner: 'savia_elevated',
+          rolbypassrls: false,
+          rolsuper: false,
+          prosecdef: true,
+          proconfig: ['search_path=pg_catalog, public'],
+        },
+        {
+          proname: 'start_job',
+          owner: 'savia_elevated',
+          rolbypassrls: false,
+          rolsuper: false,
+          prosecdef: true,
+          proconfig: ['search_path=pg_catalog, public'],
+        },
+      ]);
+
+      for (const fn of [
+        'public.start_job(uuid,integer)',
+        'public.complete_job(uuid,uuid)',
+        'public.fail_job(uuid,jsonb)',
+      ]) {
+        const pubPriv = await admin.query<{ has: boolean }>(
+          `select has_function_privilege('public', $1, 'execute') as has`,
+          [fn],
+        );
+        expect(pubPriv.rows[0].has).toBe(false);
+
+        const appPriv = await admin.query<{ has: boolean }>(
+          `select has_function_privilege('savia_application', $1, 'execute') as has`,
+          [fn],
+        );
+        expect(appPriv.rows[0].has).toBe(false);
+
+        const workerPriv = await admin.query<{ has: boolean }>(
+          `select has_function_privilege('savia_worker', $1, 'execute') as has`,
+          [fn],
+        );
+        expect(workerPriv.rows[0].has).toBe(true);
+      }
     });
   });
 
