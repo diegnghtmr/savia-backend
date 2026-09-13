@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  type BeforeApplicationShutdown,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import type { JobExecutionContext, JobHandler } from './job-handler.port.js';
 import {
   JOB_QUEUE,
@@ -21,7 +27,7 @@ interface JobCheckRow extends Record<string, unknown> {
 }
 
 @Injectable()
-export class JobRunner {
+export class JobRunner implements BeforeApplicationShutdown {
   private readonly logger = new Logger(JobRunner.name);
   private readonly handlerMap = new Map<string, JobHandler>();
 
@@ -104,6 +110,10 @@ export class JobRunner {
     while (this.activeJobsCount > 0 && Date.now() < drainDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+  }
+
+  public async beforeApplicationShutdown(): Promise<void> {
+    await this.stop();
   }
 
   public async processMessage(message: QueueMessage): Promise<boolean> {

@@ -1,7 +1,9 @@
 // Migrations under test: 202609100016_job_queue.sql
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { NestFactory } from '@nestjs/core';
 
+import { WorkerModule } from '../../src/worker.module.js';
 import { PostgresJobsAdapter } from '../../src/jobs/postgres-jobs.adapter.js';
 import type {
   JobExecutionContext,
@@ -356,5 +358,169 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       );
       expect(checkJobA.rows[0].status).toBe('queued');
     });
+  });
+
+  describe('Worker lifecycle and shutdown drain', () => {
+    it('drains in-flight job during application shutdown before closing the pool, completing the job and acking its message', async () => {
+      let releaseCompute: () => void = () => {};
+      const computeBlocked = new Promise<void>((resolve) => {
+        releaseCompute = resolve;
+      });
+      let signalComputeStarted: () => void = () => {};
+      const computeStarted = new Promise<void>((resolve) => {
+        signalComputeStarted = resolve;
+      });
+
+      const blockingDrainHandler: JobHandler<
+        { test: boolean },
+        { done: boolean }
+      > = {
+        jobType: 'balance_forecast',
+        parsePayload: (raw: unknown) => raw as { test: boolean },
+        compute: async (_context, client) => {
+          signalComputeStarted();
+          await computeBlocked;
+          const res = await client.query<{ ok: number }>('select 1 as ok');
+          return { done: res.rows[0].ok === 1 };
+        },
+        persist: async (context, _computed, client) => {
+          const accRes = await client.query<{ id: string }>(
+            `insert into public.accounts (workspace_id, name, type, currency, created_by)
+             values ($1, 'Drain Test Account', 'checking', 'USD', $2)
+             returning id::text`,
+            [context.workspaceId, context.actorId],
+          );
+          return accRes.rows[0].id;
+        },
+      };
+
+      const app = await NestFactory.createApplicationContext(WorkerModule, {
+        logger: false,
+      });
+      app.enableShutdownHooks();
+
+      const appRunner = app.get(JobRunner);
+      appRunner.registerHandler(blockingDrainHandler);
+
+      const queuedJob = await transaction.run(ownerA, async (client) => {
+        return adapter.createQueuedJob(
+          client,
+          ws1Id,
+          ownerA,
+          'balance_forecast',
+          { test: true },
+        );
+      });
+
+      void appRunner.start();
+      await computeStarted;
+
+      let appClosed = false;
+      const closePromise = app.close().then(() => {
+        appClosed = true;
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(appClosed).toBe(false);
+
+      releaseCompute();
+      await closePromise;
+
+      const completedJob = await admin.query<{
+        status: string;
+        result_resource_id: string | null;
+      }>(
+        `select status, result_resource_id::text as result_resource_id
+           from public.jobs
+          where id = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(completedJob.rows[0].status).toBe('completed');
+      expect(completedJob.rows[0].result_resource_id).toBeDefined();
+
+      const queueMsg = await admin.query(
+        `select msg_id from pgmq.q_savia_jobs where message->>'job_id' = $1`,
+        [queuedJob.id],
+      );
+      expect(queueMsg.rows).toHaveLength(0);
+
+      const appPool = app.get(PostgresPool);
+      await expect(appPool.connect()).rejects.toThrow(
+        'PostgreSQL pool has ended.',
+      );
+    });
+
+    it('returns within bounded drain timeout and leaves message unacked when in-flight job exceeds drain timeout', async () => {
+      process.env.SAVIA_WORKER_DRAIN_TIMEOUT_SECONDS = '1';
+
+      let releaseHanging: () => void = () => {};
+      const hangingBlocked = new Promise<void>((resolve) => {
+        releaseHanging = resolve;
+      });
+      let signalHangingStarted: () => void = () => {};
+      const hangingStarted = new Promise<void>((resolve) => {
+        signalHangingStarted = resolve;
+      });
+
+      const hangingHandler: JobHandler<{ test: boolean }, { done: boolean }> = {
+        jobType: 'balance_forecast',
+        parsePayload: (raw: unknown) => raw as { test: boolean },
+        compute: async () => {
+          signalHangingStarted();
+          await hangingBlocked;
+          return { done: true };
+        },
+        persist: async () => 'noop',
+      };
+
+      const app = await NestFactory.createApplicationContext(WorkerModule, {
+        logger: false,
+      });
+      app.enableShutdownHooks();
+
+      const appRunner = app.get(JobRunner);
+      appRunner.registerHandler(hangingHandler);
+
+      const queuedJob = await transaction.run(ownerA, async (client) => {
+        return adapter.createQueuedJob(
+          client,
+          ws1Id,
+          ownerA,
+          'balance_forecast',
+          { test: true },
+        );
+      });
+
+      void appRunner.start();
+      await hangingStarted;
+
+      // Auto-release hanging compute after 1500ms so test can complete cleanly
+      const hangingTimer = setTimeout(() => {
+        releaseHanging();
+      }, 1500);
+
+      const t0 = Date.now();
+      await app.close();
+      const elapsedMs = Date.now() - t0;
+      clearTimeout(hangingTimer);
+
+      expect(elapsedMs).toBeGreaterThanOrEqual(950);
+      expect(elapsedMs).toBeLessThan(3500);
+
+      const queueMsg = await admin.query(
+        `select msg_id from pgmq.q_savia_jobs where message->>'job_id' = $1`,
+        [queuedJob.id],
+      );
+      expect(queueMsg.rows).toHaveLength(1);
+
+      const jobRow = await admin.query<{ status: string }>(
+        `select status from public.jobs where id = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(jobRow.rows[0].status).toBe('processing');
+
+      releaseHanging();
+      delete process.env.SAVIA_WORKER_DRAIN_TIMEOUT_SECONDS;
+    }, 10_000);
   });
 });
