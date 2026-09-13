@@ -50,4 +50,18 @@ export interface JobWriter {
     jobId: string,
     attemptCount?: number,
   ): Promise<Record<string, unknown>>;
+
+  completeJob(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    resultResourceId?: string | null,
+  ): Promise<Record<string, unknown>>;
+
+  failJob(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
 }

@@ -124,6 +124,46 @@ export class PostgresJobsAdapter implements JobStore, JobWriter {
     return job;
   }
 
+  public async completeJob(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    resultResourceId?: string | null,
+  ): Promise<Job> {
+    await client.query('set local role savia_worker');
+    await client.query(`select public.complete_job($1::uuid, $2::uuid)`, [
+      jobId,
+      resultResourceId ?? null,
+    ]);
+    await client.query('set local role savia_application');
+
+    const job = await this.findJobById(client, workspaceId, jobId);
+    if (!job) {
+      throw new Error(`Job ${jobId} could not be completed.`);
+    }
+    return job;
+  }
+
+  public async failJob(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
+  ): Promise<Job> {
+    await client.query('set local role savia_worker');
+    await client.query(`select public.fail_job($1::uuid, $2::jsonb)`, [
+      jobId,
+      JSON.stringify(error),
+    ]);
+    await client.query('set local role savia_application');
+
+    const job = await this.findJobById(client, workspaceId, jobId);
+    if (!job) {
+      throw new Error(`Job ${jobId} could not be failed.`);
+    }
+    return job;
+  }
+
   public async readActiveRole(
     client: TransactionClient,
     workspaceId: string,

@@ -164,7 +164,8 @@ begin
     'savia_jobs',
     jsonb_build_object(
       'job_id', p_job_id,
-      'workspace_id', v_workspace_id
+      'workspace_id', v_workspace_id,
+      'actor_id', v_created_by
     )
   );
 

@@ -389,7 +389,7 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
       // Verify the message in pgmq.q_savia_jobs
       const msgRes = await admin.query<{
         msg_id: string;
-        message: { job_id: string; workspace_id: string };
+        message: { job_id: string; workspace_id: string; actor_id: string };
       }>(
         `select msg_id::text, message
            from pgmq.q_savia_jobs
@@ -397,10 +397,11 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
         [createdJob.id],
       );
       expect(msgRes.rows).toHaveLength(1);
-      // Pointer message contains job_id and workspace_id ONLY - no payload or secret
+      // Pointer message contains job_id, workspace_id, and actor_id ONLY - no payload or secret
       expect(msgRes.rows[0].message).toEqual({
         job_id: createdJob.id,
         workspace_id: ws1Id,
+        actor_id: ownerA,
       });
       expect(msgRes.rows[0].message).not.toHaveProperty('payload');
       expect(msgRes.rows[0].message).not.toHaveProperty('secret');

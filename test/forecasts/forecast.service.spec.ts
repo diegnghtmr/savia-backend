@@ -223,6 +223,48 @@ class FakeJobWriter implements JobWriter {
     this.createdJobs.push(job);
     return job as unknown as Record<string, unknown>;
   }
+
+  public async completeJob(
+    _client: TransactionClient,
+    _workspaceId: string,
+    jobId: string,
+    resultResourceId?: string | null,
+  ): Promise<Record<string, unknown>> {
+    const job: Job = {
+      id: jobId,
+      type: 'balance_forecast',
+      status: 'completed',
+      progressPercent: 100,
+      resultResourceId: resultResourceId ?? null,
+      error: null,
+      createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    };
+    this.createdJobs.push(job);
+    return job as unknown as Record<string, unknown>;
+  }
+
+  public async failJob(
+    _client: TransactionClient,
+    _workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const job: Job = {
+      id: jobId,
+      type: 'balance_forecast',
+      status: 'failed',
+      progressPercent: null,
+      resultResourceId: null,
+      error,
+      createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    };
+    this.createdJobs.push(job);
+    return job as unknown as Record<string, unknown>;
+  }
 }
 
 const mockClient = {} as TransactionClient;
