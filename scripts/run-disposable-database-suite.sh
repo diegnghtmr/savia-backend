@@ -86,6 +86,7 @@ case "$spec" in
   test/agent/agent-messages.integration-spec.ts) ;;
   test/cli-device/cli-device.integration-spec.ts) ;;
   test/cli-device/cli-device-token.integration-spec.ts) ;;
+  test/cli-device/cli-scope.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 
