@@ -10,6 +10,7 @@ import type {
   BudgetSpendRow,
   DebtOutstandingBalanceRow,
   DebtPaymentCostRow,
+  ScheduledOutflowRow,
   SubscriptionPriceRow,
   TransactionFlowRow,
 } from './analytics.port.js';
@@ -350,5 +351,105 @@ where allocation.workspace_id = $1::uuid
       [workspaceId, baseCurrency, quoteCurrency, asOf ?? null],
     );
     return result.rows[0]?.rate;
+  }
+
+  /**
+   * §3.1 financial_calendar - scheduled outflows:
+   * Reads forward-scheduled outflow facts inside [from, to] evaluated in UTC.
+   *
+   * Single query with three UNION ALL branches, each labelled by a kind column:
+   * 1. Subscriptions: active charges ('detected', 'confirmed') by next_expected_at.
+   *    Evaluated in UTC: (next_expected_at at time zone 'utc')::date.
+   * 2. Debts: active debt minimum payments.
+   *    Unlike subscriptions and recurring rules, debts.next_payment_at is already
+   *    typed as a SQL 'date' in public.debts (calendar date without time/timezone),
+   *    so it requires no timezone conversion and compares directly to $2::date / $3::date.
+   * 3. Recurring rules: active transaction automation rules by next_occurrence_at.
+   *    Evaluated in UTC: (next_occurrence_at at time zone 'utc')::date.
+   *    Filters rules where ends_at is null or (ends_at at time zone 'utc')::date >= $2::date.
+   */
+  public async readScheduledOutflows(
+    client: TransactionClient,
+    workspaceId: string,
+    from: string,
+    to: string,
+  ): Promise<readonly ScheduledOutflowRow[]> {
+    const sql = `
+select
+  'subscription' as kind,
+  s.id::text as "refId",
+  s.payee_name as label,
+  s.current_amount_minor::text as "amountMinor",
+  s.current_currency as currency,
+  (s.next_expected_at at time zone 'utc')::date::text as "scheduledDate",
+  null::jsonb as template
+from public.subscriptions s
+where s.workspace_id = $1::uuid
+  and s.status in ('detected', 'confirmed')
+  and s.next_expected_at is not null
+  and (s.next_expected_at at time zone 'utc')::date >= $2::date
+  and (s.next_expected_at at time zone 'utc')::date <= $3::date
+
+union all
+
+select
+  'debt_payment' as kind,
+  d.id::text as "refId",
+  d.name as label,
+  d.minimum_payment_minor::text as "amountMinor",
+  d.currency as currency,
+  d.next_payment_at::text as "scheduledDate",
+  null::jsonb as template
+from public.debts d
+where d.workspace_id = $1::uuid
+  and d.status = 'active'
+  and d.minimum_payment_minor is not null
+  and d.next_payment_at is not null
+  and d.next_payment_at >= $2::date
+  and d.next_payment_at <= $3::date
+
+union all
+
+select
+  'recurring_rule' as kind,
+  r.id::text as "refId",
+  r.name as label,
+  (r.template->'amount'->>'amountMinor') as "amountMinor",
+  (r.template->'amount'->>'currency') as currency,
+  (r.next_occurrence_at at time zone 'utc')::date::text as "scheduledDate",
+  r.template as template
+from public.recurring_rules r
+where r.workspace_id = $1::uuid
+  and r.active = true
+  and (r.ends_at is null or (r.ends_at at time zone 'utc')::date >= $2::date)
+  and (r.next_occurrence_at at time zone 'utc')::date >= $2::date
+  and (r.next_occurrence_at at time zone 'utc')::date <= $3::date`;
+
+    const result = await client.query<ScheduledOutflowRow>(sql, [
+      workspaceId,
+      from,
+      to,
+    ]);
+    return result.rows;
+  }
+
+  /**
+   * §3.1 financial_calendar - debts without scheduled amount:
+   * Counts active workspace debts whose minimum_payment_minor is null.
+   * Queried separately rather than contorting the scheduled outflows union query.
+   */
+  public async readActiveDebtsWithoutScheduledAmount(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<number> {
+    const sql = `
+select count(*)::text as count
+from public.debts d
+where d.workspace_id = $1::uuid
+  and d.status = 'active'
+  and d.minimum_payment_minor is null`;
+
+    const result = await client.query<{ count: string }>(sql, [workspaceId]);
+    return parseInt(result.rows[0]?.count ?? '0', 10);
   }
 }

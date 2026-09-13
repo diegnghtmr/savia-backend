@@ -1,14 +1,20 @@
 import {
   GRANULARITY,
+  type BalanceProjection,
+  type BalanceProjectionPoint,
   type ConvertedDebtCostRow,
   type ConvertedFlowRow,
   type ConvertedSubscriptionRow,
   type DebtCostEvolution,
   type DebtCostEvolutionPoint,
+  type FinancialCalendar,
+  type FinancialCalendarDay,
   type IncomeStability,
   type MonthlyCapacityPoint,
   type QuarterlyAveragePoint,
   type RecurringVsVariable,
+  type ScheduledOutflowItem,
+  type ScheduledOutflowRow,
   type SubscriptionPriceIncreaseItem,
   type SubscriptionPriceIncreases,
   type SubscriptionPriceRow,
@@ -661,5 +667,323 @@ export function buildDebtCostEvolution(
     totalInterestMinor,
     totalFeeMinor,
     totalCostMinor: totalInterestMinor + totalFeeMinor,
+  };
+}
+
+const OUTFLOW_TYPES: ReadonlySet<string> = new Set([
+  'expense',
+  'debt_payment',
+  'fund_contribution',
+]);
+
+const INTEGER_AMOUNT_PATTERN = /^-?[0-9]+$/;
+
+function parseRowDateToUtcDateString(
+  rawDate: Date | string | null | undefined,
+): string | null {
+  if (!rawDate) {
+    return null;
+  }
+  if (rawDate instanceof Date) {
+    const y = rawDate.getUTCFullYear();
+    const m = String(rawDate.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(rawDate.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  if (typeof rawDate === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+      return rawDate;
+    }
+    const parsed = new Date(rawDate);
+    if (!Number.isNaN(parsed.getTime())) {
+      const y = parsed.getUTCFullYear();
+      const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(parsed.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * §3.1 buildFinancialCalendar
+ * Pure builder that calculates the financial calendar of forward-dated scheduled outflows.
+ *
+ * Design constraints:
+ * - Only days that carry at least one item appear. A 365-day period with three scheduled
+ *   charges returns three days, not 365. This is the opposite of the monthly-bucket rule and
+ *   it is deliberate: a calendar lists events, a time series measures periods.
+ *   (Commented so nobody "fixes" it later).
+ * - Amounts are reported as positive magnitudes, because the field is named expectedOutflow
+ *   and its direction is in the name. This is NOT a clamp: no sign is discarded, the sources
+ *   hold positive scheduled amounts.
+ * - Only outflows: From the recurring template's type, include expense, debt_payment, and
+ *   fund_contribution. Exclude income, refund, transfer, and adjustment. Subscriptions and
+ *   debt payments are outflows by construction.
+ * - Deterministic order: days ascending by date; within a day, items ascending by kind, then refId.
+ * - totalExpectedOutflowMinor equals the sum of every day (asserted directly).
+ */
+export function buildFinancialCalendar(
+  from: string,
+  to: string,
+  rows: readonly ScheduledOutflowRow[],
+  debtsWithoutScheduledAmount = 0,
+  unreadableTemplateCount = 0,
+): FinancialCalendar {
+  let countedDebtsWithoutScheduledAmount = 0;
+  let countedUnreadableTemplate = 0;
+
+  const daysMap = new Map<string, ScheduledOutflowItem[]>();
+
+  for (const row of rows) {
+    const dateStr = parseRowDateToUtcDateString(
+      row.scheduledDate ?? row.scheduledAt,
+    );
+    if (!dateStr || dateStr < from || dateStr > to) {
+      continue;
+    }
+
+    if (row.kind === 'debt_payment') {
+      if (row.amountMinor === null || row.amountMinor === undefined) {
+        countedDebtsWithoutScheduledAmount += 1;
+        continue;
+      }
+      let amount: bigint;
+      if (typeof row.amountMinor === 'bigint') {
+        amount = row.amountMinor;
+      } else if (
+        typeof row.amountMinor === 'string' &&
+        INTEGER_AMOUNT_PATTERN.test(row.amountMinor)
+      ) {
+        amount = BigInt(row.amountMinor);
+      } else {
+        countedDebtsWithoutScheduledAmount += 1;
+        continue;
+      }
+      // Positive magnitude: direction lives in expectedOutflow name; not a clamp (no sign discarded to hide value)
+      const positiveAmount = amount < 0n ? -amount : amount;
+      let dayItems = daysMap.get(dateStr);
+      if (!dayItems) {
+        dayItems = [];
+        daysMap.set(dateStr, dayItems);
+      }
+      dayItems.push({
+        kind: row.kind,
+        refId: row.refId,
+        label: row.label,
+        amountMinor: positiveAmount,
+      });
+    } else if (row.kind === 'subscription') {
+      if (row.amountMinor === null || row.amountMinor === undefined) {
+        continue;
+      }
+      let amount: bigint;
+      if (typeof row.amountMinor === 'bigint') {
+        amount = row.amountMinor;
+      } else if (
+        typeof row.amountMinor === 'string' &&
+        INTEGER_AMOUNT_PATTERN.test(row.amountMinor)
+      ) {
+        amount = BigInt(row.amountMinor);
+      } else {
+        continue;
+      }
+      // Positive magnitude: direction lives in expectedOutflow name; not a clamp (no sign discarded to hide value)
+      const positiveAmount = amount < 0n ? -amount : amount;
+      let dayItems = daysMap.get(dateStr);
+      if (!dayItems) {
+        dayItems = [];
+        daysMap.set(dateStr, dayItems);
+      }
+      dayItems.push({
+        kind: row.kind,
+        refId: row.refId,
+        label: row.label,
+        amountMinor: positiveAmount,
+      });
+    } else if (row.kind === 'recurring_rule') {
+      if (row.template) {
+        const templateType = row.template.type;
+        // An allow-list must require the known-good, never merely reject the known-bad.
+        // A missing discriminator is not evidence that a charge is an outflow, and this
+        // column guarantees only `jsonb not null`.
+        if (
+          typeof templateType !== 'string' ||
+          !OUTFLOW_TYPES.has(templateType)
+        ) {
+          countedUnreadableTemplate += 1;
+          continue;
+        }
+        // Validate amountMinor and currency presence
+        const templateAmount = row.template.amount;
+        if (
+          !templateAmount ||
+          typeof templateAmount.amountMinor !== 'string' ||
+          !INTEGER_AMOUNT_PATTERN.test(templateAmount.amountMinor) ||
+          !templateAmount.currency
+        ) {
+          countedUnreadableTemplate += 1;
+          continue;
+        }
+        const amount = BigInt(templateAmount.amountMinor);
+        // Positive magnitude: direction lives in expectedOutflow name; not a clamp (no sign discarded to hide value)
+        const positiveAmount = amount < 0n ? -amount : amount;
+        let dayItems = daysMap.get(dateStr);
+        if (!dayItems) {
+          dayItems = [];
+          daysMap.set(dateStr, dayItems);
+        }
+        dayItems.push({
+          kind: row.kind,
+          refId: row.refId,
+          label: row.label,
+          amountMinor: positiveAmount,
+        });
+      } else {
+        if (row.amountMinor === null || row.amountMinor === undefined) {
+          countedUnreadableTemplate += 1;
+          continue;
+        }
+        let amount: bigint;
+        if (typeof row.amountMinor === 'bigint') {
+          amount = row.amountMinor;
+        } else if (
+          typeof row.amountMinor === 'string' &&
+          INTEGER_AMOUNT_PATTERN.test(row.amountMinor)
+        ) {
+          amount = BigInt(row.amountMinor);
+        } else {
+          countedUnreadableTemplate += 1;
+          continue;
+        }
+        // Positive magnitude: direction lives in expectedOutflow name; not a clamp (no sign discarded to hide value)
+        const positiveAmount = amount < 0n ? -amount : amount;
+        let dayItems = daysMap.get(dateStr);
+        if (!dayItems) {
+          dayItems = [];
+          daysMap.set(dateStr, dayItems);
+        }
+        dayItems.push({
+          kind: row.kind,
+          refId: row.refId,
+          label: row.label,
+          amountMinor: positiveAmount,
+        });
+      }
+    }
+  }
+
+  // Deterministic order: days ascending by date
+  const sortedDates = [...daysMap.keys()].sort((a, b) => a.localeCompare(b));
+
+  const days: FinancialCalendarDay[] = [];
+
+  for (const date of sortedDates) {
+    const items = daysMap.get(date)!;
+    // Deterministic order: within a day, items ascending by kind, then refId
+    items.sort((a, b) => {
+      const kindCmp = a.kind.localeCompare(b.kind);
+      if (kindCmp !== 0) {
+        return kindCmp;
+      }
+      return a.refId.localeCompare(b.refId);
+    });
+
+    let dayExpectedOutflowMinor = 0n;
+    for (const item of items) {
+      dayExpectedOutflowMinor += item.amountMinor;
+    }
+
+    days.push({
+      date,
+      expectedOutflowMinor: dayExpectedOutflowMinor,
+      items,
+    });
+  }
+
+  // Derived from days, so the total cannot diverge from its parts by construction.
+  // This replaces a runtime invariant check: an impossible state is better than a guarded one.
+  const totalExpectedOutflowMinor = days.reduce(
+    (sum, day) => sum + day.expectedOutflowMinor,
+    0n,
+  );
+
+  return {
+    periodStart: from,
+    periodEnd: to,
+    days,
+    totalExpectedOutflowMinor,
+    debtsWithoutScheduledAmount:
+      debtsWithoutScheduledAmount + countedDebtsWithoutScheduledAmount,
+    recurringRulesWithUnreadableTemplate:
+      unreadableTemplateCount + countedUnreadableTemplate,
+  };
+}
+
+/**
+ * §3.2 buildBalanceProjection
+ * Pure builder that extrapolates balance based on historical monthly capacity.
+ *
+ * Design constraints:
+ * - Extrapolation rule: flat-mean extrapolation based on history.
+ * - meanMonthlyIncomeMinor and meanMonthlyExpensesMinor are half-away-from-zero
+ *   integer means over history, calculated via roundDivHalfAwayFromZero.
+ * - When basisMonths === 0, both means are 0n and projection is flat (no division by zero).
+ * - Month buckets: gap-free in order via generateBucketPeriods(from, to, GRANULARITY.MONTH).
+ * - projectedBalanceMinor is a running total: openingBalance + (meanIncome - meanExpenses)
+ *   compounded month by month.
+ * - Nothing is clamped: negative projected balances stay negative.
+ * - Note on scheduled outflows: Do NOT fold financial_calendar's scheduled outflows into the
+ *   projection. The historical mean already accounts for regular recurring charges and debts,
+ *   so adding scheduled calendar outflows on top would double-count them.
+ */
+export function buildBalanceProjection(
+  from: string,
+  to: string,
+  openingBalanceMinor: bigint,
+  history: readonly MonthlyCapacityPoint[],
+): BalanceProjection {
+  const basisMonths = history.length;
+  let meanMonthlyIncomeMinor = 0n;
+  let meanMonthlyExpensesMinor = 0n;
+
+  if (basisMonths > 0) {
+    let sumIncomeMinor = 0n;
+    let sumExpensesMinor = 0n;
+    for (const point of history) {
+      sumIncomeMinor += point.incomeMinor;
+      sumExpensesMinor += point.expensesMinor;
+    }
+    const divisor = BigInt(basisMonths);
+    meanMonthlyIncomeMinor = roundDivHalfAwayFromZero(sumIncomeMinor, divisor);
+    meanMonthlyExpensesMinor = roundDivHalfAwayFromZero(
+      sumExpensesMinor,
+      divisor,
+    );
+  }
+
+  const bucketPeriods = generateBucketPeriods(from, to, GRANULARITY.MONTH);
+  const netMonthlyFlow = meanMonthlyIncomeMinor - meanMonthlyExpensesMinor;
+
+  let runningBalance = openingBalanceMinor;
+  const months: BalanceProjectionPoint[] = [];
+
+  for (const month of bucketPeriods) {
+    runningBalance += netMonthlyFlow;
+    // Nothing is clamped: if runningBalance becomes negative, it remains negative
+    months.push({
+      month,
+      expectedInflowMinor: meanMonthlyIncomeMinor,
+      expectedOutflowMinor: meanMonthlyExpensesMinor,
+      projectedBalanceMinor: runningBalance,
+    });
+  }
+
+  return {
+    openingBalanceMinor,
+    basisMonths,
+    meanMonthlyIncomeMinor,
+    meanMonthlyExpensesMinor,
+    months,
   };
 }
