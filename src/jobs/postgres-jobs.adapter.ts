@@ -111,14 +111,11 @@ export class PostgresJobsAdapter implements JobStore, JobWriter {
     attemptCount?: number,
   ): Promise<Job> {
     await client.query('set local role savia_worker');
-    try {
-      await client.query(`select public.start_job($1::uuid, $2::integer)`, [
-        jobId,
-        attemptCount ?? null,
-      ]);
-    } finally {
-      await client.query('set local role savia_application');
-    }
+    await client.query(`select public.start_job($1::uuid, $2::integer)`, [
+      jobId,
+      attemptCount ?? null,
+    ]);
+    await client.query('set local role savia_application');
 
     const job = await this.findJobById(client, workspaceId, jobId);
     if (!job) {

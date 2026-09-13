@@ -941,5 +941,41 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
       expect(jobRow.rows[0].status).toBe('processing');
       expect(jobRow.rows[0].attempt_count).toBe(1);
     });
+
+    it('adapter.transitionToProcessing preserves wrapper SQLSTATE P0001 refusal without masking with 25P02 when transitioning a terminal job', async () => {
+      const completedJob = await transaction.run(ownerA, async (client) => {
+        return adapter.createTerminalJob(
+          client,
+          ws1Id,
+          ownerA,
+          'balance_forecast',
+          'completed',
+          null,
+          null,
+        );
+      });
+
+      const err = await capturePgError(() =>
+        transaction.run(ownerA, async (client) => {
+          return adapter.transitionToProcessing(
+            client,
+            ws1Id,
+            completedJob.id,
+            1,
+          );
+        }),
+      );
+
+      expect(err.code).toBe('P0001');
+      expect(err.message).toMatch(
+        /Cannot start job.*expected status queued or processing, got completed/i,
+      );
+
+      const checkJob = await admin.query<{ status: string }>(
+        `select status from public.jobs where id = $1::uuid`,
+        [completedJob.id],
+      );
+      expect(checkJob.rows[0].status).toBe('completed');
+    });
   });
 });
