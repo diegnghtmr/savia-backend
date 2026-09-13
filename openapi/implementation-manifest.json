@@ -311,6 +311,11 @@
       "operationId": "getCashFlowAnalytics",
       "method": "GET",
       "path": "/v1/analytics/cash-flow"
+    },
+    {
+      "operationId": "getAdvancedAnalytics",
+      "method": "GET",
+      "path": "/v1/analytics/advanced"
     }
   ]
 }

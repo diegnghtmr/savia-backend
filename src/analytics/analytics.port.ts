@@ -10,6 +10,20 @@ export const GRANULARITY = {
 } as const;
 export type Granularity = (typeof GRANULARITY)[keyof typeof GRANULARITY];
 
+export const ADVANCED_METRIC = {
+  RECURRING_VS_VARIABLE: 'recurring_vs_variable',
+  FINANCIAL_CALENDAR: 'financial_calendar',
+  WEEKDAY_HEATMAP: 'weekday_heatmap',
+  BALANCE_PROJECTION: 'balance_projection',
+  QUARTERLY_AVERAGE_COMPARISON: 'quarterly_average_comparison',
+  SUBSCRIPTION_PRICE_INCREASES: 'subscription_price_increases',
+  INCOME_STABILITY: 'income_stability',
+  MONTHLY_SAVINGS_CAPACITY: 'monthly_savings_capacity',
+  DEBT_COST_EVOLUTION: 'debt_cost_evolution',
+} as const;
+export type AdvancedMetric =
+  (typeof ADVANCED_METRIC)[keyof typeof ADVANCED_METRIC];
+
 export const ANALYTICS_OUTCOMES = {
   OK: 'ok',
   FORBIDDEN: 'forbidden',
@@ -194,6 +208,13 @@ export interface CashFlowAnalyticsQuery {
   readonly granularity: Granularity;
 }
 
+export interface AdvancedAnalyticsQuery {
+  readonly workspaceId: string;
+  readonly metric: AdvancedMetric;
+  readonly from: string;
+  readonly to: string;
+}
+
 export interface AnalyticsForbiddenOutcome {
   readonly kind: typeof ANALYTICS_OUTCOMES.FORBIDDEN;
 }
@@ -224,6 +245,23 @@ export type CashFlowAnalyticsOutcome =
   | AnalyticsForbiddenOutcome
   | AnalyticsMissingRateOutcome;
 
+export interface AdvancedAnalytics {
+  readonly metric: AdvancedMetric;
+  readonly generatedAt: string;
+  readonly data: Record<string, unknown>;
+  readonly explanation: string | null;
+}
+
+export interface AdvancedAnalyticsOkOutcome {
+  readonly kind: typeof ANALYTICS_OUTCOMES.OK;
+  readonly analytics: AdvancedAnalytics;
+}
+
+export type AdvancedAnalyticsOutcome =
+  | AdvancedAnalyticsOkOutcome
+  | AnalyticsForbiddenOutcome
+  | AnalyticsMissingRateOutcome;
+
 export interface AnalyticsPort {
   getSummary(
     subject: string,
@@ -234,6 +272,11 @@ export interface AnalyticsPort {
     subject: string,
     query: CashFlowAnalyticsQuery,
   ): Promise<CashFlowAnalyticsOutcome>;
+
+  getAdvancedAnalytics(
+    subject: string,
+    query: AdvancedAnalyticsQuery,
+  ): Promise<AdvancedAnalyticsOutcome>;
 }
 
 export interface AccountNativeBalanceRow extends Record<string, unknown> {
