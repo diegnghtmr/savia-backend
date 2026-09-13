@@ -4,10 +4,13 @@ import { DEBT_OUTSTANDING_BALANCE_EXPRESSION } from '../platform/debt-balance-qu
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   AccountNativeBalanceRow,
+  ActiveSubscriptionRow,
   AnalyticsStore,
   BudgetAllocationRow,
   BudgetSpendRow,
   DebtOutstandingBalanceRow,
+  DebtPaymentCostRow,
+  SubscriptionPriceRow,
   TransactionFlowRow,
 } from './analytics.port.js';
 
@@ -105,7 +108,11 @@ where d.workspace_id = $1::uuid
    * Transaction type classification: income, expense, refund.
    * EXCLUDED from both: adjustment, debt_payment, fund_contribution.
    * EXCLUDED entirely: transfers (transfer postings carry a non-null transfer_id; postings checked for transfer_id is null).
-   * Pending or voided postings do NOT contribute to any aggregate.
+   * Posting status enforcement: at least one posting confirmed or reconciled,
+   * and no posting outside that set (not exists non-confirmed/non-reconciled).
+   * Note: mixed posting statuses are currently unreachable through any application write path
+   * because both legs are created and updated atomically; this pair of predicates is defence
+   * in depth, not a live bug fix.
    * expenses is reported as a POSITIVE magnitude even though underlying postings are negative.
    */
   public async readTransactionsInPeriod(
@@ -137,11 +144,125 @@ where t.workspace_id = $1::uuid
       and p.status in ('confirmed', 'reconciled')
       and p.transfer_id is null
   )
+  and not exists (
+    select 1
+    from public.ledger_postings p2
+    where p2.workspace_id = t.workspace_id
+      and p2.transaction_id = t.id
+      and p2.status not in ('confirmed', 'reconciled')
+  )
   and (t.occurred_at at time zone 'utc')::date >= $2::date
   and (t.occurred_at at time zone 'utc')::date <= $3::date
   and t.type in ('income', 'expense', 'refund')`;
 
     const result = await client.query<TransactionFlowRow>(sql, [
+      workspaceId,
+      from,
+      to,
+    ]);
+    return result.rows;
+  }
+
+  /**
+   * §3.1 subscription_price_increases:
+   * Reads workspace subscriptions that have a recorded previous amount.
+   * Filtered by status in ('detected', 'confirmed').
+   * 'ignored' means the user rejected the detection and 'cancelled' means
+   * the subscription ended; neither is a live recurring charge.
+   */
+  public async readSubscriptionsWithPreviousAmount(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<readonly SubscriptionPriceRow[]> {
+    const sql = `
+select
+  id::text as id,
+  payee_name as "payeeName",
+  current_amount_minor::text as "currentAmountMinor",
+  current_currency as "currentCurrency",
+  previous_amount_minor::text as "previousAmountMinor",
+  previous_currency as "previousCurrency"
+from public.subscriptions
+where workspace_id = $1::uuid
+  and status in ('detected', 'confirmed')
+  and previous_amount_minor is not null`;
+
+    const result = await client.query<SubscriptionPriceRow>(sql, [workspaceId]);
+    return result.rows;
+  }
+
+  /**
+   * §3.2 recurring_vs_variable:
+   * Reads active workspace subscriptions.
+   * Filtered by status in ('detected', 'confirmed').
+   * 'ignored' means the user rejected the detection and 'cancelled' means
+   * the subscription ended; neither is a live recurring charge.
+   */
+  public async readActiveSubscriptions(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<readonly ActiveSubscriptionRow[]> {
+    const sql = `
+select
+  current_amount_minor::text as "currentAmountMinor",
+  current_currency as "currentCurrency",
+  frequency
+from public.subscriptions
+where workspace_id = $1::uuid
+  and status in ('detected', 'confirmed')`;
+
+    const result = await client.query<ActiveSubscriptionRow>(sql, [
+      workspaceId,
+    ]);
+    return result.rows;
+  }
+
+  /**
+   * §3.3 debt_cost_evolution:
+   * Reads debt payment costs (interest and fees) within the period.
+   *
+   * Predicate invariants:
+   * Both the transaction status AND the posting-status predicates are required:
+   * at least one posting confirmed or reconciled, and no posting outside that set.
+   * Note: mixed posting statuses are currently unreachable through any application write path
+   * because both legs are created and updated atomically; this pair of predicates is defence
+   * in depth, not a live bug fix.
+   */
+  public async readDebtPaymentCostsInPeriod(
+    client: TransactionClient,
+    workspaceId: string,
+    from: string,
+    to: string,
+  ): Promise<readonly DebtPaymentCostRow[]> {
+    const sql = `
+select
+  dp.interest_minor::text as "interestMinor",
+  dp.fee_minor::text as "feeMinor",
+  d.currency,
+  t.occurred_at as "occurredAt"
+from public.debt_payments dp
+join public.debts d
+  on d.workspace_id = dp.workspace_id and d.id = dp.debt_id
+join public.transactions t
+  on t.workspace_id = dp.workspace_id and t.id = dp.transaction_id
+where dp.workspace_id = $1::uuid
+  and t.status in ('confirmed', 'reconciled')
+  and exists (
+    select 1 from public.ledger_postings p
+    where p.workspace_id = dp.workspace_id
+      and p.transaction_id = dp.transaction_id
+      and p.status in ('confirmed', 'reconciled')
+  )
+  and not exists (
+    select 1 from public.ledger_postings p2
+    where p2.workspace_id = dp.workspace_id
+      and p2.transaction_id = dp.transaction_id
+      and p2.status not in ('confirmed', 'reconciled')
+  )
+  and (t.occurred_at at time zone 'utc')::date >= $2::date
+  and (t.occurred_at at time zone 'utc')::date <= $3::date`;
+
+    const result = await client.query<DebtPaymentCostRow>(sql, [
       workspaceId,
       from,
       to,

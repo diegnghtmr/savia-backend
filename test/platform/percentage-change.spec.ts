@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeIncreasePercent } from '../../src/recurring/subscription-calculation.js';
+import { computeIncreasePercent } from '../../src/platform/percentage-change.js';
 
 describe('computeIncreasePercent (RULING 59 & RULING 60)', () => {
   const usd = (amountMinor: string) => ({ amountMinor, currency: 'USD' });

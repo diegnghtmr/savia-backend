@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import type {
+  ConvertedDebtCostRow,
   ConvertedFlowRow,
+  ConvertedSubscriptionRow,
   MonthlyCapacityPoint,
+  SubscriptionPriceRow,
 } from '../../src/analytics/analytics.port.js';
 import {
   bigintSqrt,
+  buildDebtCostEvolution,
   buildIncomeStability,
   buildMonthlySavingsCapacity,
   buildQuarterlyAverageComparison,
+  buildRecurringVsVariable,
+  buildSubscriptionPriceIncreases,
   buildWeekdayHeatmap,
 } from '../../src/analytics/advanced-metrics.js';
 
@@ -797,5 +803,598 @@ describe('buildWeekdayHeatmap', () => {
     expect(result[6].weekday).toBe(7);
     expect(result[6].transactionCount).toBe(1);
     expect(result[6].totalMinor).toBe(1000n);
+  });
+});
+
+describe('buildSubscriptionPriceIncreases', () => {
+  it('counts a subscription whose currency differs from its previous amount in excludedForCurrencyMismatch', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-1',
+        payeeName: 'GitHub',
+        currentAmountMinor: '1200',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'EUR',
+      },
+    ];
+
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result).toEqual({
+      items: [],
+      consideredCount: 1,
+      decreasedOrUnchangedCount: 0,
+      excludedForCurrencyMismatch: 1,
+      excludedForZeroPrevious: 0,
+    });
+  });
+
+  it('counts a subscription whose previous amount is 0 in excludedForZeroPrevious', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-2',
+        payeeName: 'Figma',
+        currentAmountMinor: '1500',
+        currentCurrency: 'USD',
+        previousAmountMinor: '0',
+        previousCurrency: 'USD',
+      },
+    ];
+
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result).toEqual({
+      items: [],
+      consideredCount: 1,
+      decreasedOrUnchangedCount: 0,
+      excludedForCurrencyMismatch: 0,
+      excludedForZeroPrevious: 1,
+    });
+  });
+
+  it('counts a price decrease in decreasedOrUnchangedCount and excludes it from items', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-3',
+        payeeName: 'AWS',
+        currentAmountMinor: '8000',
+        currentCurrency: 'USD',
+        previousAmountMinor: '10000',
+        previousCurrency: 'USD',
+      },
+      {
+        id: 'sub-4',
+        payeeName: 'DigitalOcean',
+        currentAmountMinor: '2000',
+        currentCurrency: 'USD',
+        previousAmountMinor: '2000',
+        previousCurrency: 'USD',
+      },
+    ];
+
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result.items).toHaveLength(0);
+    expect(result.consideredCount).toBe(2);
+    expect(result.decreasedOrUnchangedCount).toBe(2);
+    expect(result.excludedForCurrencyMismatch).toBe(0);
+    expect(result.excludedForZeroPrevious).toBe(0);
+  });
+
+  it('breaks ordering ties deterministically by payeeName ascending then subscriptionId ascending', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-c',
+        payeeName: 'Zendesk',
+        currentAmountMinor: '2000',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'USD',
+      },
+      {
+        id: 'sub-b',
+        payeeName: 'Acme Corp',
+        currentAmountMinor: '2000',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'USD',
+      },
+      {
+        id: 'sub-a',
+        payeeName: 'Acme Corp',
+        currentAmountMinor: '4000',
+        currentCurrency: 'USD',
+        previousAmountMinor: '2000',
+        previousCurrency: 'USD',
+      },
+    ];
+
+    // All three have increasePercent = +100%.
+    // Tie-break rule: payeeName asc ('Acme Corp' before 'Zendesk'), then subscriptionId asc ('sub-a' before 'sub-b')
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result.consideredCount).toBe(3);
+    expect(result.items).toHaveLength(3);
+    expect(result.items[0]).toEqual({
+      subscriptionId: 'sub-a',
+      payeeName: 'Acme Corp',
+      previousAmount: { amountMinor: '2000', currency: 'USD' },
+      currentAmount: { amountMinor: '4000', currency: 'USD' },
+      increasePercent: 100,
+    });
+    expect(result.items[1]).toEqual({
+      subscriptionId: 'sub-b',
+      payeeName: 'Acme Corp',
+      previousAmount: { amountMinor: '1000', currency: 'USD' },
+      currentAmount: { amountMinor: '2000', currency: 'USD' },
+      increasePercent: 100,
+    });
+    expect(result.items[2]).toEqual({
+      subscriptionId: 'sub-c',
+      payeeName: 'Zendesk',
+      previousAmount: { amountMinor: '1000', currency: 'USD' },
+      currentAmount: { amountMinor: '2000', currency: 'USD' },
+      increasePercent: 100,
+    });
+  });
+
+  it('includes price increases in items ordered by increasePercent descending', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-10',
+        payeeName: 'Service A',
+        currentAmountMinor: '1100',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'USD',
+      }, // +10%
+      {
+        id: 'sub-20',
+        payeeName: 'Service B',
+        currentAmountMinor: '1500',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'USD',
+      }, // +50%
+      {
+        id: 'sub-30',
+        payeeName: 'Service C',
+        currentAmountMinor: '1250',
+        currentCurrency: 'USD',
+        previousAmountMinor: '1000',
+        previousCurrency: 'USD',
+      }, // +25%
+    ];
+
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result.items.map((i) => i.subscriptionId)).toEqual([
+      'sub-20',
+      'sub-30',
+      'sub-10',
+    ]);
+    expect(result.items.map((i) => i.increasePercent)).toEqual([50, 25, 10]);
+  });
+
+  it('counts a row with malformed current amount in consideredCount but in no partition', () => {
+    const rows: readonly SubscriptionPriceRow[] = [
+      {
+        id: 'sub-malformed',
+        payeeName: 'Service Malformed',
+        currentAmountMinor: 'abc',
+        currentCurrency: 'USD',
+        previousAmountMinor: '100',
+        previousCurrency: 'USD',
+      },
+    ];
+
+    const result = buildSubscriptionPriceIncreases(rows);
+
+    expect(result.consideredCount).toBe(1);
+    expect(result.decreasedOrUnchangedCount).toBe(0);
+    expect(result.excludedForCurrencyMismatch).toBe(0);
+    expect(result.excludedForZeroPrevious).toBe(0);
+    expect(result.items).toHaveLength(0);
+  });
+});
+
+describe('buildRecurringVsVariable', () => {
+  it('normalises and classifies frequencies Monthly, weekly, MONTHLY after trim and lowercase', () => {
+    // 30 inclusive days: 2026-06-01 to 2026-06-30
+    const from = '2026-06-01';
+    const to = '2026-06-30';
+    const subscriptions: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10000n, frequency: 'Monthly' },
+      { amountMinor: 5000n, frequency: ' weekly ' },
+      { amountMinor: 20000n, frequency: 'MONTHLY' },
+    ];
+    const totalExpensesMinor = 100000n;
+
+    const result = buildRecurringVsVariable(
+      from,
+      to,
+      subscriptions,
+      totalExpensesMinor,
+    );
+
+    expect(result.consideredSubscriptionCount).toBe(3);
+    expect(result.unclassifiedSubscriptionCount).toBe(0);
+    expect(result.committedMinor).toBeGreaterThan(0n);
+    expect(result.committedMinor + result.variableMinor).toBe(
+      totalExpensesMinor,
+    );
+  });
+
+  it('marks unmatched frequencies every other Tuesday, empty, mensual as unclassified and counts them', () => {
+    const from = '2026-01-01';
+    const to = '2026-01-31';
+    const subscriptions: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10000n, frequency: 'every other Tuesday' },
+      { amountMinor: 5000n, frequency: '' },
+      { amountMinor: 8000n, frequency: 'mensual' },
+      { amountMinor: 12000n, frequency: 'monthly' }, // 1 classified
+    ];
+    const totalExpensesMinor = 50000n;
+
+    const result = buildRecurringVsVariable(
+      from,
+      to,
+      subscriptions,
+      totalExpensesMinor,
+    );
+
+    expect(result.consideredSubscriptionCount).toBe(4);
+    expect(result.unclassifiedSubscriptionCount).toBe(3);
+    // Only the 'monthly' subscription contributes to committedMinor:
+    // roundDivHalfAwayFromZero(12000n * 12n * 31n, 365n) = roundDiv(4464000n, 365n)
+    // 4464000 / 365 = 12230.13698... -> 12230n (remainder 50, 2*50=100 < 365)
+    expect(result.committedMinor).toBe(12230n);
+  });
+
+  it('preserves committed + variable === totalExpenses as an exact identity when variable is negative', () => {
+    const from = '2026-01-01';
+    const to = '2026-01-31'; // 31 days
+    // Monthly 10000n committed for 31 days = 10192n
+    const subscriptions: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10000n, frequency: 'monthly' },
+    ];
+    // Observed spend totalExpensesMinor is only 6000n (less than committed 10192n)
+    const totalExpensesMinor = 6000n;
+
+    const result = buildRecurringVsVariable(
+      from,
+      to,
+      subscriptions,
+      totalExpensesMinor,
+    );
+
+    expect(result.committedMinor).toBe(10192n);
+    expect(result.variableMinor).toBe(-4192n);
+    expect(result.totalExpensesMinor).toBe(6000n);
+    // Identity must hold: committed + variable === totalExpenses
+    expect(result.committedMinor + result.variableMinor).toBe(
+      result.totalExpensesMinor,
+    );
+    // committedPercent = (10192 / 6000) * 100 = 169.8666... -> 169.87%
+    expect(result.committedPercent).toBe(169.87);
+  });
+
+  it('returns committedPercent as null when totalExpensesMinor is 0n', () => {
+    const from = '2026-01-01';
+    const to = '2026-01-31';
+    const subscriptions: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10000n, frequency: 'monthly' },
+    ];
+    const totalExpensesMinor = 0n;
+
+    const result = buildRecurringVsVariable(
+      from,
+      to,
+      subscriptions,
+      totalExpensesMinor,
+    );
+
+    expect(result.committedMinor).toBe(10192n);
+    expect(result.variableMinor).toBe(-10192n);
+    expect(result.committedMinor + result.variableMinor).toBe(0n);
+    expect(result.committedPercent).toBeNull();
+  });
+
+  it('computes different committed amounts for 31-day vs 28-day periods for the same monthly subscription', () => {
+    /**
+     * Hand derivation:
+     * amountMinor = 10000n, frequency = 'monthly' -> perYear = 12n
+     * Formula: roundDivHalfAwayFromZero(amountMinor * perYear * days, 365n)
+     *
+     * 1) 31-day period (2026-01-01 to 2026-01-31, inclusive days = 31):
+     *    num = 10000n * 12n * 31n = 3720000n
+     *    3720000 / 365 = 10191 with remainder 285
+     *    2 * 285 = 570 >= 365 -> rounds up to 10192n
+     *
+     * 2) 28-day period (2026-02-01 to 2026-02-28, inclusive days = 28):
+     *    num = 10000n * 12n * 28n = 3360000n
+     *    3360000 / 365 = 9205 with remainder 175
+     *    2 * 175 = 350 < 365 -> rounds down to 9205n
+     *
+     * 10192n !== 9205n (difference = 987n)
+     */
+    const sub: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10000n, frequency: 'monthly' },
+    ];
+
+    const result31 = buildRecurringVsVariable(
+      '2026-01-01',
+      '2026-01-31',
+      sub,
+      20000n,
+    );
+    const result28 = buildRecurringVsVariable(
+      '2026-02-01',
+      '2026-02-28',
+      sub,
+      20000n,
+    );
+
+    expect(result31.committedMinor).toBe(10192n);
+    expect(result28.committedMinor).toBe(9205n);
+    expect(result31.committedMinor).not.toBe(result28.committedMinor);
+  });
+
+  it('returns null for committedPercent when computed percent is non-finite and ensures non-null values are always finite', () => {
+    const from = '2024-01-01';
+    const to = '2024-01-01';
+    const subscriptions: readonly ConvertedSubscriptionRow[] = [
+      { amountMinor: 10n ** 400n, frequency: 'daily' },
+    ];
+    const totalExpensesMinor = 1n;
+
+    const result = buildRecurringVsVariable(
+      from,
+      to,
+      subscriptions,
+      totalExpensesMinor,
+    );
+
+    // Non-finite computed percentage returns null explicitly instead of Infinity
+    expect(result.committedPercent).toBeNull();
+    // Guard invariant: Number.isFinite is never false for any returned non-null committedPercent
+    if (result.committedPercent !== null) {
+      expect(Number.isFinite(result.committedPercent)).toBe(true);
+    }
+  });
+
+  it('pins exact committedMinor for every token in the frequency table one subscription at a time', () => {
+    // Fixed period: 2026-01-01 to 2026-01-31 (31 inclusive days)
+    // Subscription amount: 10000n minor units
+    // Formula: roundDivHalfAwayFromZero(amountMinor * perYear * days, 365n)
+    //
+    // Hand derivations (amountMinor = 10000n, days = 31n, amountMinor * days = 310000n):
+    //
+    // 1. daily: perYear = 365n
+    //    num = 310000n * 365n = 113,150,000n
+    //    113150000 / 365 = 310000 with remainder 0
+    //    expected = 310000n
+    //
+    // 2. weekly: perYear = 52n
+    //    num = 310000n * 52n = 16,120,000n
+    //    16120000 / 365 = 44164 with remainder 140
+    //    2 * 140 = 280 < 365 -> round down
+    //    expected = 44164n
+    //
+    // 3. biweekly: perYear = 26n
+    //    num = 310000n * 26n = 8,060,000n
+    //    8060000 / 365 = 22082 with remainder 70
+    //    2 * 70 = 140 < 365 -> round down
+    //    expected = 22082n
+    //
+    // 4. fortnightly: perYear = 26n
+    //    num = 310000n * 26n = 8,060,000n
+    //    8060000 / 365 = 22082 with remainder 70
+    //    2 * 70 = 140 < 365 -> round down
+    //    expected = 22082n
+    //
+    // 5. monthly: perYear = 12n
+    //    num = 310000n * 12n = 3,720,000n
+    //    3720000 / 365 = 10191 with remainder 285
+    //    2 * 285 = 570 >= 365 -> round up to 10192n
+    //    expected = 10192n
+    //
+    // 6. bimonthly: perYear = 6n
+    //    num = 310000n * 6n = 1,860,000n
+    //    1860000 / 365 = 5095 with remainder 325
+    //    2 * 325 = 650 >= 365 -> round up to 5096n
+    //    expected = 5096n
+    //
+    // 7. quarterly: perYear = 4n
+    //    num = 310000n * 4n = 1,240,000n
+    //    1240000 / 365 = 3397 with remainder 95
+    //    2 * 95 = 190 < 365 -> round down
+    //    expected = 3397n
+    //
+    // 8. semiannual: perYear = 2n
+    //    num = 310000n * 2n = 620,000n
+    //    620000 / 365 = 1698 with remainder 230
+    //    2 * 230 = 460 >= 365 -> round up to 1699n
+    //    expected = 1699n
+    //
+    // 9. semiannually: perYear = 2n
+    //    num = 310000n * 2n = 620,000n
+    //    620000 / 365 = 1698 with remainder 230
+    //    2 * 230 = 460 >= 365 -> round up to 1699n
+    //    expected = 1699n
+    //
+    // 10. biannual: perYear = 2n
+    //     num = 310000n * 2n = 620,000n
+    //     620000 / 365 = 1698 with remainder 230
+    //     2 * 230 = 460 >= 365 -> round up to 1699n
+    //     expected = 1699n
+    //
+    // 11. yearly: perYear = 1n
+    //     num = 310000n * 1n = 310,000n
+    //     310000 / 365 = 849 with remainder 115
+    //     2 * 115 = 230 < 365 -> round down
+    //     expected = 849n
+    //
+    // 12. annual: perYear = 1n
+    //     num = 310000n * 1n = 310,000n
+    //     310000 / 365 = 849 with remainder 115
+    //     2 * 115 = 230 < 365 -> round down
+    //     expected = 849n
+    //
+    // 13. annually: perYear = 1n
+    //     num = 310000n * 1n = 310,000n
+    //     310000 / 365 = 849 with remainder 115
+    //     2 * 115 = 230 < 365 -> round down
+    //     expected = 849n
+    const from = '2026-01-01';
+    const to = '2026-01-31';
+    const amountMinor = 10000n;
+    const totalExpensesMinor = 500000n;
+
+    const testCases: readonly {
+      readonly frequency: string;
+      readonly expectedCommittedMinor: bigint;
+    }[] = [
+      { frequency: 'daily', expectedCommittedMinor: 310000n },
+      { frequency: 'weekly', expectedCommittedMinor: 44164n },
+      { frequency: 'biweekly', expectedCommittedMinor: 22082n },
+      { frequency: 'fortnightly', expectedCommittedMinor: 22082n },
+      { frequency: 'monthly', expectedCommittedMinor: 10192n },
+      { frequency: 'bimonthly', expectedCommittedMinor: 5096n },
+      { frequency: 'quarterly', expectedCommittedMinor: 3397n },
+      { frequency: 'semiannual', expectedCommittedMinor: 1699n },
+      { frequency: 'semiannually', expectedCommittedMinor: 1699n },
+      { frequency: 'biannual', expectedCommittedMinor: 1699n },
+      { frequency: 'yearly', expectedCommittedMinor: 849n },
+      { frequency: 'annual', expectedCommittedMinor: 849n },
+      { frequency: 'annually', expectedCommittedMinor: 849n },
+    ];
+
+    for (const testCase of testCases) {
+      const result = buildRecurringVsVariable(
+        from,
+        to,
+        [{ amountMinor, frequency: testCase.frequency }],
+        totalExpensesMinor,
+      );
+
+      expect(
+        result.committedMinor,
+        `committedMinor mismatch for frequency: ${testCase.frequency}`,
+      ).toBe(testCase.expectedCommittedMinor);
+      expect(result.consideredSubscriptionCount).toBe(1);
+      expect(result.unclassifiedSubscriptionCount).toBe(0);
+    }
+  });
+});
+
+describe('buildDebtCostEvolution', () => {
+  it('presents zero-filled buckets for months with no payments and assigns payments correctly across UTC boundaries', () => {
+    // 3 months: Jan, Feb, Mar 2026
+    const from = '2026-01-01';
+    const to = '2026-03-31';
+    const rows: readonly ConvertedDebtCostRow[] = [
+      // 2026-01-31T23:59:59.999Z -> UTC month is January
+      {
+        interestMinor: 1000n,
+        feeMinor: 200n,
+        occurredAt: new Date('2026-01-31T23:59:59.999Z'),
+      },
+      // 2026-02-01T00:00:00.000Z -> UTC month is February
+      {
+        interestMinor: 1500n,
+        feeMinor: 300n,
+        occurredAt: new Date('2026-02-01T00:00:00.000Z'),
+      },
+      // March has NO payments -> must be present, gap-free, zero-filled
+    ];
+
+    const result = buildDebtCostEvolution(from, to, rows);
+
+    expect(result.series).toHaveLength(3);
+    // January bucket
+    expect(result.series[0]).toEqual({
+      month: '2026-01-01',
+      interestMinor: 1000n,
+      feeMinor: 200n,
+      totalCostMinor: 1200n,
+    });
+    // February bucket
+    expect(result.series[1]).toEqual({
+      month: '2026-02-01',
+      interestMinor: 1500n,
+      feeMinor: 300n,
+      totalCostMinor: 1800n,
+    });
+    // March bucket: zero-filled
+    expect(result.series[2]).toEqual({
+      month: '2026-03-01',
+      interestMinor: 0n,
+      feeMinor: 0n,
+      totalCostMinor: 0n,
+    });
+  });
+
+  it('ensures totalCostMinor === interestMinor + feeMinor in every bucket and period totals match', () => {
+    const from = '2026-01-01';
+    const to = '2026-02-28';
+    const rows: readonly ConvertedDebtCostRow[] = [
+      {
+        interestMinor: 4000n,
+        feeMinor: 800n,
+        occurredAt: new Date('2026-01-15T12:00:00Z'),
+      },
+      {
+        interestMinor: 2500n,
+        feeMinor: 500n,
+        occurredAt: new Date('2026-01-20T12:00:00Z'),
+      },
+      {
+        interestMinor: 3000n,
+        feeMinor: 600n,
+        occurredAt: new Date('2026-02-10T12:00:00Z'),
+      },
+    ];
+
+    const result = buildDebtCostEvolution(from, to, rows);
+
+    expect(result.series).toHaveLength(2);
+    for (const point of result.series) {
+      expect(point.totalCostMinor).toBe(point.interestMinor + point.feeMinor);
+    }
+
+    expect(result.totalInterestMinor).toBe(9500n);
+    expect(result.totalFeeMinor).toBe(1900n);
+    expect(result.totalCostMinor).toBe(11400n);
+    expect(result.totalCostMinor).toBe(
+      result.totalInterestMinor + result.totalFeeMinor,
+    );
+  });
+
+  it('returns zero-filled series and all zero totals when input rows are empty', () => {
+    const from = '2026-04-01';
+    const to = '2026-05-31';
+    const rows: readonly ConvertedDebtCostRow[] = [];
+
+    const result = buildDebtCostEvolution(from, to, rows);
+
+    expect(result.series).toEqual([
+      {
+        month: '2026-04-01',
+        interestMinor: 0n,
+        feeMinor: 0n,
+        totalCostMinor: 0n,
+      },
+      {
+        month: '2026-05-01',
+        interestMinor: 0n,
+        feeMinor: 0n,
+        totalCostMinor: 0n,
+      },
+    ]);
+    expect(result.totalInterestMinor).toBe(0n);
+    expect(result.totalFeeMinor).toBe(0n);
+    expect(result.totalCostMinor).toBe(0n);
   });
 });

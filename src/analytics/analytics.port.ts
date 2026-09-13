@@ -91,6 +91,58 @@ export interface WeekdayHeatmapPoint {
   readonly totalMinor: bigint;
 }
 
+export interface SubscriptionPriceIncreaseItem {
+  readonly subscriptionId: string;
+  readonly payeeName: string;
+  readonly previousAmount: Money;
+  readonly currentAmount: Money;
+  readonly increasePercent: number;
+}
+
+export interface SubscriptionPriceIncreases {
+  readonly items: readonly SubscriptionPriceIncreaseItem[];
+  readonly consideredCount: number;
+  readonly decreasedOrUnchangedCount: number;
+  readonly excludedForCurrencyMismatch: number;
+  readonly excludedForZeroPrevious: number;
+}
+
+export interface ConvertedSubscriptionRow {
+  readonly amountMinor: bigint;
+  readonly frequency: string;
+}
+
+export interface RecurringVsVariable {
+  readonly periodStart: string;
+  readonly periodEnd: string;
+  readonly committedMinor: bigint;
+  readonly variableMinor: bigint;
+  readonly totalExpensesMinor: bigint;
+  readonly committedPercent: number | null;
+  readonly consideredSubscriptionCount: number;
+  readonly unclassifiedSubscriptionCount: number;
+}
+
+export interface ConvertedDebtCostRow {
+  readonly interestMinor: bigint;
+  readonly feeMinor: bigint;
+  readonly occurredAt: Date;
+}
+
+export interface DebtCostEvolutionPoint {
+  readonly month: string;
+  readonly interestMinor: bigint;
+  readonly feeMinor: bigint;
+  readonly totalCostMinor: bigint;
+}
+
+export interface DebtCostEvolution {
+  readonly series: readonly DebtCostEvolutionPoint[];
+  readonly totalInterestMinor: bigint;
+  readonly totalFeeMinor: bigint;
+  readonly totalCostMinor: bigint;
+}
+
 export interface AnalyticsSummaryQuery {
   readonly workspaceId: string;
   readonly from: string;
@@ -180,6 +232,28 @@ export interface BudgetSpendRow extends Record<string, unknown> {
   readonly occurredAt: Date;
 }
 
+export interface SubscriptionPriceRow extends Record<string, unknown> {
+  readonly id: string;
+  readonly payeeName: string;
+  readonly currentAmountMinor: string;
+  readonly currentCurrency: string;
+  readonly previousAmountMinor: string;
+  readonly previousCurrency: string;
+}
+
+export interface ActiveSubscriptionRow extends Record<string, unknown> {
+  readonly currentAmountMinor: string;
+  readonly currentCurrency: string;
+  readonly frequency: string;
+}
+
+export interface DebtPaymentCostRow extends Record<string, unknown> {
+  readonly interestMinor: string;
+  readonly feeMinor: string;
+  readonly currency: string;
+  readonly occurredAt: Date;
+}
+
 export interface AnalyticsStore {
   readActiveRole(
     client: TransactionClient,
@@ -207,6 +281,23 @@ export interface AnalyticsStore {
     from: string,
     to: string,
   ): Promise<readonly TransactionFlowRow[]>;
+
+  readSubscriptionsWithPreviousAmount(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<readonly SubscriptionPriceRow[]>;
+
+  readActiveSubscriptions(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<readonly ActiveSubscriptionRow[]>;
+
+  readDebtPaymentCostsInPeriod(
+    client: TransactionClient,
+    workspaceId: string,
+    from: string,
+    to: string,
+  ): Promise<readonly DebtPaymentCostRow[]>;
 
   readOverlappingBudgetAllocations(
     client: TransactionClient,
