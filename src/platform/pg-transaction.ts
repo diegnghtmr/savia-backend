@@ -1,4 +1,4 @@
-import type { OnApplicationShutdown } from '@nestjs/common';
+import { Logger, type OnApplicationShutdown } from '@nestjs/common';
 
 import type { PgClient, PgPool } from './postgres-pool.js';
 import { UUID_PATTERN } from './uuid.js';
@@ -44,6 +44,7 @@ export interface WorkerWriteContext {
 }
 export interface PgTransactionOptions {
   readonly workerMode?: boolean;
+  readonly poolCloseGraceMs?: number;
 }
 const UUID = UUID_PATTERN;
 // prettier-ignore
@@ -52,6 +53,7 @@ export class PgTransaction implements OnApplicationShutdown {
   // does: their value comes from that configuration, which must not be resolved
   // while the module graph is being built. See PostgresPool.
   private resolvedTimeouts: Required<TransactionTimeoutOptions> | undefined;
+  private readonly logger = new Logger(PgTransaction.name);
   public constructor(
     private readonly pool: PgPool,
     private readonly timeoutOptions: TransactionTimeoutOptions | (() => TransactionTimeoutOptions) = {},
@@ -231,7 +233,30 @@ export class PgTransaction implements OnApplicationShutdown {
   }
 
   public close(): Promise<void> { return this.pool.end(); }
-  public onApplicationShutdown(): Promise<void> { return this.close(); }
+  public async onApplicationShutdown(): Promise<void> {
+    if (!this.options.workerMode) {
+      await this.close();
+      return;
+    }
+    const graceMs = this.options.poolCloseGraceMs ?? 5_000;
+    const closePromise = this.close();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = await Promise.race([
+      closePromise.then(() => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), graceMs);
+      }),
+    ]);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+    if (timedOut) {
+      void closePromise.catch(() => undefined);
+      this.logger.warn(
+        `PostgreSQL pool did not close within ${graceMs}ms; continuing shutdown.`,
+      );
+    }
+  }
   private async acquire(): Promise<PgClient> {
     try {
       return await this.pool.connect();

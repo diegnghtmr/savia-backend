@@ -6,7 +6,7 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.createApplicationContext(WorkerModule, {
     logger: ['error', 'warn', 'log'],
   });
-  app.enableShutdownHooks();
+  app.enableShutdownHooks([], { useProcessExit: true });
 
   const runner = app.get(JobRunner);
   await runner.start();

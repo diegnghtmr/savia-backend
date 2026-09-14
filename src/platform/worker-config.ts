@@ -12,6 +12,7 @@ export class WorkerConfig {
     public readonly pollIntervalMs: number,
     public readonly drainTimeoutSeconds: number,
     public readonly poolSize?: number,
+    public readonly poolCloseGraceMs: number = 5_000,
   ) {
     if (batchSize > 10) {
       throw new WorkerConfigurationError('batchSize must not exceed 10.');
@@ -67,6 +68,12 @@ export class WorkerConfig {
         120,
       ),
       poolSize,
+      readPositiveInteger(
+        environment.SAVIA_WORKER_POOL_CLOSE_GRACE_MS,
+        5_000,
+        'SAVIA_WORKER_POOL_CLOSE_GRACE_MS',
+        60_000,
+      ),
     );
   }
 }

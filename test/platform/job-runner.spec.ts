@@ -500,4 +500,107 @@ describe('JobRunner unit spec (S2)', () => {
       vi.useRealTimers();
     }
   });
+
+  it('waits for pending claim when stop() is called and does not process the claimed messages', async () => {
+    let resolveClaim!: (messages: QueueMessage[]) => void;
+    const claimPending = new Promise<QueueMessage[]>((resolve) => {
+      resolveClaim = resolve;
+    });
+
+    const messages: QueueMessage[] = [
+      {
+        msgId: '101',
+        readCt: 1,
+        enqueuedAt: new Date().toISOString(),
+        vt: new Date().toISOString(),
+        message: {
+          job_id: jobId,
+          workspace_id: wsId,
+          actor_id: actorId,
+        },
+      },
+    ];
+
+    const { runner, mockQueue, probeHandler, mockJobWriter } =
+      createTestHarness();
+    mockQueue.claim = vi.fn().mockImplementation(() => claimPending);
+
+    const runPromise = runner.runOnce();
+
+    // Let microtasks tick so runOnce reaches queue.claim
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    let stopFinished = false;
+    const stopPromise = runner.stop().then(() => {
+      stopFinished = true;
+    });
+
+    // Stop must NOT finish yet because claim is pending and counted as active
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stopFinished).toBe(false);
+
+    // Resolve the pending claim with messages
+    resolveClaim(messages);
+
+    const processedCount = await runPromise;
+    await stopPromise;
+
+    expect(processedCount).toBe(0);
+    expect(stopFinished).toBe(true);
+
+    // Claimed messages must NOT be processed or acked
+    expect(mockJobWriter.transitionToProcessing).not.toHaveBeenCalled();
+    expect(probeHandler.compute).not.toHaveBeenCalled();
+    expect(probeHandler.persist).not.toHaveBeenCalled();
+    expect(mockQueue.ack).not.toHaveBeenCalled();
+  });
+
+  it('processes completing message and continues loop when another message in the batch rejects', async () => {
+    const jobId1 = '00000000-0000-0000-0000-000000000002';
+    const jobId2 = '00000000-0000-0000-0000-000000000022';
+
+    const messages: QueueMessage[] = [
+      {
+        msgId: '101',
+        readCt: 1,
+        enqueuedAt: new Date().toISOString(),
+        vt: new Date().toISOString(),
+        message: {
+          job_id: jobId1,
+          workspace_id: wsId,
+          actor_id: actorId,
+        },
+      },
+      {
+        msgId: '102',
+        readCt: 1,
+        enqueuedAt: new Date().toISOString(),
+        vt: new Date().toISOString(),
+        message: {
+          job_id: jobId2,
+          workspace_id: wsId,
+          actor_id: actorId,
+        },
+      },
+    ];
+
+    const { runner, mockQueue } = createTestHarness({
+      claimedMessages: messages,
+      config: new WorkerConfig(2, 300, 1000, 30),
+    });
+
+    const originalProcessMessage = runner.processMessage.bind(runner);
+    vi.spyOn(runner, 'processMessage').mockImplementation(async (msg) => {
+      if (msg.msgId === '101') {
+        throw new Error('Unexpected processMessage rejection');
+      }
+      return originalProcessMessage(msg);
+    });
+
+    const processedCount = await runner.runOnce();
+    expect(processedCount).toBe(1);
+
+    expect(mockQueue.ack).toHaveBeenCalledWith('102');
+    expect(mockQueue.ack).not.toHaveBeenCalledWith('101');
+  });
 });

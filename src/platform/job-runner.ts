@@ -32,6 +32,7 @@ export class JobRunner implements BeforeApplicationShutdown {
   private readonly handlerMap = new Map<string, JobHandler>();
 
   private isRunning = false;
+  private isStopping = false;
   private pollTimer?: NodeJS.Timeout;
   private activeJobsCount = 0;
 
@@ -52,10 +53,23 @@ export class JobRunner implements BeforeApplicationShutdown {
   }
 
   public async runOnce(): Promise<number> {
-    const messages = await this.queue.claim(
-      this.config.visibilityTimeoutSeconds,
-      this.config.batchSize,
-    );
+    this.activeJobsCount++;
+    let messages: readonly QueueMessage[];
+    try {
+      messages = await this.queue.claim(
+        this.config.visibilityTimeoutSeconds,
+        this.config.batchSize,
+      );
+
+      if (this.isStopping) {
+        this.logger.warn(
+          `Runner is stopping; ${messages.length} claimed messages left unacknowledged for redelivery.`,
+        );
+        return 0;
+      }
+    } finally {
+      this.activeJobsCount--;
+    }
 
     const results = await Promise.allSettled(
       messages.map(async (message) => {
@@ -78,6 +92,7 @@ export class JobRunner implements BeforeApplicationShutdown {
   public async start(): Promise<void> {
     if (this.isRunning) return;
     this.isRunning = true;
+    this.isStopping = false;
 
     const poll = async () => {
       if (!this.isRunning) return;
@@ -100,6 +115,7 @@ export class JobRunner implements BeforeApplicationShutdown {
   }
 
   public async stop(): Promise<void> {
+    this.isStopping = true;
     this.isRunning = false;
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);

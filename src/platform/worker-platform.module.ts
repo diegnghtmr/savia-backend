@@ -19,8 +19,11 @@ import { WorkerConfig } from './worker-config.js';
     },
     {
       provide: PgTransaction,
-      inject: [PostgresPool],
-      useFactory: (pool: PostgresPool): PgTransaction =>
+      inject: [PostgresPool, WorkerConfig],
+      useFactory: (
+        pool: PostgresPool,
+        workerConfig: WorkerConfig,
+      ): PgTransaction =>
         new PgTransaction(
           pool,
           () => ({
@@ -29,7 +32,10 @@ import { WorkerConfig } from './worker-config.js';
             callbackTimeoutMs: 300_000,
             idleTransactionTimeoutMs: 60_000,
           }),
-          { workerMode: true },
+          {
+            workerMode: true,
+            poolCloseGraceMs: workerConfig.poolCloseGraceMs,
+          },
         ),
     },
     PgmqJobQueueAdapter,

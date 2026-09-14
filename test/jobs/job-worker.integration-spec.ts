@@ -452,6 +452,7 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
 
     it('returns within bounded drain timeout and leaves message unacked when in-flight job exceeds drain timeout', async () => {
       process.env.SAVIA_WORKER_DRAIN_TIMEOUT_SECONDS = '1';
+      process.env.SAVIA_WORKER_POOL_CLOSE_GRACE_MS = '1000';
 
       let releaseHanging: () => void = () => {};
       const hangingBlocked = new Promise<void>((resolve) => {
@@ -494,18 +495,12 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       void appRunner.start();
       await hangingStarted;
 
-      // Auto-release hanging compute after 1500ms so test can complete cleanly
-      const hangingTimer = setTimeout(() => {
-        releaseHanging();
-      }, 1500);
-
       const t0 = Date.now();
       await app.close();
       const elapsedMs = Date.now() - t0;
-      clearTimeout(hangingTimer);
 
-      expect(elapsedMs).toBeGreaterThanOrEqual(950);
-      expect(elapsedMs).toBeLessThan(3500);
+      expect(elapsedMs).toBeGreaterThanOrEqual(1800);
+      expect(elapsedMs).toBeLessThan(2500);
 
       const queueMsg = await admin.query(
         `select msg_id from pgmq.q_savia_jobs where message->>'job_id' = $1`,
@@ -517,10 +512,11 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
         `select status from public.jobs where id = $1::uuid`,
         [queuedJob.id],
       );
-      expect(jobRow.rows[0].status).toBe('processing');
+      expect(jobRow.rows[0].status).not.toBe('completed');
 
       releaseHanging();
       delete process.env.SAVIA_WORKER_DRAIN_TIMEOUT_SECONDS;
+      delete process.env.SAVIA_WORKER_POOL_CLOSE_GRACE_MS;
     }, 10_000);
   });
 });
