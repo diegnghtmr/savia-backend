@@ -19,13 +19,36 @@ import {
 import {
   calculateBackoffDelay,
   classifyJobError,
-  isAlreadyTerminalRefusal,
+  errorHasSqlstate,
   JOB_ERROR_CLASSIFICATIONS,
 } from './job-retry-policy.js';
 import { JOB_WRITER, type JobWriter } from './job-writer.port.js';
 import { ActorVerificationError, PgTransaction } from './pg-transaction.js';
 import { UUID_PATTERN } from './uuid.js';
 import { WorkerConfig } from './worker-config.js';
+
+const TERMINAL_JOB_STATUSES = {
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+  CANCELLED: 'cancelled',
+  DEAD_LETTER: 'dead_letter',
+} as const;
+
+type TerminalJobStatus =
+  (typeof TERMINAL_JOB_STATUSES)[keyof typeof TERMINAL_JOB_STATUSES];
+
+const WRITE_REFUSAL_OUTCOMES = {
+  ACKED: 'acked',
+  CONTINUE: 'continue',
+  EXHAUSTED: 'exhausted',
+} as const;
+
+type WriteRefusalOutcome =
+  (typeof WRITE_REFUSAL_OUTCOMES)[keyof typeof WRITE_REFUSAL_OUTCOMES];
+
+function isTerminalJobStatus(status: string): status is TerminalJobStatus {
+  return (Object.values(TERMINAL_JOB_STATUSES) as string[]).includes(status);
+}
 
 interface JobCheckRow extends Record<string, unknown> {
   readonly id: string;
@@ -342,8 +365,18 @@ export class JobRunner implements BeforeApplicationShutdown {
         this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
         return false;
       }
-      if (isAlreadyTerminalRefusal(error)) {
-        await this.safeAck(message.msgId, deadline, jobId);
+      const t1Terminality = await this.resolveP0001WriteRefusal(
+        error,
+        actorId,
+        workspaceId,
+        jobId,
+        message.msgId,
+        deadline,
+      );
+      if (t1Terminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED) {
+        return false;
+      }
+      if (t1Terminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
         return true;
       }
       if (error instanceof ActorVerificationError) {
@@ -508,8 +541,21 @@ export class JobRunner implements BeforeApplicationShutdown {
               this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
               return false;
             }
-            if (isAlreadyTerminalRefusal(writeError)) {
-              await this.safeAck(message.msgId, deadline, jobId);
+            const computeDeadLetterTerminality =
+              await this.resolveP0001WriteRefusal(
+                writeError,
+                actorId,
+                workspaceId,
+                jobId,
+                message.msgId,
+                deadline,
+              );
+            if (
+              computeDeadLetterTerminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED
+            ) {
+              return false;
+            }
+            if (computeDeadLetterTerminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
               return true;
             }
             return false;
@@ -557,8 +603,18 @@ export class JobRunner implements BeforeApplicationShutdown {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
         }
-        if (isAlreadyTerminalRefusal(writeError)) {
-          await this.safeAck(message.msgId, deadline, jobId);
+        const computeFailTerminality = await this.resolveP0001WriteRefusal(
+          writeError,
+          actorId,
+          workspaceId,
+          jobId,
+          message.msgId,
+          deadline,
+        );
+        if (computeFailTerminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED) {
+          return false;
+        }
+        if (computeFailTerminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
           return true;
         }
         return false;
@@ -599,8 +655,18 @@ export class JobRunner implements BeforeApplicationShutdown {
         return false;
       }
 
-      if (isAlreadyTerminalRefusal(persistError)) {
-        await this.safeAck(message.msgId, deadline, jobId);
+      const persistTerminality = await this.resolveP0001WriteRefusal(
+        persistError,
+        actorId,
+        workspaceId,
+        jobId,
+        message.msgId,
+        deadline,
+      );
+      if (persistTerminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED) {
+        return false;
+      }
+      if (persistTerminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
         return true;
       }
 
@@ -656,8 +722,21 @@ export class JobRunner implements BeforeApplicationShutdown {
               this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
               return false;
             }
-            if (isAlreadyTerminalRefusal(writeError)) {
-              await this.safeAck(message.msgId, deadline, jobId);
+            const persistDeadLetterTerminality =
+              await this.resolveP0001WriteRefusal(
+                writeError,
+                actorId,
+                workspaceId,
+                jobId,
+                message.msgId,
+                deadline,
+              );
+            if (
+              persistDeadLetterTerminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED
+            ) {
+              return false;
+            }
+            if (persistDeadLetterTerminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
               return true;
             }
             return false;
@@ -704,8 +783,18 @@ export class JobRunner implements BeforeApplicationShutdown {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
         }
-        if (isAlreadyTerminalRefusal(writeError)) {
-          await this.safeAck(message.msgId, deadline, jobId);
+        const persistFailTerminality = await this.resolveP0001WriteRefusal(
+          writeError,
+          actorId,
+          workspaceId,
+          jobId,
+          message.msgId,
+          deadline,
+        );
+        if (persistFailTerminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED) {
+          return false;
+        }
+        if (persistFailTerminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
           return true;
         }
         return false;
@@ -716,6 +805,42 @@ export class JobRunner implements BeforeApplicationShutdown {
 
     // Ack after successful persist + completed commit
     return await this.safeAck(message.msgId, deadline, jobId);
+  }
+
+  private async resolveP0001WriteRefusal(
+    error: unknown,
+    actorId: string,
+    workspaceId: string,
+    jobId: string,
+    msgId: string | number,
+    deadline: DeliveryDeadline,
+  ): Promise<WriteRefusalOutcome> {
+    if (!errorHasSqlstate(error, 'P0001')) {
+      return WRITE_REFUSAL_OUTCOMES.CONTINUE;
+    }
+    if (deadline.isWorkExhausted()) {
+      this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+      return WRITE_REFUSAL_OUTCOMES.EXHAUSTED;
+    }
+    let job: { readonly status: string } | undefined;
+    try {
+      job = await this.transaction.runRead(
+        actorId,
+        (client) => this.jobWriter.findJobById(client, workspaceId, jobId),
+        deadline.forWork(this.config.transitionTimeoutMs),
+      );
+    } catch (recheckError) {
+      if (recheckError instanceof DeliveryDeadlineExceededError) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+        return WRITE_REFUSAL_OUTCOMES.EXHAUSTED;
+      }
+      return WRITE_REFUSAL_OUTCOMES.CONTINUE;
+    }
+    if (job && isTerminalJobStatus(job.status)) {
+      await this.safeAck(msgId, deadline, jobId);
+      return WRITE_REFUSAL_OUTCOMES.ACKED;
+    }
+    return WRITE_REFUSAL_OUTCOMES.CONTINUE;
   }
 
   private async safeAck(

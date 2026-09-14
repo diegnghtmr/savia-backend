@@ -57,6 +57,17 @@ describe('Job retry policy unit spec (S3)', () => {
       expect(isPermanentError({ code: 'P0001' })).toBe(true);
     });
 
+    it('classifies P0001 as permanent even when the message contains a terminal status word', () => {
+      for (const word of ['completed', 'failed', 'cancelled', 'dead_letter']) {
+        expect(
+          classifyJobError({
+            code: 'P0001',
+            message: `Report generation ${word}`,
+          }),
+        ).toBe(JOB_ERROR_CLASSIFICATIONS.PERMANENT);
+      }
+    });
+
     it('classifies SQLSTATE class 08 (connection exceptions) as transient', () => {
       expect(classifyJobError({ code: '08000' })).toBe(
         JOB_ERROR_CLASSIFICATIONS.TRANSIENT,

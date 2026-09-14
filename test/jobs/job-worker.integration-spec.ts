@@ -848,6 +848,87 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       expect(qCheck.rows).toHaveLength(0);
     });
 
+    it('acks a persist refusal when another delivery already completed the job', async () => {
+      const raceHandler: JobHandler<{ race: boolean }, { ok: boolean }> = {
+        jobType: 'import_rollback',
+        parsePayload: (raw: unknown) => raw as { race: boolean },
+        compute: async (context) => {
+          await transaction.run(ownerA, async (writeClient) => {
+            await adapter.completeJob(writeClient, ws1Id, context.jobId, null);
+          });
+          return { ok: true };
+        },
+        persist: async () => null,
+      };
+      runner.registerHandler(raceHandler);
+
+      const queuedJob = await transaction.run(ownerA, async (client) => {
+        return adapter.createQueuedJob(
+          client,
+          ws1Id,
+          ownerA,
+          'import_rollback',
+          {
+            race: true,
+          },
+        );
+      });
+
+      const count = await runner.runOnce();
+      expect(count).toBe(1);
+
+      const jobRow = await admin.query<{ status: string }>(
+        `select status from public.jobs where id = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(jobRow.rows[0].status).toBe('completed');
+
+      const queueRemaining = await admin.query(
+        `select msg_id from pgmq.q_savia_jobs where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(queueRemaining.rows).toHaveLength(0);
+    });
+
+    it('fails the job and acks when persist raises an unrelated P0001', async () => {
+      const failingPersistHandler: JobHandler<
+        { fail: boolean },
+        { ok: boolean }
+      > = {
+        jobType: 'import_commit',
+        parsePayload: (raw: unknown) => raw as { fail: boolean },
+        compute: async () => ({ ok: true }),
+        persist: async (_context, _computed, client) => {
+          await client.query(
+            "do $$ begin raise exception 'Report generation failed'; end $$",
+          );
+          return null;
+        },
+      };
+      runner.registerHandler(failingPersistHandler);
+
+      const queuedJob = await transaction.run(ownerA, async (client) => {
+        return adapter.createQueuedJob(client, ws1Id, ownerA, 'import_commit', {
+          fail: true,
+        });
+      });
+
+      const count = await runner.runOnce();
+      expect(count).toBe(1);
+
+      const jobRow = await admin.query<{ status: string }>(
+        `select status from public.jobs where id = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(jobRow.rows[0].status).toBe('failed');
+
+      const queueRemaining = await admin.query(
+        `select msg_id from pgmq.q_savia_jobs where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(queueRemaining.rows).toHaveLength(0);
+    });
+
     it('bounds whole transaction lifetime when blocked on advisory lock during setup', async () => {
       const lockSubject = subject(9999);
       const blocker = await admin.connect();

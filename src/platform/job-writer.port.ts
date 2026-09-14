@@ -71,4 +71,10 @@ export interface JobWriter {
     jobId: string,
     error: Record<string, unknown>,
   ): Promise<Record<string, unknown>>;
+
+  findJobById(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+  ): Promise<{ readonly status: string } | undefined>;
 }

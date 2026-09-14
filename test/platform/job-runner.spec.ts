@@ -42,6 +42,10 @@ describe('JobRunner unit spec (S2)', () => {
       config?: WorkerConfig;
       batchSize?: number;
       mockTransaction?: Partial<PgTransaction>;
+      clock?: () => number;
+      reReadStatus?: string;
+      reReadMissing?: boolean;
+      reReadThrows?: unknown;
     } = {},
   ) {
     const callLog: string[] = [];
@@ -195,6 +199,16 @@ describe('JobRunner unit spec (S2)', () => {
             return { id: jId, status: 'dead_letter' };
           },
         ),
+      findJobById: vi.fn().mockImplementation(async () => {
+        callLog.push('findJobById');
+        if (options.reReadThrows !== undefined) {
+          throw options.reReadThrows;
+        }
+        if (options.reReadMissing) {
+          return undefined;
+        }
+        return { status: options.reReadStatus ?? 'processing' };
+      }),
     };
 
     const probeHandler: JobHandler<{ value: number }, { result: number }> = {
@@ -257,6 +271,7 @@ describe('JobRunner unit spec (S2)', () => {
       mockJobWriter as JobWriter,
       config,
       [probeHandler],
+      options.clock,
     );
 
     return {
@@ -341,16 +356,85 @@ describe('JobRunner unit spec (S2)', () => {
       { code: 'P0001' },
     );
 
-    const { runner, mockQueue, mockJobWriter } = createTestHarness({});
+    const { runner, mockQueue, mockJobWriter } = createTestHarness({
+      reReadStatus: 'completed',
+    });
 
     mockJobWriter.completeJob = vi.fn().mockRejectedValue(alreadyTerminalError);
 
     const processed = await runner.runOnce();
     expect(processed).toBe(1);
 
+    expect(mockJobWriter.findJobById).toHaveBeenCalledTimes(1);
     expect(mockQueue.ack).toHaveBeenCalledTimes(1);
     expect(mockJobWriter.failJob).not.toHaveBeenCalled();
     expect(mockJobWriter.deadLetter).not.toHaveBeenCalled();
+  });
+
+  it('acks once and skips failJob when completeJob raises P0001 and the re-read status is completed', async () => {
+    const p0001 = Object.assign(new Error('complete_job refused'), {
+      code: 'P0001',
+    });
+    const { runner, mockQueue, mockJobWriter } = createTestHarness({
+      reReadStatus: 'completed',
+    });
+    mockJobWriter.completeJob = vi.fn().mockRejectedValue(p0001);
+
+    const processed = await runner.runOnce();
+    expect(processed).toBe(1);
+    expect(mockQueue.ack).toHaveBeenCalledTimes(1);
+    expect(mockJobWriter.failJob).not.toHaveBeenCalled();
+    expect(mockJobWriter.deadLetter).not.toHaveBeenCalled();
+  });
+
+  it.each(['completed', 'failed', 'cancelled', 'dead_letter'] as const)(
+    'runs the permanent-failure path when persist raises P0001 whose message contains %s and the re-read is processing',
+    async (terminalWord) => {
+      const persistError = Object.assign(
+        new Error(`Report generation ${terminalWord}`),
+        { code: 'P0001' },
+      );
+      const { runner, mockQueue, mockJobWriter, callLog } = createTestHarness({
+        persistThrows: true,
+        persistError,
+        reReadStatus: 'processing',
+      });
+
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+
+      expect(mockJobWriter.findJobById).toHaveBeenCalledTimes(1);
+      expect(mockJobWriter.failJob).toHaveBeenCalledTimes(1);
+      expect(mockJobWriter.deadLetter).not.toHaveBeenCalled();
+      expect(mockQueue.ack).toHaveBeenCalledTimes(1);
+      const failIndex = callLog.findIndex((entry) =>
+        entry.startsWith('failJob:'),
+      );
+      const ackIndex = callLog.indexOf('ack:101');
+      expect(failIndex).toBeGreaterThan(-1);
+      expect(ackIndex).toBeGreaterThan(failIndex);
+    },
+  );
+
+  it('runs the permanent-failure path when persist raises P0001 "Report generation failed" and the re-read is processing', async () => {
+    const persistError = Object.assign(new Error('Report generation failed'), {
+      code: 'P0001',
+    });
+    const { runner, mockQueue, mockJobWriter, callLog } = createTestHarness({
+      persistThrows: true,
+      persistError,
+      reReadStatus: 'processing',
+    });
+
+    const processed = await runner.runOnce();
+    expect(processed).toBe(1);
+
+    expect(mockJobWriter.failJob).toHaveBeenCalledTimes(1);
+    expect(mockQueue.ack).toHaveBeenCalledTimes(1);
+    expect(mockJobWriter.deadLetter).not.toHaveBeenCalled();
+    expect(callLog.indexOf('ack:101')).toBeGreaterThan(
+      callLog.findIndex((entry) => entry.startsWith('failJob:')),
+    );
   });
 
   it('calls fail_orphaned_job and acks message when actor is invisible or demoted', async () => {
@@ -959,6 +1043,8 @@ describe('JobRunner unit spec (S2)', () => {
       persistError?: unknown;
       readCt?: number;
       includeOnFailure?: boolean;
+      reReadStatus?: string;
+      exhaustWorkBeforeRecheck?: boolean;
     }) {
       let currentClock = 1_000;
       const clock = () => currentClock;
@@ -1057,8 +1143,23 @@ describe('JobRunner unit spec (S2)', () => {
               typeof optionsOrTimeout === 'number'
                 ? optionsOrTimeout
                 : optionsOrTimeout?.timeoutMs;
-            recordAndAdvance('runRead:compute', timeoutMs ?? 0);
-            if (options.computeThrows) {
+            const alreadyComputed = recordedCalls.some(
+              (call) => call.operation === 'runRead:compute',
+            );
+            const label = alreadyComputed
+              ? 'runRead:status'
+              : 'runRead:compute';
+            if (label === 'runRead:status') {
+              recordedCalls.push({
+                operation: label,
+                timeout: timeoutMs ?? 0,
+                remainingBefore: getRemaining(),
+              });
+              currentClock += 1;
+            } else {
+              recordAndAdvance(label, timeoutMs ?? 0);
+            }
+            if (!alreadyComputed && options.computeThrows) {
               throw (
                 options.computeError ??
                 Object.assign(new Error('Compute error'), { code: '23505' })
@@ -1076,6 +1177,9 @@ describe('JobRunner unit spec (S2)', () => {
         completeJob: vi.fn().mockResolvedValue({ id: jobId }),
         failJob: vi.fn().mockResolvedValue({ id: jobId }),
         deadLetter: vi.fn().mockResolvedValue({ id: jobId }),
+        findJobById: vi.fn().mockImplementation(async () => {
+          return { status: options.reReadStatus ?? 'processing' };
+        }),
       };
 
       const probeHandler: JobHandler<{ value: number }, { result: number }> = {
@@ -1086,6 +1190,9 @@ describe('JobRunner unit spec (S2)', () => {
         }),
         persist: vi.fn(async () => {
           if (options.persistThrows) {
+            if (options.exhaustWorkBeforeRecheck) {
+              currentClock = expiresAt;
+            }
             throw (
               options.persistError ??
               Object.assign(new Error('Persist error'), { code: '23505' })
@@ -1249,6 +1356,80 @@ describe('JobRunner unit spec (S2)', () => {
 
       const expiresAt = 1_000 + 300_000 - 20_000;
       expect(getClock()).toBeLessThan(expiresAt);
+    });
+
+    it('recording test — P0001 completeJob with re-read completed acks once and never failJob', async () => {
+      const { runner, recordedCalls, recordingQueue, recordingJobWriter } =
+        createRecordingTestHarness({
+          reReadStatus: 'completed',
+        });
+      recordingJobWriter.completeJob = vi
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error('complete_job refused'), { code: 'P0001' }),
+        );
+
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+      expect(recordingQueue.ack).toHaveBeenCalledTimes(1);
+      expect(recordingJobWriter.failJob).not.toHaveBeenCalled();
+      expect(recordingJobWriter.deadLetter).not.toHaveBeenCalled();
+
+      const statusRead = recordedCalls.find(
+        (call) => call.operation === 'runRead:status',
+      );
+      expect(statusRead).toBeDefined();
+      expect(statusRead!.timeout).toBeGreaterThan(0);
+      expect(statusRead!.timeout).toBeLessThanOrEqual(
+        statusRead!.remainingBefore,
+      );
+    });
+
+    it('recording test — P0001 persist with re-read processing failJobs then acks; re-check timeout is bounded', async () => {
+      const { runner, recordedCalls, recordingQueue, recordingJobWriter } =
+        createRecordingTestHarness({
+          persistThrows: true,
+          persistError: Object.assign(new Error('Report generation failed'), {
+            code: 'P0001',
+          }),
+          reReadStatus: 'processing',
+        });
+
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+      expect(recordingJobWriter.failJob).toHaveBeenCalledTimes(1);
+      expect(recordingQueue.ack).toHaveBeenCalledTimes(1);
+      expect(recordingJobWriter.deadLetter).not.toHaveBeenCalled();
+
+      const statusRead = recordedCalls.find(
+        (call) => call.operation === 'runRead:status',
+      );
+      expect(statusRead).toBeDefined();
+      expect(statusRead!.timeout).toBeGreaterThan(0);
+      expect(statusRead!.timeout).toBeLessThanOrEqual(
+        statusRead!.remainingBefore,
+      );
+    });
+
+    it('recording test — P0001 re-check is skipped with no ack when the deadline is exhausted', async () => {
+      const { runner, recordedCalls, recordingQueue, recordingJobWriter } =
+        createRecordingTestHarness({
+          persistThrows: true,
+          persistError: Object.assign(new Error('Report generation failed'), {
+            code: 'P0001',
+          }),
+          reReadStatus: 'completed',
+          exhaustWorkBeforeRecheck: true,
+        });
+
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+      expect(
+        recordedCalls.some((call) => call.operation === 'runRead:status'),
+      ).toBe(false);
+      expect(recordingQueue.ack).not.toHaveBeenCalled();
+      expect(recordingJobWriter.failJob).not.toHaveBeenCalled();
+      expect(recordingJobWriter.deadLetter).not.toHaveBeenCalled();
     });
 
     it('recording queue assertion — ack shrinks to remaining lease time when near expiration', async () => {

@@ -39,14 +39,14 @@ export function isPermanentError(error: unknown): boolean {
   return classifyJobError(error) === JOB_ERROR_CLASSIFICATIONS.PERMANENT;
 }
 
-const TERMINAL_STATUS_PATTERN =
-  /\b(?:completed|failed|cancelled|dead_letter)\b/i;
+const MAX_CAUSE_DEPTH = 10;
 
-export function isAlreadyTerminalRefusal(error: unknown): boolean {
+export function errorHasSqlstate(error: unknown, sqlstate: string): boolean {
   if (error === null || typeof error !== 'object') {
     return false;
   }
 
+  const expected = sqlstate.trim().toUpperCase();
   const visited = new Set<object>();
   let current: unknown = error;
   let depth = 0;
@@ -64,14 +64,7 @@ export function isAlreadyTerminalRefusal(error: unknown): boolean {
     const err = current as ErrorLike;
     const code =
       typeof err.code === 'string' ? err.code.trim().toUpperCase() : undefined;
-    const message =
-      typeof err.message === 'string'
-        ? err.message
-        : typeof (err as { detail?: unknown }).detail === 'string'
-          ? (err as { detail: string }).detail
-          : '';
-
-    if (code === 'P0001' && TERMINAL_STATUS_PATTERN.test(message)) {
+    if (code === expected) {
       return true;
     }
 
@@ -81,8 +74,6 @@ export function isAlreadyTerminalRefusal(error: unknown): boolean {
 
   return false;
 }
-
-const MAX_CAUSE_DEPTH = 10;
 
 function isLevelPermanent(err: ErrorLike): boolean {
   // 1. Explicit domain and payload permanent errors
@@ -97,10 +88,6 @@ function isLevelPermanent(err: ErrorLike): boolean {
   if (typeof err.code === 'string') {
     const code = err.code.trim().toUpperCase();
     if (code === 'P0001') {
-      const message = typeof err.message === 'string' ? err.message : '';
-      if (TERMINAL_STATUS_PATTERN.test(message)) {
-        return false;
-      }
       return true;
     }
     if (
