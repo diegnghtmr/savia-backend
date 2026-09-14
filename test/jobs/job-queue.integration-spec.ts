@@ -1,4 +1,4 @@
-// Migrations under test: 202609100016_job_queue.sql
+// Migrations under test: 202609100016_job_queue.sql, 202609100017_job_queue_actor_envelope.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -389,7 +389,7 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
       // Verify the message in pgmq.q_savia_jobs
       const msgRes = await admin.query<{
         msg_id: string;
-        message: { job_id: string; workspace_id: string };
+        message: { job_id: string; workspace_id: string; actor_id: string };
       }>(
         `select msg_id::text, message
            from pgmq.q_savia_jobs
@@ -397,11 +397,18 @@ describe('Job queue outbox (S1): pgmq precondition, wrappers, transactional enqu
         [createdJob.id],
       );
       expect(msgRes.rows).toHaveLength(1);
-      // Pointer message contains job_id and workspace_id ONLY - no payload or secret
+      // Pointer message contains job_id, workspace_id, and actor_id ONLY - no payload or secret
       expect(msgRes.rows[0].message).toEqual({
         job_id: createdJob.id,
         workspace_id: ws1Id,
+        actor_id: ownerA,
       });
+      expect(msgRes.rows[0].message.actor_id).toBe(ownerA);
+      expect(Object.keys(msgRes.rows[0].message).sort()).toEqual([
+        'actor_id',
+        'job_id',
+        'workspace_id',
+      ]);
       expect(msgRes.rows[0].message).not.toHaveProperty('payload');
       expect(msgRes.rows[0].message).not.toHaveProperty('secret');
     });

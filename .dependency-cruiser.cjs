@@ -117,6 +117,30 @@ module.exports = {
         pathNot: '^src/platform/',
       },
     },
+    {
+      name: 'no-http-to-worker-runtime',
+      severity: 'error',
+      comment:
+        'HTTP application roots and HTTP modules must not import the worker runtime',
+      from: {
+        path: '^src/(main\\.ts|app\\.module\\.ts|platform/platform\\.module\\.ts|.+/.*controller\\.ts)',
+      },
+      to: {
+        path: '^src/(worker\\.ts|worker\\.module\\.ts|platform/worker-platform\\.module\\.ts|platform/job-runner\\.ts|platform/pgmq-job-queue\\.adapter\\.ts)',
+      },
+    },
+    {
+      name: 'no-worker-to-http',
+      severity: 'error',
+      comment:
+        'Worker runtime must not import HTTP modules, controllers, or HTTP platform',
+      from: {
+        path: '^src/(worker\\.ts|worker\\.module\\.ts|platform/worker-platform\\.module\\.ts|platform/job-runner\\.ts)',
+      },
+      to: {
+        path: '^src/(main\\.ts|app\\.module\\.ts|platform/platform\\.module\\.ts|.+/.*controller\\.ts)',
+      },
+    },
   ],
   // NOTE: `pnpm architecture:check` cruises `src` only. test/, scripts/ and
   // supabase/ are NOT governed by these rules -- do not mistake a green gate for

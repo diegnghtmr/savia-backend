@@ -33,6 +33,7 @@ export interface Job {
   readonly createdAt: string;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+  readonly [key: string]: unknown;
 }
 
 export const JOB_READ_OUTCOMES = {
@@ -97,6 +98,20 @@ export interface JobWriter {
     workspaceId: string,
     jobId: string,
     attemptCount?: number,
+  ): Promise<Job>;
+
+  completeJob(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    resultResourceId?: string | null,
+  ): Promise<Job>;
+
+  failJob(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
   ): Promise<Job>;
 }
 

@@ -65,6 +65,7 @@
     "test:integration:jobs-schema": "bash scripts/run-disposable-database-suite.sh test/identity/jobs-schema.integration-spec.ts",
     "test:integration:jobs-read": "bash scripts/run-disposable-database-suite.sh test/jobs/jobs-read.integration-spec.ts",
     "test:integration:job-queue": "bash scripts/run-disposable-database-suite.sh test/jobs/job-queue.integration-spec.ts",
+    "test:integration:job-worker": "bash scripts/run-disposable-database-suite.sh test/jobs/job-worker.integration-spec.ts",
     "test:integration:reconciliations-schema": "bash scripts/run-disposable-database-suite.sh test/identity/reconciliations-schema.integration-spec.ts",
     "test:integration:reconciliations-create": "bash scripts/run-disposable-database-suite.sh test/reconciliations/reconciliations-create.integration-spec.ts",
     "test:integration:reconciliations-get": "bash scripts/run-disposable-database-suite.sh test/reconciliations/reconciliations-get.integration-spec.ts",
@@ -101,6 +102,7 @@
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
+    "start:worker": "node dist/worker.js",
     "openapi:verify": "node scripts/verify-openapi.mjs",
     "openapi:lint": "redocly lint openapi/savia.openapi.yaml",
     "check": "pnpm format:check && pnpm lint && pnpm architecture:check && pnpm typecheck && pnpm test && pnpm build && pnpm openapi:verify && pnpm openapi:lint"
