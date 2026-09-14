@@ -24,5 +24,6 @@ export interface JobHandler<P = unknown, R = unknown> {
     context: JobExecutionContext<P>,
     error: unknown,
     client?: TransactionClient,
+    timeoutMs?: number,
   ): Promise<void>;
 }

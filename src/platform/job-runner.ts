@@ -6,6 +6,10 @@ import {
   Logger,
   Optional,
 } from '@nestjs/common';
+import {
+  DeliveryDeadline,
+  DeliveryDeadlineExceededError,
+} from './delivery-deadline.js';
 import type { JobExecutionContext, JobHandler } from './job-handler.port.js';
 import {
   JOB_QUEUE,
@@ -79,6 +83,7 @@ function toProblemDetails(
 export class JobRunner implements BeforeApplicationShutdown {
   private readonly logger = new Logger(JobRunner.name);
   private readonly handlerMap = new Map<string, JobHandler>();
+  private readonly clock: () => number;
 
   private isRunning = false;
   private isStopping = false;
@@ -91,7 +96,9 @@ export class JobRunner implements BeforeApplicationShutdown {
     @Inject(JOB_WRITER) private readonly jobWriter: JobWriter,
     private readonly config: WorkerConfig,
     @Optional() handlers: readonly JobHandler[] = [],
+    @Optional() clock?: () => number,
   ) {
+    this.clock = clock ?? (() => performance.now());
     for (const handler of handlers) {
       this.registerHandler(handler);
     }
@@ -101,14 +108,28 @@ export class JobRunner implements BeforeApplicationShutdown {
     this.handlerMap.set(handler.jobType, handler);
   }
 
+  public createDeadline(claimedAt?: number): DeliveryDeadline {
+    return new DeliveryDeadline({
+      visibilityTimeoutSeconds: this.config.visibilityTimeoutSeconds,
+      leaseSafetyMs: this.config.leaseSafetyMs,
+      terminalReserveMs: this.config.terminalReserveMs,
+      minOperationMs: this.config.minOperationMs,
+      claimedAt,
+      clock: this.clock,
+    });
+  }
+
   public async runOnce(): Promise<number> {
     this.activeJobsCount++;
     let messages: readonly QueueMessage[];
+    let claimedAt: number;
     try {
       messages = await this.queue.claim(
         this.config.visibilityTimeoutSeconds,
         this.config.batchSize,
+        this.config.queueTimeoutMs,
       );
+      claimedAt = this.clock();
 
       if (this.isStopping) {
         this.logger.warn(
@@ -124,7 +145,8 @@ export class JobRunner implements BeforeApplicationShutdown {
       messages.map(async (message) => {
         this.activeJobsCount++;
         try {
-          return await this.processMessage(message);
+          const deadline = this.createDeadline(claimedAt);
+          return await this.processMessage(message, deadline);
         } finally {
           this.activeJobsCount--;
         }
@@ -181,13 +203,17 @@ export class JobRunner implements BeforeApplicationShutdown {
     await this.stop();
   }
 
-  public async processMessage(message: QueueMessage): Promise<boolean> {
+  public async processMessage(
+    message: QueueMessage,
+    deliveryDeadline?: DeliveryDeadline,
+  ): Promise<boolean> {
+    const deadline = deliveryDeadline ?? this.createDeadline();
     const envelope = message.message;
     if (!envelope || typeof envelope !== 'object') {
       this.logger.error(
         `Claimed message ${message.msgId} is malformed: missing envelope or not an object`,
       );
-      await this.queue.archive(message.msgId);
+      await this.safeArchive(message.msgId, deadline);
       return false;
     }
 
@@ -205,7 +231,7 @@ export class JobRunner implements BeforeApplicationShutdown {
       this.logger.error(
         `Claimed message ${message.msgId} is malformed: actor_id is missing or not a valid UUID`,
       );
-      await this.queue.archive(message.msgId);
+      await this.safeArchive(message.msgId, deadline);
       return false;
     }
 
@@ -218,9 +244,20 @@ export class JobRunner implements BeforeApplicationShutdown {
       !UUID_PATTERN.test(workspaceId)
     ) {
       if (typeof jobId === 'string' && UUID_PATTERN.test(jobId)) {
-        await this.queue.failOrphanedJob(jobId, actorId);
+        if (deadline.isTerminalExhausted()) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        const orphaned = await this.safeFailOrphanedJob(
+          jobId,
+          actorId,
+          deadline,
+        );
+        if (!orphaned && deadline.isTerminalExhausted()) {
+          return false;
+        }
       }
-      await this.queue.ack(message.msgId);
+      await this.safeAck(message.msgId, deadline, jobId);
       return false;
     }
 
@@ -230,6 +267,11 @@ export class JobRunner implements BeforeApplicationShutdown {
     let isExhaustedAtClaim = false;
 
     // T1: Transition to processing under actor context
+    if (deadline.isWorkExhausted()) {
+      this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+      return false;
+    }
+
     try {
       await this.transaction.run(
         actorId,
@@ -292,23 +334,38 @@ export class JobRunner implements BeforeApplicationShutdown {
         },
         { workspaceId, jobId, phase: 'transition' },
         'transition',
+        deadline.forWork(this.config.transitionTimeoutMs),
       );
     } catch (error) {
+      if (error instanceof DeliveryDeadlineExceededError) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+        return false;
+      }
       if (error instanceof ActorVerificationError) {
-        await this.queue.failOrphanedJob(jobId, actorId);
-        await this.queue.ack(message.msgId);
+        if (deadline.isTerminalExhausted()) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        const orphaned = await this.safeFailOrphanedJob(
+          jobId,
+          actorId,
+          deadline,
+        );
+        if (orphaned) {
+          await this.safeAck(message.msgId, deadline, jobId);
+        }
         return false;
       }
       return false;
     }
 
     if (isTerminal) {
-      await this.queue.ack(message.msgId);
+      await this.safeAck(message.msgId, deadline, jobId);
       return true;
     }
 
     if (isExhaustedAtClaim) {
-      await this.queue.archive(message.msgId);
+      await this.safeArchive(message.msgId, deadline, jobId);
       return false;
     }
 
@@ -321,25 +378,38 @@ export class JobRunner implements BeforeApplicationShutdown {
     try {
       parsedPayload = handler.parsePayload(jobPayload);
     } catch (parseError) {
-      await this.transaction.run(
-        actorId,
-        async (client) => {
-          await this.jobWriter.failJob(client, workspaceId, jobId, {
-            type: 'https://savia.app/problems/invalid-payload',
-            title: 'Invalid Payload',
-            status: 400,
-            code: 'invalid_payload',
-            detail:
-              parseError instanceof Error
-                ? parseError.message
-                : 'Invalid payload',
-            traceId: randomUUID(),
-          });
-        },
-        { workspaceId, jobId, phase: 'transition' },
-        'transition',
-      );
-      await this.queue.ack(message.msgId);
+      if (deadline.isWorkExhausted()) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+        return false;
+      }
+      try {
+        await this.transaction.run(
+          actorId,
+          async (client) => {
+            await this.jobWriter.failJob(client, workspaceId, jobId, {
+              type: 'https://savia.app/problems/invalid-payload',
+              title: 'Invalid Payload',
+              status: 400,
+              code: 'invalid_payload',
+              detail:
+                parseError instanceof Error
+                  ? parseError.message
+                  : 'Invalid payload',
+              traceId: randomUUID(),
+            });
+          },
+          { workspaceId, jobId, phase: 'transition' },
+          'transition',
+          deadline.forWork(this.config.transitionTimeoutMs),
+        );
+      } catch (error) {
+        if (error instanceof DeliveryDeadlineExceededError) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        return false;
+      }
+      await this.safeAck(message.msgId, deadline, jobId);
       return false;
     }
 
@@ -352,79 +422,144 @@ export class JobRunner implements BeforeApplicationShutdown {
     };
 
     // Compute phase (read-only tx)
+    if (deadline.isWorkExhausted()) {
+      this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+      return false;
+    }
+
     let computedResult: unknown;
     try {
       computedResult = await this.transaction.runRead(
         actorId,
         async (readClient) => handler.compute(context, readClient),
+        deadline.forWork(this.config.computeTimeoutMs),
       );
     } catch (computeError) {
-      if (handler.onFailure) {
-        await handler.onFailure(context, computeError).catch(() => undefined);
+      if (computeError instanceof DeliveryDeadlineExceededError) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+        return false;
+      }
+
+      if (handler.onFailure && !deadline.isWorkExhausted()) {
+        const failureTimeoutMs = deadline.forWork(
+          this.config.transitionTimeoutMs,
+        );
+        if (failureTimeoutMs >= this.config.minOperationMs) {
+          let timer: NodeJS.Timeout | undefined;
+          const timeoutPromise = new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, failureTimeoutMs);
+          });
+          try {
+            await Promise.race([
+              handler.onFailure(
+                context,
+                computeError,
+                undefined,
+                failureTimeoutMs,
+              ),
+              timeoutPromise,
+            ]);
+          } catch {
+            // onFailure errors are swallowed
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        }
       }
 
       const classification = classifyJobError(computeError);
       if (classification === JOB_ERROR_CLASSIFICATIONS.TRANSIENT) {
         if (message.readCt >= this.config.maxAttempts) {
-          await this.transaction.run(
-            actorId,
-            async (writeClient) => {
-              await this.jobWriter.deadLetter(
-                writeClient,
-                workspaceId,
-                jobId,
-                toProblemDetails(computeError, {
-                  type: 'https://savia.app/problems/job-exhausted',
-                  title: 'Job Retries Exhausted',
-                  status: 500,
-                  code: 'job_retries_exhausted',
-                  detail:
-                    computeError instanceof Error
-                      ? computeError.message
-                      : 'Job exceeded maximum retry attempts.',
-                }),
-              );
-            },
-            { workspaceId, jobId, phase: 'transition' },
-            'transition',
-          );
-          await this.queue.archive(message.msgId);
+          if (deadline.isWorkExhausted()) {
+            this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+            return false;
+          }
+          try {
+            await this.transaction.run(
+              actorId,
+              async (writeClient) => {
+                await this.jobWriter.deadLetter(
+                  writeClient,
+                  workspaceId,
+                  jobId,
+                  toProblemDetails(computeError, {
+                    type: 'https://savia.app/problems/job-exhausted',
+                    title: 'Job Retries Exhausted',
+                    status: 500,
+                    code: 'job_retries_exhausted',
+                    detail:
+                      computeError instanceof Error
+                        ? computeError.message
+                        : 'Job exceeded maximum retry attempts.',
+                  }),
+                );
+              },
+              { workspaceId, jobId, phase: 'transition' },
+              'transition',
+              deadline.forWork(this.config.transitionTimeoutMs),
+            );
+          } catch (writeError) {
+            if (writeError instanceof DeliveryDeadlineExceededError) {
+              this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+              return false;
+            }
+            return false;
+          }
+          await this.safeArchive(message.msgId, deadline, jobId);
           return false;
         }
 
         const delay = calculateBackoffDelay(message.readCt);
-        await this.queue.defer(message.msgId, Math.round(delay));
+        await this.safeDefer(message.msgId, Math.round(delay), deadline, jobId);
         return false;
       }
 
       // Permanent error moves job to failed and acks message
-      await this.transaction.run(
-        actorId,
-        async (writeClient) => {
-          await this.jobWriter.failJob(
-            writeClient,
-            workspaceId,
-            jobId,
-            toProblemDetails(computeError, {
-              type: 'https://savia.app/problems/job-failed',
-              title: 'Job Failed',
-              status: 500,
-              code: 'job_failed',
-              detail:
-                computeError instanceof Error
-                  ? computeError.message
-                  : 'Permanent job execution failure.',
-            }),
-          );
-        },
-        { workspaceId, jobId, phase: 'transition' },
-        'transition',
-      );
-      await this.queue.ack(message.msgId);
+      if (deadline.isWorkExhausted()) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+        return false;
+      }
+      try {
+        await this.transaction.run(
+          actorId,
+          async (writeClient) => {
+            await this.jobWriter.failJob(
+              writeClient,
+              workspaceId,
+              jobId,
+              toProblemDetails(computeError, {
+                type: 'https://savia.app/problems/job-failed',
+                title: 'Job Failed',
+                status: 500,
+                code: 'job_failed',
+                detail:
+                  computeError instanceof Error
+                    ? computeError.message
+                    : 'Permanent job execution failure.',
+              }),
+            );
+          },
+          { workspaceId, jobId, phase: 'transition' },
+          'transition',
+          deadline.forWork(this.config.transitionTimeoutMs),
+        );
+      } catch (writeError) {
+        if (writeError instanceof DeliveryDeadlineExceededError) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        return false;
+      }
+      await this.safeAck(message.msgId, deadline, jobId);
       return false;
     }
 
     // T2: Persist phase + mark completed
+    if (deadline.isWorkExhausted()) {
+      this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+      return false;
+    }
+
     try {
       await this.transaction.run(
         actorId,
@@ -443,76 +578,212 @@ export class JobRunner implements BeforeApplicationShutdown {
         },
         { workspaceId, jobId, phase: 'persist' },
         'persist',
+        deadline.forWork(this.config.persistTimeoutMs),
       );
     } catch (persistError) {
+      if (persistError instanceof DeliveryDeadlineExceededError) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+        return false;
+      }
+
       if (persistError instanceof ActorVerificationError) {
-        await this.queue.failOrphanedJob(jobId, actorId);
-        await this.queue.ack(message.msgId);
+        if (deadline.isTerminalExhausted()) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        const orphaned = await this.safeFailOrphanedJob(
+          jobId,
+          actorId,
+          deadline,
+        );
+        if (orphaned) {
+          await this.safeAck(message.msgId, deadline, jobId);
+        }
         return false;
       }
 
       const classification = classifyJobError(persistError);
       if (classification === JOB_ERROR_CLASSIFICATIONS.TRANSIENT) {
         if (message.readCt >= this.config.maxAttempts) {
-          await this.transaction.run(
-            actorId,
-            async (writeClient) => {
-              await this.jobWriter.deadLetter(
-                writeClient,
-                workspaceId,
-                jobId,
-                toProblemDetails(persistError, {
-                  type: 'https://savia.app/problems/job-exhausted',
-                  title: 'Job Retries Exhausted',
-                  status: 500,
-                  code: 'job_retries_exhausted',
-                  detail:
-                    persistError instanceof Error
-                      ? persistError.message
-                      : 'Job exceeded maximum retry attempts.',
-                }),
-              );
-            },
-            { workspaceId, jobId, phase: 'transition' },
-            'transition',
-          );
-          await this.queue.archive(message.msgId);
+          if (deadline.isWorkExhausted()) {
+            this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+            return false;
+          }
+          try {
+            await this.transaction.run(
+              actorId,
+              async (writeClient) => {
+                await this.jobWriter.deadLetter(
+                  writeClient,
+                  workspaceId,
+                  jobId,
+                  toProblemDetails(persistError, {
+                    type: 'https://savia.app/problems/job-exhausted',
+                    title: 'Job Retries Exhausted',
+                    status: 500,
+                    code: 'job_retries_exhausted',
+                    detail:
+                      persistError instanceof Error
+                        ? persistError.message
+                        : 'Job exceeded maximum retry attempts.',
+                  }),
+                );
+              },
+              { workspaceId, jobId, phase: 'transition' },
+              'transition',
+              deadline.forWork(this.config.transitionTimeoutMs),
+            );
+          } catch (writeError) {
+            if (writeError instanceof DeliveryDeadlineExceededError) {
+              this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+              return false;
+            }
+            return false;
+          }
+          await this.safeArchive(message.msgId, deadline, jobId);
           return false;
         }
 
         const delay = calculateBackoffDelay(message.readCt);
-        await this.queue.defer(message.msgId, Math.round(delay));
+        await this.safeDefer(message.msgId, Math.round(delay), deadline, jobId);
         return false;
       }
 
-      await this.transaction.run(
-        actorId,
-        async (writeClient) => {
-          await this.jobWriter.failJob(
-            writeClient,
-            workspaceId,
-            jobId,
-            toProblemDetails(persistError, {
-              type: 'https://savia.app/problems/job-failed',
-              title: 'Job Failed',
-              status: 500,
-              code: 'job_failed',
-              detail:
-                persistError instanceof Error
-                  ? persistError.message
-                  : 'Permanent job persist failure.',
-            }),
-          );
-        },
-        { workspaceId, jobId, phase: 'transition' },
-        'transition',
-      );
-      await this.queue.ack(message.msgId);
+      if (deadline.isWorkExhausted()) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+        return false;
+      }
+      try {
+        await this.transaction.run(
+          actorId,
+          async (writeClient) => {
+            await this.jobWriter.failJob(
+              writeClient,
+              workspaceId,
+              jobId,
+              toProblemDetails(persistError, {
+                type: 'https://savia.app/problems/job-failed',
+                title: 'Job Failed',
+                status: 500,
+                code: 'job_failed',
+                detail:
+                  persistError instanceof Error
+                    ? persistError.message
+                    : 'Permanent job persist failure.',
+              }),
+            );
+          },
+          { workspaceId, jobId, phase: 'transition' },
+          'transition',
+          deadline.forWork(this.config.transitionTimeoutMs),
+        );
+      } catch (writeError) {
+        if (writeError instanceof DeliveryDeadlineExceededError) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        return false;
+      }
+      await this.safeAck(message.msgId, deadline, jobId);
       return false;
     }
 
     // Ack after successful persist + completed commit
-    await this.queue.ack(message.msgId);
-    return true;
+    return await this.safeAck(message.msgId, deadline, jobId);
+  }
+
+  private async safeAck(
+    msgId: string | number,
+    deadline: DeliveryDeadline,
+    jobId?: string,
+  ): Promise<boolean> {
+    if (deadline.isTerminalExhausted()) {
+      this.logger.warn(`delivery_deadline_exhausted: job ${jobId ?? msgId}`);
+      return false;
+    }
+    try {
+      return await this.queue.ack(
+        msgId,
+        deadline.forTerminal(this.config.queueTimeoutMs),
+      );
+    } catch (error) {
+      if (error instanceof DeliveryDeadlineExceededError) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId ?? msgId}`);
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async safeArchive(
+    msgId: string | number,
+    deadline: DeliveryDeadline,
+    jobId?: string,
+  ): Promise<boolean> {
+    if (deadline.isTerminalExhausted()) {
+      this.logger.warn(`delivery_deadline_exhausted: job ${jobId ?? msgId}`);
+      return false;
+    }
+    try {
+      return await this.queue.archive(
+        msgId,
+        deadline.forTerminal(this.config.queueTimeoutMs),
+      );
+    } catch (error) {
+      if (error instanceof DeliveryDeadlineExceededError) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId ?? msgId}`);
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async safeDefer(
+    msgId: string | number,
+    delaySeconds: number,
+    deadline: DeliveryDeadline,
+    jobId?: string,
+  ): Promise<boolean> {
+    if (deadline.isTerminalExhausted()) {
+      this.logger.warn(`delivery_deadline_exhausted: job ${jobId ?? msgId}`);
+      return false;
+    }
+    try {
+      return await this.queue.defer(
+        msgId,
+        delaySeconds,
+        deadline.forTerminal(this.config.queueTimeoutMs),
+      );
+    } catch (error) {
+      if (error instanceof DeliveryDeadlineExceededError) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId ?? msgId}`);
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async safeFailOrphanedJob(
+    jobId: string,
+    actorId: string,
+    deadline: DeliveryDeadline,
+  ): Promise<boolean> {
+    if (deadline.isTerminalExhausted()) {
+      this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+      return false;
+    }
+    try {
+      return await this.queue.failOrphanedJob(
+        jobId,
+        actorId,
+        deadline.forTerminal(this.config.queueTimeoutMs),
+      );
+    } catch (error) {
+      if (error instanceof DeliveryDeadlineExceededError) {
+        this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+        return false;
+      }
+      throw error;
+    }
   }
 }

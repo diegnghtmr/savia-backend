@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import {
+  DeliveryDeadline,
+  DeliveryDeadlineExceededError,
+} from '../../src/platform/delivery-deadline.js';
 import type {
   JobExecutionContext,
   JobHandler,
@@ -274,7 +278,7 @@ describe('JobRunner unit spec (S2)', () => {
     const processed = await runner.runOnce();
     expect(processed).toBe(1);
 
-    expect(mockQueue.claim).toHaveBeenCalledWith(300, 1);
+    expect(mockQueue.claim).toHaveBeenCalledWith(300, 1, expect.any(Number));
     expect(mockJobWriter.transitionToProcessing).toHaveBeenCalledWith(
       expect.anything(),
       wsId,
@@ -289,7 +293,7 @@ describe('JobRunner unit spec (S2)', () => {
       jobId,
       resultResourceId,
     );
-    expect(mockQueue.ack).toHaveBeenCalledWith('101');
+    expect(mockQueue.ack).toHaveBeenCalledWith('101', expect.any(Number));
 
     // Verify ordering
     expect(callLog).toEqual([
@@ -326,7 +330,7 @@ describe('JobRunner unit spec (S2)', () => {
     expect(mockJobWriter.transitionToProcessing).not.toHaveBeenCalled();
     expect(probeHandler.compute).not.toHaveBeenCalled();
     expect(probeHandler.persist).not.toHaveBeenCalled();
-    expect(mockQueue.ack).toHaveBeenCalledWith('101');
+    expect(mockQueue.ack).toHaveBeenCalledWith('101', expect.any(Number));
 
     expect(callLog).toEqual(['claim', `run:${actorId}`, 'ack:101']);
   });
@@ -348,8 +352,12 @@ describe('JobRunner unit spec (S2)', () => {
     const processed = await runner.runOnce();
     expect(processed).toBe(1);
 
-    expect(mockQueue.failOrphanedJob).toHaveBeenCalledWith(jobId, actorId);
-    expect(mockQueue.ack).toHaveBeenCalledWith('101');
+    expect(mockQueue.failOrphanedJob).toHaveBeenCalledWith(
+      jobId,
+      actorId,
+      expect.any(Number),
+    );
+    expect(mockQueue.ack).toHaveBeenCalledWith('101', expect.any(Number));
     expect(probeHandler.compute).not.toHaveBeenCalled();
     expect(probeHandler.persist).not.toHaveBeenCalled();
 
@@ -377,8 +385,12 @@ describe('JobRunner unit spec (S2)', () => {
     const processed = await runner.runOnce();
     expect(processed).toBe(1);
 
-    expect(mockQueue.failOrphanedJob).toHaveBeenCalledWith(jobId, actorId);
-    expect(mockQueue.ack).toHaveBeenCalledWith('101');
+    expect(mockQueue.failOrphanedJob).toHaveBeenCalledWith(
+      jobId,
+      actorId,
+      expect.any(Number),
+    );
+    expect(mockQueue.ack).toHaveBeenCalledWith('101', expect.any(Number));
     expect(probeHandler.compute).not.toHaveBeenCalled();
   });
 
@@ -393,7 +405,11 @@ describe('JobRunner unit spec (S2)', () => {
     expect(probeHandler.persist).not.toHaveBeenCalled();
     // Message MUST NOT be acked; it should be deferred
     expect(mockQueue.ack).not.toHaveBeenCalled();
-    expect(mockQueue.defer).toHaveBeenCalledWith('101', expect.any(Number));
+    expect(mockQueue.defer).toHaveBeenCalledWith(
+      '101',
+      expect.any(Number),
+      expect.any(Number),
+    );
 
     expect(callLog).toContain('compute');
     expect(callLog).toContain('onFailure');
@@ -448,8 +464,18 @@ describe('JobRunner unit spec (S2)', () => {
       await expect(runner.runOnce()).resolves.toBe(1);
 
       expect(mockQueue.defer).toHaveBeenCalledTimes(2);
-      expect(mockQueue.defer).toHaveBeenNthCalledWith(1, '101', 4);
-      expect(mockQueue.defer).toHaveBeenNthCalledWith(2, '101', 8);
+      expect(mockQueue.defer).toHaveBeenNthCalledWith(
+        1,
+        '101',
+        4,
+        expect.any(Number),
+      );
+      expect(mockQueue.defer).toHaveBeenNthCalledWith(
+        2,
+        '101',
+        8,
+        expect.any(Number),
+      );
 
       const firstDelay = vi.mocked(mockQueue.defer).mock.calls[0][1] as number;
       const secondDelay = vi.mocked(mockQueue.defer).mock.calls[1][1] as number;
@@ -493,7 +519,7 @@ describe('JobRunner unit spec (S2)', () => {
         code: 'job_failed',
       }),
     );
-    expect(mockQueue.ack).toHaveBeenCalledWith('101');
+    expect(mockQueue.ack).toHaveBeenCalledWith('101', expect.any(Number));
     expect(mockQueue.defer).not.toHaveBeenCalled();
 
     expect(callLog).toContain('compute');
@@ -538,7 +564,7 @@ describe('JobRunner unit spec (S2)', () => {
       }),
     );
     // MUST archive message, NOT ack, NOT defer
-    expect(mockQueue.archive).toHaveBeenCalledWith('101');
+    expect(mockQueue.archive).toHaveBeenCalledWith('101', expect.any(Number));
     expect(mockQueue.ack).not.toHaveBeenCalled();
     expect(mockQueue.defer).not.toHaveBeenCalled();
 
@@ -581,7 +607,7 @@ describe('JobRunner unit spec (S2)', () => {
         code: 'job_retries_exhausted',
       }),
     );
-    expect(mockQueue.archive).toHaveBeenCalledWith('101');
+    expect(mockQueue.archive).toHaveBeenCalledWith('101', expect.any(Number));
     expect(mockQueue.ack).not.toHaveBeenCalled();
 
     // Verify ordering: deadLetter before archive
@@ -606,7 +632,11 @@ describe('JobRunner unit spec (S2)', () => {
 
     expect(probeHandler.compute).toHaveBeenCalled();
     expect(probeHandler.persist).toHaveBeenCalled();
-    expect(mockQueue.defer).toHaveBeenCalledWith('101', expect.any(Number));
+    expect(mockQueue.defer).toHaveBeenCalledWith(
+      '101',
+      expect.any(Number),
+      expect.any(Number),
+    );
     expect(mockQueue.ack).not.toHaveBeenCalled();
     expect(callLog).toContain('defer:101');
   });
@@ -649,7 +679,7 @@ describe('JobRunner unit spec (S2)', () => {
         title: 'Job Retries Exhausted',
       }),
     );
-    expect(mockQueue.archive).toHaveBeenCalledWith('101');
+    expect(mockQueue.archive).toHaveBeenCalledWith('101', expect.any(Number));
     expect(mockQueue.ack).not.toHaveBeenCalled();
     expect(mockQueue.defer).not.toHaveBeenCalled();
 
@@ -679,7 +709,7 @@ describe('JobRunner unit spec (S2)', () => {
     const processed = await runner.runOnce();
     expect(processed).toBe(1);
 
-    expect(mockQueue.archive).toHaveBeenCalledWith('201');
+    expect(mockQueue.archive).toHaveBeenCalledWith('201', expect.any(Number));
     expect(mockQueue.ack).not.toHaveBeenCalled();
     expect(mockQueue.failOrphanedJob).not.toHaveBeenCalled();
     expect(mockJobWriter.transitionToProcessing).not.toHaveBeenCalled();
@@ -709,7 +739,7 @@ describe('JobRunner unit spec (S2)', () => {
     const processed = await runner.runOnce();
     expect(processed).toBe(1);
 
-    expect(mockQueue.archive).toHaveBeenCalledWith('202');
+    expect(mockQueue.archive).toHaveBeenCalledWith('202', expect.any(Number));
     expect(mockQueue.ack).not.toHaveBeenCalled();
     expect(mockQueue.failOrphanedJob).not.toHaveBeenCalled();
     expect(mockJobWriter.transitionToProcessing).not.toHaveBeenCalled();
@@ -785,8 +815,8 @@ describe('JobRunner unit spec (S2)', () => {
       // Both jobs must have finished
       expect(finishLog).toContain(`finish:${jobId1}`);
       expect(finishLog).toContain(`finish:${jobId2}`);
-      expect(mockQueue.ack).toHaveBeenCalledWith('101');
-      expect(mockQueue.ack).toHaveBeenCalledWith('102');
+      expect(mockQueue.ack).toHaveBeenCalledWith('101', expect.any(Number));
+      expect(mockQueue.ack).toHaveBeenCalledWith('102', expect.any(Number));
     } finally {
       vi.useRealTimers();
     }
@@ -891,62 +921,499 @@ describe('JobRunner unit spec (S2)', () => {
     const processedCount = await runner.runOnce();
     expect(processedCount).toBe(1);
 
-    expect(mockQueue.ack).toHaveBeenCalledWith('102');
-    expect(mockQueue.ack).not.toHaveBeenCalledWith('101');
+    expect(mockQueue.ack).toHaveBeenCalledWith('102', expect.any(Number));
+    expect(mockQueue.ack).not.toHaveBeenCalledWith('101', expect.anything());
   });
 
-  describe('Phase timeout budgets (Finding 1)', () => {
-    it('records exact ordered list of (phase, timeout) for successful delivery: transition -> compute -> persist', async () => {
-      const recordedCalls: Array<{ phase: string; timeout: number }> = [];
-      const config = new WorkerConfig(1, 300, 1000, 30);
+  describe('Delivery deadline (S3 Round 3)', () => {
+    interface RecordedCall {
+      operation: string;
+      timeout: number;
+      remainingBefore: number;
+    }
+
+    function createRecordingTestHarness(options: {
+      config?: WorkerConfig;
+      jobRow?: Record<string, unknown>;
+      computeThrows?: boolean;
+      computeError?: unknown;
+      persistThrows?: boolean;
+      persistError?: unknown;
+      readCt?: number;
+      includeOnFailure?: boolean;
+    }) {
+      let currentClock = 1_000;
+      const clock = () => currentClock;
+      const config = options.config ?? new WorkerConfig(1, 300, 1000, 30);
+      const recordedCalls: RecordedCall[] = [];
+
+      const getRemaining = () => {
+        const expiresAt =
+          1_000 +
+          config.visibilityTimeoutSeconds * 1_000 -
+          config.leaseSafetyMs;
+        return Math.max(0, expiresAt - currentClock);
+      };
+
+      const recordAndAdvance = (operation: string, timeout: number) => {
+        const remainingBefore = getRemaining();
+        recordedCalls.push({ operation, timeout, remainingBefore });
+        currentClock += timeout;
+      };
+
+      const recordingQueue: JobQueue = {
+        claim: vi.fn().mockImplementation(async (_vt, _limit, timeoutMs) => {
+          recordedCalls.push({
+            operation: 'claim',
+            timeout: timeoutMs ?? 0,
+            remainingBefore: Number.POSITIVE_INFINITY,
+          });
+          return [
+            {
+              msgId: '101',
+              readCt: options.readCt ?? 1,
+              enqueuedAt: new Date().toISOString(),
+              vt: new Date().toISOString(),
+              message: {
+                job_id: jobId,
+                workspace_id: wsId,
+                actor_id: actorId,
+              },
+            },
+          ];
+        }),
+        ack: vi.fn().mockImplementation(async (_msgId, timeoutMs) => {
+          recordAndAdvance('ack', timeoutMs ?? 0);
+          return true;
+        }),
+        archive: vi.fn().mockImplementation(async (_msgId, timeoutMs) => {
+          recordAndAdvance('archive', timeoutMs ?? 0);
+          return true;
+        }),
+        defer: vi.fn().mockImplementation(async (_msgId, _delay, timeoutMs) => {
+          recordAndAdvance('defer', timeoutMs ?? 0);
+          return true;
+        }),
+        failOrphanedJob: vi
+          .fn()
+          .mockImplementation(async (_jId, _aId, timeoutMs) => {
+            recordAndAdvance('failOrphanedJob', timeoutMs ?? 0);
+            return true;
+          }),
+      };
+
+      const activeJobRow = options.jobRow ?? {
+        id: jobId,
+        workspace_id: wsId,
+        created_by: actorId,
+        type: 'probe',
+        status: 'queued',
+        payload: { value: 42 },
+        role: 'owner',
+      };
 
       const recordingTransaction: Partial<PgTransaction> = {
-        timeouts: {
-          lockTimeoutMs: 5000,
-          statementTimeoutMs: config.persistTimeoutMs,
-          idleTransactionTimeoutMs: 60000,
-          checkoutTimeoutMs: 5000,
-          callbackTimeoutMs: config.persistTimeoutMs,
-          transitionTimeoutMs: config.transitionTimeoutMs,
-          computeTimeoutMs: config.computeTimeoutMs,
-          persistTimeoutMs: config.persistTimeoutMs,
-        },
         run: vi
           .fn()
-          .mockImplementation(async (_subject, callback, context, phase) => {
-            const effectivePhase = phase ?? context?.phase ?? 'persist';
-            const timeout =
-              effectivePhase === 'transition'
-                ? config.transitionTimeoutMs
-                : config.persistTimeoutMs;
-            recordedCalls.push({ phase: effectivePhase, timeout });
+          .mockImplementation(
+            async (_subject, callback, context, phase, timeoutMs) => {
+              const effectivePhase = phase ?? context?.phase ?? 'transition';
+              recordAndAdvance(`run:${effectivePhase}`, timeoutMs ?? 0);
+              const client: TransactionClient = {
+                query: vi.fn().mockImplementation(async (sql: string) => {
+                  if (sql.includes('from public.jobs')) {
+                    return { rows: [activeJobRow] };
+                  }
+                  return { rows: [] };
+                }),
+              };
+              return callback(client);
+            },
+          ),
+        runRead: vi
+          .fn()
+          .mockImplementation(async (_subject, callback, optionsOrTimeout) => {
+            const timeoutMs =
+              typeof optionsOrTimeout === 'number'
+                ? optionsOrTimeout
+                : optionsOrTimeout?.timeoutMs;
+            recordAndAdvance('runRead:compute', timeoutMs ?? 0);
+            if (options.computeThrows) {
+              throw (
+                options.computeError ??
+                Object.assign(new Error('Compute error'), { code: '23505' })
+              );
+            }
             const client: TransactionClient = {
-              query: vi.fn().mockImplementation(async (sql: string) => {
-                if (sql.includes('from public.jobs')) {
-                  return {
-                    rows: [
-                      {
-                        id: jobId,
-                        workspace_id: wsId,
-                        created_by: actorId,
-                        type: 'probe',
-                        status: 'queued',
-                        payload: { value: 42 },
-                        role: 'owner',
-                      },
-                    ],
-                  };
-                }
-                return { rows: [] };
-              }),
+              query: vi.fn().mockResolvedValue({ rows: [] }),
             };
             return callback(client);
           }),
-        runRead: vi.fn().mockImplementation(async (_subject, callback) => {
+      };
+
+      const recordingJobWriter: Partial<JobWriter> = {
+        transitionToProcessing: vi.fn().mockResolvedValue({ id: jobId }),
+        completeJob: vi.fn().mockResolvedValue({ id: jobId }),
+        failJob: vi.fn().mockResolvedValue({ id: jobId }),
+        deadLetter: vi.fn().mockResolvedValue({ id: jobId }),
+      };
+
+      const probeHandler: JobHandler<{ value: number }, { result: number }> = {
+        jobType: 'probe',
+        parsePayload: (raw: unknown) => raw as { value: number },
+        compute: vi.fn(async () => {
+          return { result: 84 };
+        }),
+        persist: vi.fn(async () => {
+          if (options.persistThrows) {
+            throw (
+              options.persistError ??
+              Object.assign(new Error('Persist error'), { code: '23505' })
+            );
+          }
+          return resultResourceId;
+        }),
+      };
+
+      if (options.includeOnFailure) {
+        probeHandler.onFailure = vi.fn(
+          async (_ctx, _err, _client, timeoutMs) => {
+            recordAndAdvance('onFailure', timeoutMs ?? 0);
+          },
+        );
+      }
+
+      const runner = new JobRunner(
+        recordingQueue,
+        recordingTransaction as PgTransaction,
+        recordingJobWriter as JobWriter,
+        config,
+        [probeHandler],
+        clock,
+      );
+
+      return {
+        runner,
+        recordingQueue,
+        recordingTransaction,
+        recordingJobWriter,
+        probeHandler,
+        recordedCalls,
+        getClock: () => currentClock,
+        advanceClock: (delta: number) => {
+          currentClock += delta;
+        },
+      };
+    }
+
+    it('recording test — path 1: success path (transition -> compute -> persist -> ack)', async () => {
+      const { runner, recordedCalls, getClock } = createRecordingTestHarness(
+        {},
+      );
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+
+      expect(recordedCalls.map((c) => c.operation)).toEqual([
+        'claim',
+        'run:transition',
+        'runRead:compute',
+        'run:persist',
+        'ack',
+      ]);
+
+      const deliveryCalls = recordedCalls.filter(
+        (c) => c.operation !== 'claim',
+      );
+      expect(deliveryCalls).toHaveLength(4);
+
+      for (const call of deliveryCalls) {
+        expect(call.timeout).toBeGreaterThan(0);
+        expect(call.timeout).toBeLessThanOrEqual(call.remainingBefore);
+      }
+
+      const expiresAt = 1_000 + 300_000 - 20_000;
+      expect(getClock()).toBeLessThanOrEqual(expiresAt);
+    });
+
+    it('recording test — path 2: permanent compute failure (transition -> compute -> onFailure -> failJob -> ack)', async () => {
+      const { runner, recordedCalls, getClock } = createRecordingTestHarness({
+        computeThrows: true,
+        computeError: { code: '23505' }, // permanent
+        includeOnFailure: true,
+      });
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+
+      expect(recordedCalls.map((c) => c.operation)).toEqual([
+        'claim',
+        'run:transition',
+        'runRead:compute',
+        'onFailure',
+        'run:transition',
+        'ack',
+      ]);
+
+      const deliveryCalls = recordedCalls.filter(
+        (c) => c.operation !== 'claim',
+      );
+      expect(deliveryCalls).toHaveLength(5);
+
+      for (const call of deliveryCalls) {
+        expect(call.timeout).toBeGreaterThan(0);
+        expect(call.timeout).toBeLessThanOrEqual(call.remainingBefore);
+      }
+
+      const expiresAt = 1_000 + 300_000 - 20_000;
+      expect(getClock()).toBeLessThanOrEqual(expiresAt);
+    });
+
+    it('recording test — path 3: transient compute failure at attempt limit (transition -> compute -> onFailure -> deadLetter -> archive)', async () => {
+      const { runner, recordedCalls, getClock } = createRecordingTestHarness({
+        computeThrows: true,
+        computeError: { code: '40001' }, // transient
+        readCt: 5, // maxAttempts
+        includeOnFailure: true,
+      });
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+
+      expect(recordedCalls.map((c) => c.operation)).toEqual([
+        'claim',
+        'run:transition',
+        'runRead:compute',
+        'onFailure',
+        'run:transition',
+        'archive',
+      ]);
+
+      const deliveryCalls = recordedCalls.filter(
+        (c) => c.operation !== 'claim',
+      );
+      expect(deliveryCalls).toHaveLength(5);
+
+      for (const call of deliveryCalls) {
+        expect(call.timeout).toBeGreaterThan(0);
+        expect(call.timeout).toBeLessThanOrEqual(call.remainingBefore);
+      }
+
+      const expiresAt = 1_000 + 300_000 - 20_000;
+      expect(getClock()).toBeLessThanOrEqual(expiresAt);
+    });
+
+    it('recording test — path 4: persist failure followed by failure write (transition -> compute -> persist -> failJob -> ack)', async () => {
+      const { runner, recordedCalls, getClock } = createRecordingTestHarness({
+        persistThrows: true,
+        persistError: { code: '23505' }, // permanent
+      });
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+
+      expect(recordedCalls.map((c) => c.operation)).toEqual([
+        'claim',
+        'run:transition',
+        'runRead:compute',
+        'run:persist',
+        'run:transition',
+        'ack',
+      ]);
+
+      const deliveryCalls = recordedCalls.filter(
+        (c) => c.operation !== 'claim',
+      );
+      expect(deliveryCalls).toHaveLength(5);
+
+      for (const call of deliveryCalls) {
+        expect(call.timeout).toBeGreaterThan(0);
+        expect(call.timeout).toBeLessThanOrEqual(call.remainingBefore);
+      }
+
+      const expiresAt = 1_000 + 300_000 - 20_000;
+      expect(getClock()).toBeLessThanOrEqual(expiresAt);
+    });
+
+    it('recording queue assertion — ack shrinks to remaining lease time when near expiration', async () => {
+      let currentClock = 1_000;
+      const clock = () => currentClock;
+      const config = new WorkerConfig(1, 300, 1000, 30);
+      const recordedCalls: RecordedCall[] = [];
+
+      const getRemaining = () => {
+        const expiresAt =
+          1_000 +
+          config.visibilityTimeoutSeconds * 1_000 -
+          config.leaseSafetyMs;
+        return Math.max(0, expiresAt - currentClock);
+      };
+
+      const recordAndAdvance = (operation: string, timeout: number) => {
+        const remainingBefore = getRemaining();
+        recordedCalls.push({ operation, timeout, remainingBefore });
+        currentClock += timeout;
+      };
+
+      const recordingQueue: JobQueue = {
+        claim: vi.fn().mockImplementation(async (_vt, _limit, timeoutMs) => {
           recordedCalls.push({
-            phase: 'compute',
-            timeout: config.computeTimeoutMs,
+            operation: 'claim',
+            timeout: timeoutMs ?? 0,
+            remainingBefore: Number.POSITIVE_INFINITY,
           });
+          return [
+            {
+              msgId: '101',
+              readCt: 1,
+              enqueuedAt: new Date().toISOString(),
+              vt: new Date().toISOString(),
+              message: { job_id: jobId, workspace_id: wsId, actor_id: actorId },
+            },
+          ];
+        }),
+        ack: vi.fn().mockImplementation(async (_msgId, timeoutMs) => {
+          recordAndAdvance('ack', timeoutMs ?? 0);
+          return true;
+        }),
+        archive: vi.fn().mockResolvedValue(true),
+        defer: vi.fn().mockResolvedValue(true),
+        failOrphanedJob: vi.fn().mockResolvedValue(true),
+      };
+
+      const recordingTransaction: Partial<PgTransaction> = {
+        run: vi
+          .fn()
+          .mockImplementation(
+            async (_subject, callback, context, phase, timeoutMs) => {
+              const effectivePhase = phase ?? context?.phase ?? 'transition';
+              recordAndAdvance(`run:${effectivePhase}`, timeoutMs ?? 0);
+              const client: TransactionClient = {
+                query: vi.fn().mockImplementation(async (sql: string) => {
+                  if (sql.includes('from public.jobs')) {
+                    return {
+                      rows: [
+                        {
+                          id: jobId,
+                          workspace_id: wsId,
+                          created_by: actorId,
+                          type: 'probe',
+                          status: 'queued',
+                          payload: { value: 42 },
+                          role: 'owner',
+                        },
+                      ],
+                    };
+                  }
+                  return { rows: [] };
+                }),
+              };
+              return callback(client);
+            },
+          ),
+        runRead: vi
+          .fn()
+          .mockImplementation(async (_subject, callback, optionsOrTimeout) => {
+            const timeoutMs =
+              typeof optionsOrTimeout === 'number'
+                ? optionsOrTimeout
+                : optionsOrTimeout?.timeoutMs;
+            recordAndAdvance('runRead:compute', timeoutMs ?? 0);
+            const client: TransactionClient = {
+              query: vi.fn().mockResolvedValue({ rows: [] }),
+            };
+            return callback(client);
+          }),
+      };
+
+      const recordingJobWriter: Partial<JobWriter> = {
+        transitionToProcessing: vi.fn().mockResolvedValue({ id: jobId }),
+        completeJob: vi.fn().mockResolvedValue({ id: jobId }),
+      };
+
+      const probeHandler: JobHandler<{ value: number }, { result: number }> = {
+        jobType: 'probe',
+        parsePayload: (raw: unknown) => raw as { value: number },
+        compute: vi.fn().mockResolvedValue({ result: 84 }),
+        persist: vi.fn(async () => {
+          // Inside persist, advance clock so that remaining before ack is exactly 5_000ms.
+          // expiresAt = 1000 + 300_000 - 20_000 = 281_000.
+          // 281_000 - 5_000 = 276_000.
+          currentClock = 276_000;
+          return resultResourceId;
+        }),
+      };
+
+      const runner = new JobRunner(
+        recordingQueue,
+        recordingTransaction as PgTransaction,
+        recordingJobWriter as JobWriter,
+        config,
+        [probeHandler],
+        clock,
+      );
+
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+
+      const ackCall = recordedCalls.find((c) => c.operation === 'ack');
+      expect(ackCall).toBeDefined();
+      expect(ackCall!.remainingBefore).toBe(5_000);
+      expect(ackCall!.timeout).toBe(5_000);
+      expect(ackCall!.timeout).toBeLessThanOrEqual(ackCall!.remainingBefore);
+    });
+
+    it('exhaustion — compute advances clock to within terminalReserveMs of expiresAt: no persist, no ack/archive/defer, no failure write, and log event emitted', async () => {
+      let currentClock = 1_000;
+      const clock = () => currentClock;
+      const config = new WorkerConfig(1, 300, 1000, 30);
+      // expiresAt = 1000 + 300_000 - 20_000 = 281_000.
+      // terminalReserveMs = 10_000.
+
+      const mockQueue: JobQueue = {
+        claim: vi.fn().mockResolvedValue([
+          {
+            msgId: '101',
+            readCt: 1,
+            enqueuedAt: new Date().toISOString(),
+            vt: new Date().toISOString(),
+            message: { job_id: jobId, workspace_id: wsId, actor_id: actorId },
+          },
+        ]),
+        ack: vi.fn().mockResolvedValue(true),
+        archive: vi.fn().mockResolvedValue(true),
+        defer: vi.fn().mockResolvedValue(true),
+        failOrphanedJob: vi.fn().mockResolvedValue(true),
+      };
+
+      const mockJobWriter: Partial<JobWriter> = {
+        transitionToProcessing: vi.fn().mockResolvedValue({ id: jobId }),
+        completeJob: vi.fn().mockResolvedValue({ id: jobId }),
+        failJob: vi.fn().mockResolvedValue({ id: jobId }),
+        deadLetter: vi.fn().mockResolvedValue({ id: jobId }),
+      };
+
+      const mockTransaction: Partial<PgTransaction> = {
+        run: vi.fn().mockImplementation(async (_subject, callback) => {
+          const client: TransactionClient = {
+            query: vi.fn().mockImplementation(async (sql: string) => {
+              if (sql.includes('from public.jobs')) {
+                return {
+                  rows: [
+                    {
+                      id: jobId,
+                      workspace_id: wsId,
+                      created_by: actorId,
+                      type: 'probe',
+                      status: 'queued',
+                      payload: { value: 42 },
+                      role: 'owner',
+                    },
+                  ],
+                };
+              }
+              return { rows: [] };
+            }),
+          };
+          return callback(client);
+        }),
+        runRead: vi.fn().mockImplementation(async (_subject, callback) => {
           const client: TransactionClient = {
             query: vi.fn().mockResolvedValue({ rows: [] }),
           };
@@ -954,170 +1421,195 @@ describe('JobRunner unit spec (S2)', () => {
         }),
       };
 
-      const { runner } = createTestHarness({
+      const probeHandler: JobHandler<{ value: number }, { result: number }> = {
+        jobType: 'probe',
+        parsePayload: (raw: unknown) => raw as { value: number },
+        compute: vi.fn(async () => {
+          // Advance clock so remaining is 5_000ms, which is < terminalReserveMs (10_000ms)
+          // 281_000 - 5_000 = 276_000
+          currentClock = 276_000;
+          return { result: 84 };
+        }),
+        persist: vi.fn(async () => resultResourceId),
+      };
+
+      const runner = new JobRunner(
+        mockQueue,
+        mockTransaction as PgTransaction,
+        mockJobWriter as JobWriter,
         config,
-        mockTransaction: recordingTransaction,
-      });
+        [probeHandler],
+        clock,
+      );
+
+      const warnSpy = vi.spyOn((runner as any).logger, 'warn');
 
       const processed = await runner.runOnce();
       expect(processed).toBe(1);
 
-      expect(recordedCalls).toEqual([
-        { phase: 'transition', timeout: 15_000 },
-        { phase: 'compute', timeout: 180_000 },
-        { phase: 'persist', timeout: 60_000 },
-      ]);
+      // Persist was NOT called
+      expect(probeHandler.persist).not.toHaveBeenCalled();
+      expect(mockJobWriter.completeJob).not.toHaveBeenCalled();
+      // No queue action
+      expect(mockQueue.ack).not.toHaveBeenCalled();
+      expect(mockQueue.archive).not.toHaveBeenCalled();
+      expect(mockQueue.defer).not.toHaveBeenCalled();
+      // No failure write
+      expect(mockJobWriter.failJob).not.toHaveBeenCalled();
+      expect(mockJobWriter.deadLetter).not.toHaveBeenCalled();
+
+      // Log event emitted
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('delivery_deadline_exhausted'),
+      );
     });
 
-    it('records transitionTimeoutMs for permanent failure write', async () => {
-      const recordedCalls: Array<{ phase: string; timeout: number }> = [];
+    it('exhaustion — DeliveryDeadlineExceededError thrown mid-persist: caught, no failure write, no queue action, and log event emitted', async () => {
+      let currentClock = 1_000;
+      const clock = () => currentClock;
       const config = new WorkerConfig(1, 300, 1000, 30);
 
-      const recordingTransaction: Partial<PgTransaction> = {
-        timeouts: {
-          lockTimeoutMs: 5000,
-          statementTimeoutMs: config.persistTimeoutMs,
-          idleTransactionTimeoutMs: 60000,
-          checkoutTimeoutMs: 5000,
-          callbackTimeoutMs: config.persistTimeoutMs,
-          transitionTimeoutMs: config.transitionTimeoutMs,
-          computeTimeoutMs: config.computeTimeoutMs,
-          persistTimeoutMs: config.persistTimeoutMs,
-        },
-        run: vi
-          .fn()
-          .mockImplementation(async (_subject, callback, context, phase) => {
-            const effectivePhase = phase ?? context?.phase ?? 'persist';
-            const timeout =
-              effectivePhase === 'transition'
-                ? config.transitionTimeoutMs
-                : config.persistTimeoutMs;
-            recordedCalls.push({ phase: effectivePhase, timeout });
-            const client: TransactionClient = {
-              query: vi.fn().mockImplementation(async (sql: string) => {
-                if (sql.includes('from public.jobs')) {
-                  return {
-                    rows: [
-                      {
-                        id: jobId,
-                        workspace_id: wsId,
-                        created_by: actorId,
-                        type: 'probe',
-                        status: 'queued',
-                        payload: { value: 42 },
-                        role: 'owner',
-                      },
-                    ],
-                  };
-                }
-                return { rows: [] };
-              }),
-            };
-            return callback(client);
-          }),
-        runRead: vi.fn().mockImplementation(async () => {
-          recordedCalls.push({
-            phase: 'compute',
-            timeout: config.computeTimeoutMs,
-          });
-          throw { code: '23505' }; // permanent
-        }),
-      };
-
-      const { runner } = createTestHarness({
-        config,
-        mockTransaction: recordingTransaction,
-      });
-
-      await runner.runOnce();
-
-      expect(recordedCalls).toEqual([
-        { phase: 'transition', timeout: 15_000 },
-        { phase: 'compute', timeout: 180_000 },
-        { phase: 'transition', timeout: 15_000 },
-      ]);
-    });
-
-    it('records transitionTimeoutMs for dead-letter write', async () => {
-      const recordedCalls: Array<{ phase: string; timeout: number }> = [];
-      const config = new WorkerConfig(1, 300, 1000, 30, undefined, 5000, 5);
-
-      const recordingTransaction: Partial<PgTransaction> = {
-        timeouts: {
-          lockTimeoutMs: 5000,
-          statementTimeoutMs: config.persistTimeoutMs,
-          idleTransactionTimeoutMs: 60000,
-          checkoutTimeoutMs: 5000,
-          callbackTimeoutMs: config.persistTimeoutMs,
-          transitionTimeoutMs: config.transitionTimeoutMs,
-          computeTimeoutMs: config.computeTimeoutMs,
-          persistTimeoutMs: config.persistTimeoutMs,
-        },
-        run: vi
-          .fn()
-          .mockImplementation(async (_subject, callback, context, phase) => {
-            const effectivePhase = phase ?? context?.phase ?? 'persist';
-            const timeout =
-              effectivePhase === 'transition'
-                ? config.transitionTimeoutMs
-                : config.persistTimeoutMs;
-            recordedCalls.push({ phase: effectivePhase, timeout });
-            const client: TransactionClient = {
-              query: vi.fn().mockImplementation(async (sql: string) => {
-                if (sql.includes('from public.jobs')) {
-                  return {
-                    rows: [
-                      {
-                        id: jobId,
-                        workspace_id: wsId,
-                        created_by: actorId,
-                        type: 'probe',
-                        status: 'queued',
-                        payload: { value: 42 },
-                        role: 'owner',
-                      },
-                    ],
-                  };
-                }
-                return { rows: [] };
-              }),
-            };
-            return callback(client);
-          }),
-        runRead: vi.fn().mockImplementation(async () => {
-          recordedCalls.push({
-            phase: 'compute',
-            timeout: config.computeTimeoutMs,
-          });
-          throw { code: '40001' }; // transient
-        }),
-      };
-
-      const { runner } = createTestHarness({
-        config,
-        mockTransaction: recordingTransaction,
-        claimedMessages: [
+      const mockQueue: JobQueue = {
+        claim: vi.fn().mockResolvedValue([
           {
             msgId: '101',
-            readCt: 5, // retry limit reached
+            readCt: 1,
             enqueuedAt: new Date().toISOString(),
             vt: new Date().toISOString(),
-            message: {
-              job_id: jobId,
-              workspace_id: wsId,
-              actor_id: actorId,
-            },
+            message: { job_id: jobId, workspace_id: wsId, actor_id: actorId },
           },
-        ],
-      });
+        ]),
+        ack: vi.fn().mockResolvedValue(true),
+        archive: vi.fn().mockResolvedValue(true),
+        defer: vi.fn().mockResolvedValue(true),
+        failOrphanedJob: vi.fn().mockResolvedValue(true),
+      };
 
-      await runner.runOnce();
+      const mockJobWriter: Partial<JobWriter> = {
+        transitionToProcessing: vi.fn().mockResolvedValue({ id: jobId }),
+        completeJob: vi.fn().mockResolvedValue({ id: jobId }),
+        failJob: vi.fn().mockResolvedValue({ id: jobId }),
+        deadLetter: vi.fn().mockResolvedValue({ id: jobId }),
+      };
 
-      expect(recordedCalls).toEqual([
-        { phase: 'transition', timeout: 15_000 },
-        { phase: 'compute', timeout: 180_000 },
-        { phase: 'transition', timeout: 15_000 },
-      ]);
+      let persistRan = false;
+      const mockTransaction: Partial<PgTransaction> = {
+        run: vi.fn().mockImplementation(async (_subject, callback, context) => {
+          if (context?.phase === 'persist') {
+            persistRan = true;
+            throw new DeliveryDeadlineExceededError();
+          }
+          const client: TransactionClient = {
+            query: vi.fn().mockImplementation(async (sql: string) => {
+              if (sql.includes('from public.jobs')) {
+                return {
+                  rows: [
+                    {
+                      id: jobId,
+                      workspace_id: wsId,
+                      created_by: actorId,
+                      type: 'probe',
+                      status: 'queued',
+                      payload: { value: 42 },
+                      role: 'owner',
+                    },
+                  ],
+                };
+              }
+              return { rows: [] };
+            }),
+          };
+          return callback(client);
+        }),
+        runRead: vi.fn().mockImplementation(async (_subject, callback) => {
+          const client: TransactionClient = {
+            query: vi.fn().mockResolvedValue({ rows: [] }),
+          };
+          return callback(client);
+        }),
+      };
+
+      const probeHandler: JobHandler<{ value: number }, { result: number }> = {
+        jobType: 'probe',
+        parsePayload: (raw: unknown) => raw as { value: number },
+        compute: vi.fn().mockResolvedValue({ result: 84 }),
+        persist: vi.fn().mockResolvedValue(resultResourceId),
+      };
+
+      const runner = new JobRunner(
+        mockQueue,
+        mockTransaction as PgTransaction,
+        mockJobWriter as JobWriter,
+        config,
+        [probeHandler],
+        clock,
+      );
+
+      const warnSpy = vi.spyOn((runner as any).logger, 'warn');
+
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+      expect(persistRan).toBe(true);
+
+      // No failure write and no queue action
+      expect(mockJobWriter.failJob).not.toHaveBeenCalled();
+      expect(mockJobWriter.deadLetter).not.toHaveBeenCalled();
+      expect(mockQueue.ack).not.toHaveBeenCalled();
+      expect(mockQueue.archive).not.toHaveBeenCalled();
+      expect(mockQueue.defer).not.toHaveBeenCalled();
+
+      // Log event emitted
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('delivery_deadline_exhausted'),
+      );
+    });
+
+    it('onFailure bound — a hook that never resolves is abandoned at its timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const config = new WorkerConfig(1, 300, 1000, 30);
+        let failureHookStarted = false;
+
+        const neverResolvingHandler: JobHandler<
+          { value: number },
+          { result: number }
+        > = {
+          jobType: 'probe',
+          parsePayload: (raw: unknown) => raw as { value: number },
+          compute: vi.fn(async () => {
+            throw Object.assign(new Error('Permanent compute error'), {
+              code: '23505',
+            });
+          }),
+          persist: vi.fn().mockResolvedValue(resultResourceId),
+          onFailure: vi.fn(async () => {
+            failureHookStarted = true;
+            return new Promise<void>(() => {}); // Never resolves
+          }),
+        };
+
+        const { runner, mockQueue, mockJobWriter } = createTestHarness({
+          config,
+        });
+        runner.registerHandler(neverResolvingHandler);
+
+        const runPromise = runner.runOnce();
+
+        // Let microtasks run so compute throws and reaches onFailure
+        await vi.advanceTimersByTimeAsync(0);
+        expect(failureHookStarted).toBe(true);
+
+        // Advance timers past the onFailure timeout (transitionTimeoutMs = 15,000ms)
+        await vi.advanceTimersByTimeAsync(16_000);
+
+        await runPromise;
+
+        // Proves onFailure was abandoned: failJob and ack were executed!
+        expect(mockJobWriter.failJob).toHaveBeenCalled();
+        expect(mockQueue.ack).toHaveBeenCalledWith('101', expect.any(Number));
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
