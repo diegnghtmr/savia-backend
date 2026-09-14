@@ -18,6 +18,7 @@ export class WorkerConfig {
     public readonly poolSize?: number,
     public readonly poolCloseGraceMs: number = 5_000,
     public readonly maxAttempts: number = 5,
+    public readonly transitionTimeoutMs: number = 15_000,
     public readonly computeTimeoutMs: number = 180_000,
     public readonly persistTimeoutMs: number = 60_000,
     public readonly safetyMarginMs: number = WorkerConfig.SAFETY_MARGIN_MS,
@@ -33,6 +34,11 @@ export class WorkerConfig {
     if (maxAttempts < 1) {
       throw new WorkerConfigurationError('maxAttempts must be at least 1.');
     }
+    if (transitionTimeoutMs < 1) {
+      throw new WorkerConfigurationError(
+        'transitionTimeoutMs must be at least 1.',
+      );
+    }
     if (computeTimeoutMs < 1) {
       throw new WorkerConfigurationError(
         'computeTimeoutMs must be at least 1.',
@@ -44,11 +50,14 @@ export class WorkerConfig {
       );
     }
     const requiredVisibilityMs =
-      computeTimeoutMs + persistTimeoutMs + safetyMarginMs;
+      transitionTimeoutMs +
+      computeTimeoutMs +
+      persistTimeoutMs +
+      safetyMarginMs;
     const visibilityMs = visibilityTimeoutSeconds * 1_000;
     if (requiredVisibilityMs >= visibilityMs) {
       throw new WorkerConfigurationError(
-        `visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms) must be strictly greater than computeTimeoutMs (${computeTimeoutMs}ms) + persistTimeoutMs (${persistTimeoutMs}ms) + safetyMarginMs (${safetyMarginMs}ms) = ${requiredVisibilityMs}ms.`,
+        `visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms) must be strictly greater than transitionTimeoutMs (${transitionTimeoutMs}ms) + computeTimeoutMs (${computeTimeoutMs}ms) + persistTimeoutMs (${persistTimeoutMs}ms) + safetyMarginMs (${safetyMarginMs}ms) = ${requiredVisibilityMs}ms.`,
       );
     }
   }
@@ -74,6 +83,13 @@ export class WorkerConfig {
       5,
       'SAVIA_WORKER_MAX_ATTEMPTS',
       100,
+    );
+
+    const transitionTimeoutMs = readPositiveInteger(
+      environment.SAVIA_WORKER_TRANSITION_TIMEOUT_MS,
+      15_000,
+      'SAVIA_WORKER_TRANSITION_TIMEOUT_MS',
+      3_600_000,
     );
 
     const computeTimeoutMs = readPositiveInteger(
@@ -118,6 +134,7 @@ export class WorkerConfig {
         60_000,
       ),
       maxAttempts,
+      transitionTimeoutMs,
       computeTimeoutMs,
       persistTimeoutMs,
     );

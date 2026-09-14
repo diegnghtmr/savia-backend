@@ -290,7 +290,8 @@ export class JobRunner implements BeforeApplicationShutdown {
           jobType = row.type;
           jobPayload = row.payload;
         },
-        { workspaceId, jobId },
+        { workspaceId, jobId, phase: 'transition' },
+        'transition',
       );
     } catch (error) {
       if (error instanceof ActorVerificationError) {
@@ -335,7 +336,8 @@ export class JobRunner implements BeforeApplicationShutdown {
             traceId: randomUUID(),
           });
         },
-        { workspaceId, jobId },
+        { workspaceId, jobId, phase: 'transition' },
+        'transition',
       );
       await this.queue.ack(message.msgId);
       return false;
@@ -383,7 +385,8 @@ export class JobRunner implements BeforeApplicationShutdown {
                 }),
               );
             },
-            { workspaceId, jobId },
+            { workspaceId, jobId, phase: 'transition' },
+            'transition',
           );
           await this.queue.archive(message.msgId);
           return false;
@@ -414,7 +417,8 @@ export class JobRunner implements BeforeApplicationShutdown {
             }),
           );
         },
-        { workspaceId, jobId },
+        { workspaceId, jobId, phase: 'transition' },
+        'transition',
       );
       await this.queue.ack(message.msgId);
       return false;
@@ -437,7 +441,8 @@ export class JobRunner implements BeforeApplicationShutdown {
             typeof resultResourceId === 'string' ? resultResourceId : null,
           );
         },
-        { workspaceId, jobId },
+        { workspaceId, jobId, phase: 'persist' },
+        'persist',
       );
     } catch (persistError) {
       if (persistError instanceof ActorVerificationError) {
@@ -468,7 +473,8 @@ export class JobRunner implements BeforeApplicationShutdown {
                 }),
               );
             },
-            { workspaceId, jobId },
+            { workspaceId, jobId, phase: 'transition' },
+            'transition',
           );
           await this.queue.archive(message.msgId);
           return false;
@@ -498,7 +504,8 @@ export class JobRunner implements BeforeApplicationShutdown {
             }),
           );
         },
-        { workspaceId, jobId },
+        { workspaceId, jobId, phase: 'transition' },
+        'transition',
       );
       await this.queue.ack(message.msgId);
       return false;

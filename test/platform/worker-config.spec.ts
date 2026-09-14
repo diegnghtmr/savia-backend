@@ -101,14 +101,35 @@ describe('WorkerConfig', () => {
 
   it('loads defaults with single source of truth deadlines and always-on VT validation passing', () => {
     const config = WorkerConfig.fromEnvironment({});
+    expect(config.transitionTimeoutMs).toBe(15_000);
     expect(config.computeTimeoutMs).toBe(180_000);
     expect(config.persistTimeoutMs).toBe(60_000);
     expect(config.safetyMarginMs).toBe(30_000);
     expect(config.visibilityTimeoutSeconds).toBe(300);
-    // 180 + 60 + 30 = 270s < 300s
+    // 15 + 180 + 60 + 30 = 285s < 300s
     expect(
-      config.computeTimeoutMs + config.persistTimeoutMs + config.safetyMarginMs,
+      config.transitionTimeoutMs +
+        config.computeTimeoutMs +
+        config.persistTimeoutMs +
+        config.safetyMarginMs,
     ).toBeLessThan(config.visibilityTimeoutSeconds * 1_000);
+  });
+
+  it('rejects SAVIA_WORKER_TRANSITION_TIMEOUT_MS=60000 with the default visibility timeout (300s)', () => {
+    expect(() =>
+      WorkerConfig.fromEnvironment({
+        SAVIA_WORKER_TRANSITION_TIMEOUT_MS: '60000',
+      }),
+    ).toThrow(WorkerConfigurationError);
+  });
+
+  it('accepts SAVIA_WORKER_TRANSITION_TIMEOUT_MS=60000 when visibility timeout is raised to accommodate it', () => {
+    const config = WorkerConfig.fromEnvironment({
+      SAVIA_WORKER_TRANSITION_TIMEOUT_MS: '60000',
+      SAVIA_WORKER_VT_SECONDS: '350',
+    });
+    expect(config.transitionTimeoutMs).toBe(60_000);
+    expect(config.visibilityTimeoutSeconds).toBe(350);
   });
 
   it('rejects SAVIA_WORKER_COMPUTE_TIMEOUT_MS=300000 with the default visibility timeout (300s)', () => {
@@ -122,10 +143,10 @@ describe('WorkerConfig', () => {
   it('accepts SAVIA_WORKER_COMPUTE_TIMEOUT_MS=300000 when visibility timeout is raised to accommodate it', () => {
     const config = WorkerConfig.fromEnvironment({
       SAVIA_WORKER_COMPUTE_TIMEOUT_MS: '300000',
-      SAVIA_WORKER_VT_SECONDS: '400',
+      SAVIA_WORKER_VT_SECONDS: '420',
     });
     expect(config.computeTimeoutMs).toBe(300_000);
-    expect(config.visibilityTimeoutSeconds).toBe(400);
+    expect(config.visibilityTimeoutSeconds).toBe(420);
   });
 
   it('loads custom SAVIA_WORKER_PERSIST_TIMEOUT_MS and rejects out-of-bounds or non-integer values', () => {

@@ -39,6 +39,7 @@ describe('JobRunner unit spec (S2)', () => {
       persistError?: unknown;
       config?: WorkerConfig;
       batchSize?: number;
+      mockTransaction?: Partial<PgTransaction>;
     } = {},
   ) {
     const callLog: string[] = [];
@@ -247,9 +248,10 @@ describe('JobRunner unit spec (S2)', () => {
 
     const config =
       options.config ?? new WorkerConfig(options.batchSize ?? 1, 300, 1000, 30);
+    const effectiveTransaction = options.mockTransaction ?? mockTransaction;
     const runner = new JobRunner(
       mockQueue,
-      mockTransaction as PgTransaction,
+      effectiveTransaction as PgTransaction,
       mockJobWriter as JobWriter,
       config,
       [probeHandler],
@@ -258,7 +260,7 @@ describe('JobRunner unit spec (S2)', () => {
     return {
       runner,
       mockQueue,
-      mockTransaction,
+      mockTransaction: effectiveTransaction,
       mockJobWriter,
       probeHandler,
       callLog,
@@ -891,5 +893,231 @@ describe('JobRunner unit spec (S2)', () => {
 
     expect(mockQueue.ack).toHaveBeenCalledWith('102');
     expect(mockQueue.ack).not.toHaveBeenCalledWith('101');
+  });
+
+  describe('Phase timeout budgets (Finding 1)', () => {
+    it('records exact ordered list of (phase, timeout) for successful delivery: transition -> compute -> persist', async () => {
+      const recordedCalls: Array<{ phase: string; timeout: number }> = [];
+      const config = new WorkerConfig(1, 300, 1000, 30);
+
+      const recordingTransaction: Partial<PgTransaction> = {
+        timeouts: {
+          lockTimeoutMs: 5000,
+          statementTimeoutMs: config.persistTimeoutMs,
+          idleTransactionTimeoutMs: 60000,
+          checkoutTimeoutMs: 5000,
+          callbackTimeoutMs: config.persistTimeoutMs,
+          transitionTimeoutMs: config.transitionTimeoutMs,
+          computeTimeoutMs: config.computeTimeoutMs,
+          persistTimeoutMs: config.persistTimeoutMs,
+        },
+        run: vi
+          .fn()
+          .mockImplementation(async (_subject, callback, context, phase) => {
+            const effectivePhase = phase ?? context?.phase ?? 'persist';
+            const timeout =
+              effectivePhase === 'transition'
+                ? config.transitionTimeoutMs
+                : config.persistTimeoutMs;
+            recordedCalls.push({ phase: effectivePhase, timeout });
+            const client: TransactionClient = {
+              query: vi.fn().mockImplementation(async (sql: string) => {
+                if (sql.includes('from public.jobs')) {
+                  return {
+                    rows: [
+                      {
+                        id: jobId,
+                        workspace_id: wsId,
+                        created_by: actorId,
+                        type: 'probe',
+                        status: 'queued',
+                        payload: { value: 42 },
+                        role: 'owner',
+                      },
+                    ],
+                  };
+                }
+                return { rows: [] };
+              }),
+            };
+            return callback(client);
+          }),
+        runRead: vi.fn().mockImplementation(async (_subject, callback) => {
+          recordedCalls.push({
+            phase: 'compute',
+            timeout: config.computeTimeoutMs,
+          });
+          const client: TransactionClient = {
+            query: vi.fn().mockResolvedValue({ rows: [] }),
+          };
+          return callback(client);
+        }),
+      };
+
+      const { runner } = createTestHarness({
+        config,
+        mockTransaction: recordingTransaction,
+      });
+
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+
+      expect(recordedCalls).toEqual([
+        { phase: 'transition', timeout: 15_000 },
+        { phase: 'compute', timeout: 180_000 },
+        { phase: 'persist', timeout: 60_000 },
+      ]);
+    });
+
+    it('records transitionTimeoutMs for permanent failure write', async () => {
+      const recordedCalls: Array<{ phase: string; timeout: number }> = [];
+      const config = new WorkerConfig(1, 300, 1000, 30);
+
+      const recordingTransaction: Partial<PgTransaction> = {
+        timeouts: {
+          lockTimeoutMs: 5000,
+          statementTimeoutMs: config.persistTimeoutMs,
+          idleTransactionTimeoutMs: 60000,
+          checkoutTimeoutMs: 5000,
+          callbackTimeoutMs: config.persistTimeoutMs,
+          transitionTimeoutMs: config.transitionTimeoutMs,
+          computeTimeoutMs: config.computeTimeoutMs,
+          persistTimeoutMs: config.persistTimeoutMs,
+        },
+        run: vi
+          .fn()
+          .mockImplementation(async (_subject, callback, context, phase) => {
+            const effectivePhase = phase ?? context?.phase ?? 'persist';
+            const timeout =
+              effectivePhase === 'transition'
+                ? config.transitionTimeoutMs
+                : config.persistTimeoutMs;
+            recordedCalls.push({ phase: effectivePhase, timeout });
+            const client: TransactionClient = {
+              query: vi.fn().mockImplementation(async (sql: string) => {
+                if (sql.includes('from public.jobs')) {
+                  return {
+                    rows: [
+                      {
+                        id: jobId,
+                        workspace_id: wsId,
+                        created_by: actorId,
+                        type: 'probe',
+                        status: 'queued',
+                        payload: { value: 42 },
+                        role: 'owner',
+                      },
+                    ],
+                  };
+                }
+                return { rows: [] };
+              }),
+            };
+            return callback(client);
+          }),
+        runRead: vi.fn().mockImplementation(async () => {
+          recordedCalls.push({
+            phase: 'compute',
+            timeout: config.computeTimeoutMs,
+          });
+          throw { code: '23505' }; // permanent
+        }),
+      };
+
+      const { runner } = createTestHarness({
+        config,
+        mockTransaction: recordingTransaction,
+      });
+
+      await runner.runOnce();
+
+      expect(recordedCalls).toEqual([
+        { phase: 'transition', timeout: 15_000 },
+        { phase: 'compute', timeout: 180_000 },
+        { phase: 'transition', timeout: 15_000 },
+      ]);
+    });
+
+    it('records transitionTimeoutMs for dead-letter write', async () => {
+      const recordedCalls: Array<{ phase: string; timeout: number }> = [];
+      const config = new WorkerConfig(1, 300, 1000, 30, undefined, 5000, 5);
+
+      const recordingTransaction: Partial<PgTransaction> = {
+        timeouts: {
+          lockTimeoutMs: 5000,
+          statementTimeoutMs: config.persistTimeoutMs,
+          idleTransactionTimeoutMs: 60000,
+          checkoutTimeoutMs: 5000,
+          callbackTimeoutMs: config.persistTimeoutMs,
+          transitionTimeoutMs: config.transitionTimeoutMs,
+          computeTimeoutMs: config.computeTimeoutMs,
+          persistTimeoutMs: config.persistTimeoutMs,
+        },
+        run: vi
+          .fn()
+          .mockImplementation(async (_subject, callback, context, phase) => {
+            const effectivePhase = phase ?? context?.phase ?? 'persist';
+            const timeout =
+              effectivePhase === 'transition'
+                ? config.transitionTimeoutMs
+                : config.persistTimeoutMs;
+            recordedCalls.push({ phase: effectivePhase, timeout });
+            const client: TransactionClient = {
+              query: vi.fn().mockImplementation(async (sql: string) => {
+                if (sql.includes('from public.jobs')) {
+                  return {
+                    rows: [
+                      {
+                        id: jobId,
+                        workspace_id: wsId,
+                        created_by: actorId,
+                        type: 'probe',
+                        status: 'queued',
+                        payload: { value: 42 },
+                        role: 'owner',
+                      },
+                    ],
+                  };
+                }
+                return { rows: [] };
+              }),
+            };
+            return callback(client);
+          }),
+        runRead: vi.fn().mockImplementation(async () => {
+          recordedCalls.push({
+            phase: 'compute',
+            timeout: config.computeTimeoutMs,
+          });
+          throw { code: '40001' }; // transient
+        }),
+      };
+
+      const { runner } = createTestHarness({
+        config,
+        mockTransaction: recordingTransaction,
+        claimedMessages: [
+          {
+            msgId: '101',
+            readCt: 5, // retry limit reached
+            enqueuedAt: new Date().toISOString(),
+            vt: new Date().toISOString(),
+            message: {
+              job_id: jobId,
+              workspace_id: wsId,
+              actor_id: actorId,
+            },
+          },
+        ],
+      });
+
+      await runner.runOnce();
+
+      expect(recordedCalls).toEqual([
+        { phase: 'transition', timeout: 15_000 },
+        { phase: 'compute', timeout: 180_000 },
+        { phase: 'transition', timeout: 15_000 },
+      ]);
+    });
   });
 });

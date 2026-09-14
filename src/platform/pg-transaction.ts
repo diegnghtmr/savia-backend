@@ -14,6 +14,7 @@ export type TransactionTimeoutOptions = Partial<
 > & {
   readonly computeTimeoutMs?: number;
   readonly persistTimeoutMs?: number;
+  readonly transitionTimeoutMs?: number;
 };
 export type TransactionClient = Pick<PgClient, 'query'>;
 export class TransactionTimeoutError extends Error {
@@ -46,6 +47,7 @@ export class ActorVerificationError extends Error {
 export interface WorkerWriteContext {
   readonly workspaceId: string;
   readonly jobId: string;
+  readonly phase?: 'transition' | 'persist';
 }
 export interface PgTransactionOptions {
   readonly workerMode?: boolean;
@@ -60,6 +62,7 @@ export class PgTransaction implements OnApplicationShutdown {
   private resolvedTimeouts: (Required<Record<keyof typeof TIMEOUTS, number>> & {
     readonly computeTimeoutMs?: number;
     readonly persistTimeoutMs?: number;
+    readonly transitionTimeoutMs?: number;
   }) | undefined;
   private readonly logger = new Logger(PgTransaction.name);
   public constructor(
@@ -70,11 +73,13 @@ export class PgTransaction implements OnApplicationShutdown {
   public get timeouts(): Required<Record<keyof typeof TIMEOUTS, number>> & {
     readonly computeTimeoutMs?: number;
     readonly persistTimeoutMs?: number;
+    readonly transitionTimeoutMs?: number;
   } { return (this.resolvedTimeouts ??= { ...TIMEOUTS, ...(typeof this.timeoutOptions === 'function' ? this.timeoutOptions() : this.timeoutOptions) }); }
   public async run<T>(
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
     context?: WorkerWriteContext,
+    phase?: 'transition' | 'persist',
   ): Promise<T> {
     if (!UUID.test(subject)) throw new Error('subject must be a valid UUID.');
     const client = await this.acquire();
@@ -111,10 +116,18 @@ export class PgTransaction implements OnApplicationShutdown {
           );
         }
       }
+      const effectivePhase = phase ?? context?.phase ?? 'persist';
       const callbackTimeout =
-        this.timeouts.persistTimeoutMs ?? this.timeouts.callbackTimeoutMs;
+        effectivePhase === 'transition'
+          ? (this.timeouts.transitionTimeoutMs ??
+            this.timeouts.callbackTimeoutMs)
+          : (this.timeouts.persistTimeoutMs ?? this.timeouts.callbackTimeoutMs);
       const statementTimeout =
-        this.timeouts.persistTimeoutMs ?? this.timeouts.statementTimeoutMs;
+        effectivePhase === 'transition'
+          ? (this.timeouts.transitionTimeoutMs ??
+            this.timeouts.statementTimeoutMs)
+          : (this.timeouts.persistTimeoutMs ??
+            this.timeouts.statementTimeoutMs);
       const callbackDeadline = monotonicDeadline(callbackTimeout);
       let active = true;
       const transactionClient: TransactionClient = { query: async <Row extends Record<string, unknown>>(text: string, values?: readonly unknown[]) => {
