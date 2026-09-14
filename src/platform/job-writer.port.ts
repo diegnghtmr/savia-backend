@@ -64,4 +64,11 @@ export interface JobWriter {
     jobId: string,
     error: Record<string, unknown>,
   ): Promise<Record<string, unknown>>;
+
+  deadLetter(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
 }

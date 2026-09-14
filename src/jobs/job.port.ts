@@ -113,6 +113,13 @@ export interface JobWriter {
     jobId: string,
     error: Record<string, unknown>,
   ): Promise<Job>;
+
+  deadLetter(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
+  ): Promise<Job>;
 }
 
 export interface JobsPort {
