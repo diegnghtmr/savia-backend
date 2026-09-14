@@ -39,6 +39,49 @@ export function isPermanentError(error: unknown): boolean {
   return classifyJobError(error) === JOB_ERROR_CLASSIFICATIONS.PERMANENT;
 }
 
+const TERMINAL_STATUS_PATTERN =
+  /\b(?:completed|failed|cancelled|dead_letter)\b/i;
+
+export function isAlreadyTerminalRefusal(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') {
+    return false;
+  }
+
+  const visited = new Set<object>();
+  let current: unknown = error;
+  let depth = 0;
+
+  while (
+    current !== null &&
+    typeof current === 'object' &&
+    depth < MAX_CAUSE_DEPTH
+  ) {
+    if (visited.has(current)) {
+      break;
+    }
+    visited.add(current);
+
+    const err = current as ErrorLike;
+    const code =
+      typeof err.code === 'string' ? err.code.trim().toUpperCase() : undefined;
+    const message =
+      typeof err.message === 'string'
+        ? err.message
+        : typeof (err as { detail?: unknown }).detail === 'string'
+          ? (err as { detail: string }).detail
+          : '';
+
+    if (code === 'P0001' && TERMINAL_STATUS_PATTERN.test(message)) {
+      return true;
+    }
+
+    current = 'cause' in err ? err.cause : undefined;
+    depth++;
+  }
+
+  return false;
+}
+
 const MAX_CAUSE_DEPTH = 10;
 
 function isLevelPermanent(err: ErrorLike): boolean {
@@ -53,11 +96,17 @@ function isLevelPermanent(err: ErrorLike): boolean {
   // invalid_payload
   if (typeof err.code === 'string') {
     const code = err.code.trim().toUpperCase();
+    if (code === 'P0001') {
+      const message = typeof err.message === 'string' ? err.message : '';
+      if (TERMINAL_STATUS_PATTERN.test(message)) {
+        return false;
+      }
+      return true;
+    }
     if (
       code.startsWith('22') ||
       code.startsWith('23') ||
       code.startsWith('42') ||
-      code === 'P0001' ||
       code === 'INVALID_PAYLOAD'
     ) {
       return true;

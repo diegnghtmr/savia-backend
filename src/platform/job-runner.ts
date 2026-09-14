@@ -19,6 +19,7 @@ import {
 import {
   calculateBackoffDelay,
   classifyJobError,
+  isAlreadyTerminalRefusal,
   JOB_ERROR_CLASSIFICATIONS,
 } from './job-retry-policy.js';
 import { JOB_WRITER, type JobWriter } from './job-writer.port.js';
@@ -341,6 +342,10 @@ export class JobRunner implements BeforeApplicationShutdown {
         this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
         return false;
       }
+      if (isAlreadyTerminalRefusal(error)) {
+        await this.safeAck(message.msgId, deadline, jobId);
+        return true;
+      }
       if (error instanceof ActorVerificationError) {
         if (deadline.isTerminalExhausted()) {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
@@ -503,6 +508,10 @@ export class JobRunner implements BeforeApplicationShutdown {
               this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
               return false;
             }
+            if (isAlreadyTerminalRefusal(writeError)) {
+              await this.safeAck(message.msgId, deadline, jobId);
+              return true;
+            }
             return false;
           }
           await this.safeArchive(message.msgId, deadline, jobId);
@@ -548,6 +557,10 @@ export class JobRunner implements BeforeApplicationShutdown {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
         }
+        if (isAlreadyTerminalRefusal(writeError)) {
+          await this.safeAck(message.msgId, deadline, jobId);
+          return true;
+        }
         return false;
       }
       await this.safeAck(message.msgId, deadline, jobId);
@@ -584,6 +597,11 @@ export class JobRunner implements BeforeApplicationShutdown {
       if (persistError instanceof DeliveryDeadlineExceededError) {
         this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
         return false;
+      }
+
+      if (isAlreadyTerminalRefusal(persistError)) {
+        await this.safeAck(message.msgId, deadline, jobId);
+        return true;
       }
 
       if (persistError instanceof ActorVerificationError) {
@@ -638,6 +656,10 @@ export class JobRunner implements BeforeApplicationShutdown {
               this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
               return false;
             }
+            if (isAlreadyTerminalRefusal(writeError)) {
+              await this.safeAck(message.msgId, deadline, jobId);
+              return true;
+            }
             return false;
           }
           await this.safeArchive(message.msgId, deadline, jobId);
@@ -681,6 +703,10 @@ export class JobRunner implements BeforeApplicationShutdown {
         if (writeError instanceof DeliveryDeadlineExceededError) {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
+        }
+        if (isAlreadyTerminalRefusal(writeError)) {
+          await this.safeAck(message.msgId, deadline, jobId);
+          return true;
         }
         return false;
       }

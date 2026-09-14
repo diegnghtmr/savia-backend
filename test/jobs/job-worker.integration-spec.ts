@@ -892,5 +892,41 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
         blocker.release();
       }
     });
+
+    it('empirically verifies SET LOCAL transaction_timeout terminates a running transaction mid-transaction', async () => {
+      const client = await admin.connect();
+      client.on('error', () => undefined);
+      try {
+        await client.query('BEGIN');
+        await client.query("SET LOCAL transaction_timeout = '500ms'");
+        const start = Date.now();
+        await expect(client.query('select pg_sleep(2)')).rejects.toThrow();
+        const elapsed = Date.now() - start;
+        expect(elapsed).toBeGreaterThanOrEqual(400);
+        expect(elapsed).toBeLessThan(1800);
+      } finally {
+        await client.query('ROLLBACK').catch(() => undefined);
+        client.release(true);
+      }
+    });
+
+    it('sets transaction_timeout server-side for bounded transactions', async () => {
+      let observedTimeout = '';
+      await transaction.run(
+        ownerA,
+        async (client) => {
+          const res = await client.query<{ timeout: string }>(
+            "select current_setting('transaction_timeout') as timeout",
+          );
+          observedTimeout = res.rows[0].timeout;
+        },
+        undefined,
+        undefined,
+        5000,
+      );
+      expect(observedTimeout).toMatch(/^[1-9]\d*ms$/);
+      expect(Number.parseInt(observedTimeout, 10)).toBeGreaterThan(0);
+      expect(Number.parseInt(observedTimeout, 10)).toBeLessThanOrEqual(5000);
+    });
   });
 });

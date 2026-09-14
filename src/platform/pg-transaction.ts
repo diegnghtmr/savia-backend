@@ -118,6 +118,11 @@ export class PgTransaction implements OnApplicationShutdown {
               `${Math.max(1, getRemaining())}ms`,
             ]);
             if (isExpired()) throw new DeliveryDeadlineExceededError();
+            await client.query('select set_config($1, $2::text, true)', [
+              'transaction_timeout',
+              `${Math.max(1, getRemaining())}ms`,
+            ]);
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('SET LOCAL ROLE savia_application');
             if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query(
@@ -189,6 +194,7 @@ export class PgTransaction implements OnApplicationShutdown {
             const result = await callback(transactionClient);
             active = false;
             if (isExpired()) throw new DeliveryDeadlineExceededError();
+            // Residual window: a COMMIT whose WAL flush is already in progress when the server timeout fires completes; that window is milliseconds and is covered by leaseSafetyMs.
             try {
               await client.query('COMMIT');
             } catch (error) {
@@ -331,6 +337,11 @@ export class PgTransaction implements OnApplicationShutdown {
               `${Math.max(1, getRemaining())}ms`,
             ]);
             if (isExpired()) throw new DeliveryDeadlineExceededError();
+            await client.query('select set_config($1, $2::text, true)', [
+              'transaction_timeout',
+              `${Math.max(1, getRemaining())}ms`,
+            ]);
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('SET LOCAL ROLE savia_worker');
             if (isExpired()) throw new DeliveryDeadlineExceededError();
             await this.configureTimeouts(client, true);
@@ -360,6 +371,7 @@ export class PgTransaction implements OnApplicationShutdown {
             const result = await callback(transactionClient);
             active = false;
             if (isExpired()) throw new DeliveryDeadlineExceededError();
+            // Residual window: a COMMIT whose WAL flush is already in progress when the server timeout fires completes; that window is milliseconds and is covered by leaseSafetyMs.
             try {
               await client.query('COMMIT');
             } catch (error) {
@@ -456,6 +468,11 @@ export class PgTransaction implements OnApplicationShutdown {
             if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('select set_config($1, $2::text, true)', [
               'statement_timeout',
+              `${Math.max(1, getRemaining())}ms`,
+            ]);
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
+            await client.query('select set_config($1, $2::text, true)', [
+              'transaction_timeout',
               `${Math.max(1, getRemaining())}ms`,
             ]);
             if (isExpired()) throw new DeliveryDeadlineExceededError();

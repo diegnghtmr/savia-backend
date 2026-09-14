@@ -333,6 +333,28 @@ describe('JobRunner unit spec (S2)', () => {
     expect(callLog).toEqual(['claim', `run:${actorId}`, 'ack:101']);
   });
 
+  it('acks and stops without failure write or dead-letter when completeJob refuses because job is already terminal', async () => {
+    const alreadyTerminalError = Object.assign(
+      new Error(
+        `Cannot complete job ${jobId}: expected status processing, got completed`,
+      ),
+      { code: 'P0001' },
+    );
+
+    const { runner, mockQueue, mockJobWriter } = createTestHarness({});
+
+    mockJobWriter.completeJob = vi
+      .fn()
+      .mockRejectedValue(alreadyTerminalError);
+
+    const processed = await runner.runOnce();
+    expect(processed).toBe(1);
+
+    expect(mockQueue.ack).toHaveBeenCalledTimes(1);
+    expect(mockJobWriter.failJob).not.toHaveBeenCalled();
+    expect(mockJobWriter.deadLetter).not.toHaveBeenCalled();
+  });
+
   it('calls fail_orphaned_job and acks message when actor is invisible or demoted', async () => {
     // Demoted actor: role is viewer (lacks write role)
     const { runner, mockQueue, probeHandler, callLog } = createTestHarness({
