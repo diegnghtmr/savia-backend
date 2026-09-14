@@ -256,6 +256,66 @@ describe('Job retry policy unit spec (S3)', () => {
         JOB_ERROR_CLASSIFICATIONS.TRANSIENT,
       );
     });
+
+    it('classifies two-level nested permanent cause (e.g. 23505) as permanent', () => {
+      const inner = { code: '23505' };
+      const middle = new Error('Database query failed', { cause: inner });
+      const outer = new Error('Service operation failed', { cause: middle });
+      expect(classifyJobError(outer)).toBe(JOB_ERROR_CLASSIFICATIONS.PERMANENT);
+      expect(isPermanentError(outer)).toBe(true);
+    });
+
+    it('classifies outer transient code (ECONNRESET) wrapping permanent cause (42501) as permanent', () => {
+      const inner = { code: '42501' };
+      const outer = Object.assign(
+        new Error('Connection error during migration'),
+        {
+          code: 'ECONNRESET',
+          cause: inner,
+        },
+      );
+      expect(classifyJobError(outer)).toBe(JOB_ERROR_CLASSIFICATIONS.PERMANENT);
+      expect(isPermanentError(outer)).toBe(true);
+    });
+
+    it('classifies nested storage 404 as permanent', () => {
+      const inner = { status: 404 };
+      const middle = new Error('Storage client error', { cause: inner });
+      const outer = new Error('Asset download failed', { cause: middle });
+      expect(classifyJobError(outer)).toBe(JOB_ERROR_CLASSIFICATIONS.PERMANENT);
+      expect(isPermanentError(outer)).toBe(true);
+    });
+
+    it('terminates and classifies cyclic chains deterministically without infinite loop', () => {
+      let aCauseReads = 0;
+      const a = new Error('Cycle node A') as Error & { cause?: unknown };
+      const b = new Error('Cycle node B') as Error & { cause?: unknown };
+      Object.defineProperty(a, 'cause', {
+        get() {
+          aCauseReads++;
+          return b;
+        },
+      });
+      b.cause = a;
+
+      expect(classifyJobError(a)).toBe(JOB_ERROR_CLASSIFICATIONS.TRANSIENT);
+      expect(aCauseReads).toBe(1);
+      aCauseReads = 0;
+      expect(isTransientError(a)).toBe(true);
+      expect(aCauseReads).toBe(1);
+    }, 500);
+
+    it('stops traversal without throwing when chain exceeds maximum depth', () => {
+      const root = new Error('Depth 0');
+      let current = root;
+      for (let i = 1; i <= 25; i++) {
+        const next = new Error(`Depth ${i}`);
+        (current as { cause?: unknown }).cause = next;
+        current = next;
+      }
+      expect(() => classifyJobError(root)).not.toThrow();
+      expect(classifyJobError(root)).toBe(JOB_ERROR_CLASSIFICATIONS.TRANSIENT);
+    });
   });
 
   describe('Seeded equal-jitter exponential backoff', () => {
