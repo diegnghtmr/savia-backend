@@ -57,6 +57,7 @@ case "$spec" in
   test/jobs/jobs-read.integration-spec.ts) ;;
   test/jobs/job-queue.integration-spec.ts) ;;
   test/jobs/job-worker.integration-spec.ts) ;;
+  test/jobs/job-transitions.integration-spec.ts) ;;
   test/identity/reconciliations-schema.integration-spec.ts) ;;
   test/reconciliations/reconciliations-create.integration-spec.ts) ;;
   test/reconciliations/reconciliations-get.integration-spec.ts) ;;

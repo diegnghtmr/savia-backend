@@ -1,4 +1,4 @@
-// Migrations under test: 202608310001_jobs.sql, 202609100016_job_queue.sql
+// Migrations under test: 202608310001_jobs.sql, 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -268,7 +268,12 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
       expect(constraintNames).toContain('jobs_progress_percent_range_check');
       expect(constraintNames).toContain('jobs_started_at_required_check');
       expect(constraintNames).toContain('jobs_completed_at_terminal_check');
-      expect(constraintNames).toContain('jobs_error_only_when_failed_check');
+      expect(constraintNames).toContain(
+        'jobs_error_only_when_failed_or_dead_letter_check',
+      );
+      expect(constraintNames).not.toContain(
+        'jobs_error_only_when_failed_check',
+      );
       expect(constraintNames).toContain(
         'jobs_error_problem_details_shape_check',
       );
@@ -455,13 +460,21 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
           join pg_namespace n on n.oid = p.pronamespace
           join pg_roles r on r.oid = p.proowner
          where n.nspname = 'public'
-           and p.proname in ('start_job', 'complete_job', 'fail_job')
+           and p.proname in ('start_job', 'complete_job', 'fail_job', 'dead_letter_job')
          order by p.proname
       `);
 
       expect(res.rows).toEqual([
         {
           proname: 'complete_job',
+          owner: 'savia_elevated',
+          rolbypassrls: false,
+          rolsuper: false,
+          prosecdef: true,
+          proconfig: ['search_path=pg_catalog, public'],
+        },
+        {
+          proname: 'dead_letter_job',
           owner: 'savia_elevated',
           rolbypassrls: false,
           rolsuper: false,
@@ -490,6 +503,7 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
         'public.start_job(uuid,integer)',
         'public.complete_job(uuid,uuid)',
         'public.fail_job(uuid,jsonb)',
+        'public.dead_letter_job(uuid,jsonb)',
       ]) {
         const pubPriv = await admin.query<{ has: boolean }>(
           `select has_function_privilege('public', $1, 'execute') as has`,
@@ -712,7 +726,7 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
       );
     });
 
-    it('enforces jobs_error_only_when_failed_check: error is required for failed, forbidden for other statuses', async () => {
+    it('enforces jobs_error_only_when_failed_or_dead_letter_check: error is required for failed and dead_letter, forbidden for other statuses', async () => {
       // 1. status = failed with error = null -> fails
       const errFailedWithoutError = await capturePgError(() =>
         asSubject(ownerA, async (client) => {
@@ -725,10 +739,25 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
       );
       expect(errFailedWithoutError.code).toBe('23514');
       expect(errFailedWithoutError.constraint).toBe(
-        'jobs_error_only_when_failed_check',
+        'jobs_error_only_when_failed_or_dead_letter_check',
       );
 
-      // 2. status = completed with error set -> fails
+      // 2. status = dead_letter with error = null -> fails
+      const errDeadLetterWithoutError = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `insert into public.jobs (workspace_id, type, status, started_at, completed_at, error, created_by)
+             values ($1, $2, 'dead_letter', now(), now(), null, $3)`,
+            [ws1Id, 'import_commit', ownerA],
+          );
+        }),
+      );
+      expect(errDeadLetterWithoutError.code).toBe('23514');
+      expect(errDeadLetterWithoutError.constraint).toBe(
+        'jobs_error_only_when_failed_or_dead_letter_check',
+      );
+
+      // 3. status = completed with error set -> fails
       const validProblem = JSON.stringify({
         type: 'https://savia.app/problems/bad-request',
         title: 'Bad Request',
@@ -747,8 +776,20 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
       );
       expect(errCompletedWithError.code).toBe('23514');
       expect(errCompletedWithError.constraint).toBe(
-        'jobs_error_only_when_failed_check',
+        'jobs_error_only_when_failed_or_dead_letter_check',
       );
+
+      // 4. status = dead_letter with valid ProblemDetails -> accepted
+      const deadLetterJob = await asSubject(ownerA, async (client) => {
+        const res = await client.query<{ id: string; status: string }>(
+          `insert into public.jobs (workspace_id, type, status, started_at, completed_at, error, created_by)
+           values ($1, $2, 'dead_letter', now(), now(), $3::jsonb, $4)
+           returning id, status`,
+          [ws1Id, 'import_commit', validProblem, ownerA],
+        );
+        return res.rows[0];
+      });
+      expect(deadLetterJob.status).toBe('dead_letter');
     });
 
     it('enforces jobs_error_problem_details_shape_check: rejects non-object, missing keys, invalid types, and out-of-range status; accepts valid ProblemDetails', async () => {

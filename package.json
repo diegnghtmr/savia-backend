@@ -66,6 +66,7 @@
     "test:integration:jobs-read": "bash scripts/run-disposable-database-suite.sh test/jobs/jobs-read.integration-spec.ts",
     "test:integration:job-queue": "bash scripts/run-disposable-database-suite.sh test/jobs/job-queue.integration-spec.ts",
     "test:integration:job-worker": "bash scripts/run-disposable-database-suite.sh test/jobs/job-worker.integration-spec.ts",
+    "test:integration:job-transitions": "bash scripts/run-disposable-database-suite.sh test/jobs/job-transitions.integration-spec.ts",
     "test:integration:reconciliations-schema": "bash scripts/run-disposable-database-suite.sh test/identity/reconciliations-schema.integration-spec.ts",
     "test:integration:reconciliations-create": "bash scripts/run-disposable-database-suite.sh test/reconciliations/reconciliations-create.integration-spec.ts",
     "test:integration:reconciliations-get": "bash scripts/run-disposable-database-suite.sh test/reconciliations/reconciliations-get.integration-spec.ts",

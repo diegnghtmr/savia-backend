@@ -239,6 +239,9 @@ jobs:
       - name: job worker integration
         shell: bash
         run: pnpm test:integration:job-worker
+      - name: job transitions integration
+        shell: bash
+        run: pnpm test:integration:job-transitions
       - name: reconciliations schema integration
         shell: bash
         run: pnpm test:integration:reconciliations-schema
