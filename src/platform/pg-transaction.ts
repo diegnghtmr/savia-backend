@@ -9,7 +9,12 @@ export const TIMEOUTS = {
   idleTransactionTimeoutMs: 1_000,
   callbackTimeoutMs: 1_000,
 } as const;
-type TransactionTimeoutOptions = Partial<Record<keyof typeof TIMEOUTS, number>>;
+export type TransactionTimeoutOptions = Partial<
+  Record<keyof typeof TIMEOUTS, number>
+> & {
+  readonly computeTimeoutMs?: number;
+  readonly persistTimeoutMs?: number;
+};
 export type TransactionClient = Pick<PgClient, 'query'>;
 export class TransactionTimeoutError extends Error {
   public constructor(message: string, cause?: unknown) {
@@ -52,14 +57,20 @@ export class PgTransaction implements OnApplicationShutdown {
   // Timeouts may arrive as a thunk for the same reason the pool configuration
   // does: their value comes from that configuration, which must not be resolved
   // while the module graph is being built. See PostgresPool.
-  private resolvedTimeouts: Required<TransactionTimeoutOptions> | undefined;
+  private resolvedTimeouts: (Required<Record<keyof typeof TIMEOUTS, number>> & {
+    readonly computeTimeoutMs?: number;
+    readonly persistTimeoutMs?: number;
+  }) | undefined;
   private readonly logger = new Logger(PgTransaction.name);
   public constructor(
     private readonly pool: PgPool,
     private readonly timeoutOptions: TransactionTimeoutOptions | (() => TransactionTimeoutOptions) = {},
     private readonly options: PgTransactionOptions = {},
   ) {}
-  private get timeouts(): Required<TransactionTimeoutOptions> { return (this.resolvedTimeouts ??= { ...TIMEOUTS, ...(typeof this.timeoutOptions === 'function' ? this.timeoutOptions() : this.timeoutOptions) }); }
+  public get timeouts(): Required<Record<keyof typeof TIMEOUTS, number>> & {
+    readonly computeTimeoutMs?: number;
+    readonly persistTimeoutMs?: number;
+  } { return (this.resolvedTimeouts ??= { ...TIMEOUTS, ...(typeof this.timeoutOptions === 'function' ? this.timeoutOptions() : this.timeoutOptions) }); }
   public async run<T>(
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
@@ -100,13 +111,17 @@ export class PgTransaction implements OnApplicationShutdown {
           );
         }
       }
-      const callbackDeadline = monotonicDeadline(this.timeouts.callbackTimeoutMs);
+      const callbackTimeout =
+        this.timeouts.persistTimeoutMs ?? this.timeouts.callbackTimeoutMs;
+      const statementTimeout =
+        this.timeouts.persistTimeoutMs ?? this.timeouts.statementTimeoutMs;
+      const callbackDeadline = monotonicDeadline(callbackTimeout);
       let active = true;
       const transactionClient: TransactionClient = { query: async <Row extends Record<string, unknown>>(text: string, values?: readonly unknown[]) => {
         const remaining = remainingMilliseconds(callbackDeadline);
         if (!active || remaining < 1) throw deadlineError();
         if (!text.trim().toUpperCase().startsWith('ROLLBACK TO')) {
-          await client.query('select set_config($1, $2::text, true)', ['statement_timeout', `${Math.min(this.timeouts.statementTimeoutMs, remaining)}ms`]);
+          await client.query('select set_config($1, $2::text, true)', ['statement_timeout', `${Math.min(statementTimeout, remaining)}ms`]);
         }
         if (!active || remainingMilliseconds(callbackDeadline) < 1) throw deadlineError();
         return client.query<Row>(text, values);
@@ -212,12 +227,16 @@ export class PgTransaction implements OnApplicationShutdown {
       await client.query('SET LOCAL ROLE savia_application');
       await client.query("select set_config('app.subject_id', $1, true)", [subject.toLowerCase()]);
       await this.configureTimeouts(client);
-      const callbackDeadline = monotonicDeadline(this.timeouts.callbackTimeoutMs);
+      const callbackTimeout =
+        this.timeouts.computeTimeoutMs ?? this.timeouts.callbackTimeoutMs;
+      const statementTimeout =
+        this.timeouts.computeTimeoutMs ?? this.timeouts.statementTimeoutMs;
+      const callbackDeadline = monotonicDeadline(callbackTimeout);
       let active = true;
       const transactionClient: TransactionClient = { query: async <Row extends Record<string, unknown>>(text: string, values?: readonly unknown[]) => {
         const remaining = remainingMilliseconds(callbackDeadline);
         if (!active || remaining < 1) throw deadlineError();
-        await client.query('select set_config($1, $2::text, true)', ['statement_timeout', `${Math.min(this.timeouts.statementTimeoutMs, remaining)}ms`]);
+        await client.query('select set_config($1, $2::text, true)', ['statement_timeout', `${Math.min(statementTimeout, remaining)}ms`]);
         if (!active || remainingMilliseconds(callbackDeadline) < 1) throw deadlineError();
         return client.query<Row>(text, values);
       } };

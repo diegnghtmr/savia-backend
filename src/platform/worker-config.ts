@@ -8,6 +8,8 @@ export class WorkerConfigurationError extends Error {
 }
 
 export class WorkerConfig {
+  public static readonly SAFETY_MARGIN_MS = 30_000;
+
   public constructor(
     public readonly batchSize: number,
     public readonly visibilityTimeoutSeconds: number,
@@ -16,7 +18,9 @@ export class WorkerConfig {
     public readonly poolSize?: number,
     public readonly poolCloseGraceMs: number = 5_000,
     public readonly maxAttempts: number = 5,
-    public readonly phaseDeadlinesSeconds: readonly number[] = [],
+    public readonly computeTimeoutMs: number = 180_000,
+    public readonly persistTimeoutMs: number = 60_000,
+    public readonly safetyMarginMs: number = WorkerConfig.SAFETY_MARGIN_MS,
   ) {
     if (batchSize > 10) {
       throw new WorkerConfigurationError('batchSize must not exceed 10.');
@@ -29,23 +33,28 @@ export class WorkerConfig {
     if (maxAttempts < 1) {
       throw new WorkerConfigurationError('maxAttempts must be at least 1.');
     }
-    const summedPhaseDeadlines = phaseDeadlinesSeconds.reduce(
-      (sum, d) => sum + d,
-      0,
-    );
-    if (
-      phaseDeadlinesSeconds.length > 0 &&
-      visibilityTimeoutSeconds <= summedPhaseDeadlines
-    ) {
+    if (computeTimeoutMs < 1) {
       throw new WorkerConfigurationError(
-        `visibilityTimeoutSeconds (${visibilityTimeoutSeconds}) must be greater than summed phase deadlines (${summedPhaseDeadlines}).`,
+        'computeTimeoutMs must be at least 1.',
+      );
+    }
+    if (persistTimeoutMs < 1) {
+      throw new WorkerConfigurationError(
+        'persistTimeoutMs must be at least 1.',
+      );
+    }
+    const requiredVisibilityMs =
+      computeTimeoutMs + persistTimeoutMs + safetyMarginMs;
+    const visibilityMs = visibilityTimeoutSeconds * 1_000;
+    if (requiredVisibilityMs >= visibilityMs) {
+      throw new WorkerConfigurationError(
+        `visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms) must be strictly greater than computeTimeoutMs (${computeTimeoutMs}ms) + persistTimeoutMs (${persistTimeoutMs}ms) + safetyMarginMs (${safetyMarginMs}ms) = ${requiredVisibilityMs}ms.`,
       );
     }
   }
 
   public static fromEnvironment(
     environment: NodeJS.ProcessEnv = process.env,
-    phaseDeadlines?: readonly number[],
   ): WorkerConfig {
     const batchSize = readPositiveInteger(
       environment.SAVIA_WORKER_BATCH_SIZE,
@@ -67,23 +76,19 @@ export class WorkerConfig {
       100,
     );
 
-    const envPhaseDeadlinesRaw =
-      environment.SAVIA_WORKER_PHASE_DEADLINES ??
-      environment.SAVIA_WORKER_PHASE_DEADLINES_SECONDS;
-    const resolvedPhaseDeadlines =
-      phaseDeadlines ??
-      (envPhaseDeadlinesRaw
-        ? envPhaseDeadlinesRaw.split(',').map((part) => {
-            const trimmed = part.trim();
-            const parsed = Number(trimmed);
-            if (!Number.isInteger(parsed) || parsed < 1) {
-              throw new WorkerConfigurationError(
-                `Phase deadline "${trimmed}" must be a positive integer.`,
-              );
-            }
-            return parsed;
-          })
-        : []);
+    const computeTimeoutMs = readPositiveInteger(
+      environment.SAVIA_WORKER_COMPUTE_TIMEOUT_MS,
+      180_000,
+      'SAVIA_WORKER_COMPUTE_TIMEOUT_MS',
+      3_600_000,
+    );
+
+    const persistTimeoutMs = readPositiveInteger(
+      environment.SAVIA_WORKER_PERSIST_TIMEOUT_MS,
+      60_000,
+      'SAVIA_WORKER_PERSIST_TIMEOUT_MS',
+      3_600_000,
+    );
 
     return new WorkerConfig(
       batchSize,
@@ -113,7 +118,8 @@ export class WorkerConfig {
         60_000,
       ),
       maxAttempts,
-      resolvedPhaseDeadlines,
+      computeTimeoutMs,
+      persistTimeoutMs,
     );
   }
 }

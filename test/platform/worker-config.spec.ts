@@ -99,63 +99,86 @@ describe('WorkerConfig', () => {
     ).toThrow(WorkerConfigurationError);
   });
 
-  it('rejects visibility timeout <= summed phase deadlines', () => {
-    // visibilityTimeoutSeconds = 300, summed phase deadlines = 300 -> throws
+  it('loads defaults with single source of truth deadlines and always-on VT validation passing', () => {
+    const config = WorkerConfig.fromEnvironment({});
+    expect(config.computeTimeoutMs).toBe(180_000);
+    expect(config.persistTimeoutMs).toBe(60_000);
+    expect(config.safetyMarginMs).toBe(30_000);
+    expect(config.visibilityTimeoutSeconds).toBe(300);
+    // 180 + 60 + 30 = 270s < 300s
     expect(
-      () =>
-        new WorkerConfig(
-          1,
-          300,
-          1_000,
-          30,
-          undefined,
-          5_000,
-          5,
-          [100, 150, 50],
-        ),
-    ).toThrow(WorkerConfigurationError);
+      config.computeTimeoutMs + config.persistTimeoutMs + config.safetyMarginMs,
+    ).toBeLessThan(config.visibilityTimeoutSeconds * 1_000);
+  });
 
-    // visibilityTimeoutSeconds = 300, summed phase deadlines = 350 -> throws
-    expect(
-      () =>
-        new WorkerConfig(
-          1,
-          300,
-          1_000,
-          30,
-          undefined,
-          5_000,
-          5,
-          [100, 200, 50],
-        ),
-    ).toThrow(WorkerConfigurationError);
-
-    // From environment with SAVIA_WORKER_PHASE_DEADLINES:
+  it('rejects SAVIA_WORKER_COMPUTE_TIMEOUT_MS=300000 with the default visibility timeout (300s)', () => {
     expect(() =>
       WorkerConfig.fromEnvironment({
-        SAVIA_WORKER_VT_SECONDS: '120',
-        SAVIA_WORKER_PHASE_DEADLINES: '50,50,30',
+        SAVIA_WORKER_COMPUTE_TIMEOUT_MS: '300000',
       }),
     ).toThrow(WorkerConfigurationError);
   });
 
-  it('accepts visibility timeout > summed phase deadlines', () => {
-    const config = new WorkerConfig(
-      1,
-      300,
-      1_000,
-      30,
-      undefined,
-      5_000,
-      5,
-      [50, 100, 50],
-    );
-    expect(config.visibilityTimeoutSeconds).toBe(300);
-
-    const envConfig = WorkerConfig.fromEnvironment({
-      SAVIA_WORKER_VT_SECONDS: '300',
-      SAVIA_WORKER_PHASE_DEADLINES: '50,100,50',
+  it('accepts SAVIA_WORKER_COMPUTE_TIMEOUT_MS=300000 when visibility timeout is raised to accommodate it', () => {
+    const config = WorkerConfig.fromEnvironment({
+      SAVIA_WORKER_COMPUTE_TIMEOUT_MS: '300000',
+      SAVIA_WORKER_VT_SECONDS: '400',
     });
-    expect(envConfig.visibilityTimeoutSeconds).toBe(300);
+    expect(config.computeTimeoutMs).toBe(300_000);
+    expect(config.visibilityTimeoutSeconds).toBe(400);
+  });
+
+  it('loads custom SAVIA_WORKER_PERSIST_TIMEOUT_MS and rejects out-of-bounds or non-integer values', () => {
+    const validConfig = WorkerConfig.fromEnvironment({
+      SAVIA_WORKER_PERSIST_TIMEOUT_MS: '70000',
+      SAVIA_WORKER_VT_SECONDS: '350',
+    });
+    expect(validConfig.persistTimeoutMs).toBe(70_000);
+
+    expect(() =>
+      WorkerConfig.fromEnvironment({
+        SAVIA_WORKER_COMPUTE_TIMEOUT_MS: '0',
+      }),
+    ).toThrow(WorkerConfigurationError);
+
+    expect(() =>
+      WorkerConfig.fromEnvironment({
+        SAVIA_WORKER_COMPUTE_TIMEOUT_MS: '-5',
+      }),
+    ).toThrow(WorkerConfigurationError);
+
+    expect(() =>
+      WorkerConfig.fromEnvironment({
+        SAVIA_WORKER_COMPUTE_TIMEOUT_MS: 'invalid',
+      }),
+    ).toThrow(WorkerConfigurationError);
+
+    expect(() =>
+      WorkerConfig.fromEnvironment({
+        SAVIA_WORKER_PERSIST_TIMEOUT_MS: '0',
+      }),
+    ).toThrow(WorkerConfigurationError);
+
+    expect(() =>
+      WorkerConfig.fromEnvironment({
+        SAVIA_WORKER_PERSIST_TIMEOUT_MS: '-5',
+      }),
+    ).toThrow(WorkerConfigurationError);
+
+    expect(() =>
+      WorkerConfig.fromEnvironment({
+        SAVIA_WORKER_PERSIST_TIMEOUT_MS: 'invalid',
+      }),
+    ).toThrow(WorkerConfigurationError);
+  });
+
+  it('ensures the removed optional phaseDeadlinesSeconds path no longer exists', () => {
+    const envConfig = WorkerConfig.fromEnvironment({
+      SAVIA_WORKER_PHASE_DEADLINES: '50,100,50',
+    } as unknown as Record<string, string>);
+    expect(
+      (envConfig as unknown as Record<string, unknown>).phaseDeadlinesSeconds,
+    ).toBeUndefined();
+    expect(WorkerConfig.fromEnvironment.length).toBeLessThanOrEqual(1);
   });
 });
