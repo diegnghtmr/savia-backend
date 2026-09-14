@@ -1,3 +1,5 @@
+import { PostgresConfig } from './postgres-config.js';
+
 export class WorkerConfigurationError extends Error {
   public constructor(message: string) {
     super(message);
@@ -33,16 +35,8 @@ export class WorkerConfig {
       'SAVIA_WORKER_BATCH_SIZE',
       10,
     );
-    const poolSize =
-      environment.DATABASE_POOL_MAX !== undefined
-        ? readPositiveInteger(
-            environment.DATABASE_POOL_MAX,
-            4,
-            'DATABASE_POOL_MAX',
-            32,
-          )
-        : undefined;
-    if (poolSize !== undefined && poolSize < batchSize + 1) {
+    const poolSize = PostgresConfig.poolMaxFromEnvironment(environment);
+    if (poolSize < batchSize + 1) {
       throw new WorkerConfigurationError(
         `DATABASE_POOL_MAX (${poolSize}) must be at least SAVIA_WORKER_BATCH_SIZE + 1 (${batchSize + 1}).`,
       );

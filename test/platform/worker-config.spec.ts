@@ -19,6 +19,7 @@ describe('WorkerConfig', () => {
       SAVIA_WORKER_VT_SECONDS: '600',
       SAVIA_WORKER_POLL_INTERVAL_MS: '2000',
       SAVIA_WORKER_DRAIN_TIMEOUT_SECONDS: '45',
+      DATABASE_POOL_MAX: '6',
     });
     expect(config.batchSize).toBe(5);
     expect(config.visibilityTimeoutSeconds).toBe(600);
@@ -59,5 +60,20 @@ describe('WorkerConfig', () => {
         DATABASE_POOL_MAX: '4',
       }),
     ).toThrow(WorkerConfigurationError);
+  });
+
+  it('rejects batch size 5 when DATABASE_POOL_MAX is omitted (default pool is 4)', () => {
+    expect(() =>
+      WorkerConfig.fromEnvironment({
+        SAVIA_WORKER_BATCH_SIZE: '5',
+      }),
+    ).toThrow(WorkerConfigurationError);
+  });
+
+  it('accepts batch size 3 against the default pool size', () => {
+    const config = WorkerConfig.fromEnvironment({
+      SAVIA_WORKER_BATCH_SIZE: '3',
+    });
+    expect(config.batchSize).toBe(3);
   });
 });
