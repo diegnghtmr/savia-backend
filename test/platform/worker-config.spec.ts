@@ -107,7 +107,7 @@ describe('WorkerConfig', () => {
     expect(config.leaseSafetyMs).toBe(20_000);
     expect(config.terminalReserveMs).toBe(10_000);
     expect(config.minOperationMs).toBe(1_000);
-    expect(config.queueTimeoutMs).toBe(10_000);
+    expect(config.queueTimeoutMs).toBe(8_000);
     expect(config.visibilityTimeoutSeconds).toBe(300);
 
     // Each cap < visibilityMs
@@ -123,6 +123,50 @@ describe('WorkerConfig', () => {
         config.terminalReserveMs +
         3 * config.minOperationMs,
     ).toBeLessThan(visibilityMs);
+  });
+
+  it('rejects queueTimeoutMs greater than or equal to terminalReserveMs', () => {
+    // queueTimeoutMs == terminalReserveMs
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          10_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // queueTimeoutMs > terminalReserveMs
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          11_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
   });
 
   it('rejects a phase cap >= visibility timeout', () => {

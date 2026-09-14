@@ -343,9 +343,7 @@ describe('JobRunner unit spec (S2)', () => {
 
     const { runner, mockQueue, mockJobWriter } = createTestHarness({});
 
-    mockJobWriter.completeJob = vi
-      .fn()
-      .mockRejectedValue(alreadyTerminalError);
+    mockJobWriter.completeJob = vi.fn().mockRejectedValue(alreadyTerminalError);
 
     const processed = await runner.runOnce();
     expect(processed).toBe(1);
@@ -967,11 +965,10 @@ describe('JobRunner unit spec (S2)', () => {
       const config = options.config ?? new WorkerConfig(1, 300, 1000, 30);
       const recordedCalls: RecordedCall[] = [];
 
+      const expiresAt =
+        1_000 + config.visibilityTimeoutSeconds * 1_000 - config.leaseSafetyMs;
+
       const getRemaining = () => {
-        const expiresAt =
-          1_000 +
-          config.visibilityTimeoutSeconds * 1_000 -
-          config.leaseSafetyMs;
         return Math.max(0, expiresAt - currentClock);
       };
 
@@ -979,6 +976,9 @@ describe('JobRunner unit spec (S2)', () => {
         const remainingBefore = getRemaining();
         recordedCalls.push({ operation, timeout, remainingBefore });
         currentClock += timeout;
+        if (currentClock >= expiresAt) {
+          throw new DeliveryDeadlineExceededError();
+        }
       };
 
       const recordingQueue: JobQueue = {
@@ -1152,7 +1152,7 @@ describe('JobRunner unit spec (S2)', () => {
       }
 
       const expiresAt = 1_000 + 300_000 - 20_000;
-      expect(getClock()).toBeLessThanOrEqual(expiresAt);
+      expect(getClock()).toBeLessThan(expiresAt);
     });
 
     it('recording test — path 2: permanent compute failure (transition -> compute -> onFailure -> failJob -> ack)', async () => {
@@ -1184,7 +1184,7 @@ describe('JobRunner unit spec (S2)', () => {
       }
 
       const expiresAt = 1_000 + 300_000 - 20_000;
-      expect(getClock()).toBeLessThanOrEqual(expiresAt);
+      expect(getClock()).toBeLessThan(expiresAt);
     });
 
     it('recording test — path 3: transient compute failure at attempt limit (transition -> compute -> onFailure -> deadLetter -> archive)', async () => {
@@ -1217,7 +1217,7 @@ describe('JobRunner unit spec (S2)', () => {
       }
 
       const expiresAt = 1_000 + 300_000 - 20_000;
-      expect(getClock()).toBeLessThanOrEqual(expiresAt);
+      expect(getClock()).toBeLessThan(expiresAt);
     });
 
     it('recording test — path 4: persist failure followed by failure write (transition -> compute -> persist -> failJob -> ack)', async () => {
@@ -1248,7 +1248,7 @@ describe('JobRunner unit spec (S2)', () => {
       }
 
       const expiresAt = 1_000 + 300_000 - 20_000;
-      expect(getClock()).toBeLessThanOrEqual(expiresAt);
+      expect(getClock()).toBeLessThan(expiresAt);
     });
 
     it('recording queue assertion — ack shrinks to remaining lease time when near expiration', async () => {

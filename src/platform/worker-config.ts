@@ -22,7 +22,7 @@ export class WorkerConfig {
     public readonly leaseSafetyMs: number = 20_000,
     public readonly terminalReserveMs: number = 10_000,
     public readonly minOperationMs: number = 1_000,
-    public readonly queueTimeoutMs: number = 10_000,
+    public readonly queueTimeoutMs: number = 8_000,
   ) {
     if (batchSize > 10) {
       throw new WorkerConfigurationError('batchSize must not exceed 10.');
@@ -63,6 +63,11 @@ export class WorkerConfig {
     }
     if (queueTimeoutMs < 1) {
       throw new WorkerConfigurationError('queueTimeoutMs must be at least 1.');
+    }
+    if (queueTimeoutMs >= terminalReserveMs) {
+      throw new WorkerConfigurationError(
+        `queueTimeoutMs (${queueTimeoutMs}ms) must be strictly less than terminalReserveMs (${terminalReserveMs}ms).`,
+      );
     }
 
     const visibilityMs = visibilityTimeoutSeconds * 1_000;
@@ -163,7 +168,7 @@ export class WorkerConfig {
 
     const queueTimeoutMs = readPositiveInteger(
       environment.SAVIA_WORKER_QUEUE_TIMEOUT_MS,
-      10_000,
+      8_000,
       'SAVIA_WORKER_QUEUE_TIMEOUT_MS',
       3_600_000,
     );
