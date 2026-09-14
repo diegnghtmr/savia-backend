@@ -154,6 +154,7 @@ for (const target of sharedParameterTargets) {
           operationId:
             operation.operationId ?? `${method.toUpperCase()} ${path}`,
           schema: matched.schema ?? {},
+          required: matched.required,
         });
       }
     }
@@ -180,7 +181,29 @@ for (const target of sharedParameterTargets) {
     (occ) => JSON.stringify(sortKeys(occ.schema)) === baselineSer,
   );
 
+  const requiredFrequencies = new Map();
   for (const occ of occurrences) {
+    requiredFrequencies.set(
+      occ.required,
+      (requiredFrequencies.get(occ.required) ?? 0) + 1,
+    );
+  }
+
+  let baselineRequired = undefined;
+  let maxReqCount = -1;
+  for (const [req, count] of requiredFrequencies) {
+    if (count > maxReqCount) {
+      maxReqCount = count;
+      baselineRequired = req;
+    }
+  }
+
+  for (const occ of occurrences) {
+    if (occ.required !== baselineRequired) {
+      fail(
+        `shared parameter "${target.name}" in ${target.in} has required mismatch in operation "${occ.operationId}": differing field "required"`,
+      );
+    }
     if (JSON.stringify(sortKeys(occ.schema)) !== baselineSer) {
       const differingField = findDifferingField(occ.schema, baseline.schema);
       fail(

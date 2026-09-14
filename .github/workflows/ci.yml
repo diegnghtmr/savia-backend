@@ -278,6 +278,9 @@ jobs:
       - name: analytics integration
         shell: bash
         run: pnpm test:integration:analytics
+      - name: scenarios integration
+        shell: bash
+        run: pnpm test:integration:scenarios
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

@@ -70,6 +70,7 @@ case "$spec" in
   test/funds/funds.integration-spec.ts) ;;
   test/debts/debts.integration-spec.ts) ;;
   test/analytics/analytics.integration-spec.ts) ;;
+  test/scenarios/scenarios.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 

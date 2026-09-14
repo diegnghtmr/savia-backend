@@ -1745,6 +1745,77 @@ components:
           type:
             - string
             - 'null'
+    ScenarioAssumption:
+      type: object
+      required:
+        - type
+        - value
+      properties:
+        type:
+          type: string
+          enum:
+            - income_change
+            - expense_change
+            - purchase
+            - new_debt
+            - extra_debt_payment
+            - cancel_subscription
+            - exchange_rate_change
+            - savings_contribution
+            - income_gap
+        value:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    Scenario:
+      type: object
+      required:
+        - id
+        - name
+        - assumptions
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        name:
+          type: string
+        description:
+          type:
+            - string
+            - 'null'
+        assumptions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScenarioAssumption'
+        createdAt:
+          $ref: '#/components/schemas/DateTime'
+        lastRunId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+      additionalProperties: false
+    CreateScenarioRequest:
+      type: object
+      required:
+        - name
+        - assumptions
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 1000
+        assumptions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScenarioAssumption'
+          minItems: 1
+      additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -5148,10 +5219,11 @@ paths:
             required: true,
             schema: { type: string, format: uuid },
           }
-        - { name: cursor, in: query, schema: { type: string } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
         - {
             name: limit,
             in: query,
+            required: false,
             schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
         - {
@@ -5391,10 +5463,11 @@ paths:
             required: true,
             schema: { type: string, format: uuid },
           }
-        - { name: cursor, in: query, schema: { type: string } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
         - {
             name: limit,
             in: query,
+            required: false,
             schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
       responses:
@@ -5570,10 +5643,11 @@ paths:
             required: true,
             schema: { type: string, format: uuid },
           }
-        - { name: cursor, in: query, schema: { type: string } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
         - {
             name: limit,
             in: query,
+            required: false,
             schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
           }
       responses:
@@ -6153,6 +6227,119 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '403':
           description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: The request is structurally valid but violates a business rule.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /v1/scenarios:
+    get:
+      operationId: listScenarios
+      summary: List scenarios
+      tags:
+        - Scenarios
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Scenario page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - items
+                  - pageInfo
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Scenario'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+    post:
+      operationId: createScenario
+      summary: Create scenario
+      tags:
+        - Scenarios
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScenarioRequest'
+      responses:
+        '201':
+          description: Scenario created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scenario'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
           content:
             application/problem+json:
               schema:
