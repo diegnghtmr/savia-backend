@@ -99,28 +99,40 @@ export class PgTransaction implements OnApplicationShutdown {
     if (effectiveTimeoutMs !== undefined) {
       return this.runWithLifetimeTimeout(
         effectiveTimeoutMs,
-        async (overallDeadline, getRemaining, setClient) => {
+        async (overallDeadline, getRemaining, setClient, isExpired) => {
           const client = await this.acquire();
+          if (isExpired()) {
+            client.release(
+              new DeliveryDeadlineExceededError('Delivery deadline exceeded.'),
+            );
+            throw new DeliveryDeadlineExceededError();
+          }
           setClient(client);
           let began = false;
           try {
             await client.query('BEGIN');
             began = true;
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('select set_config($1, $2::text, true)', [
               'statement_timeout',
               `${Math.max(1, getRemaining())}ms`,
             ]);
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('SET LOCAL ROLE savia_application');
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query(
               "select set_config('app.subject_id', $1, true)",
               [subject.toLowerCase()],
             );
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await this.configureTimeouts(client, true);
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query(
               'select pg_advisory_xact_lock(hashtextextended($1, 0))',
               [subject.toLowerCase()],
             );
             if (context?.jobId && context?.workspaceId) {
+              if (isExpired()) throw new DeliveryDeadlineExceededError();
               const checkRes = await client.query<{
                 workspace_id: string;
                 created_by: string;
@@ -159,7 +171,7 @@ export class PgTransaction implements OnApplicationShutdown {
                 values?: readonly unknown[],
               ) => {
                 const remaining = getRemaining();
-                if (!active || remaining < 1) {
+                if (!active || remaining < 1 || isExpired()) {
                   throw new DeliveryDeadlineExceededError();
                 }
                 if (!text.trim().toUpperCase().startsWith('ROLLBACK TO')) {
@@ -168,7 +180,7 @@ export class PgTransaction implements OnApplicationShutdown {
                     `${Math.min(capTimeout, remaining)}ms`,
                   ]);
                 }
-                if (!active || getRemaining() < 1) {
+                if (!active || getRemaining() < 1 || isExpired()) {
                   throw new DeliveryDeadlineExceededError();
                 }
                 return client.query<Row>(text, values);
@@ -176,6 +188,7 @@ export class PgTransaction implements OnApplicationShutdown {
             };
             const result = await callback(transactionClient);
             active = false;
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             try {
               await client.query('COMMIT');
             } catch (error) {
@@ -298,18 +311,28 @@ export class PgTransaction implements OnApplicationShutdown {
     if (effectiveTimeoutMs !== undefined) {
       return this.runWithLifetimeTimeout(
         effectiveTimeoutMs,
-        async (overallDeadline, getRemaining, setClient) => {
+        async (overallDeadline, getRemaining, setClient, isExpired) => {
           const client = await this.acquire();
+          if (isExpired()) {
+            client.release(
+              new DeliveryDeadlineExceededError('Delivery deadline exceeded.'),
+            );
+            throw new DeliveryDeadlineExceededError();
+          }
           setClient(client);
           let began = false;
           try {
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('BEGIN');
             began = true;
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('select set_config($1, $2::text, true)', [
               'statement_timeout',
               `${Math.max(1, getRemaining())}ms`,
             ]);
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('SET LOCAL ROLE savia_worker');
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await this.configureTimeouts(client, true);
 
             let active = true;
@@ -319,7 +342,7 @@ export class PgTransaction implements OnApplicationShutdown {
                 values?: readonly unknown[],
               ) => {
                 const remaining = getRemaining();
-                if (!active || remaining < 1) {
+                if (!active || remaining < 1 || isExpired()) {
                   throw new DeliveryDeadlineExceededError();
                 }
                 if (!text.trim().toUpperCase().startsWith('ROLLBACK TO')) {
@@ -328,7 +351,7 @@ export class PgTransaction implements OnApplicationShutdown {
                     `${Math.min(this.timeouts.statementTimeoutMs, remaining)}ms`,
                   ]);
                 }
-                if (!active || getRemaining() < 1) {
+                if (!active || getRemaining() < 1 || isExpired()) {
                   throw new DeliveryDeadlineExceededError();
                 }
                 return client.query<Row>(text, values);
@@ -336,6 +359,7 @@ export class PgTransaction implements OnApplicationShutdown {
             };
             const result = await callback(transactionClient);
             active = false;
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             try {
               await client.query('COMMIT');
             } catch (error) {
@@ -409,11 +433,18 @@ export class PgTransaction implements OnApplicationShutdown {
     if (effectiveTimeoutMs !== undefined) {
       return this.runWithLifetimeTimeout(
         effectiveTimeoutMs,
-        async (overallDeadline, getRemaining, setClient) => {
+        async (overallDeadline, getRemaining, setClient, isExpired) => {
           const client = await this.acquire();
+          if (isExpired()) {
+            client.release(
+              new DeliveryDeadlineExceededError('Delivery deadline exceeded.'),
+            );
+            throw new DeliveryDeadlineExceededError();
+          }
           setClient(client);
           let began = false;
           try {
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             if (this.options.workerMode) {
               await client.query(
                 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
@@ -422,15 +453,19 @@ export class PgTransaction implements OnApplicationShutdown {
               await client.query('BEGIN READ ONLY');
             }
             began = true;
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('select set_config($1, $2::text, true)', [
               'statement_timeout',
               `${Math.max(1, getRemaining())}ms`,
             ]);
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('SET LOCAL ROLE savia_application');
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query(
               "select set_config('app.subject_id', $1, true)",
               [subject.toLowerCase()],
             );
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await this.configureTimeouts(client, true);
 
             const capTimeout =
@@ -442,14 +477,14 @@ export class PgTransaction implements OnApplicationShutdown {
                 values?: readonly unknown[],
               ) => {
                 const remaining = getRemaining();
-                if (!active || remaining < 1) {
+                if (!active || remaining < 1 || isExpired()) {
                   throw new DeliveryDeadlineExceededError();
                 }
                 await client.query('select set_config($1, $2::text, true)', [
                   'statement_timeout',
                   `${Math.min(capTimeout, remaining)}ms`,
                 ]);
-                if (!active || getRemaining() < 1) {
+                if (!active || getRemaining() < 1 || isExpired()) {
                   throw new DeliveryDeadlineExceededError();
                 }
                 return client.query<Row>(text, values);
@@ -534,6 +569,7 @@ export class PgTransaction implements OnApplicationShutdown {
       overallDeadline: bigint,
       getRemaining: () => number,
       setClient: (client: PgClient) => void,
+      isExpired: () => boolean,
     ) => Promise<LifetimeOutcome<T>>,
   ): Promise<T> {
     const overallDeadline = monotonicDeadline(timeoutMs);
@@ -544,17 +580,11 @@ export class PgTransaction implements OnApplicationShutdown {
     let clientRef: PgClient | undefined;
     let released = false;
 
+    const isExpired = () => timedOut || getRemaining() < 1;
+
     const destroyClient = (cause?: unknown) => {
       if (clientRef && !released) {
         released = true;
-        try {
-          const rawClient = clientRef as unknown as {
-            connection?: { stream?: { destroy: () => void } };
-          };
-          rawClient.connection?.stream?.destroy();
-        } catch {
-          // ignore stream destruction errors
-        }
         try {
           clientRef.release(
             new DeliveryDeadlineExceededError('Delivery deadline exceeded.', {
@@ -584,6 +614,7 @@ export class PgTransaction implements OnApplicationShutdown {
           (client) => {
             clientRef = client;
           },
+          isExpired,
         );
       } catch (err) {
         outcome = { kind: 'failure', client: clientRef, error: err, began: false };
