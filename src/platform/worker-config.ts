@@ -8,8 +8,6 @@ export class WorkerConfigurationError extends Error {
 }
 
 export class WorkerConfig {
-  public static readonly SAFETY_MARGIN_MS = 30_000;
-
   public constructor(
     public readonly batchSize: number,
     public readonly visibilityTimeoutSeconds: number,
@@ -21,7 +19,10 @@ export class WorkerConfig {
     public readonly transitionTimeoutMs: number = 15_000,
     public readonly computeTimeoutMs: number = 180_000,
     public readonly persistTimeoutMs: number = 60_000,
-    public readonly safetyMarginMs: number = WorkerConfig.SAFETY_MARGIN_MS,
+    public readonly leaseSafetyMs: number = 20_000,
+    public readonly terminalReserveMs: number = 10_000,
+    public readonly minOperationMs: number = 1_000,
+    public readonly queueTimeoutMs: number = 10_000,
   ) {
     if (batchSize > 10) {
       throw new WorkerConfigurationError('batchSize must not exceed 10.');
@@ -49,15 +50,48 @@ export class WorkerConfig {
         'persistTimeoutMs must be at least 1.',
       );
     }
-    const requiredVisibilityMs =
-      transitionTimeoutMs +
-      computeTimeoutMs +
-      persistTimeoutMs +
-      safetyMarginMs;
-    const visibilityMs = visibilityTimeoutSeconds * 1_000;
-    if (requiredVisibilityMs >= visibilityMs) {
+    if (leaseSafetyMs < 1) {
+      throw new WorkerConfigurationError('leaseSafetyMs must be at least 1.');
+    }
+    if (terminalReserveMs < 1) {
       throw new WorkerConfigurationError(
-        `visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms) must be strictly greater than transitionTimeoutMs (${transitionTimeoutMs}ms) + computeTimeoutMs (${computeTimeoutMs}ms) + persistTimeoutMs (${persistTimeoutMs}ms) + safetyMarginMs (${safetyMarginMs}ms) = ${requiredVisibilityMs}ms.`,
+        'terminalReserveMs must be at least 1.',
+      );
+    }
+    if (minOperationMs < 1) {
+      throw new WorkerConfigurationError('minOperationMs must be at least 1.');
+    }
+    if (queueTimeoutMs < 1) {
+      throw new WorkerConfigurationError('queueTimeoutMs must be at least 1.');
+    }
+
+    const visibilityMs = visibilityTimeoutSeconds * 1_000;
+    if (transitionTimeoutMs >= visibilityMs) {
+      throw new WorkerConfigurationError(
+        `transitionTimeoutMs (${transitionTimeoutMs}ms) must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
+      );
+    }
+    if (computeTimeoutMs >= visibilityMs) {
+      throw new WorkerConfigurationError(
+        `computeTimeoutMs (${computeTimeoutMs}ms) must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
+      );
+    }
+    if (persistTimeoutMs >= visibilityMs) {
+      throw new WorkerConfigurationError(
+        `persistTimeoutMs (${persistTimeoutMs}ms) must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
+      );
+    }
+    if (queueTimeoutMs >= visibilityMs) {
+      throw new WorkerConfigurationError(
+        `queueTimeoutMs (${queueTimeoutMs}ms) must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
+      );
+    }
+
+    const minDeadlineOverheadMs =
+      leaseSafetyMs + terminalReserveMs + 3 * minOperationMs;
+    if (minDeadlineOverheadMs >= visibilityMs) {
+      throw new WorkerConfigurationError(
+        `leaseSafetyMs (${leaseSafetyMs}ms) + terminalReserveMs (${terminalReserveMs}ms) + 3·minOperationMs (3·${minOperationMs}ms = ${3 * minOperationMs}ms) = ${minDeadlineOverheadMs}ms must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
       );
     }
   }
@@ -106,6 +140,34 @@ export class WorkerConfig {
       3_600_000,
     );
 
+    const leaseSafetyMs = readPositiveInteger(
+      environment.SAVIA_WORKER_LEASE_SAFETY_MS,
+      20_000,
+      'SAVIA_WORKER_LEASE_SAFETY_MS',
+      3_600_000,
+    );
+
+    const terminalReserveMs = readPositiveInteger(
+      environment.SAVIA_WORKER_TERMINAL_RESERVE_MS,
+      10_000,
+      'SAVIA_WORKER_TERMINAL_RESERVE_MS',
+      3_600_000,
+    );
+
+    const minOperationMs = readPositiveInteger(
+      environment.SAVIA_WORKER_MIN_OPERATION_MS,
+      1_000,
+      'SAVIA_WORKER_MIN_OPERATION_MS',
+      60_000,
+    );
+
+    const queueTimeoutMs = readPositiveInteger(
+      environment.SAVIA_WORKER_QUEUE_TIMEOUT_MS,
+      10_000,
+      'SAVIA_WORKER_QUEUE_TIMEOUT_MS',
+      3_600_000,
+    );
+
     return new WorkerConfig(
       batchSize,
       readPositiveInteger(
@@ -137,6 +199,10 @@ export class WorkerConfig {
       transitionTimeoutMs,
       computeTimeoutMs,
       persistTimeoutMs,
+      leaseSafetyMs,
+      terminalReserveMs,
+      minOperationMs,
+      queueTimeoutMs,
     );
   }
 }

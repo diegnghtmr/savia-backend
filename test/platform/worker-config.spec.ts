@@ -99,54 +99,162 @@ describe('WorkerConfig', () => {
     ).toThrow(WorkerConfigurationError);
   });
 
-  it('loads defaults with single source of truth deadlines and always-on VT validation passing', () => {
+  it('loads defaults with deadline model parameters and validation passing', () => {
     const config = WorkerConfig.fromEnvironment({});
     expect(config.transitionTimeoutMs).toBe(15_000);
     expect(config.computeTimeoutMs).toBe(180_000);
     expect(config.persistTimeoutMs).toBe(60_000);
-    expect(config.safetyMarginMs).toBe(30_000);
+    expect(config.leaseSafetyMs).toBe(20_000);
+    expect(config.terminalReserveMs).toBe(10_000);
+    expect(config.minOperationMs).toBe(1_000);
+    expect(config.queueTimeoutMs).toBe(10_000);
     expect(config.visibilityTimeoutSeconds).toBe(300);
-    // 15 + 180 + 60 + 30 = 285s < 300s
+
+    // Each cap < visibilityMs
+    const visibilityMs = config.visibilityTimeoutSeconds * 1_000;
+    expect(config.transitionTimeoutMs).toBeLessThan(visibilityMs);
+    expect(config.computeTimeoutMs).toBeLessThan(visibilityMs);
+    expect(config.persistTimeoutMs).toBeLessThan(visibilityMs);
+    expect(config.queueTimeoutMs).toBeLessThan(visibilityMs);
+
+    // leaseSafetyMs + terminalReserveMs + 3 * minOperationMs < visibilityMs
     expect(
-      config.transitionTimeoutMs +
-        config.computeTimeoutMs +
-        config.persistTimeoutMs +
-        config.safetyMarginMs,
-    ).toBeLessThan(config.visibilityTimeoutSeconds * 1_000);
+      config.leaseSafetyMs +
+        config.terminalReserveMs +
+        3 * config.minOperationMs,
+    ).toBeLessThan(visibilityMs);
   });
 
-  it('rejects SAVIA_WORKER_TRANSITION_TIMEOUT_MS=60000 with the default visibility timeout (300s)', () => {
-    expect(() =>
-      WorkerConfig.fromEnvironment({
-        SAVIA_WORKER_TRANSITION_TIMEOUT_MS: '60000',
-      }),
+  it('rejects a phase cap >= visibility timeout', () => {
+    // transitionTimeoutMs >= VT
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          300_000, // cap == VT
+          180_000,
+          60_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // computeTimeoutMs >= VT
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          300_000, // cap == VT
+          60_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // persistTimeoutMs >= VT
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          300_000, // cap == VT
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // queueTimeoutMs >= VT
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          300_000, // queueTimeout == VT
+        ),
     ).toThrow(WorkerConfigurationError);
   });
 
-  it('accepts SAVIA_WORKER_TRANSITION_TIMEOUT_MS=60000 when visibility timeout is raised to accommodate it', () => {
-    const config = WorkerConfig.fromEnvironment({
-      SAVIA_WORKER_TRANSITION_TIMEOUT_MS: '60000',
-      SAVIA_WORKER_VT_SECONDS: '350',
-    });
-    expect(config.transitionTimeoutMs).toBe(60_000);
-    expect(config.visibilityTimeoutSeconds).toBe(350);
-  });
+  it('rejects leaseSafetyMs + terminalReserveMs + 3 * minOperationMs >= visibility timeout', () => {
+    // 280_000 + 18_000 + 3 * 1_000 = 301_000 >= 300_000
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          280_000,
+          18_000,
+          1_000,
+          10_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
 
-  it('rejects SAVIA_WORKER_COMPUTE_TIMEOUT_MS=300000 with the default visibility timeout (300s)', () => {
-    expect(() =>
-      WorkerConfig.fromEnvironment({
-        SAVIA_WORKER_COMPUTE_TIMEOUT_MS: '300000',
-      }),
+    // Exactly equal to VT is also rejected (must be strictly less)
+    // 280_000 + 17_000 + 3 * 1_000 = 300_000 == 300_000
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          280_000,
+          17_000,
+          1_000,
+          10_000,
+        ),
     ).toThrow(WorkerConfigurationError);
   });
 
-  it('accepts SAVIA_WORKER_COMPUTE_TIMEOUT_MS=300000 when visibility timeout is raised to accommodate it', () => {
+  it('loads custom deadline parameters from environment', () => {
     const config = WorkerConfig.fromEnvironment({
-      SAVIA_WORKER_COMPUTE_TIMEOUT_MS: '300000',
-      SAVIA_WORKER_VT_SECONDS: '420',
+      SAVIA_WORKER_LEASE_SAFETY_MS: '25000',
+      SAVIA_WORKER_TERMINAL_RESERVE_MS: '15000',
+      SAVIA_WORKER_MIN_OPERATION_MS: '2000',
+      SAVIA_WORKER_QUEUE_TIMEOUT_MS: '12000',
     });
-    expect(config.computeTimeoutMs).toBe(300_000);
-    expect(config.visibilityTimeoutSeconds).toBe(420);
+    expect(config.leaseSafetyMs).toBe(25_000);
+    expect(config.terminalReserveMs).toBe(15_000);
+    expect(config.minOperationMs).toBe(2_000);
+    expect(config.queueTimeoutMs).toBe(12_000);
   });
 
   it('loads custom SAVIA_WORKER_PERSIST_TIMEOUT_MS and rejects out-of-bounds or non-integer values', () => {
