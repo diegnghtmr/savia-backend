@@ -281,6 +281,9 @@ jobs:
       - name: scenarios integration
         shell: bash
         run: pnpm test:integration:scenarios
+      - name: forecasts integration
+        shell: bash
+        run: pnpm test:integration:forecasts
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
