@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   type BeforeApplicationShutdown,
   Inject,
@@ -11,6 +12,11 @@ import {
   type JobQueue,
   type QueueMessage,
 } from './job-queue.port.js';
+import {
+  calculateBackoffDelay,
+  classifyJobError,
+  JOB_ERROR_CLASSIFICATIONS,
+} from './job-retry-policy.js';
 import { JOB_WRITER, type JobWriter } from './job-writer.port.js';
 import { ActorVerificationError, PgTransaction } from './pg-transaction.js';
 import { UUID_PATTERN } from './uuid.js';
@@ -24,6 +30,49 @@ interface JobCheckRow extends Record<string, unknown> {
   readonly workspace_id: string;
   readonly created_by: string;
   readonly role: string | null;
+}
+
+function toProblemDetails(
+  error: unknown,
+  fallback: {
+    type: string;
+    title: string;
+    status: number;
+    code: string;
+    detail: string;
+  },
+): Record<string, unknown> {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'type' in error &&
+    'title' in error &&
+    'status' in error &&
+    'code' in error &&
+    typeof (error as Record<string, unknown>).type === 'string' &&
+    typeof (error as Record<string, unknown>).title === 'string' &&
+    typeof (error as Record<string, unknown>).status === 'number' &&
+    typeof (error as Record<string, unknown>).code === 'string'
+  ) {
+    const errObj = error as Record<string, unknown>;
+    return {
+      type: errObj.type,
+      title: errObj.title,
+      status: errObj.status,
+      code: errObj.code,
+      detail:
+        typeof errObj.detail === 'string' ? errObj.detail : fallback.detail,
+      traceId:
+        typeof errObj.traceId === 'string' && UUID_PATTERN.test(errObj.traceId)
+          ? errObj.traceId
+          : randomUUID(),
+    };
+  }
+
+  return {
+    ...fallback,
+    traceId: randomUUID(),
+  };
 }
 
 @Injectable()
@@ -178,6 +227,7 @@ export class JobRunner implements BeforeApplicationShutdown {
     let jobType: string | undefined;
     let jobPayload: unknown;
     let isTerminal = false;
+    let isExhaustedAtClaim = false;
 
     // T1: Transition to processing under actor context
     try {
@@ -217,6 +267,20 @@ export class JobRunner implements BeforeApplicationShutdown {
             return;
           }
 
+          // Check if message read_ct exceeded maxAttempts at claim time
+          if (message.readCt > this.config.maxAttempts) {
+            await this.jobWriter.deadLetter(client, workspaceId, jobId, {
+              type: 'https://savia.app/problems/job-exhausted',
+              title: 'Job Retries Exhausted',
+              status: 500,
+              code: 'job_retries_exhausted',
+              detail: `Job exceeded maximum attempts (${this.config.maxAttempts}).`,
+              traceId: randomUUID(),
+            });
+            isExhaustedAtClaim = true;
+            return;
+          }
+
           await this.jobWriter.transitionToProcessing(
             client,
             workspaceId,
@@ -242,6 +306,11 @@ export class JobRunner implements BeforeApplicationShutdown {
       return true;
     }
 
+    if (isExhaustedAtClaim) {
+      await this.queue.archive(message.msgId);
+      return false;
+    }
+
     const handler = jobType ? this.handlerMap.get(jobType) : undefined;
     if (!handler) {
       return false;
@@ -263,12 +332,13 @@ export class JobRunner implements BeforeApplicationShutdown {
               parseError instanceof Error
                 ? parseError.message
                 : 'Invalid payload',
+            traceId: randomUUID(),
           });
         },
         { workspaceId, jobId },
       );
       await this.queue.ack(message.msgId);
-      return true;
+      return false;
     }
 
     const context: JobExecutionContext<unknown> = {
@@ -290,7 +360,63 @@ export class JobRunner implements BeforeApplicationShutdown {
       if (handler.onFailure) {
         await handler.onFailure(context, computeError).catch(() => undefined);
       }
-      // Thrown error in compute leaves message unacked for retry
+
+      const classification = classifyJobError(computeError);
+      if (classification === JOB_ERROR_CLASSIFICATIONS.TRANSIENT) {
+        if (message.readCt >= this.config.maxAttempts) {
+          await this.transaction.run(
+            actorId,
+            async (writeClient) => {
+              await this.jobWriter.deadLetter(
+                writeClient,
+                workspaceId,
+                jobId,
+                toProblemDetails(computeError, {
+                  type: 'https://savia.app/problems/job-exhausted',
+                  title: 'Job Retries Exhausted',
+                  status: 500,
+                  code: 'job_retries_exhausted',
+                  detail:
+                    computeError instanceof Error
+                      ? computeError.message
+                      : 'Job exceeded maximum retry attempts.',
+                }),
+              );
+            },
+            { workspaceId, jobId },
+          );
+          await this.queue.archive(message.msgId);
+          return false;
+        }
+
+        const delay = calculateBackoffDelay(message.readCt);
+        await this.queue.defer(message.msgId, Math.round(delay));
+        return false;
+      }
+
+      // Permanent error moves job to failed and acks message
+      await this.transaction.run(
+        actorId,
+        async (writeClient) => {
+          await this.jobWriter.failJob(
+            writeClient,
+            workspaceId,
+            jobId,
+            toProblemDetails(computeError, {
+              type: 'https://savia.app/problems/job-failed',
+              title: 'Job Failed',
+              status: 500,
+              code: 'job_failed',
+              detail:
+                computeError instanceof Error
+                  ? computeError.message
+                  : 'Permanent job execution failure.',
+            }),
+          );
+        },
+        { workspaceId, jobId },
+      );
+      await this.queue.ack(message.msgId);
       return false;
     }
 
@@ -319,6 +445,62 @@ export class JobRunner implements BeforeApplicationShutdown {
         await this.queue.ack(message.msgId);
         return false;
       }
+
+      const classification = classifyJobError(persistError);
+      if (classification === JOB_ERROR_CLASSIFICATIONS.TRANSIENT) {
+        if (message.readCt >= this.config.maxAttempts) {
+          await this.transaction.run(
+            actorId,
+            async (writeClient) => {
+              await this.jobWriter.deadLetter(
+                writeClient,
+                workspaceId,
+                jobId,
+                toProblemDetails(persistError, {
+                  type: 'https://savia.app/problems/job-exhausted',
+                  title: 'Job Retries Exhausted',
+                  status: 500,
+                  code: 'job_retries_exhausted',
+                  detail:
+                    persistError instanceof Error
+                      ? persistError.message
+                      : 'Job exceeded maximum retry attempts.',
+                }),
+              );
+            },
+            { workspaceId, jobId },
+          );
+          await this.queue.archive(message.msgId);
+          return false;
+        }
+
+        const delay = calculateBackoffDelay(message.readCt);
+        await this.queue.defer(message.msgId, Math.round(delay));
+        return false;
+      }
+
+      await this.transaction.run(
+        actorId,
+        async (writeClient) => {
+          await this.jobWriter.failJob(
+            writeClient,
+            workspaceId,
+            jobId,
+            toProblemDetails(persistError, {
+              type: 'https://savia.app/problems/job-failed',
+              title: 'Job Failed',
+              status: 500,
+              code: 'job_failed',
+              detail:
+                persistError instanceof Error
+                  ? persistError.message
+                  : 'Permanent job persist failure.',
+            }),
+          );
+        },
+        { workspaceId, jobId },
+      );
+      await this.queue.ack(message.msgId);
       return false;
     }
 

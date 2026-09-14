@@ -1,4 +1,4 @@
-// Migrations under test: 202609100016_job_queue.sql
+// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { NestFactory } from '@nestjs/core';
@@ -518,5 +518,227 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       delete process.env.SAVIA_WORKER_DRAIN_TIMEOUT_SECONDS;
       delete process.env.SAVIA_WORKER_POOL_CLOSE_GRACE_MS;
     }, 10_000);
+  });
+
+  describe('Retry, backoff, and dead letter (S3)', () => {
+    it('poison job (fails every attempt, max 5 from read_ct) reaches dead_letter with a Problem Details error and its message is archived', async () => {
+      const poisonHandler: JobHandler<{ poison: boolean }, { ok: boolean }> = {
+        jobType: 'import_commit',
+        parsePayload: (raw: unknown) => raw as { poison: boolean },
+        compute: async () => {
+          const err = new Error('Transient lock timeout in compute');
+          Object.assign(err, { code: '40001' });
+          throw err;
+        },
+        persist: async () => null,
+      };
+      runner.registerHandler(poisonHandler);
+
+      const queuedJob = await transaction.run(ownerA, async (client) => {
+        return adapter.createQueuedJob(client, ws1Id, ownerA, 'import_commit', {
+          poison: true,
+        });
+      });
+
+      // Run attempts 1 to 4: each fails transiently and defers
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        const count = await runner.runOnce();
+        expect(count).toBe(1);
+
+        const msgCheck = await admin.query<{ vt: string; read_ct: number }>(
+          `select vt::text, read_ct from pgmq.q_savia_jobs where (message->>'job_id')::uuid = $1::uuid`,
+          [queuedJob.id],
+        );
+        expect(msgCheck.rows).toHaveLength(1);
+        expect(msgCheck.rows[0].read_ct).toBe(attempt);
+
+        // Fast-forward visibility timeout for next attempt
+        await admin.query(
+          `update pgmq.q_savia_jobs set vt = now() - interval '1 second' where (message->>'job_id')::uuid = $1::uuid`,
+          [queuedJob.id],
+        );
+      }
+
+      // Attempt 5: read_ct reaches 5 (>= maxAttempts 5) -> dead_letter and archive
+      const finalCount = await runner.runOnce();
+      expect(finalCount).toBe(1);
+
+      // Verify jobs table reached dead_letter with RFC 9457 Problem Details
+      const deadJob = await admin.query<{
+        status: string;
+        error: {
+          type?: string;
+          title?: string;
+          status?: number;
+          code?: string;
+          detail?: string;
+          traceId?: string;
+        };
+      }>(`select status, error from public.jobs where id = $1::uuid`, [
+        queuedJob.id,
+      ]);
+      expect(deadJob.rows[0].status).toBe('dead_letter');
+      expect(deadJob.rows[0].error.type).toBe(
+        'https://savia.app/problems/job-exhausted',
+      );
+      expect(deadJob.rows[0].error.status).toBe(500);
+      expect(deadJob.rows[0].error.code).toBe('job_retries_exhausted');
+
+      // Verify queue is empty for this job and message is in archive table
+      const queueRemaining = await admin.query(
+        `select msg_id from pgmq.q_savia_jobs where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(queueRemaining.rows).toHaveLength(0);
+
+      const archiveMsg = await admin.query(
+        `select msg_id from pgmq.a_savia_jobs where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(archiveMsg.rows).toHaveLength(1);
+    });
+
+    it('an unacked mid-job crash redelivers', async () => {
+      let runCount = 0;
+      const redeliveryHandler: JobHandler<{ test: boolean }, { ok: boolean }> =
+        {
+          jobType: 'import_rollback',
+          parsePayload: (raw: unknown) => raw as { test: boolean },
+          compute: async () => {
+            runCount++;
+            return { ok: true };
+          },
+          persist: async () => null,
+        };
+      runner.registerHandler(redeliveryHandler);
+
+      const queuedJob = await transaction.run(ownerA, async (client) => {
+        return adapter.createQueuedJob(
+          client,
+          ws1Id,
+          ownerA,
+          'import_rollback',
+          { test: true },
+        );
+      });
+
+      // Simulate a worker claiming the message and crashing mid-job (no ack, no defer)
+      const claimed = await queueAdapter.claim(1, 1);
+      expect(claimed.length).toBe(1);
+      expect(claimed[0].message.job_id).toBe(queuedJob.id);
+      expect(claimed[0].readCt).toBe(1);
+
+      // Fast-forward visibility timeout so message becomes eligible for redelivery
+      await admin.query(
+        `update pgmq.q_savia_jobs set vt = now() - interval '1 second' where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+
+      // Runner runs: redelivery attempt (readCt = 2) processes to completion
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+      expect(runCount).toBe(1);
+
+      const finishedJob = await admin.query<{
+        status: string;
+        attempt_count: number;
+      }>(`select status, attempt_count from public.jobs where id = $1::uuid`, [
+        queuedJob.id,
+      ]);
+      expect(finishedJob.rows[0].status).toBe('completed');
+      expect(finishedJob.rows[0].attempt_count).toBe(2);
+
+      // Message is acked (removed from queue)
+      const qCheck = await admin.query(
+        `select msg_id from pgmq.q_savia_jobs where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(qCheck.rows).toHaveLength(0);
+    });
+
+    it('a transient failure succeeds on retry with an increasing delay', async () => {
+      let attempts = 0;
+      const retryHandler: JobHandler<{ test: boolean }, { ok: boolean }> = {
+        jobType: 'balance_forecast',
+        parsePayload: (raw: unknown) => raw as { test: boolean },
+        compute: async () => {
+          attempts++;
+          if (attempts === 1) {
+            const err = new Error('Transient serialization failure');
+            Object.assign(err, { code: '40001' });
+            throw err;
+          }
+          return { ok: true };
+        },
+        persist: async () => null,
+      };
+      runner.registerHandler(retryHandler);
+
+      const queuedJob = await transaction.run(ownerA, async (client) => {
+        return adapter.createQueuedJob(
+          client,
+          ws1Id,
+          ownerA,
+          'balance_forecast',
+          { test: true },
+        );
+      });
+
+      // Attempt 1: transient failure
+      const count1 = await runner.runOnce();
+      expect(count1).toBe(1);
+      expect(attempts).toBe(1);
+
+      // Job stays in processing
+      const jobAfter1 = await admin.query<{
+        status: string;
+        attempt_count: number;
+      }>(`select status, attempt_count from public.jobs where id = $1::uuid`, [
+        queuedJob.id,
+      ]);
+      expect(jobAfter1.rows[0].status).toBe('processing');
+      expect(jobAfter1.rows[0].attempt_count).toBe(1);
+
+      // Verify backoff delay was applied to vt: vt > now()
+      const vtCheck = await admin.query<{
+        is_future: boolean;
+        delay_seconds: string;
+      }>(
+        `select vt > clock_timestamp() as is_future,
+                extract(epoch from (vt - clock_timestamp()))::text as delay_seconds
+           from pgmq.q_savia_jobs
+          where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(vtCheck.rows[0].is_future).toBe(true);
+      expect(Number(vtCheck.rows[0].delay_seconds)).toBeGreaterThanOrEqual(1.5);
+
+      // Fast-forward visibility timeout
+      await admin.query(
+        `update pgmq.q_savia_jobs set vt = now() - interval '1 second' where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+
+      // Attempt 2: succeeds
+      const count2 = await runner.runOnce();
+      expect(count2).toBe(1);
+      expect(attempts).toBe(2);
+
+      const jobAfter2 = await admin.query<{
+        status: string;
+        attempt_count: number;
+      }>(`select status, attempt_count from public.jobs where id = $1::uuid`, [
+        queuedJob.id,
+      ]);
+      expect(jobAfter2.rows[0].status).toBe('completed');
+      expect(jobAfter2.rows[0].attempt_count).toBe(2);
+
+      // Queue is empty
+      const qCheck = await admin.query(
+        `select msg_id from pgmq.q_savia_jobs where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(qCheck.rows).toHaveLength(0);
+    });
   });
 });

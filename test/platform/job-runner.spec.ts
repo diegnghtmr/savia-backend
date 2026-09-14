@@ -34,6 +34,9 @@ describe('JobRunner unit spec (S2)', () => {
         role: string | null;
       } | null;
       computeThrows?: boolean;
+      computeError?: unknown;
+      persistThrows?: boolean;
+      persistError?: unknown;
       config?: WorkerConfig;
       batchSize?: number;
     } = {},
@@ -176,6 +179,19 @@ describe('JobRunner unit spec (S2)', () => {
             return { id: jId, status: 'failed' };
           },
         ),
+      deadLetter: vi
+        .fn()
+        .mockImplementation(
+          async (
+            _client: TransactionClient,
+            wId: string,
+            jId: string,
+            error: Record<string, unknown>,
+          ) => {
+            callLog.push(`deadLetter:${wId}:${jId}:${error.code}`);
+            return { id: jId, status: 'dead_letter' };
+          },
+        ),
     };
 
     const probeHandler: JobHandler<{ value: number }, { result: number }> = {
@@ -193,7 +209,12 @@ describe('JobRunner unit spec (S2)', () => {
           void client;
           callLog.push('compute');
           if (options.computeThrows) {
-            throw new Error('Compute explosion');
+            throw (
+              options.computeError ??
+              Object.assign(new Error('Compute transient error'), {
+                code: '40001',
+              })
+            );
           }
           return { result: 84 };
         },
@@ -208,6 +229,14 @@ describe('JobRunner unit spec (S2)', () => {
           void computed;
           void client;
           callLog.push('persist');
+          if (options.persistThrows) {
+            throw (
+              options.persistError ??
+              Object.assign(new Error('Persist transient error'), {
+                code: '40001',
+              })
+            );
+          }
           return resultResourceId;
         },
       ),
@@ -351,7 +380,7 @@ describe('JobRunner unit spec (S2)', () => {
     expect(probeHandler.compute).not.toHaveBeenCalled();
   });
 
-  it('leaves the message unacked when compute throws an error, and does not crash the loop', async () => {
+  it('leaves the message unacked and defers with backoff when compute throws a transient error, and does not crash the loop', async () => {
     const { runner, mockQueue, probeHandler, callLog } = createTestHarness({
       computeThrows: true,
     });
@@ -360,12 +389,204 @@ describe('JobRunner unit spec (S2)', () => {
 
     expect(probeHandler.compute).toHaveBeenCalled();
     expect(probeHandler.persist).not.toHaveBeenCalled();
-    // Message MUST NOT be acked
+    // Message MUST NOT be acked; it should be deferred
     expect(mockQueue.ack).not.toHaveBeenCalled();
+    expect(mockQueue.defer).toHaveBeenCalledWith('101', expect.any(Number));
 
     expect(callLog).toContain('compute');
     expect(callLog).toContain('onFailure');
     expect(callLog).not.toContain('ack:101');
+    expect(callLog).toContain('defer:101');
+  });
+
+  it('marks job as failed and acks the message when compute throws a permanent error', async () => {
+    const { runner, mockQueue, mockJobWriter, probeHandler, callLog } =
+      createTestHarness({
+        computeThrows: true,
+        computeError: Object.assign(new Error('Invalid column value'), {
+          code: '22001',
+        }),
+      });
+
+    await expect(runner.runOnce()).resolves.toBe(1);
+
+    expect(probeHandler.compute).toHaveBeenCalled();
+    expect(probeHandler.persist).not.toHaveBeenCalled();
+    expect(mockJobWriter.failJob).toHaveBeenCalledWith(
+      expect.anything(),
+      wsId,
+      jobId,
+      expect.objectContaining({
+        type: 'https://savia.app/problems/job-failed',
+        title: 'Job Failed',
+        status: 500,
+        code: 'job_failed',
+      }),
+    );
+    expect(mockQueue.ack).toHaveBeenCalledWith('101');
+    expect(mockQueue.defer).not.toHaveBeenCalled();
+
+    expect(callLog).toContain('compute');
+    expect(callLog).toContain('onFailure');
+    expect(callLog).toContain('ack:101');
+  });
+
+  it('dead-letters the job and archives the message when transient compute error reaches maxAttempts', async () => {
+    const { runner, mockQueue, mockJobWriter, probeHandler, callLog } =
+      createTestHarness({
+        claimedMessages: [
+          {
+            msgId: '101',
+            readCt: 5, // maxAttempts reached
+            enqueuedAt: new Date().toISOString(),
+            vt: new Date().toISOString(),
+            message: {
+              job_id: jobId,
+              workspace_id: wsId,
+              actor_id: actorId,
+            },
+          },
+        ],
+        computeThrows: true,
+        computeError: Object.assign(new Error('Transient deadlock'), {
+          code: '40P01',
+        }),
+      });
+
+    await expect(runner.runOnce()).resolves.toBe(1);
+
+    expect(probeHandler.compute).toHaveBeenCalled();
+    expect(mockJobWriter.deadLetter).toHaveBeenCalledWith(
+      expect.anything(),
+      wsId,
+      jobId,
+      expect.objectContaining({
+        type: 'https://savia.app/problems/job-exhausted',
+        title: 'Job Retries Exhausted',
+        status: 500,
+        code: 'job_retries_exhausted',
+      }),
+    );
+    // MUST archive message, NOT ack, NOT defer
+    expect(mockQueue.archive).toHaveBeenCalledWith('101');
+    expect(mockQueue.ack).not.toHaveBeenCalled();
+    expect(mockQueue.defer).not.toHaveBeenCalled();
+
+    // Verify ordering: deadLetter before archive
+    const deadLetterIdx = callLog.findIndex((c) => c.startsWith('deadLetter:'));
+    const archiveIdx = callLog.indexOf('archive:101');
+    expect(deadLetterIdx).toBeGreaterThanOrEqual(0);
+    expect(archiveIdx).toBeGreaterThan(deadLetterIdx);
+  });
+
+  it('dead-letters the job and archives the message when claim-time read_ct > maxAttempts without running compute', async () => {
+    const { runner, mockQueue, mockJobWriter, probeHandler, callLog } =
+      createTestHarness({
+        claimedMessages: [
+          {
+            msgId: '101',
+            readCt: 6, // > maxAttempts (5)
+            enqueuedAt: new Date().toISOString(),
+            vt: new Date().toISOString(),
+            message: {
+              job_id: jobId,
+              workspace_id: wsId,
+              actor_id: actorId,
+            },
+          },
+        ],
+      });
+
+    await expect(runner.runOnce()).resolves.toBe(1);
+
+    expect(probeHandler.compute).not.toHaveBeenCalled();
+    expect(mockJobWriter.deadLetter).toHaveBeenCalledWith(
+      expect.anything(),
+      wsId,
+      jobId,
+      expect.objectContaining({
+        type: 'https://savia.app/problems/job-exhausted',
+        title: 'Job Retries Exhausted',
+        status: 500,
+        code: 'job_retries_exhausted',
+      }),
+    );
+    expect(mockQueue.archive).toHaveBeenCalledWith('101');
+    expect(mockQueue.ack).not.toHaveBeenCalled();
+
+    // Verify ordering: deadLetter before archive
+    const deadLetterIdx = callLog.findIndex((c) => c.startsWith('deadLetter:'));
+    const archiveIdx = callLog.indexOf('archive:101');
+    expect(deadLetterIdx).toBeGreaterThanOrEqual(0);
+    expect(archiveIdx).toBeGreaterThan(deadLetterIdx);
+  });
+
+  it('defers with backoff when persist throws a transient error and read_ct < maxAttempts', async () => {
+    const { runner, mockQueue, probeHandler, callLog } = createTestHarness({
+      persistThrows: true,
+      persistError: Object.assign(
+        new Error('Serialization failure in persist'),
+        {
+          code: '40001',
+        },
+      ),
+    });
+
+    await expect(runner.runOnce()).resolves.toBe(1);
+
+    expect(probeHandler.compute).toHaveBeenCalled();
+    expect(probeHandler.persist).toHaveBeenCalled();
+    expect(mockQueue.defer).toHaveBeenCalledWith('101', expect.any(Number));
+    expect(mockQueue.ack).not.toHaveBeenCalled();
+    expect(callLog).toContain('defer:101');
+  });
+
+  it('dead-letters the job and archives the message when persist transient error reaches maxAttempts', async () => {
+    const { runner, mockQueue, mockJobWriter, probeHandler, callLog } =
+      createTestHarness({
+        claimedMessages: [
+          {
+            msgId: '101',
+            readCt: 5,
+            enqueuedAt: new Date().toISOString(),
+            vt: new Date().toISOString(),
+            message: {
+              job_id: jobId,
+              workspace_id: wsId,
+              actor_id: actorId,
+            },
+          },
+        ],
+        persistThrows: true,
+        persistError: Object.assign(
+          new Error('Connection lost during persist'),
+          {
+            code: '08006',
+          },
+        ),
+      });
+
+    await expect(runner.runOnce()).resolves.toBe(1);
+
+    expect(probeHandler.compute).toHaveBeenCalled();
+    expect(probeHandler.persist).toHaveBeenCalled();
+    expect(mockJobWriter.deadLetter).toHaveBeenCalledWith(
+      expect.anything(),
+      wsId,
+      jobId,
+      expect.objectContaining({
+        type: 'https://savia.app/problems/job-exhausted',
+        title: 'Job Retries Exhausted',
+      }),
+    );
+    expect(mockQueue.archive).toHaveBeenCalledWith('101');
+    expect(mockQueue.ack).not.toHaveBeenCalled();
+    expect(mockQueue.defer).not.toHaveBeenCalled();
+
+    const deadLetterIdx = callLog.findIndex((c) => c.startsWith('deadLetter:'));
+    const archiveIdx = callLog.indexOf('archive:101');
+    expect(deadLetterIdx).toBeGreaterThanOrEqual(0);
+    expect(archiveIdx).toBeGreaterThan(deadLetterIdx);
   });
 
   it('archives the message, logs an error, and does not run domain work when actor_id is missing', async () => {
