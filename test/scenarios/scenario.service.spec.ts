@@ -7,10 +7,14 @@ import { computeRequestFingerprint } from '../../src/platform/idempotency.servic
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
   SCENARIO_OUTCOMES,
+  type AccountNativeBalanceRow,
   type CreateScenarioRequest,
+  type DebtOutstandingBalanceRow,
   type Scenario,
   type ScenarioItem,
+  type ScenarioRun,
   type ScenarioStore,
+  type TransactionFlowRow,
 } from '../../src/scenarios/scenario.port.js';
 import {
   ScenarioService,
@@ -49,6 +53,13 @@ describe('ScenarioService', () => {
     rereadIdempotency?: IdempotencyRecord | undefined;
     createdScenario?: Scenario;
     listRows?: readonly ScenarioItem[];
+    foundScenario?: Scenario | null;
+    baseCurrency?: string;
+    flowRows?: readonly TransactionFlowRow[];
+    accountBalances?: readonly AccountNativeBalanceRow[];
+    debtBalances?: readonly DebtOutstandingBalanceRow[];
+    exchangeRates?: Record<string, string>;
+    clockDate?: Date;
   }) {
     let rollbackOccurred = false;
 
@@ -66,6 +77,40 @@ describe('ScenarioService', () => {
       runRead: vi.fn(async (_subj, callback) => callback(mockClient)),
     };
 
+    const defaultRun: ScenarioRun = {
+      id: 'dddddddd-0000-4000-8000-000000000001',
+      scenarioId: sampleScenario.id,
+      status: 'completed',
+      baseline: {
+        periodStart: '2025-10-01',
+        periodEnd: '2026-09-04',
+        baseCurrency: 'USD',
+        monthlyIncomeMinor: '300000',
+        monthlyExpensesMinor: '200000',
+        monthlySavingsCapacityMinor: '100000',
+        netWorthMinor: '1000000',
+      },
+      projected: {
+        periodStart: '2025-10-01',
+        periodEnd: '2026-09-04',
+        baseCurrency: 'USD',
+        monthlyIncomeMinor: '310000',
+        monthlyExpensesMinor: '200000',
+        monthlySavingsCapacityMinor: '110000',
+        netWorthMinor: '1000000',
+      },
+      difference: {
+        periodStart: '2025-10-01',
+        periodEnd: '2026-09-04',
+        baseCurrency: 'USD',
+        monthlyIncomeMinor: '10000',
+        monthlyExpensesMinor: '0',
+        monthlySavingsCapacityMinor: '10000',
+        netWorthMinor: '0',
+      },
+      risks: [],
+    };
+
     const mockStore: ScenarioStore = {
       readActiveRole: vi.fn(async () =>
         overrides && 'role' in overrides ? overrides.role : 'owner',
@@ -73,8 +118,38 @@ describe('ScenarioService', () => {
       createScenario: vi.fn(
         async () => overrides?.createdScenario ?? sampleScenario,
       ),
-      findScenario: vi.fn(async () => sampleScenario),
+      findScenario: vi.fn(async () =>
+        overrides && 'foundScenario' in overrides
+          ? (overrides.foundScenario ?? undefined)
+          : sampleScenario,
+      ),
       listScenarios: vi.fn(async () => overrides?.listRows ?? []),
+      readWorkspaceBaseCurrency: vi.fn(async () =>
+        overrides && 'baseCurrency' in overrides
+          ? overrides.baseCurrency
+          : 'USD',
+      ),
+      readAccountNativeBalances: vi.fn(
+        async () => overrides?.accountBalances ?? [],
+      ),
+      readDebtOutstandingBalances: vi.fn(
+        async () => overrides?.debtBalances ?? [],
+      ),
+      readTransactionsInPeriod: vi.fn(async () => overrides?.flowRows ?? []),
+      findExchangeRate: vi.fn(async (_c, _w, base, quote) => {
+        const key = `${base}:${quote}`;
+        return overrides?.exchangeRates?.[key];
+      }),
+      createScenarioRun: vi.fn(async (_c, _w, _s, _u, res) => ({
+        id: defaultRun.id,
+        scenarioId: sampleScenario.id,
+        status: res.status,
+        baseline: res.baseline,
+        projected: res.projected,
+        difference: res.difference,
+        risks: res.risks,
+      })),
+      updateScenarioLastRunId: vi.fn(async () => undefined),
     };
 
     const mockIdempotency: IdempotencyStore = {
@@ -82,13 +157,20 @@ describe('ScenarioService', () => {
       write: vi.fn(async () => overrides?.writeIdempotencyResult ?? true),
     };
 
-    const service = new ScenarioService(mockTx, mockStore, mockIdempotency);
+    const fixedClock = overrides?.clockDate ?? new Date('2026-09-04T12:00:00Z');
+    const service = new ScenarioService(
+      mockTx,
+      mockStore,
+      mockIdempotency,
+      () => fixedClock,
+    );
 
     return {
       service,
       mockTx,
       mockStore,
       mockIdempotency,
+      defaultRun,
       wasRolledBack: () => rollbackOccurred,
     };
   }
@@ -332,6 +414,227 @@ describe('ScenarioService', () => {
       });
 
       expect(outcome.kind).toBe(SCENARIO_OUTCOMES.FORBIDDEN);
+    });
+  });
+
+  describe('runScenario', () => {
+    const scenarioId = sampleScenario.id;
+
+    it('computes run, creates run record, updates lastRunId, writes idempotency with 200, returns OK', async () => {
+      const { service, mockStore, mockIdempotency, defaultRun } =
+        createHarness();
+
+      const outcome = await service.runScenario(
+        subject,
+        workspaceId,
+        scenarioId,
+        idempotencyKey,
+      );
+
+      expect(outcome.kind).toBe(SCENARIO_OUTCOMES.OK);
+      if (outcome.kind === SCENARIO_OUTCOMES.OK) {
+        expect(outcome.run.id).toBe(defaultRun.id);
+        expect(outcome.run.scenarioId).toBe(scenarioId);
+        expect(outcome.run.status).toBe('completed');
+      }
+
+      expect(mockStore.createScenarioRun).toHaveBeenCalledWith(
+        expect.anything(),
+        workspaceId,
+        scenarioId,
+        subject,
+        expect.objectContaining({
+          status: 'completed',
+        }),
+      );
+      expect(mockStore.updateScenarioLastRunId).toHaveBeenCalledWith(
+        expect.anything(),
+        workspaceId,
+        scenarioId,
+        defaultRun.id,
+      );
+      expect(mockIdempotency.write).toHaveBeenCalledWith(
+        expect.anything(),
+        subject,
+        'POST /v1/scenarios/{scenarioId}/runs',
+        idempotencyKey,
+        computeRequestFingerprint({ scenarioId }),
+        200,
+        null,
+        expect.objectContaining({ id: defaultRun.id }),
+        workspaceId,
+      );
+    });
+
+    it('returns forbidden when role is viewer or non-member without writing', async () => {
+      const { service, mockStore, mockIdempotency } = createHarness({
+        role: 'viewer',
+      });
+
+      const outcome = await service.runScenario(
+        subject,
+        workspaceId,
+        scenarioId,
+        idempotencyKey,
+      );
+
+      expect(outcome.kind).toBe(SCENARIO_OUTCOMES.FORBIDDEN);
+      expect(mockStore.createScenarioRun).not.toHaveBeenCalled();
+      expect(mockIdempotency.write).not.toHaveBeenCalled();
+    });
+
+    it('replays original 200 response when same key and scenarioId are sent', async () => {
+      const fingerprint = computeRequestFingerprint({ scenarioId });
+      const { service, mockStore } = createHarness({
+        existingIdempotency: {
+          requestFingerprint: fingerprint,
+          responseStatus: 200,
+          responseEtag: null,
+          responseBody: { id: 'replayed-run-id' },
+        },
+      });
+
+      const outcome = await service.runScenario(
+        subject,
+        workspaceId,
+        scenarioId,
+        idempotencyKey,
+      );
+
+      expect(outcome.kind).toBe(SCENARIO_OUTCOMES.REPLAYED);
+      if (outcome.kind === SCENARIO_OUTCOMES.REPLAYED) {
+        expect(outcome.status).toBe(200);
+        expect(outcome.body).toEqual({ id: 'replayed-run-id' });
+      }
+      expect(mockStore.createScenarioRun).not.toHaveBeenCalled();
+    });
+
+    it('returns conflict 409 when same key has different fingerprint', async () => {
+      const { service, mockStore } = createHarness({
+        existingIdempotency: {
+          requestFingerprint: 'different-fingerprint',
+          responseStatus: 200,
+          responseEtag: null,
+          responseBody: {},
+        },
+      });
+
+      const outcome = await service.runScenario(
+        subject,
+        workspaceId,
+        scenarioId,
+        idempotencyKey,
+      );
+
+      expect(outcome.kind).toBe(SCENARIO_OUTCOMES.CONFLICT);
+      expect(mockStore.createScenarioRun).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 NOT_FOUND when scenario is not found in workspace', async () => {
+      const { service, mockStore } = createHarness({
+        foundScenario: null,
+      });
+
+      const outcome = await service.runScenario(
+        subject,
+        workspaceId,
+        scenarioId,
+        idempotencyKey,
+      );
+
+      expect(outcome.kind).toBe(SCENARIO_OUTCOMES.NOT_FOUND);
+      expect(mockStore.createScenarioRun).not.toHaveBeenCalled();
+    });
+
+    it('returns 422 MISSING_RATE when exchange rate is missing for a foreign currency', async () => {
+      const { service, mockStore } = createHarness({
+        flowRows: [
+          {
+            id: 'txn-eur',
+            type: 'income',
+            amountMinor: '10000',
+            currency: 'EUR',
+            occurredAt: new Date('2026-08-01T12:00:00Z'),
+          },
+        ],
+        exchangeRates: {}, // No EUR:USD rate
+      });
+
+      const outcome = await service.runScenario(
+        subject,
+        workspaceId,
+        scenarioId,
+        idempotencyKey,
+      );
+
+      expect(outcome.kind).toBe(SCENARIO_OUTCOMES.MISSING_RATE);
+      if (outcome.kind === SCENARIO_OUTCOMES.MISSING_RATE) {
+        expect(outcome.fromCurrency).toBe('EUR');
+        expect(outcome.toCurrency).toBe('USD');
+      }
+      expect(mockStore.createScenarioRun).not.toHaveBeenCalled();
+    });
+
+    it('RULING 92: rolls back inserted scenario run and last_run_id update on concurrent idempotency write collision (conflict)', async () => {
+      const differentFingerprint = 'race-conflict-fingerprint';
+      const raceRecord: IdempotencyRecord = {
+        requestFingerprint: differentFingerprint,
+        responseStatus: 200,
+        responseEtag: null,
+        responseBody: {},
+      };
+
+      const { service, mockIdempotency, wasRolledBack } = createHarness({
+        writeIdempotencyResult: false,
+      });
+
+      mockIdempotency.read = vi
+        .fn()
+        .mockResolvedValueOnce(undefined) // First read: not found
+        .mockResolvedValueOnce(raceRecord); // Reread after failed write: found conflicting
+
+      const outcome = await service.runScenario(
+        subject,
+        workspaceId,
+        scenarioId,
+        idempotencyKey,
+      );
+
+      expect(wasRolledBack()).toBe(true);
+      expect(outcome.kind).toBe(SCENARIO_OUTCOMES.CONFLICT);
+    });
+
+    it('RULING 92: rolls back on concurrent idempotency replay collision', async () => {
+      const fingerprint = computeRequestFingerprint({ scenarioId });
+      const replayRecord: IdempotencyRecord = {
+        requestFingerprint: fingerprint,
+        responseStatus: 200,
+        responseEtag: null,
+        responseBody: { id: 'original-run-id' },
+      };
+
+      const { service, mockIdempotency, wasRolledBack } = createHarness({
+        writeIdempotencyResult: false,
+      });
+
+      mockIdempotency.read = vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(replayRecord);
+
+      const outcome = await service.runScenario(
+        subject,
+        workspaceId,
+        scenarioId,
+        idempotencyKey,
+      );
+
+      expect(wasRolledBack()).toBe(true);
+      expect(outcome.kind).toBe(SCENARIO_OUTCOMES.REPLAYED);
+      if (outcome.kind === SCENARIO_OUTCOMES.REPLAYED) {
+        expect(outcome.status).toBe(200);
+        expect(outcome.body).toEqual({ id: 'original-run-id' });
+      }
     });
   });
 });

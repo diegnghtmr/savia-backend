@@ -326,6 +326,11 @@
       "operationId": "createScenario",
       "method": "POST",
       "path": "/v1/scenarios"
+    },
+    {
+      "operationId": "runScenario",
+      "method": "POST",
+      "path": "/v1/scenarios/{scenarioId}/runs"
     }
   ]
 }

@@ -2,13 +2,19 @@ import type { TransactionClient } from '../platform/pg-transaction.js';
 
 export const ANALYTICS_PORT = Symbol('AnalyticsPort');
 
-export const GRANULARITY = {
-  DAY: 'day',
-  WEEK: 'week',
-  MONTH: 'month',
-  QUARTER: 'quarter',
-} as const;
-export type Granularity = (typeof GRANULARITY)[keyof typeof GRANULARITY];
+import {
+  GRANULARITY,
+  type Granularity,
+  type ConvertedFlowRow,
+  type MonthlyCapacityPoint,
+} from '../platform/monthly-capacity.js';
+
+export {
+  GRANULARITY,
+  type Granularity,
+  type ConvertedFlowRow,
+  type MonthlyCapacityPoint,
+};
 
 export const ADVANCED_METRIC = {
   RECURRING_VS_VARIABLE: 'recurring_vs_variable',
@@ -67,19 +73,6 @@ export interface CategoryBreakdownItem {
 export interface CashFlowAnalytics {
   readonly series: readonly TimeSeriesPoint[];
   readonly categories: readonly CategoryBreakdownItem[];
-}
-
-export interface ConvertedFlowRow {
-  readonly type: 'income' | 'expense' | 'refund';
-  readonly amountMinor: bigint;
-  readonly occurredAt: Date;
-}
-
-export interface MonthlyCapacityPoint {
-  readonly month: string;
-  readonly incomeMinor: bigint;
-  readonly expensesMinor: bigint;
-  readonly savingsCapacityMinor: bigint;
 }
 
 export interface IncomeStability {

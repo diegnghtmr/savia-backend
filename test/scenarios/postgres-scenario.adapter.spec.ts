@@ -111,4 +111,241 @@ describe('PostgresScenarioAdapter', () => {
     expect(sql).toMatch(/order by.*created_at asc.*id asc/i);
     expect(values).toEqual([workspaceId, null, null, 11]);
   });
+
+  it('reads workspace base currency', async () => {
+    const mockClient = {
+      query: vi.fn().mockResolvedValueOnce({
+        rows: [{ baseCurrency: 'USD' }],
+      }),
+    } as unknown as TransactionClient;
+
+    const adapter = new PostgresScenarioAdapter();
+    const curr = await adapter.readWorkspaceBaseCurrency(
+      mockClient,
+      workspaceId,
+    );
+    expect(curr).toBe('USD');
+    expect(mockClient.query).toHaveBeenCalledWith(
+      expect.stringContaining('select base_currency'),
+      [workspaceId],
+    );
+  });
+
+  it('reads account native balances filtering confirmed/reconciled', async () => {
+    const mockClient = {
+      query: vi.fn().mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'acct-1',
+            currency: 'USD',
+            nativeBalanceMinor: '150000',
+          },
+        ],
+      }),
+    } as unknown as TransactionClient;
+
+    const adapter = new PostgresScenarioAdapter();
+    const balances = await adapter.readAccountNativeBalances(
+      mockClient,
+      workspaceId,
+    );
+    expect(balances).toHaveLength(1);
+    expect(balances[0]?.nativeBalanceMinor).toBe('150000');
+    expect(mockClient.query).toHaveBeenCalledWith(
+      expect.stringContaining("acct.status <> 'closed'"),
+      [workspaceId],
+    );
+  });
+
+  it('reads debt outstanding balances', async () => {
+    const mockClient = {
+      query: vi.fn().mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'debt-1',
+            currency: 'USD',
+            outstandingBalanceMinor: '50000',
+          },
+        ],
+      }),
+    } as unknown as TransactionClient;
+
+    const adapter = new PostgresScenarioAdapter();
+    const balances = await adapter.readDebtOutstandingBalances(
+      mockClient,
+      workspaceId,
+    );
+    expect(balances).toHaveLength(1);
+    expect(balances[0]?.outstandingBalanceMinor).toBe('50000');
+    expect(mockClient.query).toHaveBeenCalledWith(
+      expect.stringContaining("d.status <> 'archived'"),
+      [workspaceId],
+    );
+  });
+
+  it('reads transactions in period with posting status checks', async () => {
+    const mockClient = {
+      query: vi.fn().mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'txn-1',
+            type: 'income',
+            amountMinor: '300000',
+            currency: 'USD',
+            occurredAt: new Date('2026-08-15T12:00:00Z'),
+          },
+        ],
+      }),
+    } as unknown as TransactionClient;
+
+    const adapter = new PostgresScenarioAdapter();
+    const rows = await adapter.readTransactionsInPeriod(
+      mockClient,
+      workspaceId,
+      '2025-10-01',
+      '2026-09-04',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.amountMinor).toBe('300000');
+    expect(mockClient.query).toHaveBeenCalledWith(
+      expect.stringContaining("t.status in ('confirmed', 'reconciled')"),
+      [workspaceId, '2025-10-01', '2026-09-04'],
+    );
+  });
+
+  it('finds exchange rate using shared query', async () => {
+    const mockClient = {
+      query: vi.fn().mockResolvedValueOnce({
+        rows: [{ rate: '1.25' }],
+      }),
+    } as unknown as TransactionClient;
+
+    const adapter = new PostgresScenarioAdapter();
+    const asOf = new Date('2026-09-04T00:00:00Z');
+    const rate = await adapter.findExchangeRate(
+      mockClient,
+      workspaceId,
+      'EUR',
+      'USD',
+      asOf,
+    );
+    expect(rate).toBe('1.25');
+    expect(mockClient.query).toHaveBeenCalledWith(
+      expect.stringContaining('select rate::text as rate'),
+      [workspaceId, 'EUR', 'USD', asOf],
+    );
+  });
+
+  it('creates scenario run and returns ScenarioRun record', async () => {
+    const scenarioId = 'cccccccc-0000-4000-8000-000000000001';
+    const mockClient = {
+      query: vi.fn().mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'run-1',
+            scenarioId,
+            status: 'completed',
+            baseline: {
+              periodStart: '2025-10-01',
+              periodEnd: '2026-09-04',
+              baseCurrency: 'USD',
+              monthlyIncomeMinor: '300000',
+              monthlyExpensesMinor: '200000',
+              monthlySavingsCapacityMinor: '100000',
+              netWorthMinor: '1000000',
+            },
+            projected: {
+              periodStart: '2025-10-01',
+              periodEnd: '2026-09-04',
+              baseCurrency: 'USD',
+              monthlyIncomeMinor: '350000',
+              monthlyExpensesMinor: '200000',
+              monthlySavingsCapacityMinor: '150000',
+              netWorthMinor: '1000000',
+            },
+            difference: {
+              periodStart: '2025-10-01',
+              periodEnd: '2026-09-04',
+              baseCurrency: 'USD',
+              monthlyIncomeMinor: '50000',
+              monthlyExpensesMinor: '0',
+              monthlySavingsCapacityMinor: '50000',
+              netWorthMinor: '0',
+            },
+            risks: [],
+          },
+        ],
+      }),
+    } as unknown as TransactionClient;
+
+    const adapter = new PostgresScenarioAdapter();
+    const run = await adapter.createScenarioRun(
+      mockClient,
+      workspaceId,
+      scenarioId,
+      subject,
+      {
+        status: 'completed',
+        baseline: {
+          periodStart: '2025-10-01',
+          periodEnd: '2026-09-04',
+          baseCurrency: 'USD',
+          monthlyIncomeMinor: '300000',
+          monthlyExpensesMinor: '200000',
+          monthlySavingsCapacityMinor: '100000',
+          netWorthMinor: '1000000',
+        },
+        projected: {
+          periodStart: '2025-10-01',
+          periodEnd: '2026-09-04',
+          baseCurrency: 'USD',
+          monthlyIncomeMinor: '350000',
+          monthlyExpensesMinor: '200000',
+          monthlySavingsCapacityMinor: '150000',
+          netWorthMinor: '1000000',
+        },
+        difference: {
+          periodStart: '2025-10-01',
+          periodEnd: '2026-09-04',
+          baseCurrency: 'USD',
+          monthlyIncomeMinor: '50000',
+          monthlyExpensesMinor: '0',
+          monthlySavingsCapacityMinor: '50000',
+          netWorthMinor: '0',
+        },
+        risks: [],
+      },
+    );
+
+    expect(run.id).toBe('run-1');
+    expect(run.scenarioId).toBe(scenarioId);
+    expect(run.status).toBe('completed');
+    expect(mockClient.query).toHaveBeenCalledWith(
+      expect.stringMatching(/insert into public\.scenario_runs/i),
+      expect.arrayContaining([workspaceId, scenarioId, 'completed', subject]),
+    );
+  });
+
+  it('updates scenario last_run_id', async () => {
+    const scenarioId = 'cccccccc-0000-4000-8000-000000000001';
+    const runId = 'run-1';
+    const mockClient = {
+      query: vi.fn().mockResolvedValueOnce({ rows: [] }),
+    } as unknown as TransactionClient;
+
+    const adapter = new PostgresScenarioAdapter();
+    await adapter.updateScenarioLastRunId(
+      mockClient,
+      workspaceId,
+      scenarioId,
+      runId,
+    );
+
+    expect(mockClient.query).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /update public\.scenarios\s+set last_run_id = \$3::uuid/i,
+      ),
+      [workspaceId, scenarioId, runId],
+    );
+  });
 });
