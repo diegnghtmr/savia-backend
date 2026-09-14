@@ -11,6 +11,7 @@ describe('WorkerConfig', () => {
     expect(config.visibilityTimeoutSeconds).toBe(300);
     expect(config.pollIntervalMs).toBe(1_000);
     expect(config.drainTimeoutSeconds).toBe(30);
+    expect(config.maxAttempts).toBe(5);
   });
 
   it('loads custom valid values from environment', () => {
@@ -75,5 +76,86 @@ describe('WorkerConfig', () => {
       SAVIA_WORKER_BATCH_SIZE: '3',
     });
     expect(config.batchSize).toBe(3);
+  });
+
+  it('loads custom maxAttempts from SAVIA_WORKER_MAX_ATTEMPTS', () => {
+    const config = WorkerConfig.fromEnvironment({
+      SAVIA_WORKER_MAX_ATTEMPTS: '8',
+    });
+    expect(config.maxAttempts).toBe(8);
+  });
+
+  it('rejects invalid maxAttempts', () => {
+    expect(() =>
+      WorkerConfig.fromEnvironment({ SAVIA_WORKER_MAX_ATTEMPTS: '0' }),
+    ).toThrow(WorkerConfigurationError);
+
+    expect(() =>
+      WorkerConfig.fromEnvironment({ SAVIA_WORKER_MAX_ATTEMPTS: '-2' }),
+    ).toThrow(WorkerConfigurationError);
+
+    expect(() =>
+      WorkerConfig.fromEnvironment({ SAVIA_WORKER_MAX_ATTEMPTS: 'xyz' }),
+    ).toThrow(WorkerConfigurationError);
+  });
+
+  it('rejects visibility timeout <= summed phase deadlines', () => {
+    // visibilityTimeoutSeconds = 300, summed phase deadlines = 300 -> throws
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1_000,
+          30,
+          undefined,
+          5_000,
+          5,
+          [100, 150, 50],
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // visibilityTimeoutSeconds = 300, summed phase deadlines = 350 -> throws
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1_000,
+          30,
+          undefined,
+          5_000,
+          5,
+          [100, 200, 50],
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // From environment with SAVIA_WORKER_PHASE_DEADLINES:
+    expect(() =>
+      WorkerConfig.fromEnvironment({
+        SAVIA_WORKER_VT_SECONDS: '120',
+        SAVIA_WORKER_PHASE_DEADLINES: '50,50,30',
+      }),
+    ).toThrow(WorkerConfigurationError);
+  });
+
+  it('accepts visibility timeout > summed phase deadlines', () => {
+    const config = new WorkerConfig(
+      1,
+      300,
+      1_000,
+      30,
+      undefined,
+      5_000,
+      5,
+      [50, 100, 50],
+    );
+    expect(config.visibilityTimeoutSeconds).toBe(300);
+
+    const envConfig = WorkerConfig.fromEnvironment({
+      SAVIA_WORKER_VT_SECONDS: '300',
+      SAVIA_WORKER_PHASE_DEADLINES: '50,100,50',
+    });
+    expect(envConfig.visibilityTimeoutSeconds).toBe(300);
   });
 });

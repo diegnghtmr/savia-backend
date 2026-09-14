@@ -15,6 +15,8 @@ export class WorkerConfig {
     public readonly drainTimeoutSeconds: number,
     public readonly poolSize?: number,
     public readonly poolCloseGraceMs: number = 5_000,
+    public readonly maxAttempts: number = 5,
+    public readonly phaseDeadlinesSeconds: readonly number[] = [],
   ) {
     if (batchSize > 10) {
       throw new WorkerConfigurationError('batchSize must not exceed 10.');
@@ -24,10 +26,26 @@ export class WorkerConfig {
         `poolSize (${poolSize}) must be at least batchSize + 1 (${batchSize + 1}).`,
       );
     }
+    if (maxAttempts < 1) {
+      throw new WorkerConfigurationError('maxAttempts must be at least 1.');
+    }
+    const summedPhaseDeadlines = phaseDeadlinesSeconds.reduce(
+      (sum, d) => sum + d,
+      0,
+    );
+    if (
+      phaseDeadlinesSeconds.length > 0 &&
+      visibilityTimeoutSeconds <= summedPhaseDeadlines
+    ) {
+      throw new WorkerConfigurationError(
+        `visibilityTimeoutSeconds (${visibilityTimeoutSeconds}) must be greater than summed phase deadlines (${summedPhaseDeadlines}).`,
+      );
+    }
   }
 
   public static fromEnvironment(
     environment: NodeJS.ProcessEnv = process.env,
+    phaseDeadlines?: readonly number[],
   ): WorkerConfig {
     const batchSize = readPositiveInteger(
       environment.SAVIA_WORKER_BATCH_SIZE,
@@ -41,6 +59,32 @@ export class WorkerConfig {
         `DATABASE_POOL_MAX (${poolSize}) must be at least SAVIA_WORKER_BATCH_SIZE + 1 (${batchSize + 1}).`,
       );
     }
+
+    const maxAttempts = readPositiveInteger(
+      environment.SAVIA_WORKER_MAX_ATTEMPTS,
+      5,
+      'SAVIA_WORKER_MAX_ATTEMPTS',
+      100,
+    );
+
+    const envPhaseDeadlinesRaw =
+      environment.SAVIA_WORKER_PHASE_DEADLINES ??
+      environment.SAVIA_WORKER_PHASE_DEADLINES_SECONDS;
+    const resolvedPhaseDeadlines =
+      phaseDeadlines ??
+      (envPhaseDeadlinesRaw
+        ? envPhaseDeadlinesRaw.split(',').map((part) => {
+            const trimmed = part.trim();
+            const parsed = Number(trimmed);
+            if (!Number.isInteger(parsed) || parsed < 1) {
+              throw new WorkerConfigurationError(
+                `Phase deadline "${trimmed}" must be a positive integer.`,
+              );
+            }
+            return parsed;
+          })
+        : []);
+
     return new WorkerConfig(
       batchSize,
       readPositiveInteger(
@@ -68,6 +112,8 @@ export class WorkerConfig {
         'SAVIA_WORKER_POOL_CLOSE_GRACE_MS',
         60_000,
       ),
+      maxAttempts,
+      resolvedPhaseDeadlines,
     );
   }
 }
