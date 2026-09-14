@@ -127,4 +127,26 @@ describe('PgTransaction lifetime checkout resilience', () => {
     );
     expect(pool.availableSlots).toBe(5);
   });
+
+  it('does not issue a query after rejection when the runRead callback finishes after the lifetime deadline', async () => {
+    const pool = new RecordingPool(0);
+    const transaction = new PgTransaction(pool);
+    const subject = '00000000-0000-0000-0000-000000000001';
+    const callback = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return 'ok';
+    });
+
+    const runPromise = transaction.runRead(subject, callback, 15);
+
+    await expect(runPromise).rejects.toBeInstanceOf(
+      DeliveryDeadlineExceededError,
+    );
+
+    const queriesAtRejection = pool.client.queries.slice();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(callback).toHaveBeenCalled();
+    expect(pool.client.queries).toEqual(queriesAtRejection);
+  });
 });

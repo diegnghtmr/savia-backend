@@ -509,6 +509,7 @@ export class PgTransaction implements OnApplicationShutdown {
             };
             const result = await callback(transactionClient);
             active = false;
+            if (isExpired()) throw new DeliveryDeadlineExceededError();
             await client.query('ROLLBACK');
             return { kind: 'success', client, result };
           } catch (error) {
