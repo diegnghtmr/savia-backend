@@ -184,12 +184,18 @@ describe('Job retry policy unit spec (S3)', () => {
       );
     });
 
-    it('classifies typed domain errors, invalid payload, and arbitrary errors as permanent', () => {
+    it('classifies typed domain errors and invalid payload as permanent', () => {
       class DomainError extends Error {
         public readonly isDomainError = true;
       }
       expect(classifyJobError(new DomainError('Domain rule violated'))).toBe(
         JOB_ERROR_CLASSIFICATIONS.PERMANENT,
+      );
+      expect(isPermanentError(new DomainError('Domain rule violated'))).toBe(
+        true,
+      );
+      expect(isTransientError(new DomainError('Domain rule violated'))).toBe(
+        false,
       );
 
       class InvalidPayloadError extends Error {
@@ -198,16 +204,56 @@ describe('Job retry policy unit spec (S3)', () => {
       expect(
         classifyJobError(new InvalidPayloadError('Bad JSON payload')),
       ).toBe(JOB_ERROR_CLASSIFICATIONS.PERMANENT);
+      expect(classifyJobError({ code: 'INVALID_PAYLOAD' })).toBe(
+        JOB_ERROR_CLASSIFICATIONS.PERMANENT,
+      );
+      expect(isPermanentError({ code: 'invalid_payload' })).toBe(true);
+    });
 
-      expect(classifyJobError(new Error('Unknown generic error'))).toBe(
-        JOB_ERROR_CLASSIFICATIONS.PERMANENT,
+    it('classifies unknown failures, network variants, and general pg pool errors as transient', () => {
+      // EPIPE, ENOTFOUND, EAI_AGAIN
+      expect(classifyJobError({ code: 'EPIPE' })).toBe(
+        JOB_ERROR_CLASSIFICATIONS.TRANSIENT,
       );
-      expect(classifyJobError('plain string error')).toBe(
-        JOB_ERROR_CLASSIFICATIONS.PERMANENT,
+      expect(classifyJobError({ code: 'ENOTFOUND' })).toBe(
+        JOB_ERROR_CLASSIFICATIONS.TRANSIENT,
       );
-      expect(classifyJobError(null)).toBe(JOB_ERROR_CLASSIFICATIONS.PERMANENT);
-      expect(classifyJobError(undefined)).toBe(
-        JOB_ERROR_CLASSIFICATIONS.PERMANENT,
+      expect(classifyJobError({ code: 'EAI_AGAIN' })).toBe(
+        JOB_ERROR_CLASSIFICATIONS.TRANSIENT,
+      );
+
+      // AbortError
+      const abortError = new Error('The operation was aborted');
+      abortError.name = 'AbortError';
+      expect(classifyJobError(abortError)).toBe(
+        JOB_ERROR_CLASSIFICATIONS.TRANSIENT,
+      );
+
+      // Plain new Error('boom')
+      expect(classifyJobError(new Error('boom'))).toBe(
+        JOB_ERROR_CLASSIFICATIONS.TRANSIENT,
+      );
+
+      // Wrapped error whose cause is an unknown error
+      const wrappedUnknown = new Error('Top-level worker error', {
+        cause: new Error('boom'),
+      });
+      expect(classifyJobError(wrappedUnknown)).toBe(
+        JOB_ERROR_CLASSIFICATIONS.TRANSIENT,
+      );
+
+      // Pg pool error that is not the known acquisition timeout
+      const poolTerminationError = new Error(
+        'Connection terminated unexpectedly',
+      );
+      expect(classifyJobError(poolTerminationError)).toBe(
+        JOB_ERROR_CLASSIFICATIONS.TRANSIENT,
+      );
+      const serverClosedError = new Error(
+        'server closed the connection unexpectedly',
+      );
+      expect(classifyJobError(serverClosedError)).toBe(
+        JOB_ERROR_CLASSIFICATIONS.TRANSIENT,
       );
     });
   });

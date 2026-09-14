@@ -399,6 +399,74 @@ describe('JobRunner unit spec (S2)', () => {
     expect(callLog).toContain('defer:101');
   });
 
+  it('produces non-decreasing backoff delays drawn from [d(n)/2, d(n)] across two successive transient failures with seeded random', async () => {
+    let callIndex = 0;
+    const seedValues = [0.4, 0.6];
+    const randomSpy = vi
+      .spyOn(Math, 'random')
+      .mockImplementation(() => seedValues[callIndex++ % seedValues.length]);
+
+    try {
+      const message1: QueueMessage = {
+        msgId: '101',
+        readCt: 1,
+        enqueuedAt: new Date().toISOString(),
+        vt: new Date().toISOString(),
+        message: { job_id: jobId, workspace_id: wsId, actor_id: actorId },
+      };
+      const message2: QueueMessage = {
+        msgId: '101',
+        readCt: 2,
+        enqueuedAt: new Date().toISOString(),
+        vt: new Date().toISOString(),
+        message: { job_id: jobId, workspace_id: wsId, actor_id: actorId },
+      };
+
+      const messagesQueue = [message1, message2];
+      let claimIndex = 0;
+
+      const { runner, mockQueue } = createTestHarness({
+        computeThrows: true,
+        computeError: Object.assign(
+          new Error('Transient serialization failure'),
+          {
+            code: '40001',
+          },
+        ),
+      });
+
+      mockQueue.claim = vi.fn().mockImplementation(async () => {
+        const msg = messagesQueue[claimIndex++];
+        return msg ? [msg] : [];
+      });
+
+      // Attempt 1 (readCt = 1): d(1) = 5, [2.5, 5] with seed 0.4 -> 2.5 + 0.4 * 2.5 = 3.5 -> round = 4
+      await expect(runner.runOnce()).resolves.toBe(1);
+      // Attempt 2 (readCt = 2): d(2) = 10, [5, 10] with seed 0.6 -> 5 + 0.6 * 5 = 8.0 -> round = 8
+      await expect(runner.runOnce()).resolves.toBe(1);
+
+      expect(mockQueue.defer).toHaveBeenCalledTimes(2);
+      expect(mockQueue.defer).toHaveBeenNthCalledWith(1, '101', 4);
+      expect(mockQueue.defer).toHaveBeenNthCalledWith(2, '101', 8);
+
+      const firstDelay = vi.mocked(mockQueue.defer).mock.calls[0][1] as number;
+      const secondDelay = vi.mocked(mockQueue.defer).mock.calls[1][1] as number;
+
+      // d(1) = 5 -> [2.5, 5]
+      expect(firstDelay).toBeGreaterThanOrEqual(2.5);
+      expect(firstDelay).toBeLessThanOrEqual(5);
+
+      // d(2) = 10 -> [5, 10]
+      expect(secondDelay).toBeGreaterThanOrEqual(5);
+      expect(secondDelay).toBeLessThanOrEqual(10);
+
+      // Non-decreasing progression
+      expect(secondDelay).toBeGreaterThanOrEqual(firstDelay);
+    } finally {
+      randomSpy.mockRestore();
+    }
+  });
+
   it('marks job as failed and acks the message when compute throws a permanent error', async () => {
     const { runner, mockQueue, mockJobWriter, probeHandler, callLog } =
       createTestHarness({

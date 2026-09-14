@@ -598,6 +598,112 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       expect(archiveMsg.rows).toHaveLength(1);
     });
 
+    it('an unknown error thrown by compute is deferred (job stays processing) and ends in dead_letter at the attempt limit', async () => {
+      const unknownErrorHandler: JobHandler<
+        { test: boolean },
+        { ok: boolean }
+      > = {
+        jobType: 'import_commit',
+        parsePayload: (raw: unknown) => raw as { test: boolean },
+        compute: async () => {
+          throw new Error(
+            'EPIPE: broken pipe on unexpected worker socket closure',
+          );
+        },
+        persist: async () => null,
+      };
+      runner.registerHandler(unknownErrorHandler);
+
+      const queuedJob = await transaction.run(ownerA, async (client) => {
+        return adapter.createQueuedJob(client, ws1Id, ownerA, 'import_commit', {
+          test: true,
+        });
+      });
+
+      // Attempt 1: fails with unknown error -> deferred, job stays in processing
+      const count1 = await runner.runOnce();
+      expect(count1).toBe(1);
+
+      const jobAfter1 = await admin.query<{
+        status: string;
+        attempt_count: number;
+      }>(`select status, attempt_count from public.jobs where id = $1::uuid`, [
+        queuedJob.id,
+      ]);
+      expect(jobAfter1.rows[0].status).toBe('processing');
+      expect(jobAfter1.rows[0].attempt_count).toBe(1);
+
+      const msgCheck1 = await admin.query<{ vt: string; read_ct: number }>(
+        `select vt::text, read_ct from pgmq.q_savia_jobs where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(msgCheck1.rows).toHaveLength(1);
+      expect(msgCheck1.rows[0].read_ct).toBe(1);
+
+      // Fast-forward visibility timeout for attempts 2 to 4
+      for (let attempt = 2; attempt <= 4; attempt++) {
+        await admin.query(
+          `update pgmq.q_savia_jobs set vt = now() - interval '1 second' where (message->>'job_id')::uuid = $1::uuid`,
+          [queuedJob.id],
+        );
+
+        const count = await runner.runOnce();
+        expect(count).toBe(1);
+
+        const jobRow = await admin.query<{
+          status: string;
+          attempt_count: number;
+        }>(
+          `select status, attempt_count from public.jobs where id = $1::uuid`,
+          [queuedJob.id],
+        );
+        expect(jobRow.rows[0].status).toBe('processing');
+        expect(jobRow.rows[0].attempt_count).toBe(attempt);
+      }
+
+      // Fast-forward for attempt 5: limit reached (read_ct 5 >= maxAttempts 5) -> dead_letter and archive
+      await admin.query(
+        `update pgmq.q_savia_jobs set vt = now() - interval '1 second' where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+
+      const finalCount = await runner.runOnce();
+      expect(finalCount).toBe(1);
+
+      const deadJob = await admin.query<{
+        status: string;
+        error: {
+          type?: string;
+          title?: string;
+          status?: number;
+          code?: string;
+          detail?: string;
+          traceId?: string;
+        };
+      }>(`select status, error from public.jobs where id = $1::uuid`, [
+        queuedJob.id,
+      ]);
+      expect(deadJob.rows[0].status).toBe('dead_letter');
+      expect(deadJob.rows[0].error.type).toBe(
+        'https://savia.app/problems/job-exhausted',
+      );
+      expect(deadJob.rows[0].error.status).toBe(500);
+      expect(deadJob.rows[0].error.code).toBe('job_retries_exhausted');
+
+      // Message removed from queue and present in archive
+      const queueRemaining = await admin.query(
+        `select msg_id from pgmq.q_savia_jobs where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(queueRemaining.rows).toHaveLength(0);
+
+      const archiveMsg = await admin.query(
+        `select msg_id from pgmq.a_savia_jobs where (message->>'job_id')::uuid = $1::uuid`,
+        [queuedJob.id],
+      );
+      expect(archiveMsg.rows).toHaveLength(1);
+    });
+
     it('an unacked mid-job crash redelivers', async () => {
       let runCount = 0;
       const redeliveryHandler: JobHandler<{ test: boolean }, { ok: boolean }> =
