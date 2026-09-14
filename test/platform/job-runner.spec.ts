@@ -1,8 +1,6 @@
+import type { Logger } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  DeliveryDeadline,
-  DeliveryDeadlineExceededError,
-} from '../../src/platform/delivery-deadline.js';
+import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import type {
   JobExecutionContext,
   JobHandler,
@@ -1442,7 +1440,10 @@ describe('JobRunner unit spec (S2)', () => {
         clock,
       );
 
-      const warnSpy = vi.spyOn((runner as any).logger, 'warn');
+      const warnSpy = vi.spyOn(
+        (runner as unknown as { logger: Logger }).logger,
+        'warn',
+      );
 
       const processed = await runner.runOnce();
       expect(processed).toBe(1);
@@ -1465,7 +1466,7 @@ describe('JobRunner unit spec (S2)', () => {
     });
 
     it('exhaustion — DeliveryDeadlineExceededError thrown mid-persist: caught, no failure write, no queue action, and log event emitted', async () => {
-      let currentClock = 1_000;
+      const currentClock = 1_000;
       const clock = () => currentClock;
       const config = new WorkerConfig(1, 300, 1000, 30);
 
@@ -1545,7 +1546,10 @@ describe('JobRunner unit spec (S2)', () => {
         clock,
       );
 
-      const warnSpy = vi.spyOn((runner as any).logger, 'warn');
+      const warnSpy = vi.spyOn(
+        (runner as unknown as { logger: Logger }).logger,
+        'warn',
+      );
 
       const processed = await runner.runOnce();
       expect(processed).toBe(1);

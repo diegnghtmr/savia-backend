@@ -312,7 +312,6 @@ export class PgTransaction implements OnApplicationShutdown {
             await client.query('SET LOCAL ROLE savia_worker');
             await this.configureTimeouts(client, true);
 
-            const capTimeout = this.timeouts.callbackTimeoutMs;
             let active = true;
             const transactionClient: TransactionClient = {
               query: async <Row extends Record<string, unknown>>(
@@ -549,15 +548,22 @@ export class PgTransaction implements OnApplicationShutdown {
       if (clientRef && !released) {
         released = true;
         try {
-          (clientRef as any).connection?.stream?.destroy();
-        } catch {}
+          const rawClient = clientRef as unknown as {
+            connection?: { stream?: { destroy: () => void } };
+          };
+          rawClient.connection?.stream?.destroy();
+        } catch {
+          // ignore stream destruction errors
+        }
         try {
           clientRef.release(
             new DeliveryDeadlineExceededError('Delivery deadline exceeded.', {
               cause,
             }),
           );
-        } catch {}
+        } catch {
+          // ignore client release errors
+        }
       }
     };
 
