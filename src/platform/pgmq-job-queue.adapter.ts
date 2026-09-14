@@ -21,6 +21,7 @@ export class PgmqJobQueueAdapter implements JobQueue {
   public async claim(
     vtSeconds: number,
     limit: number,
+    timeoutMs?: number,
   ): Promise<readonly QueueMessage[]> {
     return this.transaction.runAsQueueConsumer(async (client) => {
       const result = await client.query<ClaimedJobRow>(
@@ -38,32 +39,39 @@ export class PgmqJobQueueAdapter implements JobQueue {
         vt: row.vt instanceof Date ? row.vt.toISOString() : String(row.vt),
         message: row.message,
       }));
-    });
+    }, timeoutMs);
   }
 
-  public async ack(msgId: number | string): Promise<boolean> {
+  public async ack(
+    msgId: number | string,
+    timeoutMs?: number,
+  ): Promise<boolean> {
     return this.transaction.runAsQueueConsumer(async (client) => {
       const result = await client.query<{ ack_job: boolean }>(
         `select public.ack_job($1::bigint) as ack_job`,
         [msgId],
       );
       return result.rows[0]?.ack_job ?? false;
-    });
+    }, timeoutMs);
   }
 
-  public async archive(msgId: number | string): Promise<boolean> {
+  public async archive(
+    msgId: number | string,
+    timeoutMs?: number,
+  ): Promise<boolean> {
     return this.transaction.runAsQueueConsumer(async (client) => {
       const result = await client.query<{ archive_job: boolean }>(
         `select public.archive_job($1::bigint) as archive_job`,
         [msgId],
       );
       return result.rows[0]?.archive_job ?? false;
-    });
+    }, timeoutMs);
   }
 
   public async defer(
     msgId: number | string,
     delaySeconds: number,
+    timeoutMs?: number,
   ): Promise<boolean> {
     return this.transaction.runAsQueueConsumer(async (client) => {
       const result = await client.query(
@@ -71,12 +79,13 @@ export class PgmqJobQueueAdapter implements JobQueue {
         [msgId, delaySeconds],
       );
       return (result.rowCount ?? 0) > 0;
-    });
+    }, timeoutMs);
   }
 
   public async failOrphanedJob(
     jobId: string,
     actorId: string,
+    timeoutMs?: number,
   ): Promise<boolean> {
     return this.transaction.runAsQueueConsumer(async (client) => {
       const result = await client.query<{ fail_orphaned_job: boolean }>(
@@ -84,6 +93,6 @@ export class PgmqJobQueueAdapter implements JobQueue {
         [jobId, actorId],
       );
       return result.rows[0]?.fail_orphaned_job ?? false;
-    });
+    }, timeoutMs);
   }
 }

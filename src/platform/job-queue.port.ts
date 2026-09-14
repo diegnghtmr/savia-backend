@@ -15,9 +15,21 @@ export interface QueueMessage<T = QueueMessageEnvelope> {
 }
 
 export interface JobQueue {
-  claim(vtSeconds: number, limit: number): Promise<readonly QueueMessage[]>;
-  ack(msgId: number | string): Promise<boolean>;
-  archive(msgId: number | string): Promise<boolean>;
-  defer(msgId: number | string, delaySeconds: number): Promise<boolean>;
-  failOrphanedJob(jobId: string, actorId: string): Promise<boolean>;
+  claim(
+    vtSeconds: number,
+    limit: number,
+    timeoutMs?: number,
+  ): Promise<readonly QueueMessage[]>;
+  ack(msgId: number | string, timeoutMs?: number): Promise<boolean>;
+  archive(msgId: number | string, timeoutMs?: number): Promise<boolean>;
+  defer(
+    msgId: number | string,
+    delaySeconds: number,
+    timeoutMs?: number,
+  ): Promise<boolean>;
+  failOrphanedJob(
+    jobId: string,
+    actorId: string,
+    timeoutMs?: number,
+  ): Promise<boolean>;
 }

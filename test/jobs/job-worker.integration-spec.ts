@@ -18,6 +18,7 @@ import { PgmqJobQueueAdapter } from '../../src/platform/pgmq-job-queue.adapter.j
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { WorkerConfig } from '../../src/platform/worker-config.js';
+import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -845,6 +846,51 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
         [queuedJob.id],
       );
       expect(qCheck.rows).toHaveLength(0);
+    });
+
+    it('bounds whole transaction lifetime when blocked on advisory lock during setup', async () => {
+      const lockSubject = subject(9999);
+      const blocker = await admin.connect();
+      try {
+        await blocker.query('BEGIN');
+        await blocker.query(
+          'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [lockSubject],
+        );
+
+        const start = Date.now();
+        await expect(
+          transaction.run(lockSubject, async () => 'ok', { timeoutMs: 1000 }),
+        ).rejects.toThrow(DeliveryDeadlineExceededError);
+        const elapsed = Date.now() - start;
+        expect(elapsed).toBeLessThan(2500);
+
+        // pg_stat_activity shows no active transaction for that connection
+        const blockerPidRes = await blocker.query<{ pid: number }>(
+          'select pg_backend_pid() as pid',
+        );
+        const blockerPid = blockerPidRes.rows[0].pid;
+
+        const activeCheck = await admin.query<{ pid: number; state: string }>(
+          `select pid, state from pg_stat_activity
+            where query like '%hashtextextended%'
+              and pid != pg_backend_pid()
+              and pid != $1
+              and state = 'active'`,
+          [blockerPid],
+        );
+        expect(activeCheck.rows).toHaveLength(0);
+
+        // The pool remains usable afterwards
+        const probe = await transaction.run(ownerA, async (client) => {
+          const res = await client.query<{ one: number }>('select 1 as one');
+          return res.rows[0].one;
+        });
+        expect(probe).toBe(1);
+      } finally {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        blocker.release();
+      }
     });
   });
 });
