@@ -437,6 +437,31 @@ describe('JobRunner unit spec (S2)', () => {
     );
   });
 
+  it('acks once and skips further writes when invalid-payload failJob raises P0001 and the re-read status is completed', async () => {
+    const { runner, mockQueue, mockJobWriter, probeHandler } =
+      createTestHarness({
+        reReadStatus: 'completed',
+      });
+    vi.mocked(probeHandler.parsePayload).mockImplementation(() => {
+      throw new Error('Invalid payload');
+    });
+    mockJobWriter.failJob = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error('fail_job refused'), { code: 'P0001' }),
+      );
+
+    const processed = await runner.runOnce();
+    expect(processed).toBe(1);
+    expect(mockJobWriter.findJobById).toHaveBeenCalledTimes(1);
+    expect(mockQueue.ack).toHaveBeenCalledTimes(1);
+    expect(mockJobWriter.failJob).toHaveBeenCalledTimes(1);
+    expect(mockJobWriter.completeJob).not.toHaveBeenCalled();
+    expect(mockJobWriter.deadLetter).not.toHaveBeenCalled();
+    expect(probeHandler.compute).not.toHaveBeenCalled();
+    expect(probeHandler.persist).not.toHaveBeenCalled();
+  });
+
   it('calls fail_orphaned_job and acks message when actor is invisible or demoted', async () => {
     // Demoted actor: role is viewer (lacks write role)
     const { runner, mockQueue, probeHandler, callLog } = createTestHarness({

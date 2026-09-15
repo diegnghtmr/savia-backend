@@ -451,6 +451,24 @@ export class JobRunner implements BeforeApplicationShutdown {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
         }
+        const invalidPayloadTerminality = await this.resolveP0001WriteRefusal(
+          error,
+          actorId,
+          workspaceId,
+          jobId,
+          message.msgId,
+          deadline,
+        );
+        if (
+          invalidPayloadTerminality.outcome === WRITE_REFUSAL_OUTCOMES.EXHAUSTED
+        ) {
+          return false;
+        }
+        if (
+          invalidPayloadTerminality.outcome === WRITE_REFUSAL_OUTCOMES.ACKED
+        ) {
+          return true;
+        }
         return false;
       }
       await this.safeAck(message.msgId, deadline, jobId);
