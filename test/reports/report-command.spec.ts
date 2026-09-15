@@ -264,7 +264,7 @@ describe('createReportDefinitionCommand', () => {
     });
 
     describe('dimensions acceptance', () => {
-      it.each(AUTHORITY_DIMENSIONS)(
+      it.each(AUTHORITY_DIMENSIONS.filter((d) => d !== 'variability'))(
         'accepts authority dimension: %s',
         (dimension) => {
           const result = createReportDefinitionCommand({
@@ -275,7 +275,7 @@ describe('createReportDefinitionCommand', () => {
         },
       );
 
-      it.each(REPORT_DIMENSIONS)(
+      it.each(REPORT_DIMENSIONS.filter((d) => d !== 'variability'))(
         'accepts exported dimension: %s',
         (dimension) => {
           const result = createReportDefinitionCommand({
@@ -285,6 +285,26 @@ describe('createReportDefinitionCommand', () => {
           expect(result.dimensions).toEqual([dimension]);
         },
       );
+
+      it('rejects variability dimension with unsupported code and explanation', () => {
+        try {
+          createReportDefinitionCommand({
+            ...validPayload,
+            dimensions: ['month', 'variability'],
+          });
+          expect.fail('Should have thrown');
+        } catch (e) {
+          if (!(e instanceof ReportCommandValidationError)) throw e;
+          expect(e.violations).toContainEqual(
+            expect.objectContaining({
+              field: 'dimensions.1',
+              code: 'unsupported',
+              message:
+                "variability dimension is not supported by this deployment's data model",
+            }),
+          );
+        }
+      });
     });
 
     describe('measures acceptance', () => {

@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { escapeCsvField } from '../platform/csv.js';
 import type { ExportFormat, ExportRows } from './export.port.js';
 function columns(rows: readonly Record<string, unknown>[]): string[] {
   return [...new Set(rows.flatMap((r) => Object.keys(r)))];
@@ -9,8 +10,7 @@ export function serializeCsv(rows: readonly Record<string, unknown>[]): Buffer {
     if (/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value)) return value;
     return /^[=+\-@]|^[\t\r]/.test(value) ? `'${value}` : value;
   };
-  const esc = (v: unknown) =>
-    `"${neutralize(String(v ?? '')).replaceAll('"', '""')}"`;
+  const esc = (v: unknown) => escapeCsvField(v, neutralize);
   return Buffer.from(
     [
       cols.join(','),
@@ -18,6 +18,7 @@ export function serializeCsv(rows: readonly Record<string, unknown>[]): Buffer {
     ].join('\n'),
   );
 }
+
 export function serializeJsonBackup(rows: ExportRows): Buffer {
   return Buffer.from(
     JSON.stringify(

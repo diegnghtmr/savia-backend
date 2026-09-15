@@ -6,6 +6,10 @@ import { PostgresReportAdapter } from './postgres-report.adapter.js';
 import { PlatformModule } from '../platform/platform.module.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
+import {
+  ARTIFACT_STORAGE,
+  type ArtifactStorage,
+} from '../platform/artifact-storage.port.js';
 
 @Module({
   imports: [PlatformModule],
@@ -18,12 +22,14 @@ import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.ada
         PgTransaction,
         PostgresReportAdapter,
         PostgresIdempotencyAdapter,
+        ARTIFACT_STORAGE,
       ],
       useFactory: (
         tx: PgTransaction,
         store: PostgresReportAdapter,
         idempotency: PostgresIdempotencyAdapter,
-      ) => new ReportService(tx, store, idempotency),
+        storage: ArtifactStorage,
+      ) => new ReportService(tx, store, idempotency, storage),
     },
     { provide: REPORTS_PORT, useExisting: ReportService },
   ],

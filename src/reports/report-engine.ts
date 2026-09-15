@@ -8,38 +8,21 @@ import {
   roundDivHalfAwayFromZero,
 } from '../platform/percentage-change.js';
 import {
+  getReportGridCellCap,
+  getReportMaxCellStringLength,
   REPORT_DIMENSION,
   REPORT_DIMENSIONS,
   REPORT_MEASURE,
   REPORT_MEASURES,
+  ReportCellCapExceededError,
+  ReportCellStringLengthExceededError,
   type ReportDimension,
   type ReportMeasure,
+  type ReportSourceRow,
 } from './report.port.js';
+export type { ReportSourceRow } from './report.port.js';
 
 export const UNIT_SEPARATOR = '\x1f';
-
-export interface ReportSourceRow {
-  readonly transactionId: string;
-  readonly occurredAt: Date; // UTC
-  readonly type:
-    | 'income'
-    | 'expense'
-    | 'refund'
-    | 'adjustment'
-    | 'debt_payment'
-    | 'fund_contribution';
-  readonly status: string;
-  readonly amountMinor: bigint; // native currency
-  readonly currency: string;
-  readonly convertedMinor: bigint; // workspace base currency
-  readonly accountId: string;
-  readonly accountType: string;
-  readonly categoryId: string | null;
-  readonly tags: readonly string[];
-  readonly payee: string | null;
-  readonly memberId: string;
-  readonly variability: 'fixed' | 'variable' | null;
-}
 
 export interface ReportEngineInput {
   readonly rows: readonly ReportSourceRow[];
@@ -362,6 +345,26 @@ export function buildReportGrid(input: ReportEngineInput): ReportGrid {
     }
 
     reportRows.push({ key: b.key, cells });
+  }
+
+  const gridCellCap = getReportGridCellCap();
+  const maxCellLength = getReportMaxCellStringLength();
+  const totalCells = reportRows.length * input.measures.length;
+  if (Number.isFinite(gridCellCap) && totalCells > gridCellCap) {
+    throw new ReportCellCapExceededError(gridCellCap, totalCells);
+  }
+
+  for (const row of reportRows) {
+    for (const k of row.key) {
+      if (k.length > maxCellLength) {
+        throw new ReportCellStringLengthExceededError(maxCellLength);
+      }
+    }
+    for (const cell of row.cells) {
+      if (cell.value && cell.value.length > maxCellLength) {
+        throw new ReportCellStringLengthExceededError(maxCellLength);
+      }
+    }
   }
 
   return {

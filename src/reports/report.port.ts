@@ -1,5 +1,27 @@
 import type { Cursor, PageInfo } from '../platform/cursor.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
+export interface ReportSourceRow {
+  readonly transactionId: string;
+  readonly occurredAt: Date;
+  readonly type:
+    | 'income'
+    | 'expense'
+    | 'refund'
+    | 'adjustment'
+    | 'debt_payment'
+    | 'fund_contribution';
+  readonly status: string;
+  readonly amountMinor: bigint;
+  readonly currency: string;
+  readonly convertedMinor: bigint;
+  readonly accountId: string;
+  readonly accountType: string;
+  readonly categoryId: string | null;
+  readonly tags: readonly string[];
+  readonly payee: string | null;
+  readonly memberId: string;
+  readonly variability: 'fixed' | 'variable' | null;
+}
 
 export const REPORTS_PORT = Symbol('ReportsPort');
 
@@ -79,6 +101,42 @@ export interface ReportDefinition {
   readonly version: number;
 }
 
+export const REPORT_RUN_FORMAT = {
+  JSON: 'json',
+  CSV: 'csv',
+  PDF: 'pdf',
+} as const;
+export type ReportRunFormat =
+  (typeof REPORT_RUN_FORMAT)[keyof typeof REPORT_RUN_FORMAT];
+
+export const REPORT_RUN_STATUS = {
+  QUEUED: 'queued',
+  PROCESSING: 'processing',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+} as const;
+export type ReportRunStatus =
+  (typeof REPORT_RUN_STATUS)[keyof typeof REPORT_RUN_STATUS];
+
+export interface CreateReportRunRequest {
+  readonly definitionId?: string | null;
+  readonly preset?: string | null;
+  readonly format: ReportRunFormat;
+  readonly filters: Record<string, unknown>;
+}
+
+export interface ReportRun {
+  readonly id: string;
+  readonly definitionId: string | null;
+  readonly preset: string | null;
+  readonly status: ReportRunStatus;
+  readonly format: ReportRunFormat;
+  readonly snapshotId: string | null;
+  readonly downloadUrl: string | null;
+  readonly expiresAt: string | null;
+  readonly createdAt: string;
+}
+
 export interface CreateReportDefinitionRequest {
   readonly name: string;
   readonly dimensions: readonly ReportDimension[];
@@ -145,6 +203,152 @@ export interface ReportStore {
     query: ReportListQuery,
     limit: number,
   ): Promise<readonly ReportItem[]>;
+  readReportDefinition?(
+    client: TransactionClient,
+    workspaceId: string,
+    definitionId: string,
+  ): Promise<ReportDefinition | undefined>;
+  readWorkspaceBaseCurrency?(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<string | undefined>;
+  readReportSourceRows?(
+    client: TransactionClient,
+    workspaceId: string,
+    from: string,
+    to: string,
+    typeFilter?: string,
+    callerTypeFilter?: string,
+  ): Promise<readonly ReportSourceRow[]>;
+  readBudgetedMinorByBucket?(
+    client: TransactionClient,
+    workspaceId: string,
+    from: string,
+    to: string,
+    dimensions: readonly ReportDimension[],
+  ): Promise<ReadonlyMap<string, bigint>>;
+  insertReportRun?(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    data: CreateReportRunRecord,
+  ): Promise<ReportRun>;
+  findReportRun?(
+    client: TransactionClient,
+    workspaceId: string,
+    reportRunId: string,
+  ): Promise<ReportRun | undefined>;
+}
+
+export interface CreateReportRunRecord {
+  readonly id: string;
+  readonly definitionId: string | null;
+  readonly preset: string | null;
+  readonly format: ReportRunFormat;
+  readonly filters: Record<string, unknown>;
+  readonly snapshotId: string;
+  readonly downloadUrl: string;
+  readonly expiresAt: Date;
+  readonly completedAt: Date;
+}
+
+/**
+ * Maximum source rows allowed in a synchronous report run to prevent heap exhaustion
+ * and event-loop monopolization. 50,000 rows provides rich analytics coverage for
+ * multi-year workspace history while keeping memory and processing within safe request bounds.
+ */
+export const REPORT_SOURCE_ROW_CAP = 50_000;
+
+/**
+ * Maximum total grid cells (rows * measures) allowed in a generated report.
+ * Guards against fan-out explosion (e.g. multi-tag expansion) while allowing large tabular outputs.
+ */
+export const REPORT_GRID_CELL_CAP = 100_000;
+
+/**
+ * Maximum string length allowed for an individual rendered cell or dimension value.
+ * Prevents single pathological strings (e.g. 100k-char payee or note) from dominating renderers.
+ */
+export const REPORT_MAX_CELL_STRING_LENGTH = 4096;
+
+let activeSourceRowCap = REPORT_SOURCE_ROW_CAP;
+let activeGridCellCap = REPORT_GRID_CELL_CAP;
+let activeMaxCellStringLength = REPORT_MAX_CELL_STRING_LENGTH;
+
+export function getReportSourceRowCap(): number {
+  if (process.env.REPORT_SOURCE_ROW_CAP !== undefined) {
+    const parsed = Number(process.env.REPORT_SOURCE_ROW_CAP);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return activeSourceRowCap;
+}
+
+export function setReportSourceRowCap(cap: number): void {
+  activeSourceRowCap = cap;
+}
+
+export function getReportGridCellCap(): number {
+  if (process.env.REPORT_GRID_CELL_CAP !== undefined) {
+    const parsed = Number(process.env.REPORT_GRID_CELL_CAP);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return activeGridCellCap;
+}
+
+export function setReportGridCellCap(cap: number): void {
+  activeGridCellCap = cap;
+}
+
+export function getReportMaxCellStringLength(): number {
+  if (process.env.REPORT_MAX_CELL_STRING_LENGTH !== undefined) {
+    const parsed = Number(process.env.REPORT_MAX_CELL_STRING_LENGTH);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return activeMaxCellStringLength;
+}
+
+export function setReportMaxCellStringLength(max: number): void {
+  activeMaxCellStringLength = max;
+}
+
+export class ReportRowCapExceededError extends Error {
+  public constructor(public readonly cap: number) {
+    super(
+      `Report matched more source rows than the limit of ${cap} allowed for synchronous execution. Please specify a narrower period or additional filters.`,
+    );
+    this.name = 'ReportRowCapExceededError';
+  }
+}
+
+export class ReportCellCapExceededError extends Error {
+  public constructor(
+    public readonly cap: number,
+    public readonly actual: number,
+  ) {
+    super(
+      `Report generated ${actual} grid cells, exceeding the synchronous limit of ${cap}. Please specify a narrower period or fewer dimensions/measures.`,
+    );
+    this.name = 'ReportCellCapExceededError';
+  }
+}
+
+export class ReportCellStringLengthExceededError extends Error {
+  public constructor(public readonly maxLength: number) {
+    super(
+      `Report cell string length exceeded maximum allowed length of ${maxLength} characters.`,
+    );
+    this.name = 'ReportCellStringLengthExceededError';
+  }
+}
+
+export class ReportMissingRateError extends Error {
+  public constructor(
+    public readonly fromCurrency: string,
+    public readonly toCurrency: string,
+  ) {
+    super(`Missing exchange rate from ${fromCurrency} to ${toCurrency}`);
+    this.name = 'ReportMissingRateError';
+  }
 }
 
 export interface ReportsPort {
@@ -158,4 +362,58 @@ export interface ReportsPort {
     subject: string,
     query: ReportListQuery,
   ): Promise<ReportListOutcome>;
+  createReportRun?(
+    subject: string,
+    workspaceId: string,
+    command: CreateReportRunRequest,
+    key: string,
+  ): Promise<ReportRunCreateOutcome>;
+  getReportRun?(
+    subject: string,
+    workspaceId: string,
+    reportRunId: string,
+  ): Promise<ReportRunGetOutcome>;
 }
+
+export const REPORT_RUN_OUTCOMES = {
+  CREATED: 'created',
+  REPLAYED: 'replayed',
+  CONFLICT: 'conflict',
+  FORBIDDEN: 'forbidden',
+  UNPROCESSABLE: 'unprocessable',
+  MISSING_RATE: 'missing_rate',
+  NOT_FOUND: 'not_found',
+  OK: 'ok',
+} as const;
+
+export type ReportRunCreateOutcome =
+  | {
+      readonly kind: typeof REPORT_RUN_OUTCOMES.CREATED;
+      readonly reportRun: ReportRun;
+    }
+  | {
+      readonly kind: typeof REPORT_RUN_OUTCOMES.REPLAYED;
+      readonly status: number;
+      readonly etag?: string | null;
+      readonly body: unknown;
+    }
+  | { readonly kind: typeof REPORT_RUN_OUTCOMES.CONFLICT }
+  | { readonly kind: typeof REPORT_RUN_OUTCOMES.FORBIDDEN }
+  | {
+      readonly kind: typeof REPORT_RUN_OUTCOMES.UNPROCESSABLE;
+      readonly violations: readonly { field: string; message: string }[];
+      readonly detail?: string;
+    }
+  | {
+      readonly kind: typeof REPORT_RUN_OUTCOMES.MISSING_RATE;
+      readonly fromCurrency: string;
+      readonly toCurrency: string;
+    };
+
+export type ReportRunGetOutcome =
+  | {
+      readonly kind: typeof REPORT_RUN_OUTCOMES.OK;
+      readonly reportRun: ReportRun;
+    }
+  | { readonly kind: typeof REPORT_RUN_OUTCOMES.NOT_FOUND }
+  | { readonly kind: typeof REPORT_RUN_OUTCOMES.FORBIDDEN };

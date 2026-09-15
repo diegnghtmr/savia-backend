@@ -351,6 +351,16 @@
       "operationId": "createReportDefinition",
       "method": "POST",
       "path": "/v1/report-definitions"
+    },
+    {
+      "operationId": "createReportRun",
+      "method": "POST",
+      "path": "/v1/report-runs"
+    },
+    {
+      "operationId": "getReportRun",
+      "method": "GET",
+      "path": "/v1/report-runs/{reportRunId}"
     }
   ]
 }

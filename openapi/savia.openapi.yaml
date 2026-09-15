@@ -2034,6 +2034,88 @@ components:
           type: object
           additionalProperties: true
       additionalProperties: false
+    ReportRun:
+      type: object
+      required:
+        - id
+        - status
+        - format
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        definitionId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        preset:
+          type:
+            - string
+            - 'null'
+        status:
+          type: string
+          enum: [queued, processing, completed, failed]
+        format:
+          type: string
+          enum: [json, csv, pdf]
+        snapshotId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        downloadUrl:
+          type:
+            - string
+            - 'null'
+          format: uri
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        createdAt:
+          $ref: '#/components/schemas/DateTime'
+      additionalProperties: false
+    CreateReportRunRequest:
+      type: object
+      required: [format]
+      properties:
+        definitionId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        preset:
+          type:
+            - string
+            - 'null'
+          enum:
+            [
+              monthly_summary,
+              cash_flow,
+              expenses,
+              income,
+              budget,
+              net_worth,
+              debts,
+              funds,
+              family_workspace,
+              multi_currency,
+              forecast,
+              period_comparison,
+              null,
+            ]
+        format:
+          type: string
+          enum: [json, csv, pdf]
+        filters:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+      oneOf:
+        - required: [definitionId]
+        - required: [preset]
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -6870,3 +6952,108 @@ paths:
         requiresApproval: true
         requiredScopes:
           - reports:write
+  /v1/report-runs:
+    post:
+      operationId: createReportRun
+      summary: Run preset or custom report
+      tags: [Reports]
+      responses:
+        '202':
+          description: Report run accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportRun'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: The request is structurally valid but violates a business rule.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      parameters:
+        - name: X-Workspace-Id
+          in: header
+          required: true
+          description: Workspace in which the operation is executed.
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReportRunRequest'
+      x-savia-mcp-tool:
+        name: run_report
+        riskClass: read
+        requiresApproval: false
+        requiredScopes: [reports:read]
+  /v1/report-runs/{reportRunId}:
+    parameters:
+      - name: reportRunId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Uuid'
+      - name: X-Workspace-Id
+        in: header
+        required: true
+        description: Workspace in which the operation is executed.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getReportRun
+      summary: Get report run
+      tags: [Reports]
+      responses:
+        '200':
+          description: Report run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportRun'
+        '401':
+          description: Unauthorized.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Forbidden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
