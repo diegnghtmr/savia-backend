@@ -164,6 +164,44 @@ export class PostgresJobsAdapter implements JobStore, JobWriter {
     return job;
   }
 
+  public async deadLetter(
+    client: TransactionClient,
+    jobId: string,
+    error: Record<string, unknown>,
+  ): Promise<void>;
+  public async deadLetter(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
+  ): Promise<Job>;
+  public async deadLetter(
+    client: TransactionClient,
+    arg1: string,
+    arg2: string | Record<string, unknown>,
+    arg3?: Record<string, unknown>,
+  ): Promise<Job | void> {
+    const isTwoArg = typeof arg2 === 'object' && arg2 !== null;
+    const jobId = isTwoArg ? arg1 : (arg2 as string);
+    const error = isTwoArg ? arg2 : arg3!;
+    const workspaceId = isTwoArg ? undefined : arg1;
+
+    await client.query('set local role savia_worker');
+    await client.query(`select public.dead_letter_job($1::uuid, $2::jsonb)`, [
+      jobId,
+      JSON.stringify(error),
+    ]);
+    await client.query('set local role savia_application');
+
+    if (workspaceId) {
+      const job = await this.findJobById(client, workspaceId, jobId);
+      if (!job) {
+        throw new Error(`Job ${jobId} could not be dead-lettered.`);
+      }
+      return job;
+    }
+  }
+
   public async readActiveRole(
     client: TransactionClient,
     workspaceId: string,

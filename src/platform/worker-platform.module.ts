@@ -28,8 +28,11 @@ import { WorkerConfig } from './worker-config.js';
           pool,
           () => ({
             checkoutTimeoutMs: pool.checkoutTimeoutMs,
-            statementTimeoutMs: 300_000,
-            callbackTimeoutMs: 300_000,
+            statementTimeoutMs: workerConfig.persistTimeoutMs,
+            callbackTimeoutMs: workerConfig.persistTimeoutMs,
+            transitionTimeoutMs: workerConfig.transitionTimeoutMs,
+            computeTimeoutMs: workerConfig.computeTimeoutMs,
+            persistTimeoutMs: workerConfig.persistTimeoutMs,
             idleTransactionTimeoutMs: 60_000,
           }),
           {
