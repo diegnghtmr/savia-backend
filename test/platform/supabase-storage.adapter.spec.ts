@@ -36,6 +36,33 @@ describe('SupabaseStorageAdapter', () => {
     ).rejects.toThrow('500');
   });
 
+  it('overwrites an existing object at the same key instead of failing', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (_input, init) => {
+        const headers = new Headers(init?.headers);
+        if (headers.get('x-upsert') === 'true') {
+          return new Response('', { status: 200 });
+        }
+        return new Response('', { status: 409 });
+      });
+
+    await expect(
+      new SupabaseStorageAdapter({
+        SUPABASE_URL: 'https://storage.test',
+        SUPABASE_SERVICE_ROLE_KEY: 'secret',
+      }).upload(
+        'aaaaaaaa-0000-4000-8000-000000000001/bbbbbbbb-0000-4000-8000-000000000001.json',
+        Buffer.from('retry-bytes'),
+        'application/json',
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalled();
+    const init = fetchMock.mock.calls[0]?.[1];
+    expect(new Headers(init?.headers).get('x-upsert')).toBe('true');
+  });
+
   it('classifies upload transport and 5xx failures as unavailable', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'));
     await expect(

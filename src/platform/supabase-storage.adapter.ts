@@ -44,7 +44,7 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
           headers: {
             ...this.headers(),
             'content-type': contentType,
-            'x-upsert': 'false',
+            'x-upsert': 'true',
           },
           body: new Uint8Array(content),
         },

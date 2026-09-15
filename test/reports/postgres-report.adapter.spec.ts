@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import { PostgresReportAdapter } from '../../src/reports/postgres-report.adapter.js';
+import { reportArtifactObjectKey } from '../../src/reports/report-run-snapshot.js';
 import { ReportMissingRateError } from '../../src/reports/report.port.js';
 
 describe('PostgresReportAdapter report-run queries', () => {
   const workspaceId = 'aaaaaaaa-0000-4000-8000-000000000001';
+  const subject = '11111111-0000-4000-8000-000000000001';
 
   function clientWithRows(rows: readonly Record<string, unknown>[]) {
     const query = vi.fn().mockResolvedValue({ rows });
@@ -125,5 +127,118 @@ describe('PostgresReportAdapter report-run queries', () => {
       workspaceId,
       'eeeeeeee-0000-4000-8000-000000000001',
     ]);
+  });
+
+  it('stores the deterministic object key computed at request time', async () => {
+    const reportRunId = 'eeeeeeee-0000-4000-8000-000000000001';
+    const { client, query } = clientWithRows([
+      {
+        id: reportRunId,
+        definitionId: null,
+        preset: 'expenses',
+        status: 'completed',
+        format: 'json',
+        snapshotId: 'ffffffff-0000-4000-8000-000000000001',
+        downloadUrl: 'https://storage.example.test/report.json',
+        expiresAt: '2026-09-22T00:00:00.000000Z',
+        createdAt: '2026-09-15T00:00:00.000000Z',
+      },
+    ]);
+    const completedAt = new Date('2026-09-15T12:00:00.000Z');
+    await new PostgresReportAdapter().insertReportRun(
+      client,
+      workspaceId,
+      subject,
+      {
+        id: reportRunId,
+        definitionId: null,
+        preset: 'expenses',
+        format: 'json',
+        filters: {},
+        snapshotId: 'ffffffff-0000-4000-8000-000000000001',
+        downloadUrl: 'https://storage.example.test/report.json',
+        expiresAt: new Date('2026-09-22T00:00:00.000Z'),
+        completedAt,
+      },
+    );
+
+    const [, values] = query.mock.calls[0] as [string, readonly unknown[]];
+    expect(values).toContain(
+      reportArtifactObjectKey(workspaceId, reportRunId, 'json'),
+    );
+  });
+
+  it('does not rewrite a completed artifact when persist is guarded by processing status', async () => {
+    const reportRunId = 'eeeeeeee-0000-4000-8000-000000000001';
+    const originalUrl = 'https://storage.example.test/original.json';
+    const row = {
+      id: reportRunId,
+      definitionId: null,
+      preset: 'expenses',
+      status: 'completed',
+      format: 'json',
+      snapshotId: 'ffffffff-0000-4000-8000-000000000001',
+      downloadUrl: originalUrl,
+      expiresAt: '2026-09-22T00:00:00.000000Z',
+      createdAt: '2026-09-15T00:00:00.000000Z',
+    };
+    const query = vi.fn(async (sql: string) => {
+      const guarded = /status\s*=\s*'processing'/.test(sql);
+      if (/update\s+public\.report_runs/i.test(sql) && !guarded) {
+        row.downloadUrl = 'https://storage.example.test/rewritten.json';
+        row.status = 'completed';
+        return { rows: [row] };
+      }
+      if (
+        /update\s+public\.report_runs/i.test(sql) &&
+        row.status !== 'processing'
+      ) {
+        return { rows: [] };
+      }
+      return { rows: [row] };
+    });
+    const client = { query } as unknown as TransactionClient;
+
+    await expect(
+      new PostgresReportAdapter().completeProcessingReportRun(
+        client,
+        workspaceId,
+        reportRunId,
+        {
+          downloadUrl: 'https://storage.example.test/rewritten.json',
+          expiresAt: new Date('2026-09-22T00:00:00.000Z'),
+          completedAt: new Date('2026-09-15T12:00:00.000Z'),
+        },
+      ),
+    ).rejects.toThrow(/processing/);
+    expect(row.downloadUrl).toBe(originalUrl);
+  });
+
+  it('STRUCTURAL: persist completes only rows still processing', async () => {
+    const { client, query } = clientWithRows([
+      {
+        id: 'eeeeeeee-0000-4000-8000-000000000001',
+        definitionId: null,
+        preset: 'expenses',
+        status: 'completed',
+        format: 'json',
+        snapshotId: 'ffffffff-0000-4000-8000-000000000001',
+        downloadUrl: 'https://storage.example.test/report.json',
+        expiresAt: '2026-09-22T00:00:00.000000Z',
+        createdAt: '2026-09-15T00:00:00.000000Z',
+      },
+    ]);
+    await new PostgresReportAdapter().completeProcessingReportRun(
+      client,
+      workspaceId,
+      'eeeeeeee-0000-4000-8000-000000000001',
+      {
+        downloadUrl: 'https://storage.example.test/report.json',
+        expiresAt: new Date('2026-09-22T00:00:00.000Z'),
+        completedAt: new Date('2026-09-15T12:00:00.000Z'),
+      },
+    );
+    const [sql] = query.mock.calls[0] as [string];
+    expect(sql).toMatch(/where[\s\S]*status\s*=\s*'processing'/);
   });
 });

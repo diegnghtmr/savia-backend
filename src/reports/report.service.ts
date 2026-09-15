@@ -4,8 +4,14 @@ import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { randomUUID } from 'node:crypto';
 import type { ArtifactStorage } from '../platform/artifact-storage.port.js';
-import { computeReportGrid } from './report-engine.js';
+import {
+  computePreparedReportGrid,
+  resolveReportPeriod,
+  resolveShapeTypeFilter,
+  type ReportComputationShape,
+} from './report-computation.js';
 import { REPORT_PRESETS } from './report-presets.js';
+import { reportArtifactObjectKey } from './report-run-snapshot.js';
 import { serializeReport } from './report-serializers.js';
 import {
   ReportMissingRateError,
@@ -257,63 +263,19 @@ export class ReportService implements ReportsPort {
               },
             ],
           } as const;
-        const now = this.clock();
-        const periodEnd = now.toISOString().slice(0, 10);
-        const defaultStart = new Date(
-          Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1),
-        )
-          .toISOString()
-          .slice(0, 10);
+        const computationShape = shape as ReportComputationShape;
         const defFilters =
           'filters' in shape &&
           typeof shape.filters === 'object' &&
           shape.filters !== null
             ? (shape.filters as Record<string, unknown>)
             : undefined;
-
-        const shapeTypeFilter =
-          'typeFilter' in shape
-            ? shape.typeFilter
-            : typeof defFilters?.type === 'string'
-              ? defFilters.type
-              : undefined;
-
-        const defFrom =
-          typeof defFilters?.from === 'string' ? defFilters.from : undefined;
-        const callerFrom =
-          typeof command.filters.from === 'string'
-            ? command.filters.from
-            : undefined;
-
-        let periodStart: string;
-        if (defFrom && callerFrom) {
-          periodStart = defFrom > callerFrom ? defFrom : callerFrom;
-        } else if (defFrom) {
-          periodStart = defFrom;
-        } else if (callerFrom) {
-          periodStart = callerFrom;
-        } else {
-          periodStart = defaultStart;
-        }
-
-        const defTo =
-          typeof defFilters?.to === 'string' ? defFilters.to : undefined;
-        const callerTo =
-          typeof command.filters.to === 'string'
-            ? command.filters.to
-            : undefined;
-
-        let to: string;
-        if (defTo && callerTo) {
-          to = defTo < callerTo ? defTo : callerTo;
-        } else if (defTo) {
-          to = defTo;
-        } else if (callerTo) {
-          to = callerTo;
-        } else {
-          to = periodEnd;
-        }
-
+        const { periodStart, periodTo } = resolveReportPeriod(
+          this.clock(),
+          defFilters,
+          command.filters,
+        );
+        const shapeTypeFilter = resolveShapeTypeFilter(computationShape);
         const callerType =
           typeof command.filters.type === 'string'
             ? command.filters.type
@@ -324,7 +286,7 @@ export class ReportService implements ReportsPort {
             client,
             workspaceId,
             periodStart,
-            to,
+            periodTo,
             shapeTypeFilter,
             callerType,
           );
@@ -348,7 +310,7 @@ export class ReportService implements ReportsPort {
           client,
           workspaceId,
           periodStart,
-          to,
+          periodTo,
           shape.dimensions,
         );
         if (command.preset === 'budget' && budget.size === 0) {
@@ -365,12 +327,13 @@ export class ReportService implements ReportsPort {
         }
         let grid;
         try {
-          grid = computeReportGrid({
+          grid = computePreparedReportGrid({
             rows,
             dimensions: shape.dimensions,
             measures: shape.measures,
             baseCurrency,
             budgetedMinorByBucket: budget,
+            preset: command.preset,
           });
         } catch (error) {
           if (
@@ -385,25 +348,23 @@ export class ReportService implements ReportsPort {
           }
           throw error;
         }
-        if (command.preset === 'budget') {
-          const unbudgetedCount = grid.rows.filter(
-            (r) => r.cells.find((c) => c.measure === 'budget')?.value === null,
-          ).length;
-          if (unbudgetedCount > 0) {
-            const warningMessage = `${unbudgetedCount} ${unbudgetedCount === 1 ? 'bucket had' : 'buckets had'} no budget.`;
-            grid = {
-              ...grid,
-              warnings: [...grid.warnings, warningMessage],
-            };
-          }
-        }
-        return { kind: 'prepared' as const, grid, shape, periodStart, to };
+        return {
+          kind: 'prepared' as const,
+          grid,
+          shape,
+          periodStart,
+          to: periodTo,
+        };
       });
       if (prepared.kind !== 'prepared') return prepared;
       if (!this.storage)
         throw new Error('Report artifact storage is not configured.');
       const reportRunId = randomUUID();
-      uploadedPath = `${workspaceId}/${reportRunId}.${command.format}`;
+      uploadedPath = reportArtifactObjectKey(
+        workspaceId,
+        reportRunId,
+        command.format,
+      );
       const artifact = await serializeReport(command.format, prepared.grid);
       await this.storage.upload(
         uploadedPath,
