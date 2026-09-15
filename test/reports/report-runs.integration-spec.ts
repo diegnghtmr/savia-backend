@@ -1,19 +1,27 @@
-// Migrations under test: 202609050001_report_definitions.sql, 202609050002_report_runs.sql, 202609150001_report_runs_async.sql
+// Migrations under test: 202609050001_report_definitions.sql, 202609050002_report_runs.sql, 202609150001_report_runs_async.sql, 202609150002_report_run_job_failure_projection.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
-import { Test } from '@nestjs/testing';
+import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import {
+  JOB_HANDLERS,
+  type JobHandler,
+} from '../../src/platform/job-handler.port.js';
+import { JobRunner } from '../../src/platform/job-runner.js';
+import {
   ARTIFACT_STORAGE,
+  ArtifactStorageClientError,
+  ArtifactStorageUnavailableError,
   type ArtifactStorage,
 } from '../../src/platform/artifact-storage.port.js';
+import { WorkerModule } from '../../src/worker.module.js';
 import {
   createReportRunCommand,
   ReportRunCommandValidationError,
@@ -39,6 +47,7 @@ class InMemoryArtifactStorage implements ArtifactStorage {
   public uploadCallCount = 0;
   public removeCallCount = 0;
   public failRemove = false;
+  public failNext: Array<'unavailable' | number> = [];
 
   public async upload(
     path: string,
@@ -46,6 +55,18 @@ class InMemoryArtifactStorage implements ArtifactStorage {
     contentType: string,
   ): Promise<void> {
     this.uploadCallCount++;
+    const fail = this.failNext.shift();
+    if (fail === 'unavailable') {
+      throw new ArtifactStorageUnavailableError(
+        'Storage upload failed with status 503.',
+      );
+    }
+    if (typeof fail === 'number') {
+      throw new ArtifactStorageClientError(
+        fail,
+        `Storage upload failed with status ${fail}.`,
+      );
+    }
     this.uploaded.set(path, { content, contentType });
   }
 
@@ -68,6 +89,8 @@ class InMemoryArtifactStorage implements ArtifactStorage {
 describe('Report runs integration contract and endpoint suite', () => {
   let admin: Pool;
   let application: NestFastifyApplication;
+  let workerModule: TestingModule;
+  let runner: JobRunner;
   let inMemoryStorage: InMemoryArtifactStorage;
 
   const ownerId = '11111111-0000-4000-8000-000000000001';
@@ -395,9 +418,32 @@ describe('Report runs integration contract and endpoint suite', () => {
     registerProblemFilter(application);
     await application.init();
     await application.getHttpAdapter().getInstance().ready();
+
+    workerModule = await Test.createTestingModule({
+      imports: [WorkerModule],
+    })
+      .overrideProvider(ARTIFACT_STORAGE)
+      .useValue(inMemoryStorage)
+      .compile();
+    await workerModule.init();
+    runner = workerModule.get(JobRunner);
+  });
+
+  afterEach(async () => {
+    inMemoryStorage.failNext = [];
+    await admin.query(
+      `update public.workspace_memberships
+          set role = 'editor'
+        where workspace_id = $1::uuid
+          and profile_id = $2::uuid`,
+      [workspace1Id, editorId],
+    );
   });
 
   afterAll(async () => {
+    if (workerModule) {
+      await workerModule.close();
+    }
     if (application) {
       await application.close();
     }
@@ -405,6 +451,53 @@ describe('Report runs integration contract and endpoint suite', () => {
       await admin.end();
     }
   });
+
+  async function drainUntilRunTerminal(runId: string): Promise<{
+    jobStatus: string;
+    jobError: Record<string, unknown> | null;
+    runStatus: string;
+    runError: Record<string, unknown> | null;
+    downloadUrl: string | null;
+  }> {
+    const link = await admin.query<{ job_id: string }>(
+      `select job_id::text as job_id from public.report_runs where id = $1::uuid`,
+      [runId],
+    );
+    const jobId = link.rows[0]?.job_id;
+    if (!jobId) {
+      throw new Error(`Report run ${runId} has no job_id`);
+    }
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const job = await admin.query<{
+        status: string;
+        error: Record<string, unknown> | null;
+      }>(`select status, error from public.jobs where id = $1::uuid`, [jobId]);
+      const run = await admin.query<{
+        status: string;
+        error: Record<string, unknown> | null;
+        download_url: string | null;
+      }>(
+        `select status, error, download_url from public.report_runs where id = $1::uuid`,
+        [runId],
+      );
+      const jobStatus = job.rows[0]?.status;
+      if (
+        jobStatus &&
+        ['completed', 'failed', 'dead_letter', 'cancelled'].includes(jobStatus)
+      ) {
+        return {
+          jobStatus,
+          jobError: job.rows[0]?.error ?? null,
+          runStatus: run.rows[0]?.status ?? '',
+          runError: run.rows[0]?.error ?? null,
+          downloadUrl: run.rows[0]?.download_url ?? null,
+        };
+      }
+      await runner.drainOnce();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`Report run ${runId} did not reach a terminal job status`);
+  }
 
   describe('Database schema and constraints', () => {
     it('has the report runs table and terminal status constraint installed', async () => {
@@ -462,11 +555,17 @@ describe('Report runs integration contract and endpoint suite', () => {
       const body = JSON.parse(response.body) as {
         id: string;
         status: string;
-        downloadUrl: string;
+        downloadUrl: string | null;
       };
-      expect(body.status).toBe('completed');
+      expect(body.status).toBe('queued');
+      expect(body.downloadUrl).toBeNull();
+      expect(inMemoryStorage.uploadCallCount).toBe(0);
 
-      // Verify artifact content
+      const finished = await drainUntilRunTerminal(body.id);
+      expect(finished.jobStatus).toBe('completed');
+      expect(finished.runStatus).toBe('completed');
+      expect(finished.downloadUrl).toEqual(expect.any(String));
+
       const artifactPath = `${workspace1Id}/${body.id}.json`;
       const uploaded = inMemoryStorage.uploaded.get(artifactPath);
       expect(uploaded).toBeDefined();
@@ -483,7 +582,7 @@ describe('Report runs integration contract and endpoint suite', () => {
   });
 
   describe('FIX 2: Budget join and empty budget policy', () => {
-    it('returns 422 with problem-details when budget preset has no applicable budget in period', async () => {
+    it('fails the queued run when budget preset has no applicable budget in period', async () => {
       const response = await application.inject({
         method: 'POST',
         url: '/v1/report-runs',
@@ -502,13 +601,15 @@ describe('Report runs integration contract and endpoint suite', () => {
         },
       });
 
-      expect(response.statusCode).toBe(422);
-      const body = JSON.parse(response.body) as {
-        detail?: string;
-        errors?: readonly { field: string; message: string }[];
-      };
-      const message = body.detail ?? body.errors?.[0]?.message;
-      expect(message).toContain('No budget exists for the requested period.');
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string; status: string };
+      expect(body.status).toBe('queued');
+      const finished = await drainUntilRunTerminal(body.id);
+      expect(finished.jobStatus).toBe('failed');
+      expect(finished.runStatus).toBe('failed');
+      expect(JSON.stringify(finished.runError)).toContain(
+        'No budget exists for the requested period.',
+      );
     });
 
     it('returns 202 and warnings when budget preset has some unbudgeted buckets', async () => {
@@ -531,7 +632,9 @@ describe('Report runs integration contract and endpoint suite', () => {
       });
 
       expect(response.statusCode).toBe(202);
-      const body = JSON.parse(response.body) as { id: string };
+      const body = JSON.parse(response.body) as { id: string; status: string };
+      expect(body.status).toBe('queued');
+      await drainUntilRunTerminal(body.id);
       const uploaded = inMemoryStorage.uploaded.get(
         `${workspace1Id}/${body.id}.json`,
       );
@@ -562,7 +665,9 @@ describe('Report runs integration contract and endpoint suite', () => {
       });
 
       expect(response.statusCode).toBe(202);
-      const body = JSON.parse(response.body) as { id: string };
+      const body = JSON.parse(response.body) as { id: string; status: string };
+      expect(body.status).toBe('queued');
+      await drainUntilRunTerminal(body.id);
       const uploaded = inMemoryStorage.uploaded.get(
         `${workspace1Id}/${body.id}.json`,
       );
@@ -583,7 +688,7 @@ describe('Report runs integration contract and endpoint suite', () => {
       setReportMaxCellStringLength(REPORT_MAX_CELL_STRING_LENGTH);
     });
 
-    it('returns 202 when source row count is exactly at the cap', async () => {
+    it('completes when source row count is exactly at the cap', async () => {
       // In June 2026 we have 2 transactions (txEurId and txEur2Id)
       setReportSourceRowCap(2);
 
@@ -606,9 +711,12 @@ describe('Report runs integration contract and endpoint suite', () => {
       });
 
       expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const finished = await drainUntilRunTerminal(body.id);
+      expect(finished.runStatus).toBe('completed');
     });
 
-    it('returns 422 when source row count is one over the cap', async () => {
+    it('fails the queued run when source row count is one over the cap', async () => {
       // 2 transactions in June, cap set to 1 -> one over the cap
       setReportSourceRowCap(1);
 
@@ -630,18 +738,16 @@ describe('Report runs integration contract and endpoint suite', () => {
         },
       });
 
-      expect(response.statusCode).toBe(422);
-      const body = JSON.parse(response.body) as {
-        detail?: string;
-        errors?: readonly { field: string; message: string }[];
-      };
-      const message = body.detail ?? body.errors?.[0]?.message;
-      expect(message).toContain(
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const finished = await drainUntilRunTerminal(body.id);
+      expect(finished.runStatus).toBe('failed');
+      expect(JSON.stringify(finished.runError)).toContain(
         'Report matched more source rows than the limit',
       );
     });
 
-    it('returns 202 when grid cell count is exactly at the cap', async () => {
+    it('completes when grid cell count is exactly at the cap', async () => {
       // expenses preset has 2 rows and 2 measures ('converted_value', 'percentage') -> 4 cells
       setReportGridCellCap(4);
 
@@ -664,9 +770,12 @@ describe('Report runs integration contract and endpoint suite', () => {
       });
 
       expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const finished = await drainUntilRunTerminal(body.id);
+      expect(finished.runStatus).toBe('completed');
     });
 
-    it('returns 422 when grid cell count is one over the cap', async () => {
+    it('fails the queued run when grid cell count is one over the cap', async () => {
       // expenses preset has 4 cells, cap set to 3 -> one over the cap
       setReportGridCellCap(3);
 
@@ -688,16 +797,16 @@ describe('Report runs integration contract and endpoint suite', () => {
         },
       });
 
-      expect(response.statusCode).toBe(422);
-      const body = JSON.parse(response.body) as {
-        detail?: string;
-        errors?: readonly { field: string; message: string }[];
-      };
-      const message = body.detail ?? body.errors?.[0]?.message;
-      expect(message).toContain('grid cells, exceeding the synchronous limit');
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const finished = await drainUntilRunTerminal(body.id);
+      expect(finished.runStatus).toBe('failed');
+      expect(JSON.stringify(finished.runError)).toContain(
+        'grid cells, exceeding the synchronous limit',
+      );
     });
 
-    it('returns 422 when an individual cell string exceeds maximum allowed length', async () => {
+    it('fails the queued run when an individual cell string exceeds maximum allowed length', async () => {
       setReportMaxCellStringLength(5); // 'Expenses' is 8 chars, so it exceeds 5
 
       const response = await application.inject({
@@ -718,13 +827,13 @@ describe('Report runs integration contract and endpoint suite', () => {
         },
       });
 
-      expect(response.statusCode).toBe(422);
-      const body = JSON.parse(response.body) as {
-        detail?: string;
-        errors?: readonly { field: string; message: string }[];
-      };
-      const message = body.detail ?? body.errors?.[0]?.message;
-      expect(message).toContain('Report cell string length exceeded maximum');
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const finished = await drainUntilRunTerminal(body.id);
+      expect(finished.runStatus).toBe('failed');
+      expect(JSON.stringify(finished.runError)).toContain(
+        'Report cell string length exceeded maximum',
+      );
     });
   });
 
@@ -784,7 +893,8 @@ describe('Report runs integration contract and endpoint suite', () => {
 
       expect(response.statusCode).toBe(202);
       const body = JSON.parse(response.body) as { id: string; status: string };
-      expect(body.status).toBe('completed');
+      expect(body.status).toBe('queued');
+      await drainUntilRunTerminal(body.id);
 
       const artifactPath = `${workspace1Id}/${body.id}.json`;
       const uploaded = inMemoryStorage.uploaded.get(artifactPath);
@@ -819,7 +929,9 @@ describe('Report runs integration contract and endpoint suite', () => {
       });
 
       expect(response.statusCode).toBe(202);
-      const body = JSON.parse(response.body) as { id: string };
+      const body = JSON.parse(response.body) as { id: string; status: string };
+      expect(body.status).toBe('queued');
+      await drainUntilRunTerminal(body.id);
       const artifactPath = `${workspace1Id}/${body.id}.json`;
       const uploaded = inMemoryStorage.uploaded.get(artifactPath);
       const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
@@ -848,7 +960,9 @@ describe('Report runs integration contract and endpoint suite', () => {
       });
 
       expect(response.statusCode).toBe(202);
-      const body = JSON.parse(response.body) as { id: string };
+      const body = JSON.parse(response.body) as { id: string; status: string };
+      expect(body.status).toBe('queued');
+      await drainUntilRunTerminal(body.id);
       const artifactPath = `${workspace1Id}/${body.id}.json`;
       const uploaded = inMemoryStorage.uploaded.get(artifactPath);
       const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
@@ -884,7 +998,9 @@ describe('Report runs integration contract and endpoint suite', () => {
       });
 
       expect(response.statusCode).toBe(202);
-      const body = JSON.parse(response.body) as { id: string };
+      const body = JSON.parse(response.body) as { id: string; status: string };
+      expect(body.status).toBe('queued');
+      await drainUntilRunTerminal(body.id);
       const artifactPath = `${workspace1Id}/${body.id}.json`;
       const uploaded = inMemoryStorage.uploaded.get(artifactPath);
       const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
@@ -981,7 +1097,9 @@ describe('Report runs integration contract and endpoint suite', () => {
       });
 
       expect(response.statusCode).toBe(202);
-      const body = JSON.parse(response.body) as { id: string };
+      const body = JSON.parse(response.body) as { id: string; status: string };
+      expect(body.status).toBe('queued');
+      await drainUntilRunTerminal(body.id);
       const artifactPath = `${workspace1Id}/${body.id}.json`;
       const uploaded = inMemoryStorage.uploaded.get(artifactPath);
       const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
@@ -1041,6 +1159,209 @@ describe('Report runs integration contract and endpoint suite', () => {
       );
       const dbCountAfter = parseInt(dbRunsAfter.rows[0]?.count ?? '0', 10);
       expect(dbCountAfter).toBe(dbCountBefore);
+    });
+
+    it('retries a storage 5xx by overwriting the same object key', async () => {
+      inMemoryStorage.failNext = ['unavailable'];
+      const uploadsBefore = inMemoryStorage.uploadCallCount;
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: { from: '2026-06-01', to: '2026-06-30' },
+        },
+      });
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const finished = await drainUntilRunTerminal(body.id);
+      expect(finished.runStatus).toBe('completed');
+      expect(inMemoryStorage.uploadCallCount).toBe(uploadsBefore + 2);
+      expect(
+        inMemoryStorage.uploaded.has(`${workspace1Id}/${body.id}.json`),
+      ).toBe(true);
+    });
+
+    it('fails the run permanently on a storage 4xx', async () => {
+      inMemoryStorage.failNext = [400];
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: { from: '2026-06-01', to: '2026-06-30' },
+        },
+      });
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const finished = await drainUntilRunTerminal(body.id);
+      expect(finished.jobStatus).toBe('failed');
+      expect(finished.runStatus).toBe('failed');
+    });
+
+    it('fails with the 403 Problem when the creator is demoted before drain', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: { from: '2026-06-01', to: '2026-06-30' },
+        },
+      });
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string; status: string };
+      expect(body.status).toBe('queued');
+
+      await admin.query(
+        `update public.workspace_memberships
+            set role = 'viewer'
+          where workspace_id = $1::uuid
+            and profile_id = $2::uuid`,
+        [workspace1Id, editorId],
+      );
+
+      try {
+        const finished = await drainUntilRunTerminal(body.id);
+        expect(finished.jobStatus).toBe('failed');
+        expect(finished.runStatus).toBe('failed');
+        expect(finished.runError).toEqual(
+          expect.objectContaining({
+            status: 403,
+            code: 'forbidden',
+          }),
+        );
+      } finally {
+        await admin.query(
+          `update public.workspace_memberships
+              set role = 'editor'
+            where workspace_id = $1::uuid
+              and profile_id = $2::uuid`,
+          [workspace1Id, editorId],
+        );
+      }
+    });
+
+    it('projects dead_letter as failed on the report run with the job error copied', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: { from: '2026-06-01', to: '2026-06-30' },
+        },
+      });
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const link = await admin.query<{ job_id: string }>(
+        `select job_id::text as job_id from public.report_runs where id = $1::uuid`,
+        [body.id],
+      );
+      const jobId = link.rows[0]?.job_id;
+      const problem = {
+        type: 'https://savia.app/problems/job-exhausted',
+        title: 'Job Retries Exhausted',
+        status: 500,
+        code: 'job_retries_exhausted',
+        detail: 'poison report run',
+        traceId: randomUUID(),
+      };
+      await admin.query(`select public.dead_letter_job($1::uuid, $2::jsonb)`, [
+        jobId,
+        JSON.stringify(problem),
+      ]);
+      const run = await admin.query<{
+        status: string;
+        error: Record<string, unknown> | null;
+      }>(`select status, error from public.report_runs where id = $1::uuid`, [
+        body.id,
+      ]);
+      const job = await admin.query<{
+        status: string;
+        error: Record<string, unknown> | null;
+      }>(`select status, error from public.jobs where id = $1::uuid`, [jobId]);
+      expect(job.rows[0]?.status).toBe('dead_letter');
+      expect(run.rows[0]?.status).toBe('failed');
+      expect(run.rows[0]?.error).toEqual(job.rows[0]?.error);
+    });
+
+    it('rolls back the report run completion when persist throws after writing', async () => {
+      const handlers = workerModule.get<readonly JobHandler[] | JobHandler>(
+        JOB_HANDLERS,
+      );
+      const list = Array.isArray(handlers) ? handlers : [handlers];
+      const original = list.find((handler) => handler.jobType === 'report_run');
+      if (!original) {
+        throw new Error('Expected a registered report_run handler');
+      }
+      const racing: JobHandler = {
+        jobType: original.jobType,
+        parsePayload: (raw) => original.parsePayload(raw),
+        compute: (context, client) => original.compute(context, client),
+        materialize: original.materialize?.bind(original),
+        persist: async (context, computed, client) => {
+          await original.persist(context, computed, client);
+          throw new Error('refuse after persist');
+        },
+      };
+      runner.registerHandler(racing);
+      try {
+        const response = await application.inject({
+          method: 'POST',
+          url: '/v1/report-runs',
+          headers: {
+            authorization: 'Bearer editor-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': randomUUID(),
+          },
+          payload: {
+            preset: 'expenses',
+            format: 'json',
+            filters: { from: '2026-06-01', to: '2026-06-30' },
+          },
+        });
+        expect(response.statusCode).toBe(202);
+        const body = JSON.parse(response.body) as { id: string };
+        await runner.drainOnce();
+        const run = await admin.query<{ status: string }>(
+          `select status from public.report_runs where id = $1::uuid`,
+          [body.id],
+        );
+        const job = await admin.query<{ status: string }>(
+          `select j.status
+             from public.jobs j
+             join public.report_runs r on r.job_id = j.id
+            where r.id = $1::uuid`,
+          [body.id],
+        );
+        expect(run.rows[0]?.status).toBe('queued');
+        expect(job.rows[0]?.status).not.toBe('completed');
+      } finally {
+        runner.registerHandler(original);
+      }
     });
   });
 });

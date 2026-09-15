@@ -144,8 +144,7 @@ describe('PostgresReportAdapter report-run queries', () => {
         createdAt: '2026-09-15T00:00:00.000000Z',
       },
     ]);
-    const completedAt = new Date('2026-09-15T12:00:00.000Z');
-    await new PostgresReportAdapter().insertReportRun(
+    await new PostgresReportAdapter().insertQueuedReportRun(
       client,
       workspaceId,
       subject,
@@ -156,9 +155,7 @@ describe('PostgresReportAdapter report-run queries', () => {
         format: 'json',
         filters: {},
         snapshotId: 'ffffffff-0000-4000-8000-000000000001',
-        downloadUrl: 'https://storage.example.test/report.json',
-        expiresAt: new Date('2026-09-22T00:00:00.000Z'),
-        completedAt,
+        jobId: 'aaaaaaaa-0000-4000-8000-000000000099',
       },
     );
 

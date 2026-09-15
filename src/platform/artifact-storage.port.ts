@@ -7,6 +7,16 @@ export class ArtifactStorageUnavailableError extends Error {
   }
 }
 
+export class ArtifactStorageClientError extends Error {
+  public constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ArtifactStorageClientError';
+  }
+}
+
 export interface ArtifactStorage {
   /**
    * Stores `content` at `path`, overwriting any existing object at that key.

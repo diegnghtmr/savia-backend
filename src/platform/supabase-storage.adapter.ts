@@ -1,4 +1,5 @@
 import {
+  ArtifactStorageClientError,
   ArtifactStorageUnavailableError,
   type ArtifactStorage,
 } from './artifact-storage.port.js';
@@ -61,7 +62,8 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
           `Storage upload failed with status ${response.status}.`,
         );
       else
-        throw new Error(
+        throw new ArtifactStorageClientError(
+          response.status,
           `Storage upload failed with status ${response.status}.`,
         );
   }
@@ -96,7 +98,8 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
           `Storage signing failed with status ${response.status}.`,
         );
       else
-        throw new Error(
+        throw new ArtifactStorageClientError(
+          response.status,
           `Storage signing failed with status ${response.status}.`,
         );
     const body = (await response.json()) as {
@@ -139,7 +142,8 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
           `Storage removal failed with status ${response.status}.`,
         );
       else
-        throw new Error(
+        throw new ArtifactStorageClientError(
+          response.status,
           `Storage removal failed with status ${response.status}.`,
         );
   }

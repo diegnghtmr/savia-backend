@@ -108,6 +108,8 @@ describe('WorkerConfig', () => {
     expect(config.terminalReserveMs).toBe(10_000);
     expect(config.minOperationMs).toBe(1_000);
     expect(config.queueTimeoutMs).toBe(8_000);
+    expect(config.storageUploadTimeoutMs).toBe(30_000);
+    expect(config.pdfRenderTimeoutMs).toBe(30_000);
     expect(config.visibilityTimeoutSeconds).toBe(300);
 
     // Each cap < visibilityMs

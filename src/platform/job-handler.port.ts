@@ -10,12 +10,17 @@ export interface JobExecutionContext<P> {
   readonly payload: P;
 }
 
-export interface JobHandler<P = unknown, R = unknown> {
+export interface JobHandler<P = unknown, C = unknown, R = C> {
   readonly jobType: string;
   parsePayload(raw: unknown): P;
   compute(
     context: JobExecutionContext<P>,
     client: TransactionClient,
+  ): Promise<C>;
+  materialize?(
+    context: JobExecutionContext<P>,
+    computed: C,
+    timeoutMs: number,
   ): Promise<R>;
   persist(
     context: JobExecutionContext<P>,

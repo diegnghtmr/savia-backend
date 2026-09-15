@@ -2,7 +2,7 @@ import type { TransactionClient } from '../platform/pg-transaction.js';
 import { multiplyMinorByRate } from '../platform/currency-conversion.js';
 import type {
   CompleteProcessingReportRunRecord,
-  CreateReportRunRecord,
+  CreateQueuedReportRunRecord,
   CreateReportDefinitionRequest,
   ReportDefinition,
   ReportDimension,
@@ -283,15 +283,15 @@ limit $5`;
     );
   }
 
-  public async insertReportRun(
+  public async insertQueuedReportRun(
     client: TransactionClient,
     workspaceId: string,
     subject: string,
-    data: CreateReportRunRecord,
+    data: CreateQueuedReportRunRecord,
   ): Promise<ReportRun> {
     const result = await client.query<ReportRunRow>(
       `insert into public.report_runs (id, workspace_id, definition_id, preset, status, format, snapshot_id, object_path, download_url, expires_at, filters, created_by, completed_at, job_id)
-       values ($1::uuid, $2::uuid, $3::uuid, $4, 'completed', $5, $6::uuid, $7, $8, $9::timestamptz, $10::jsonb, $11::uuid, $12::timestamptz, $13::uuid)
+       values ($1::uuid, $2::uuid, $3::uuid, $4, 'queued', $5, $6::uuid, $7, null, null, $8::jsonb, $9::uuid, null, $10::uuid)
        returning id::text, definition_id::text as "definitionId", preset, status, format, snapshot_id::text as "snapshotId", download_url as "downloadUrl",
                  to_char(expires_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "expiresAt",
                  to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt"`,
@@ -303,17 +303,35 @@ limit $5`;
         data.format,
         data.snapshotId,
         reportArtifactObjectKey(workspaceId, data.id, data.format),
-        data.downloadUrl,
-        data.expiresAt.toISOString(),
         JSON.stringify(data.filters),
         subject,
-        data.completedAt.toISOString(),
-        data.jobId ?? null,
+        data.jobId,
       ],
     );
     const row = result.rows[0];
     if (!row) throw new Error('Created report run could not be read.');
     return mapReportRun(row);
+  }
+
+  public async beginProcessingReportRun(
+    client: TransactionClient,
+    workspaceId: string,
+    reportRunId: string,
+  ): Promise<void> {
+    const result = await client.query<{ id: string }>(
+      `update public.report_runs
+          set status = 'processing'
+        where workspace_id = $1::uuid
+          and id = $2::uuid
+          and status = 'queued'
+       returning id::text`,
+      [workspaceId, reportRunId],
+    );
+    if (!result.rows[0]) {
+      throw new Error(
+        'Report run could not be marked processing because it was not queued.',
+      );
+    }
   }
 
   public async completeProcessingReportRun(
