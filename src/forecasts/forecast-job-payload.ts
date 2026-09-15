@@ -42,6 +42,16 @@ function isStringArray(value: unknown): value is readonly string[] {
   );
 }
 
+const CANONICAL_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+function isCanonicalUtcTimestamp(value: string): boolean {
+  if (!CANONICAL_UTC_TIMESTAMP.test(value)) {
+    return false;
+  }
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
 export function parseForecastJobPayload(raw: unknown): ForecastJobPayload {
   if (!isRecord(raw)) {
     throw new ForecastJobPayloadError(
@@ -67,7 +77,7 @@ export function parseForecastJobPayload(raw: unknown): ForecastJobPayload {
     );
   }
 
-  if (typeof raw.asOf !== 'string' || Number.isNaN(Date.parse(raw.asOf))) {
+  if (typeof raw.asOf !== 'string' || !isCanonicalUtcTimestamp(raw.asOf)) {
     throw new ForecastJobPayloadError(
       'Forecast job payload asOf must be an ISO timestamp.',
     );

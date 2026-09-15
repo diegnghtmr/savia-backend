@@ -38,6 +38,42 @@ describe('parseForecastJobPayload', () => {
     ).toThrow(/asOf/);
   });
 
+  it('rejects a non-ISO asOf timestamp', () => {
+    expect(() =>
+      parseForecastJobPayload({ ...valid, asOf: 'September 4, 2026' }),
+    ).toThrow(/asOf/);
+  });
+
+  it('rejects a date-only asOf timestamp', () => {
+    expect(() =>
+      parseForecastJobPayload({ ...valid, asOf: '2026-09-04' }),
+    ).toThrow(/asOf/);
+  });
+
+  it('rejects an asOf timestamp with an offset', () => {
+    expect(() =>
+      parseForecastJobPayload({
+        ...valid,
+        asOf: '2026-09-04T12:00:00.000+02:00',
+      }),
+    ).toThrow(/asOf/);
+  });
+
+  it('rejects an impossible calendar asOf timestamp', () => {
+    expect(() =>
+      parseForecastJobPayload({
+        ...valid,
+        asOf: '2026-02-30T00:00:00.000Z',
+      }),
+    ).toThrow(/asOf/);
+  });
+
+  it('rejects an asOf timestamp missing milliseconds', () => {
+    expect(() =>
+      parseForecastJobPayload({ ...valid, asOf: '2026-09-04T12:00:00Z' }),
+    ).toThrow(/asOf/);
+  });
+
   it('rejects a non-uuid effectiveAccountId', () => {
     expect(() =>
       parseForecastJobPayload({ ...valid, effectiveAccountIds: ['nope'] }),
