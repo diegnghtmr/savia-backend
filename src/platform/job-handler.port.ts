@@ -1,5 +1,7 @@
 import type { TransactionClient } from './pg-transaction.js';
 
+export const JOB_HANDLERS = Symbol('JOB_HANDLERS');
+
 export interface JobExecutionContext<P> {
   readonly jobId: string;
   readonly workspaceId: string;

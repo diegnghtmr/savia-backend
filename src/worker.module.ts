@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
+import { ForecastWorkerModule } from './forecasts/forecast-worker.module.js';
 import { PostgresJobsAdapter } from './jobs/postgres-jobs.adapter.js';
 import { JobRunner } from './platform/job-runner.js';
 import { JOB_WRITER } from './platform/job-writer.port.js';
 import { WorkerPlatformModule } from './platform/worker-platform.module.js';
 
 @Module({
-  imports: [WorkerPlatformModule],
+  imports: [WorkerPlatformModule, ForecastWorkerModule],
   providers: [
     PostgresJobsAdapter,
     {

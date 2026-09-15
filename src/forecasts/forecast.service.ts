@@ -1,22 +1,15 @@
-import { randomUUID } from 'node:crypto';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   JobWriter,
-  TerminalJob as Job,
+  JobRecord as Job,
 } from '../platform/job-writer.port.js';
-import { multiplyMinorByRate } from '../platform/currency-conversion.js';
+import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
 import {
-  buildMonthlySavingsCapacity,
-  truncateToBucketStart,
-  GRANULARITY,
-  type ConvertedFlowRow,
-} from '../platform/monthly-capacity.js';
-import {
-  computeForecast,
-  type AppliedScenarioRunData,
-} from './forecast-engine.js';
+  FORECAST_JOB_PAYLOAD_VERSION,
+  freezeForecastJobPayload,
+} from './forecast-job-payload.js';
 import {
   FORECAST_OUTCOMES,
   type ForecastCreateOutcome,
@@ -49,6 +42,15 @@ export class ForecastCreateRollbackError extends Error {
   }
 }
 
+const FORECAST_WRITE_ROLES = {
+  OWNER: 'owner',
+  ADMINISTRATOR: 'administrator',
+  EDITOR: 'editor',
+} as const;
+
+const WRITE_ROLE_VALUES: readonly string[] =
+  Object.values(FORECAST_WRITE_ROLES);
+
 export class ForecastService implements ForecastsPort {
   public constructor(
     private readonly tx: ForecastTransaction,
@@ -70,7 +72,7 @@ export class ForecastService implements ForecastsPort {
     try {
       return await this.tx.run(subject, async (client) => {
         const role = await this.store.readActiveRole(client, workspaceId);
-        if (!['owner', 'administrator', 'editor'].includes(role ?? '')) {
+        if (!WRITE_ROLE_VALUES.includes(role ?? '')) {
           return { kind: FORECAST_OUTCOMES.FORBIDDEN };
         }
 
@@ -141,167 +143,22 @@ export class ForecastService implements ForecastsPort {
         }
 
         const now = this.clock();
-        const periodEnd = now.toISOString().slice(0, 10);
-        const nowYear = now.getUTCFullYear();
-        const nowMonth = now.getUTCMonth();
-        const startMonthDate = new Date(Date.UTC(nowYear, nowMonth - 11, 1));
-        const periodStart = startMonthDate.toISOString().slice(0, 10);
-
-        const flowRows = await this.store.readTransactionsInPeriod(
-          client,
-          workspaceId,
-          periodStart,
-          periodEnd,
-          effectiveAccountIds,
-        );
-        const accountBalances = await this.store.readAccountNativeBalances(
-          client,
-          workspaceId,
-          effectiveAccountIds,
-        );
-
-        const rates = new Map<string, string>();
-        const neededCurrencies = new Set<string>();
-
-        for (const acct of accountBalances) {
-          if (acct.currency !== baseCurrency) {
-            neededCurrencies.add(acct.currency);
-          }
-        }
-        for (const row of flowRows) {
-          if (row.currency !== baseCurrency) {
-            neededCurrencies.add(row.currency);
-          }
-        }
-
-        for (const curr of neededCurrencies) {
-          const rate = await this.store.findExchangeRate(
-            client,
-            workspaceId,
-            curr,
-            baseCurrency,
-            now,
-          );
-          if (!rate) {
-            return {
-              kind: FORECAST_OUTCOMES.MISSING_RATE,
-              fromCurrency: curr,
-              toCurrency: baseCurrency,
-            };
-          }
-          rates.set(`${curr}:${baseCurrency}`, rate);
-        }
-
-        let openingBalanceMinor = 0n;
-        for (const acct of accountBalances) {
-          if (acct.currency === baseCurrency) {
-            openingBalanceMinor += BigInt(acct.nativeBalanceMinor);
-          } else {
-            const rate = rates.get(`${acct.currency}:${baseCurrency}`)!;
-            openingBalanceMinor += BigInt(
-              multiplyMinorByRate(acct.nativeBalanceMinor, rate),
-            );
-          }
-        }
-
-        const convertedFlowRows: ConvertedFlowRow[] = [];
-        for (const row of flowRows) {
-          let amountMinor: bigint;
-          if (row.currency === baseCurrency) {
-            amountMinor = BigInt(row.amountMinor);
-          } else {
-            const rate = rates.get(`${row.currency}:${baseCurrency}`)!;
-            amountMinor = BigInt(multiplyMinorByRate(row.amountMinor, rate));
-          }
-          convertedFlowRows.push({
-            type: row.type,
-            amountMinor,
-            occurredAt: new Date(row.occurredAt),
-          });
-        }
-
-        const monthsWithRows = new Set<string>();
-        for (const row of convertedFlowRows) {
-          monthsWithRows.add(
-            truncateToBucketStart(row.occurredAt, GRANULARITY.MONTH),
-          );
-        }
-        const monthsOfHistoryAvailable = monthsWithRows.size;
-
-        const buckets = buildMonthlySavingsCapacity(
-          periodStart,
-          periodEnd,
-          convertedFlowRows,
-        );
-
-        let monthlySavingsCapacities: bigint[] = [];
-        if (monthsOfHistoryAvailable > 0) {
-          const firstIdx = buckets.findIndex((b) =>
-            monthsWithRows.has(b.month),
-          );
-          if (firstIdx !== -1) {
-            monthlySavingsCapacities = buckets
-              .slice(firstIdx)
-              .map((b) => b.savingsCapacityMinor);
-          }
-        }
-
-        let appliedScenarioRun: AppliedScenarioRunData | null = null;
-        if (command.includeScenarios) {
-          const scenarioRun =
-            await this.store.findMostRecentCompletedScenarioRun(
-              client,
-              workspaceId,
-            );
-          if (scenarioRun) {
-            appliedScenarioRun = {
-              id: scenarioRun.id,
-              monthlySavingsCapacityMinor:
-                scenarioRun.monthlySavingsCapacityMinor,
-            };
-          }
-        }
-
-        const engineResult = computeForecast({
-          openingBalanceMinor,
-          baseCurrency,
-          horizonDays: command.horizonDays,
-          today: now,
-          monthlySavingsCapacities,
-          monthsOfHistoryAvailable,
-          includeScenarios: command.includeScenarios,
-          appliedScenarioRun,
-        });
-
-        const assumptions = [
-          ...closedAccountAssumptions,
-          ...engineResult.assumptions,
-        ];
-
-        const forecastId = randomUUID();
-
-        const jobRecord = await this.jobs.createTerminalJob(
+        const jobRecord = await this.jobs.createQueuedJob(
           client,
           workspaceId,
           subject,
-          'balance_forecast',
-          'completed',
-          forecastId,
-          null,
+          JOB_WRITER_TYPES.BALANCE_FORECAST,
+          freezeForecastJobPayload({
+            version: FORECAST_JOB_PAYLOAD_VERSION,
+            asOf: now.toISOString(),
+            horizonDays: command.horizonDays,
+            includeScenarios: command.includeScenarios,
+            effectiveAccountIds,
+            closedAccountAssumptions,
+            baseCurrency,
+          }),
         );
         const job = jobRecord as unknown as Job;
-
-        await this.store.createForecast(client, workspaceId, subject, {
-          id: forecastId,
-          jobId: job.id,
-          status: 'completed',
-          confidence: engineResult.confidence,
-          method: engineResult.method,
-          horizonDays: command.horizonDays,
-          assumptions,
-          series: engineResult.series,
-          generatedAt: now,
-        });
 
         const written = await this.idempotency.write(
           client,

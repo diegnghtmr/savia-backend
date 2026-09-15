@@ -158,6 +158,7 @@ class FakeIdempotencyStore implements IdempotencyStore {
 
 class FakeJobWriter implements JobWriter {
   public createdJobs: unknown[] = [];
+  public createdQueuedPayloads: unknown[] = [];
 
   public async createTerminalJob(
     _client: TransactionClient,
@@ -188,7 +189,9 @@ class FakeJobWriter implements JobWriter {
     _workspaceId: string,
     _subject: string,
     type: string,
+    payload?: Record<string, unknown> | null,
   ): Promise<Record<string, unknown>> {
+    this.createdQueuedPayloads.push(payload ?? null);
     const job: Job = {
       id: 'job-uuid-queued-1',
       type,
@@ -518,15 +521,21 @@ describe('ForecastService', () => {
         'key-1',
       );
       expect(result.kind).toBe(FORECAST_OUTCOMES.ACCEPTED);
-      expect(store.createdForecasts).toHaveLength(1);
-      const created = store.createdForecasts[0];
-      expect(created.assumptions).toContain(
-        `Account ${closedId} is closed and contributes zero.`,
-      );
-      // Opening balance should reflect only openId (50000)
-      expect(created.series[0].expected.amountMinor).toBe('50000');
-      expect(store.readNativeBalanceAccountIds).toEqual([openId]);
-      expect(store.readTransactionsInPeriodAccountIds).toEqual([openId]);
+      expect(store.createdForecasts).toHaveLength(0);
+      expect(store.readNativeBalanceAccountIds).toBeUndefined();
+      expect(store.readTransactionsInPeriodAccountIds).toBeUndefined();
+      expect(jobs.createdQueuedPayloads).toHaveLength(1);
+      expect(jobs.createdQueuedPayloads[0]).toMatchObject({
+        version: 1,
+        asOf: fixedNow.toISOString(),
+        horizonDays: 30,
+        includeScenarios: false,
+        effectiveAccountIds: [openId],
+        closedAccountAssumptions: [
+          `Account ${closedId} is closed and contributes zero.`,
+        ],
+        baseCurrency: 'USD',
+      });
     });
 
     it('when all requested accountIds are closed, passes empty array to both reads resulting in zero balance and zero history', async () => {
@@ -558,17 +567,14 @@ describe('ForecastService', () => {
         'key-1',
       );
       expect(result.kind).toBe(FORECAST_OUTCOMES.ACCEPTED);
-      expect(store.readNativeBalanceAccountIds).toEqual([]);
-      expect(store.readTransactionsInPeriodAccountIds).toEqual([]);
-      const created = store.createdForecasts[0];
-      expect(created.series[0].expected.amountMinor).toBe('0');
-      expect(created.confidence).toBe('low');
-      expect(created.assumptions).toContain(
-        '0 months of history available; daily drift and bounds are zero.',
-      );
-      expect(created.assumptions).toContain(
-        `Account ${closedId} is closed and contributes zero.`,
-      );
+      expect(store.createdForecasts).toHaveLength(0);
+      expect(store.readNativeBalanceAccountIds).toBeUndefined();
+      expect(jobs.createdQueuedPayloads[0]).toMatchObject({
+        effectiveAccountIds: [],
+        closedAccountAssumptions: [
+          `Account ${closedId} is closed and contributes zero.`,
+        ],
+      });
     });
 
     it('when accountIds is absent, queries readOpenAccountIds and passes effective set to both reads', async () => {
@@ -604,90 +610,19 @@ describe('ForecastService', () => {
       );
       expect(result.kind).toBe(FORECAST_OUTCOMES.ACCEPTED);
       expect(store.readOpenAccountIdsCalled).toBe(true);
-      expect(store.readNativeBalanceAccountIds).toEqual([openId1, openId2]);
-      expect(store.readTransactionsInPeriodAccountIds).toEqual([
-        openId1,
-        openId2,
-      ]);
-    });
-
-    it('returns MISSING_RATE 422 when account has non-base currency with missing exchange rate', async () => {
-      const store = new FakeForecastStore({
-        baseCurrency: 'USD',
-        nativeBalances: [
-          { id: 'acct-eur', currency: 'EUR', nativeBalanceMinor: '1000' },
-        ],
-        rates: {}, // no EUR:USD rate
+      expect(store.readNativeBalanceAccountIds).toBeUndefined();
+      expect(jobs.createdQueuedPayloads[0]).toMatchObject({
+        effectiveAccountIds: [openId1, openId2],
       });
-      const idempotency = new FakeIdempotencyStore();
-      const jobs = new FakeJobWriter();
-      const service = new ForecastService(
-        directTransaction,
-        store,
-        idempotency,
-        jobs,
-        () => fixedNow,
-      );
-
-      const result = await service.createBalanceForecast(
-        subject,
-        workspaceId,
-        command,
-        'key-1',
-      );
-      expect(result.kind).toBe(FORECAST_OUTCOMES.MISSING_RATE);
-      if (result.kind === FORECAST_OUTCOMES.MISSING_RATE) {
-        expect(result.fromCurrency).toBe('EUR');
-        expect(result.toCurrency).toBe('USD');
-      }
     });
 
-    it('returns MISSING_RATE 422 when transaction flow row has non-base currency with missing rate', async () => {
-      const store = new FakeForecastStore({
-        baseCurrency: 'USD',
-        transactions: [
-          {
-            id: 'tx-1',
-            type: 'income',
-            amountMinor: '2000',
-            currency: 'EUR',
-            occurredAt: new Date('2026-08-15T00:00:00.000Z'),
-          },
-        ],
-        rates: {}, // no EUR:USD rate
-      });
-      const idempotency = new FakeIdempotencyStore();
-      const jobs = new FakeJobWriter();
-      const service = new ForecastService(
-        directTransaction,
-        store,
-        idempotency,
-        jobs,
-        () => fixedNow,
-      );
-
-      const result = await service.createBalanceForecast(
-        subject,
-        workspaceId,
-        command,
-        'key-1',
-      );
-      expect(result.kind).toBe(FORECAST_OUTCOMES.MISSING_RATE);
-      if (result.kind === FORECAST_OUTCOMES.MISSING_RATE) {
-        expect(result.fromCurrency).toBe('EUR');
-        expect(result.toCurrency).toBe('USD');
-      }
-    });
-
-    it('converts non-base currency using exchange rate and computes forecast', async () => {
+    it('enqueues a queued job and does not compute or persist a forecast in the request', async () => {
       const store = new FakeForecastStore({
         baseCurrency: 'USD',
         nativeBalances: [
           { id: 'acct-eur', currency: 'EUR', nativeBalanceMinor: '10000' },
         ],
-        rates: {
-          'EUR:USD': '1.10',
-        },
+        rates: {},
       });
       const idempotency = new FakeIdempotencyStore();
       const jobs = new FakeJobWriter();
@@ -706,14 +641,25 @@ describe('ForecastService', () => {
         'key-1',
       );
       expect(result.kind).toBe(FORECAST_OUTCOMES.ACCEPTED);
-      expect(store.createdForecasts).toHaveLength(1);
-      // 10000 EUR * 1.10 = 11000 USD
-      expect(store.createdForecasts[0].series[0].expected.amountMinor).toBe(
-        '11000',
-      );
+      if (result.kind === FORECAST_OUTCOMES.ACCEPTED) {
+        expect(result.job.status).toBe('queued');
+        expect(result.job.resultResourceId).toBeNull();
+        expect(result.job.type).toBe('balance_forecast');
+      }
+      expect(store.createdForecasts).toHaveLength(0);
+      expect(store.readNativeBalanceAccountIds).toBeUndefined();
+      expect(store.readTransactionsInPeriodAccountIds).toBeUndefined();
+      expect(jobs.createdJobs).toHaveLength(1);
+      expect(jobs.createdQueuedPayloads[0]).toMatchObject({
+        version: 1,
+        asOf: fixedNow.toISOString(),
+        horizonDays: 30,
+        includeScenarios: false,
+        baseCurrency: 'USD',
+      });
     });
 
-    it('applies completed scenario run when includeScenarios is true', async () => {
+    it('freezes includeScenarios into the queued payload without reading scenario runs', async () => {
       const store = new FakeForecastStore({
         baseCurrency: 'USD',
         scenarioRun: {
@@ -743,90 +689,10 @@ describe('ForecastService', () => {
         'key-1',
       );
       expect(result.kind).toBe(FORECAST_OUTCOMES.ACCEPTED);
-      const created = store.createdForecasts[0];
-      expect(created.assumptions).toContain(
-        'Applied scenario run scen-run-123.',
-      );
-      // 60000 / 30 = 2000 per day drift; opening balance 0 -> day 1 = 2000
-      expect(created.series[0].expected.amountMinor).toBe('2000');
-    });
-
-    it('records assumption when includeScenarios requested but no completed scenario run existed', async () => {
-      const store = new FakeForecastStore({
-        baseCurrency: 'USD',
-        scenarioRun: undefined,
-      });
-      const idempotency = new FakeIdempotencyStore();
-      const jobs = new FakeJobWriter();
-      const service = new ForecastService(
-        directTransaction,
-        store,
-        idempotency,
-        jobs,
-        () => fixedNow,
-      );
-
-      const cmd: ForecastRequest = {
-        horizonDays: 30,
+      expect(store.createdForecasts).toHaveLength(0);
+      expect(jobs.createdQueuedPayloads[0]).toMatchObject({
         includeScenarios: true,
-      };
-
-      const result = await service.createBalanceForecast(
-        subject,
-        workspaceId,
-        cmd,
-        'key-1',
-      );
-      expect(result.kind).toBe(FORECAST_OUTCOMES.ACCEPTED);
-      const created = store.createdForecasts[0];
-      expect(created.assumptions).toContain(
-        'includeScenarios was requested but no completed scenario run existed; proceeded from history.',
-      );
-    });
-
-    it('counts only buckets with rows for monthsOfHistoryAvailable and trims leading empty buckets', async () => {
-      // 2 flow rows in two distinct months (Aug 2026 and Jul 2026)
-      const store = new FakeForecastStore({
-        baseCurrency: 'USD',
-        transactions: [
-          {
-            id: 'tx-1',
-            type: 'income',
-            amountMinor: '30000',
-            currency: 'USD',
-            occurredAt: new Date('2026-07-15T00:00:00.000Z'),
-          },
-          {
-            id: 'tx-2',
-            type: 'income',
-            amountMinor: '30000',
-            currency: 'USD',
-            occurredAt: new Date('2026-08-15T00:00:00.000Z'),
-          },
-        ],
       });
-      const idempotency = new FakeIdempotencyStore();
-      const jobs = new FakeJobWriter();
-      const service = new ForecastService(
-        directTransaction,
-        store,
-        idempotency,
-        jobs,
-        () => fixedNow,
-      );
-
-      const result = await service.createBalanceForecast(
-        subject,
-        workspaceId,
-        command,
-        'key-1',
-      );
-      expect(result.kind).toBe(FORECAST_OUTCOMES.ACCEPTED);
-      const created = store.createdForecasts[0];
-      // 2 months with rows -> confidence is low (< 3)
-      expect(created.confidence).toBe('low');
-      // trimmed buckets from first month with rows (July) through last bucket (September) = 3 months
-      expect(created.assumptions).toContain('3 month(s) of history used.');
     });
 
     it('handles race condition where idempotency write fails and rereads record', async () => {

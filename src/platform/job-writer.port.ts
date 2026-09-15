@@ -13,16 +13,20 @@ export const JOB_WRITER_TYPES = {
 export type JobWriterType =
   (typeof JOB_WRITER_TYPES)[keyof typeof JOB_WRITER_TYPES];
 
-export interface TerminalJob {
+export interface JobRecord {
   readonly id: string;
   readonly type: string;
-  readonly status: 'completed' | 'failed';
+  readonly status: string;
   readonly progressPercent: number | null;
   readonly resultResourceId: string | null;
   readonly error: Record<string, unknown> | null;
   readonly createdAt: string;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+}
+
+export interface TerminalJob extends JobRecord {
+  readonly status: 'completed' | 'failed';
 }
 
 export interface JobWriter {
