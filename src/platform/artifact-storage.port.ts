@@ -8,6 +8,10 @@ export class ArtifactStorageUnavailableError extends Error {
 }
 
 export interface ArtifactStorage {
+  /**
+   * Stores `content` at `path`, overwriting any existing object at that key.
+   * Retry-safe: a second upload to the same path replaces the first.
+   */
   upload(path: string, content: Buffer, contentType: string): Promise<void>;
   sign(
     path: string,
