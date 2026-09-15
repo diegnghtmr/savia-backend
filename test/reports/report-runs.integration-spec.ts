@@ -1,4 +1,4 @@
-// Migrations under test: 202609050001_report_definitions.sql, 202609050002_report_runs.sql
+// Migrations under test: 202609050001_report_definitions.sql, 202609050002_report_runs.sql, 202609150001_report_runs_async.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
