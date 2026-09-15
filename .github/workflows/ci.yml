@@ -293,6 +293,9 @@ jobs:
       - name: report runs schema integration
         shell: bash
         run: pnpm test:integration:report-runs-schema
+      - name: approvals integration
+        shell: bash
+        run: pnpm test:integration:approvals
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

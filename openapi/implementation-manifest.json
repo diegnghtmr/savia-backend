@@ -361,6 +361,21 @@
       "operationId": "getReportRun",
       "method": "GET",
       "path": "/v1/report-runs/{reportRunId}"
+    },
+    {
+      "operationId": "getApproval",
+      "method": "GET",
+      "path": "/v1/approvals/{approvalId}"
+    },
+    {
+      "operationId": "confirmApproval",
+      "method": "POST",
+      "path": "/v1/approvals/{approvalId}/confirm"
+    },
+    {
+      "operationId": "rejectApproval",
+      "method": "POST",
+      "path": "/v1/approvals/{approvalId}/reject"
     }
   ]
 }
