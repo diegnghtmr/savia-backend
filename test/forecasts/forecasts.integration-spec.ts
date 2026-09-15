@@ -557,6 +557,24 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       expect(forecast.confidence).toBe('medium');
       expect(forecast.assumptions).toContain('3 month(s) of history used.');
       expect(forecast.series[0].expected.currency).toBe('USD');
+      expect(forecast.series[0]).toEqual({
+        date: '2026-09-16',
+        expected: { amountMinor: '52214667', currency: 'USD' },
+        lowerBound: { amountMinor: '52207466', currency: 'USD' },
+        upperBound: { amountMinor: '52221868', currency: 'USD' },
+      });
+      expect(forecast.series[44]).toEqual({
+        date: '2026-10-30',
+        expected: { amountMinor: '52508015', currency: 'USD' },
+        lowerBound: { amountMinor: '52183977', currency: 'USD' },
+        upperBound: { amountMinor: '52832053', currency: 'USD' },
+      });
+      expect(forecast.series[89]).toEqual({
+        date: '2026-12-14',
+        expected: { amountMinor: '52808030', currency: 'USD' },
+        lowerBound: { amountMinor: '52159955', currency: 'USD' },
+        upperBound: { amountMinor: '53456105', currency: 'USD' },
+      });
 
       const transitions = await admin.query<{
         from_status: string | null;
