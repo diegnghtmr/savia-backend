@@ -231,6 +231,12 @@ export interface ReportStore {
     subject: string,
     data: CreateReportRunRecord,
   ): Promise<ReportRun>;
+  completeProcessingReportRun?(
+    client: TransactionClient,
+    workspaceId: string,
+    reportRunId: string,
+    data: CompleteProcessingReportRunRecord,
+  ): Promise<ReportRun>;
   findReportRun?(
     client: TransactionClient,
     workspaceId: string,
@@ -245,6 +251,13 @@ export interface CreateReportRunRecord {
   readonly format: ReportRunFormat;
   readonly filters: Record<string, unknown>;
   readonly snapshotId: string;
+  readonly downloadUrl: string;
+  readonly expiresAt: Date;
+  readonly completedAt: Date;
+  readonly jobId?: string | null;
+}
+
+export interface CompleteProcessingReportRunRecord {
   readonly downloadUrl: string;
   readonly expiresAt: Date;
   readonly completedAt: Date;

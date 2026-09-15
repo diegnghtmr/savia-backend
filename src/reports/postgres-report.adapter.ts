@@ -1,6 +1,7 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { multiplyMinorByRate } from '../platform/currency-conversion.js';
 import type {
+  CompleteProcessingReportRunRecord,
   CreateReportRunRecord,
   CreateReportDefinitionRequest,
   ReportDefinition,
@@ -14,6 +15,7 @@ import type {
   ReportRunFormat,
   ReportRunStatus,
 } from './report.port.js';
+import { reportArtifactObjectKey } from './report-run-snapshot.js';
 import type { ReportSourceRow } from './report.port.js';
 import {
   getReportSourceRowCap,
@@ -288,8 +290,8 @@ limit $5`;
     data: CreateReportRunRecord,
   ): Promise<ReportRun> {
     const result = await client.query<ReportRunRow>(
-      `insert into public.report_runs (id, workspace_id, definition_id, preset, status, format, snapshot_id, object_path, download_url, expires_at, filters, created_by, completed_at)
-       values ($1::uuid, $2::uuid, $3::uuid, $4, 'completed', $5, $6::uuid, $7, $8, $9::timestamptz, $10::jsonb, $11::uuid, $12::timestamptz)
+      `insert into public.report_runs (id, workspace_id, definition_id, preset, status, format, snapshot_id, object_path, download_url, expires_at, filters, created_by, completed_at, job_id)
+       values ($1::uuid, $2::uuid, $3::uuid, $4, 'completed', $5, $6::uuid, $7, $8, $9::timestamptz, $10::jsonb, $11::uuid, $12::timestamptz, $13::uuid)
        returning id::text, definition_id::text as "definitionId", preset, status, format, snapshot_id::text as "snapshotId", download_url as "downloadUrl",
                  to_char(expires_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "expiresAt",
                  to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt"`,
@@ -300,16 +302,52 @@ limit $5`;
         data.preset,
         data.format,
         data.snapshotId,
-        `${workspaceId}/${data.id}.${data.format}`,
+        reportArtifactObjectKey(workspaceId, data.id, data.format),
         data.downloadUrl,
         data.expiresAt.toISOString(),
         JSON.stringify(data.filters),
         subject,
         data.completedAt.toISOString(),
+        data.jobId ?? null,
       ],
     );
     const row = result.rows[0];
     if (!row) throw new Error('Created report run could not be read.');
+    return mapReportRun(row);
+  }
+
+  public async completeProcessingReportRun(
+    client: TransactionClient,
+    workspaceId: string,
+    reportRunId: string,
+    data: CompleteProcessingReportRunRecord,
+  ): Promise<ReportRun> {
+    const result = await client.query<ReportRunRow>(
+      `update public.report_runs
+          set status = 'completed',
+              download_url = $3,
+              expires_at = $4::timestamptz,
+              completed_at = $5::timestamptz
+        where workspace_id = $1::uuid
+          and id = $2::uuid
+          and status = 'processing'
+       returning id::text, definition_id::text as "definitionId", preset, status, format, snapshot_id::text as "snapshotId", download_url as "downloadUrl",
+                 to_char(expires_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "expiresAt",
+                 to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt"`,
+      [
+        workspaceId,
+        reportRunId,
+        data.downloadUrl,
+        data.expiresAt.toISOString(),
+        data.completedAt.toISOString(),
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(
+        'Report run artifact was not rewritten because it was not processing.',
+      );
+    }
     return mapReportRun(row);
   }
 
