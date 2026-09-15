@@ -341,6 +341,16 @@
       "operationId": "getForecast",
       "method": "GET",
       "path": "/v1/forecasts/{forecastId}"
+    },
+    {
+      "operationId": "listReportDefinitions",
+      "method": "GET",
+      "path": "/v1/report-definitions"
+    },
+    {
+      "operationId": "createReportDefinition",
+      "method": "POST",
+      "path": "/v1/report-definitions"
     }
   ]
 }
