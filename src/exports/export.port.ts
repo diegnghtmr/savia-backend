@@ -133,14 +133,6 @@ export interface ExportStore {
     id: string,
   ): Promise<ExportJob | undefined>;
 }
-export interface ExportStorage {
-  upload(path: string, content: Buffer, contentType: string): Promise<void>;
-  sign(
-    path: string,
-    expiresAt: Date,
-  ): Promise<{ url: string; expiresAt: Date }>;
-  remove(path: string): Promise<void>;
-}
 export interface ExportsPort {
   createExportJob(
     subject: string,

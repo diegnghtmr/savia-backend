@@ -3,12 +3,12 @@ import type { FieldViolation } from '../platform/problem-details.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
 import {
   ADVANCED_METRIC,
-  GRANULARITY,
+  CASH_FLOW_GRANULARITY,
   type AdvancedAnalyticsQuery,
   type AdvancedMetric,
   type AnalyticsSummaryQuery,
   type CashFlowAnalyticsQuery,
-  type Granularity,
+  type CashFlowGranularity,
 } from './analytics.port.js';
 
 export class AnalyticsQueryValidationError extends Error {
@@ -179,16 +179,18 @@ export function createCashFlowAnalyticsQuery(input: {
   }
 
   // 4.6 Granularity: day | week | month | quarter, default month
-  let granularity: Granularity = GRANULARITY.MONTH;
+  let granularity: CashFlowGranularity = CASH_FLOW_GRANULARITY.MONTH;
   if (input.granularityParam !== undefined) {
     const raw = input.granularityParam.trim().toLowerCase();
-    if (Object.values(GRANULARITY).includes(raw as Granularity)) {
-      granularity = raw as Granularity;
+    if (
+      Object.values(CASH_FLOW_GRANULARITY).includes(raw as CashFlowGranularity)
+    ) {
+      granularity = raw as CashFlowGranularity;
     } else {
       violations.push({
         field: 'granularity',
         code: 'invalid-granularity',
-        message: `granularity must be one of: ${Object.values(GRANULARITY).join(', ')}.`,
+        message: `granularity must be one of: ${Object.values(CASH_FLOW_GRANULARITY).join(', ')}.`,
       });
     }
   }

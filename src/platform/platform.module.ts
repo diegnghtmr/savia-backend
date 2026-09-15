@@ -8,6 +8,8 @@ import { PostgresConfig } from './postgres-config.js';
 import { PostgresPool } from './postgres-pool.js';
 
 import { PostgresIdempotencyAdapter } from './postgres-idempotency.adapter.js';
+import { ARTIFACT_STORAGE } from './artifact-storage.port.js';
+import { SupabaseStorageAdapter } from './supabase-storage.adapter.js';
 
 @Module({
   providers: [
@@ -44,6 +46,11 @@ import { PostgresIdempotencyAdapter } from './postgres-idempotency.adapter.js';
       useFactory: (pool: PostgresPool): PgTransaction => new PgTransaction(pool, () => ({ checkoutTimeoutMs: pool.checkoutTimeoutMs })),
     },
     PostgresIdempotencyAdapter,
+    SupabaseStorageAdapter,
+    {
+      provide: ARTIFACT_STORAGE,
+      useExisting: SupabaseStorageAdapter,
+    },
   ],
   exports: [
     AuthConfig,
@@ -52,6 +59,8 @@ import { PostgresIdempotencyAdapter } from './postgres-idempotency.adapter.js';
     PostgresPool,
     PgTransaction,
     PostgresIdempotencyAdapter,
+    SupabaseStorageAdapter,
+    ARTIFACT_STORAGE,
   ],
 })
 export class PlatformModule {
