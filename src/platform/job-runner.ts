@@ -10,7 +10,11 @@ import {
   DeliveryDeadline,
   DeliveryDeadlineExceededError,
 } from './delivery-deadline.js';
-import type { JobExecutionContext, JobHandler } from './job-handler.port.js';
+import {
+  JOB_HANDLERS,
+  type JobExecutionContext,
+  type JobHandler,
+} from './job-handler.port.js';
 import {
   JOB_QUEUE,
   type JobQueue,
@@ -125,11 +129,15 @@ export class JobRunner implements BeforeApplicationShutdown {
     private readonly transaction: PgTransaction,
     @Inject(JOB_WRITER) private readonly jobWriter: JobWriter,
     private readonly config: WorkerConfig,
-    @Optional() handlers: readonly JobHandler[] = [],
+    @Inject(JOB_HANDLERS)
+    @Optional()
+    handlers?: readonly JobHandler[] | JobHandler,
     @Optional() clock?: () => number,
   ) {
     this.clock = clock ?? (() => performance.now());
-    for (const handler of handlers) {
+    const list =
+      handlers == null ? [] : Array.isArray(handlers) ? handlers : [handlers];
+    for (const handler of list) {
       this.registerHandler(handler);
     }
   }
