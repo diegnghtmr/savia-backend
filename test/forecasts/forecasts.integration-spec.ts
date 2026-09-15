@@ -13,7 +13,16 @@ import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { FORECAST_METHOD } from '../../src/forecasts/forecast.port.js';
+import {
+  JOB_HANDLERS,
+  type JobHandler,
+} from '../../src/platform/job-handler.port.js';
 import { JobRunner } from '../../src/platform/job-runner.js';
+import {
+  JOB_WRITER,
+  type JobWriter,
+} from '../../src/platform/job-writer.port.js';
+import { PgTransaction } from '../../src/platform/pg-transaction.js';
 import { WorkerModule } from '../../src/worker.module.js';
 
 const url = process.env.DATABASE_URL;
@@ -571,6 +580,89 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
         ['queued', 'processing', 1],
         ['processing', 'completed', 1],
       ]);
+    });
+
+    it('rolls back the forecast when another delivery completes the job before persist', async () => {
+      const handlers = workerApp.get<readonly JobHandler[]>(JOB_HANDLERS);
+      const original = handlers.find(
+        (handler) => handler.jobType === 'balance_forecast',
+      );
+      if (!original) {
+        throw new Error('Expected a registered balance_forecast handler');
+      }
+      const jobWriter = workerApp.get<JobWriter>(JOB_WRITER);
+      const transaction = workerApp.get(PgTransaction);
+
+      const racingHandler: JobHandler = {
+        jobType: original.jobType,
+        parsePayload: (raw) => original.parsePayload(raw),
+        compute: async (context, client) => {
+          const computed = await original.compute(context, client);
+          await transaction.run(context.actorId, async (writeClient) => {
+            await jobWriter.completeJob(
+              writeClient,
+              context.workspaceId,
+              context.jobId,
+              null,
+            );
+          });
+          return computed;
+        },
+        persist: (context, computed, client) =>
+          original.persist(context, computed, client),
+      };
+      runner.registerHandler(racingHandler);
+
+      try {
+        const res = await application.inject({
+          method: 'POST',
+          url: '/v1/forecasts/balance',
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': randomUUID(),
+          },
+          payload: {
+            horizonDays: 90,
+          },
+        });
+        expect(res.statusCode).toBe(202);
+        const job = JSON.parse(res.payload) as { id: string; status: string };
+        expect(job.status).toBe('queued');
+
+        const processed = await runner.drainOnce();
+        expect(processed).toBe(1);
+
+        const jobRow = await admin.query<{
+          status: string;
+          result_resource_id: string | null;
+        }>(
+          `select status, result_resource_id::text as result_resource_id
+             from public.jobs
+            where id = $1::uuid`,
+          [job.id],
+        );
+        expect(jobRow.rows[0]?.status).toBe('completed');
+        expect(jobRow.rows[0]?.result_resource_id).toBeNull();
+
+        const forecasts = await admin.query<{ count: string }>(
+          `select count(*)::text as count
+             from public.forecasts
+            where job_id = $1::uuid`,
+          [job.id],
+        );
+        expect(forecasts.rows[0]?.count).toBe('0');
+
+        const queueRemaining = await admin.query(
+          `select msg_id
+             from pgmq.q_savia_jobs
+            where (message->>'job_id')::uuid = $1::uuid`,
+          [job.id],
+        );
+        expect(queueRemaining.rows).toHaveLength(0);
+      } finally {
+        runner.registerHandler(original);
+      }
     });
 
     it('returns 422 when accountIds contains an unknown id', async () => {
