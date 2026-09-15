@@ -1044,6 +1044,7 @@ describe('JobRunner unit spec (S2)', () => {
       readCt?: number;
       includeOnFailure?: boolean;
       reReadStatus?: string;
+      reReadThrows?: unknown;
       exhaustWorkBeforeRecheck?: boolean;
     }) {
       let currentClock = 1_000;
@@ -1178,6 +1179,9 @@ describe('JobRunner unit spec (S2)', () => {
         failJob: vi.fn().mockResolvedValue({ id: jobId }),
         deadLetter: vi.fn().mockResolvedValue({ id: jobId }),
         findJobById: vi.fn().mockImplementation(async () => {
+          if (options.reReadThrows !== undefined) {
+            throw options.reReadThrows;
+          }
           return { status: options.reReadStatus ?? 'processing' };
         }),
       };
@@ -1429,6 +1433,69 @@ describe('JobRunner unit spec (S2)', () => {
       ).toBe(false);
       expect(recordingQueue.ack).not.toHaveBeenCalled();
       expect(recordingJobWriter.failJob).not.toHaveBeenCalled();
+      expect(recordingJobWriter.deadLetter).not.toHaveBeenCalled();
+    });
+
+    it('recording test — P0001 persist with failing re-check defers and never failJob', async () => {
+      const { runner, recordingQueue, recordingJobWriter } =
+        createRecordingTestHarness({
+          persistThrows: true,
+          persistError: Object.assign(new Error('Report generation failed'), {
+            code: 'P0001',
+          }),
+          reReadThrows: Object.assign(new Error('serialization failure'), {
+            code: '40001',
+          }),
+        });
+
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+      expect(recordingJobWriter.failJob).not.toHaveBeenCalled();
+      expect(recordingQueue.ack).not.toHaveBeenCalled();
+      expect(recordingQueue.defer).toHaveBeenCalledTimes(1);
+      expect(recordingJobWriter.deadLetter).not.toHaveBeenCalled();
+    });
+
+    it('recording test — P0001 persist with failing re-check at attempt limit dead-letters and never failJob', async () => {
+      const { runner, recordingQueue, recordingJobWriter } =
+        createRecordingTestHarness({
+          persistThrows: true,
+          persistError: Object.assign(new Error('Report generation failed'), {
+            code: 'P0001',
+          }),
+          reReadThrows: Object.assign(new Error('serialization failure'), {
+            code: '40001',
+          }),
+          readCt: 5,
+        });
+
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+      expect(recordingJobWriter.failJob).not.toHaveBeenCalled();
+      expect(recordingQueue.ack).not.toHaveBeenCalled();
+      expect(recordingQueue.defer).not.toHaveBeenCalled();
+      expect(recordingJobWriter.deadLetter).toHaveBeenCalledTimes(1);
+      expect(recordingQueue.archive).toHaveBeenCalledTimes(1);
+    });
+
+    it('recording test — P0001 completeJob with failing re-check defers and never failJob', async () => {
+      const { runner, recordingQueue, recordingJobWriter } =
+        createRecordingTestHarness({
+          reReadThrows: Object.assign(new Error('serialization failure'), {
+            code: '40001',
+          }),
+        });
+      recordingJobWriter.completeJob = vi
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error('complete_job refused'), { code: 'P0001' }),
+        );
+
+      const processed = await runner.runOnce();
+      expect(processed).toBe(1);
+      expect(recordingJobWriter.failJob).not.toHaveBeenCalled();
+      expect(recordingQueue.ack).not.toHaveBeenCalled();
+      expect(recordingQueue.defer).toHaveBeenCalledTimes(1);
       expect(recordingJobWriter.deadLetter).not.toHaveBeenCalled();
     });
 

@@ -41,10 +41,16 @@ const WRITE_REFUSAL_OUTCOMES = {
   ACKED: 'acked',
   CONTINUE: 'continue',
   EXHAUSTED: 'exhausted',
+  RECHECK_FAILED: 'recheck_failed',
 } as const;
 
 type WriteRefusalOutcome =
   (typeof WRITE_REFUSAL_OUTCOMES)[keyof typeof WRITE_REFUSAL_OUTCOMES];
+
+interface WriteRefusalResult {
+  readonly outcome: WriteRefusalOutcome;
+  readonly error: unknown;
+}
 
 function isTerminalJobStatus(status: string): status is TerminalJobStatus {
   return (Object.values(TERMINAL_JOB_STATUSES) as string[]).includes(status);
@@ -373,13 +379,13 @@ export class JobRunner implements BeforeApplicationShutdown {
         message.msgId,
         deadline,
       );
-      if (t1Terminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED) {
+      if (t1Terminality.outcome === WRITE_REFUSAL_OUTCOMES.EXHAUSTED) {
         return false;
       }
-      if (t1Terminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
+      if (t1Terminality.outcome === WRITE_REFUSAL_OUTCOMES.ACKED) {
         return true;
       }
-      if (error instanceof ActorVerificationError) {
+      if (t1Terminality.error instanceof ActorVerificationError) {
         if (deadline.isTerminalExhausted()) {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
@@ -551,11 +557,15 @@ export class JobRunner implements BeforeApplicationShutdown {
                 deadline,
               );
             if (
-              computeDeadLetterTerminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED
+              computeDeadLetterTerminality.outcome ===
+              WRITE_REFUSAL_OUTCOMES.EXHAUSTED
             ) {
               return false;
             }
-            if (computeDeadLetterTerminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
+            if (
+              computeDeadLetterTerminality.outcome ===
+              WRITE_REFUSAL_OUTCOMES.ACKED
+            ) {
               return true;
             }
             return false;
@@ -611,10 +621,12 @@ export class JobRunner implements BeforeApplicationShutdown {
           message.msgId,
           deadline,
         );
-        if (computeFailTerminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED) {
+        if (
+          computeFailTerminality.outcome === WRITE_REFUSAL_OUTCOMES.EXHAUSTED
+        ) {
           return false;
         }
-        if (computeFailTerminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
+        if (computeFailTerminality.outcome === WRITE_REFUSAL_OUTCOMES.ACKED) {
           return true;
         }
         return false;
@@ -663,14 +675,16 @@ export class JobRunner implements BeforeApplicationShutdown {
         message.msgId,
         deadline,
       );
-      if (persistTerminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED) {
+      if (persistTerminality.outcome === WRITE_REFUSAL_OUTCOMES.EXHAUSTED) {
         return false;
       }
-      if (persistTerminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
+      if (persistTerminality.outcome === WRITE_REFUSAL_OUTCOMES.ACKED) {
         return true;
       }
 
-      if (persistError instanceof ActorVerificationError) {
+      const persistHandledError = persistTerminality.error;
+
+      if (persistHandledError instanceof ActorVerificationError) {
         if (deadline.isTerminalExhausted()) {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
@@ -686,7 +700,7 @@ export class JobRunner implements BeforeApplicationShutdown {
         return false;
       }
 
-      const classification = classifyJobError(persistError);
+      const classification = classifyJobError(persistHandledError);
       if (classification === JOB_ERROR_CLASSIFICATIONS.TRANSIENT) {
         if (message.readCt >= this.config.maxAttempts) {
           if (deadline.isWorkExhausted()) {
@@ -701,14 +715,14 @@ export class JobRunner implements BeforeApplicationShutdown {
                   writeClient,
                   workspaceId,
                   jobId,
-                  toProblemDetails(persistError, {
+                  toProblemDetails(persistHandledError, {
                     type: 'https://savia.app/problems/job-exhausted',
                     title: 'Job Retries Exhausted',
                     status: 500,
                     code: 'job_retries_exhausted',
                     detail:
-                      persistError instanceof Error
-                        ? persistError.message
+                      persistHandledError instanceof Error
+                        ? persistHandledError.message
                         : 'Job exceeded maximum retry attempts.',
                   }),
                 );
@@ -732,11 +746,15 @@ export class JobRunner implements BeforeApplicationShutdown {
                 deadline,
               );
             if (
-              persistDeadLetterTerminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED
+              persistDeadLetterTerminality.outcome ===
+              WRITE_REFUSAL_OUTCOMES.EXHAUSTED
             ) {
               return false;
             }
-            if (persistDeadLetterTerminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
+            if (
+              persistDeadLetterTerminality.outcome ===
+              WRITE_REFUSAL_OUTCOMES.ACKED
+            ) {
               return true;
             }
             return false;
@@ -762,14 +780,14 @@ export class JobRunner implements BeforeApplicationShutdown {
               writeClient,
               workspaceId,
               jobId,
-              toProblemDetails(persistError, {
+              toProblemDetails(persistHandledError, {
                 type: 'https://savia.app/problems/job-failed',
                 title: 'Job Failed',
                 status: 500,
                 code: 'job_failed',
                 detail:
-                  persistError instanceof Error
-                    ? persistError.message
+                  persistHandledError instanceof Error
+                    ? persistHandledError.message
                     : 'Permanent job persist failure.',
               }),
             );
@@ -791,10 +809,12 @@ export class JobRunner implements BeforeApplicationShutdown {
           message.msgId,
           deadline,
         );
-        if (persistFailTerminality === WRITE_REFUSAL_OUTCOMES.EXHAUSTED) {
+        if (
+          persistFailTerminality.outcome === WRITE_REFUSAL_OUTCOMES.EXHAUSTED
+        ) {
           return false;
         }
-        if (persistFailTerminality === WRITE_REFUSAL_OUTCOMES.ACKED) {
+        if (persistFailTerminality.outcome === WRITE_REFUSAL_OUTCOMES.ACKED) {
           return true;
         }
         return false;
@@ -814,13 +834,13 @@ export class JobRunner implements BeforeApplicationShutdown {
     jobId: string,
     msgId: string | number,
     deadline: DeliveryDeadline,
-  ): Promise<WriteRefusalOutcome> {
+  ): Promise<WriteRefusalResult> {
     if (!errorHasSqlstate(error, 'P0001')) {
-      return WRITE_REFUSAL_OUTCOMES.CONTINUE;
+      return { outcome: WRITE_REFUSAL_OUTCOMES.CONTINUE, error };
     }
     if (deadline.isWorkExhausted()) {
       this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
-      return WRITE_REFUSAL_OUTCOMES.EXHAUSTED;
+      return { outcome: WRITE_REFUSAL_OUTCOMES.EXHAUSTED, error };
     }
     let job: { readonly status: string } | undefined;
     try {
@@ -832,15 +852,21 @@ export class JobRunner implements BeforeApplicationShutdown {
     } catch (recheckError) {
       if (recheckError instanceof DeliveryDeadlineExceededError) {
         this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
-        return WRITE_REFUSAL_OUTCOMES.EXHAUSTED;
+        return {
+          outcome: WRITE_REFUSAL_OUTCOMES.EXHAUSTED,
+          error: recheckError,
+        };
       }
-      return WRITE_REFUSAL_OUTCOMES.CONTINUE;
+      return {
+        outcome: WRITE_REFUSAL_OUTCOMES.RECHECK_FAILED,
+        error: recheckError,
+      };
     }
     if (job && isTerminalJobStatus(job.status)) {
       await this.safeAck(msgId, deadline, jobId);
-      return WRITE_REFUSAL_OUTCOMES.ACKED;
+      return { outcome: WRITE_REFUSAL_OUTCOMES.ACKED, error };
     }
-    return WRITE_REFUSAL_OUTCOMES.CONTINUE;
+    return { outcome: WRITE_REFUSAL_OUTCOMES.CONTINUE, error };
   }
 
   private async safeAck(
