@@ -12,8 +12,10 @@ import {
 } from './delivery-deadline.js';
 import {
   JOB_HANDLERS,
+  JOB_RENDER_BUDGETS,
   type JobExecutionContext,
   type JobHandler,
+  type RenderingJobHandler,
 } from './job-handler.port.js';
 import {
   JOB_QUEUE,
@@ -26,11 +28,7 @@ import {
   errorHasSqlstate,
   JOB_ERROR_CLASSIFICATIONS,
 } from './job-retry-policy.js';
-import {
-  JOB_WRITER,
-  JOB_WRITER_TYPES,
-  type JobWriter,
-} from './job-writer.port.js';
+import { JOB_WRITER, type JobWriter } from './job-writer.port.js';
 import { ActorVerificationError, PgTransaction } from './pg-transaction.js';
 import { UUID_PATTERN } from './uuid.js';
 import { WorkerConfig } from './worker-config.js';
@@ -147,6 +145,18 @@ export class JobRunner implements BeforeApplicationShutdown {
   }
 
   public registerHandler(handler: JobHandler): void {
+    if (typeof handler.render === 'function') {
+      const budget = (handler as unknown as { renderBudget?: unknown })
+        .renderBudget;
+      if (
+        budget !== JOB_RENDER_BUDGETS.PDF_RENDER &&
+        budget !== JOB_RENDER_BUDGETS.EXPORT_SERIALIZE
+      ) {
+        throw new Error(
+          `Refusing registration for rendering handler "${handler.jobType}": unknown or missing render budget "${String(budget)}"`,
+        );
+      }
+    }
     this.handlerMap.set(handler.jobType, handler);
   }
 
@@ -513,10 +523,9 @@ export class JobRunner implements BeforeApplicationShutdown {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
         }
-        const configuredRenderTimeoutMs =
-          handler.jobType === JOB_WRITER_TYPES.EXPORT_JOB
-            ? this.config.exportSerializeTimeoutMs
-            : this.config.pdfRenderTimeoutMs;
+        const configuredRenderTimeoutMs = this.resolveRenderTimeoutMs(
+          handler as RenderingJobHandler,
+        );
         const renderTimeoutMs = deadline.forWork(configuredRenderTimeoutMs);
         if (renderTimeoutMs < this.config.minOperationMs) {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
@@ -891,6 +900,19 @@ export class JobRunner implements BeforeApplicationShutdown {
 
     // Ack after successful persist + completed commit
     return await this.safeAck(message.msgId, deadline, jobId);
+  }
+
+  private resolveRenderTimeoutMs(handler: RenderingJobHandler): number {
+    switch (handler.renderBudget) {
+      case JOB_RENDER_BUDGETS.PDF_RENDER:
+        return this.config.pdfRenderTimeoutMs;
+      case JOB_RENDER_BUDGETS.EXPORT_SERIALIZE:
+        return this.config.exportSerializeTimeoutMs;
+      default:
+        throw new Error(
+          `Refusing execution for rendering handler "${handler.jobType}": unknown or missing render budget "${String((handler as unknown as { renderBudget?: unknown }).renderBudget)}"`,
+        );
+    }
   }
 
   private async resolveP0001WriteRefusal(

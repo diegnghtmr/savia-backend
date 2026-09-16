@@ -4,9 +4,10 @@ import {
   ARTIFACT_STORAGE,
   type ArtifactStorage,
 } from '../platform/artifact-storage.port.js';
-import type {
-  JobExecutionContext,
-  JobHandler,
+import {
+  JOB_RENDER_BUDGETS,
+  type JobExecutionContext,
+  type RenderingJobHandler,
 } from '../platform/job-handler.port.js';
 import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
@@ -75,9 +76,11 @@ export interface ExportJobComputed {
 
 @Injectable()
 export class ExportJobHandler
-  implements JobHandler<ExportJobPayload, ExportRows, ExportJobComputed>
+  implements
+    RenderingJobHandler<ExportJobPayload, ExportRows, ExportJobComputed>
 {
   public readonly jobType = JOB_WRITER_TYPES.EXPORT_JOB;
+  public readonly renderBudget = JOB_RENDER_BUDGETS.EXPORT_SERIALIZE;
 
   public constructor(
     private readonly exports: PostgresExportAdapter,

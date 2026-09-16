@@ -19,6 +19,7 @@ import {
   JOB_HANDLERS,
   type JobExecutionContext,
   type JobHandler,
+  type RenderingJobHandler,
 } from '../../src/platform/job-handler.port.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import { WorkerModule } from '../../src/worker.module.js';
@@ -947,8 +948,9 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       const original = list.find((h) => h.jobType === 'export_job');
       if (!original) throw new Error('Expected export_job handler');
 
-      const swapped: JobHandler = {
+      const swapped: RenderingJobHandler = {
         jobType: original.jobType,
+        renderBudget: (original as RenderingJobHandler).renderBudget,
         parsePayload: (raw, execution) => {
           const record = raw as Record<string, unknown>;
           if (record.exportJobId === exportA.id) {
@@ -1013,8 +1015,9 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       const original = list.find((h) => h.jobType === 'export_job');
       if (!original) throw new Error('Expected export_job handler');
 
-      const misbound: JobHandler = {
+      const misbound: RenderingJobHandler = {
         jobType: original.jobType,
+        renderBudget: (original as RenderingJobHandler).renderBudget,
         parsePayload: (raw, execution) => {
           const record = raw as Record<string, unknown>;
           return original.parsePayload(

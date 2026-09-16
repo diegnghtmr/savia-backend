@@ -10,7 +10,15 @@ export interface JobExecutionContext<P> {
   readonly payload: P;
 }
 
-export interface JobHandler<P = unknown, C = unknown, R = C> {
+export const JOB_RENDER_BUDGETS = {
+  PDF_RENDER: 'pdf_render',
+  EXPORT_SERIALIZE: 'export_serialize',
+} as const;
+
+export type JobRenderBudget =
+  (typeof JOB_RENDER_BUDGETS)[keyof typeof JOB_RENDER_BUDGETS];
+
+export interface BaseJobHandler<P = unknown, C = unknown, R = C> {
   readonly jobType: string;
   parsePayload(
     raw: unknown,
@@ -20,11 +28,6 @@ export interface JobHandler<P = unknown, C = unknown, R = C> {
     context: JobExecutionContext<P>,
     client: TransactionClient,
   ): Promise<C>;
-  render?(
-    context: JobExecutionContext<P>,
-    computed: C,
-    timeoutMs: number,
-  ): Promise<unknown>;
   store?(
     context: JobExecutionContext<P>,
     rendered: unknown,
@@ -42,3 +45,23 @@ export interface JobHandler<P = unknown, C = unknown, R = C> {
     timeoutMs?: number,
   ): Promise<void>;
 }
+
+export interface RenderingJobHandler<P = unknown, C = unknown, R = C>
+  extends BaseJobHandler<P, C, R> {
+  readonly renderBudget: JobRenderBudget;
+  render(
+    context: JobExecutionContext<P>,
+    computed: C,
+    timeoutMs: number,
+  ): Promise<unknown>;
+}
+
+export interface NonRenderingJobHandler<P = unknown, C = unknown, R = C>
+  extends BaseJobHandler<P, C, R> {
+  readonly renderBudget?: never;
+  readonly render?: never;
+}
+
+export type JobHandler<P = unknown, C = unknown, R = C> =
+  | RenderingJobHandler<P, C, R>
+  | NonRenderingJobHandler<P, C, R>;

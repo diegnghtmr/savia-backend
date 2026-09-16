@@ -4,9 +4,10 @@ import {
   ARTIFACT_STORAGE,
   type ArtifactStorage,
 } from '../platform/artifact-storage.port.js';
-import type {
-  JobExecutionContext,
-  JobHandler,
+import {
+  JOB_RENDER_BUDGETS,
+  type JobExecutionContext,
+  type RenderingJobHandler,
 } from '../platform/job-handler.port.js';
 import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
@@ -72,9 +73,11 @@ export interface ReportJobComputed {
 
 @Injectable()
 export class ReportJobHandler
-  implements JobHandler<ReportJobPayload, ReportGrid, ReportJobComputed>
+  implements
+    RenderingJobHandler<ReportJobPayload, ReportGrid, ReportJobComputed>
 {
   public readonly jobType = JOB_WRITER_TYPES.REPORT_RUN;
+  public readonly renderBudget = JOB_RENDER_BUDGETS.PDF_RENDER;
 
   public constructor(
     private readonly reports: PostgresReportAdapter,
