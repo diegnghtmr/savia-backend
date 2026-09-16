@@ -15,7 +15,11 @@ import {
   ARTIFACT_STORAGE,
   type ArtifactStorage,
 } from '../../src/platform/artifact-storage.port.js';
-import { type JobExecutionContext } from '../../src/platform/job-handler.port.js';
+import {
+  JOB_HANDLERS,
+  type JobExecutionContext,
+  type JobHandler,
+} from '../../src/platform/job-handler.port.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import { WorkerModule } from '../../src/worker.module.js';
 import {
@@ -23,6 +27,7 @@ import {
   type ExportJobComputed,
 } from '../../src/exports/export-job.handler.js';
 import type { ExportJobPayload } from '../../src/exports/export-job-payload.js';
+import { PostgresExportAdapter } from '../../src/exports/postgres-export.adapter.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -228,7 +233,33 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       'delete from public.command_idempotency_records where workspace_id = $1',
       [workspace1Id],
     );
+    await admin.query('delete from pgmq.q_savia_jobs');
   });
+
+  async function drainUntilJobTerminal(jobId: string): Promise<{
+    status: string;
+    error: Record<string, unknown> | null;
+  }> {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const job = await admin.query<{
+        status: string;
+        error: Record<string, unknown> | null;
+      }>(`select status, error from public.jobs where id = $1::uuid`, [jobId]);
+      const status = job.rows[0]?.status;
+      if (
+        status &&
+        ['completed', 'failed', 'dead_letter', 'cancelled'].includes(status)
+      ) {
+        return {
+          status,
+          error: job.rows[0]?.error ?? null,
+        };
+      }
+      await runner.drainOnce();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`Job ${jobId} did not reach a terminal status`);
+  }
 
   afterAll(async () => {
     await workerModule?.close();
@@ -327,6 +358,140 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       } finally {
         client.release();
       }
+    });
+  });
+
+  describe('Failure projection privilege boundary catalog pins', () => {
+    it('pins savia_elevated role attributes: rolcanlogin = false, rolbypassrls = false', async () => {
+      const roleRes = await admin.query<{
+        rolcanlogin: boolean;
+        rolbypassrls: boolean;
+      }>(
+        `select rolcanlogin, rolbypassrls from pg_roles where rolname = 'savia_elevated'`,
+      );
+      expect(roleRes.rows).toHaveLength(1);
+      expect(roleRes.rows[0]?.rolcanlogin).toBe(false);
+      expect(roleRes.rows[0]?.rolbypassrls).toBe(false);
+    });
+
+    it('pins project_export_job_failure function owner, security definer, search_path, and execute privilege', async () => {
+      const procRes = await admin.query<{
+        owner: string;
+        prosecdef: boolean;
+        proconfig: string[] | null;
+        has_public_exec: boolean;
+        has_elevated_exec: boolean;
+      }>(
+        `select
+           r.rolname as owner,
+           p.prosecdef,
+           p.proconfig,
+           has_function_privilege('public', p.oid, 'execute') as has_public_exec,
+           has_function_privilege('savia_elevated', p.oid, 'execute') as has_elevated_exec
+         from pg_proc p
+         join pg_roles r on r.oid = p.proowner
+         join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public'
+          and p.proname = 'project_export_job_failure'`,
+      );
+      expect(procRes.rows).toHaveLength(1);
+      const row = procRes.rows[0];
+      expect(row?.owner).toBe('savia_elevated');
+      expect(row?.prosecdef).toBe(true);
+      expect(row?.proconfig).toEqual(['search_path=pg_catalog, public']);
+      expect(row?.has_public_exec).toBe(false);
+      expect(row?.has_elevated_exec).toBe(true);
+    });
+
+    it('pins project_export_job_failure trigger binding on public.jobs', async () => {
+      const trigRes = await admin.query<{
+        tgname: string;
+        triggerdef: string;
+      }>(
+        `select tgname, pg_get_triggerdef(oid) as triggerdef
+           from pg_trigger
+          where tgrelid = 'public.jobs'::regclass
+            and tgname = 'project_export_job_failure'`,
+      );
+      expect(trigRes.rows).toHaveLength(1);
+      const trig = trigRes.rows[0];
+      expect(trig?.tgname).toBe('project_export_job_failure');
+      expect(trig?.triggerdef).toContain(
+        'AFTER UPDATE OF status ON public.jobs',
+      );
+      expect(trig?.triggerdef).toContain('project_export_job_failure()');
+    });
+
+    it('pins the exact set of savia_elevated policies on export_jobs', async () => {
+      const policiesRes = await admin.query<{
+        policyname: string;
+        cmd: string;
+        qual: string;
+        with_check: string | null;
+      }>(
+        `select policyname, cmd, qual, with_check
+           from pg_policies
+          where tablename = 'export_jobs'
+            and 'savia_elevated' = any(roles)
+          order by policyname`,
+      );
+      expect(policiesRes.rows).toEqual([
+        {
+          policyname: 'elevated_reads_export_jobs',
+          cmd: 'SELECT',
+          qual: 'true',
+          with_check: null,
+        },
+        {
+          policyname: 'elevated_updates_export_jobs',
+          cmd: 'UPDATE',
+          qual: 'true',
+          with_check: "(status = 'failed'::text)",
+        },
+      ]);
+    });
+
+    it('pins savia_elevated table and column privileges on export_jobs exactly', async () => {
+      const tablePrivRes = await admin.query<{ privilege_type: string }>(
+        `select privilege_type
+           from information_schema.table_privileges
+          where table_name = 'export_jobs'
+            and grantee = 'savia_elevated'
+          order by privilege_type`,
+      );
+      expect(tablePrivRes.rows.map((r) => r.privilege_type)).toEqual([
+        'SELECT',
+      ]);
+
+      const colPrivRes = await admin.query<{
+        column_name: string;
+        privilege_type: string;
+      }>(
+        `select column_name, privilege_type
+           from information_schema.column_privileges
+          where table_name = 'export_jobs'
+            and grantee = 'savia_elevated'
+            and privilege_type = 'UPDATE'
+          order by column_name, privilege_type`,
+      );
+      expect(colPrivRes.rows).toEqual([
+        { column_name: 'completed_at', privilege_type: 'UPDATE' },
+        { column_name: 'error', privilege_type: 'UPDATE' },
+        { column_name: 'status', privilege_type: 'UPDATE' },
+      ]);
+    });
+
+    it('pins that savia_elevated retains no schema CREATE on public after migration', async () => {
+      const privRes = await admin.query<{
+        has_create: boolean;
+        has_usage: boolean;
+      }>(
+        `select
+           has_schema_privilege('savia_elevated', 'public', 'create') as has_create,
+           has_schema_privilege('savia_elevated', 'public', 'usage') as has_usage`,
+      );
+      expect(privRes.rows[0]?.has_create).toBe(false);
+      expect(privRes.rows[0]?.has_usage).toBe(true);
     });
   });
 
@@ -719,6 +884,257 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
         expect(jobRow.rows[0]?.status).not.toBe('completed');
       } finally {
         exportHandler!.persist = originalPersist;
+      }
+    });
+
+    it('fails permanently with invalid_payload and zero storage IO when payload targets a different export in the same workspace', async () => {
+      const first = await application.inject({
+        method: 'POST',
+        url: '/v1/export-jobs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: { format: 'csv', resource: 'all' },
+      });
+      const second = await application.inject({
+        method: 'POST',
+        url: '/v1/export-jobs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: { format: 'csv', resource: 'all' },
+      });
+      expect(first.statusCode).toBe(202);
+      expect(second.statusCode).toBe(202);
+      const exportA = JSON.parse(first.body) as { id: string };
+      const exportB = JSON.parse(second.body) as { id: string };
+
+      const links = await admin.query<{ id: string; job_id: string }>(
+        `select id::text, job_id::text as job_id
+           from public.export_jobs
+          where id = any($1::uuid[])`,
+        [[exportA.id, exportB.id]],
+      );
+      const jobAId = links.rows.find((r) => r.id === exportA.id)?.job_id;
+      const jobBId = links.rows.find((r) => r.id === exportB.id)?.job_id;
+      if (!jobAId || !jobBId) {
+        throw new Error('Expected both jobAId and jobBId to be defined');
+      }
+
+      // Delete message for job B from pgmq so we only process job A
+      const queuedB = await admin.query<{ msg_id: string }>(
+        `select msg_id::text as msg_id
+           from pgmq.q_savia_jobs
+          where (message->>'job_id')::uuid = $1::uuid`,
+        [jobBId],
+      );
+      const msgBId = queuedB.rows[0]?.msg_id;
+      if (msgBId) {
+        await admin.query(`select pgmq.delete('savia_jobs', $1::bigint)`, [
+          msgBId,
+        ]);
+      }
+
+      // Handler override: when job A is processed, swap payload to point exportJobId to export B
+      const handlers = workerModule.get<readonly JobHandler[] | JobHandler>(
+        JOB_HANDLERS,
+      );
+      const list = Array.isArray(handlers) ? handlers : [handlers];
+      const original = list.find((h) => h.jobType === 'export_job');
+      if (!original) throw new Error('Expected export_job handler');
+
+      const swapped: JobHandler = {
+        jobType: original.jobType,
+        parsePayload: (raw, execution) => {
+          const record = raw as Record<string, unknown>;
+          if (record.exportJobId === exportA.id) {
+            return original.parsePayload(
+              {
+                ...record,
+                exportJobId: exportB.id,
+                objectKey: `${workspace1Id}/${exportB.id}.csv`,
+              },
+              execution,
+            );
+          }
+          return original.parsePayload(raw, execution);
+        },
+        compute: (context, client) => original.compute(context, client),
+        render: original.render?.bind(original),
+        store: original.store?.bind(original),
+        persist: (context, comp, client) =>
+          original.persist(context, comp, client),
+        onFailure: original.onFailure?.bind(original),
+      };
+      runner.registerHandler(swapped);
+
+      const uploadsBefore = inMemoryStorage.uploadCallCount;
+      const signsBefore = inMemoryStorage.signCallCount;
+
+      try {
+        const finishedA = await drainUntilJobTerminal(jobAId);
+        expect(finishedA.status).toBe('failed');
+        expect(finishedA.error).toEqual(
+          expect.objectContaining({ code: 'invalid_payload' }),
+        );
+
+        // Zero uploads and zero signs
+        expect(inMemoryStorage.uploadCallCount).toBe(uploadsBefore);
+        expect(inMemoryStorage.signCallCount).toBe(signsBefore);
+
+        // Export B untouched: still queued, same job_id, no download URL
+        const exportBRow = await admin.query<{
+          status: string;
+          job_id: string;
+          download_url: string | null;
+        }>(
+          `select status, job_id::text as job_id, download_url
+             from public.export_jobs
+            where id = $1::uuid`,
+          [exportB.id],
+        );
+        expect(exportBRow.rows[0]?.status).toBe('queued');
+        expect(exportBRow.rows[0]?.job_id).toBe(jobBId);
+        expect(exportBRow.rows[0]?.download_url).toBeNull();
+      } finally {
+        runner.registerHandler(original);
+      }
+    });
+
+    it('fails permanently with invalid_payload and zero storage IO when payload object key has a foreign workspace prefix', async () => {
+      const handlers = workerModule.get<readonly JobHandler[] | JobHandler>(
+        JOB_HANDLERS,
+      );
+      const list = Array.isArray(handlers) ? handlers : [handlers];
+      const original = list.find((h) => h.jobType === 'export_job');
+      if (!original) throw new Error('Expected export_job handler');
+
+      const misbound: JobHandler = {
+        jobType: original.jobType,
+        parsePayload: (raw, execution) => {
+          const record = raw as Record<string, unknown>;
+          return original.parsePayload(
+            {
+              ...record,
+              objectKey: `${workspace2Id}/${String(record.exportJobId)}.csv`,
+            },
+            execution,
+          );
+        },
+        compute: (context, client) => original.compute(context, client),
+        render: original.render?.bind(original),
+        store: original.store?.bind(original),
+        persist: (context, comp, client) =>
+          original.persist(context, comp, client),
+        onFailure: original.onFailure?.bind(original),
+      };
+      runner.registerHandler(misbound);
+
+      const uploadsBefore = inMemoryStorage.uploadCallCount;
+      const signsBefore = inMemoryStorage.signCallCount;
+
+      try {
+        const response = await application.inject({
+          method: 'POST',
+          url: '/v1/export-jobs',
+          headers: {
+            authorization: 'Bearer editor-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': randomUUID(),
+          },
+          payload: { format: 'csv', resource: 'all' },
+        });
+        expect(response.statusCode).toBe(202);
+        const body = JSON.parse(response.body) as { id: string };
+
+        const link = await admin.query<{ job_id: string }>(
+          `select job_id::text as job_id from public.export_jobs where id = $1::uuid`,
+          [body.id],
+        );
+        const jobId = link.rows[0]?.job_id;
+        expect(jobId).toBeDefined();
+
+        const finished = await drainUntilJobTerminal(jobId!);
+        expect(finished.status).toBe('failed');
+        expect(finished.error).toEqual(
+          expect.objectContaining({ code: 'invalid_payload' }),
+        );
+        expect(inMemoryStorage.uploadCallCount).toBe(uploadsBefore);
+        expect(inMemoryStorage.signCallCount).toBe(signsBefore);
+      } finally {
+        runner.registerHandler(original);
+      }
+    });
+
+    it('keeps job_id predicate on resource transitions so mismatched job_id updates zero rows', async () => {
+      const adapter = workerModule.get(PostgresExportAdapter);
+      const exportId = randomUUID();
+      const actualJobId = randomUUID();
+      const mismatchedJobId = randomUUID();
+
+      await admin.query(
+        `insert into public.jobs (id, workspace_id, type, status, created_by)
+         values ($1::uuid, $2::uuid, 'export_job', 'queued', $3::uuid),
+                ($4::uuid, $2::uuid, 'export_job', 'queued', $3::uuid)`,
+        [actualJobId, workspace1Id, editorId, mismatchedJobId],
+      );
+      await admin.query(
+        `insert into public.export_jobs (id, workspace_id, format, resource, status, created_by, job_id)
+         values ($1::uuid, $2::uuid, 'csv', 'all', 'queued', $3::uuid, $4::uuid)`,
+        [exportId, workspace1Id, editorId, actualJobId],
+      );
+
+      const client = await admin.connect();
+      try {
+        await client.query('begin');
+        await client.query("set local role 'savia_application'");
+        await client.query("select set_config('app.subject_id', $1, true)", [
+          editorId,
+        ]);
+
+        // Attempt beginProcessing with mismatched job_id -> must fail because 0 rows updated
+        await expect(
+          adapter.beginProcessingExportJob(
+            client,
+            workspace1Id,
+            exportId,
+            mismatchedJobId,
+          ),
+        ).rejects.toThrow(
+          'Export job could not be transitioned to processing.',
+        );
+
+        // Transition with actualJobId succeeds
+        await adapter.beginProcessingExportJob(
+          client,
+          workspace1Id,
+          exportId,
+          actualJobId,
+        );
+
+        // Attempt completeProcessing with mismatched job_id -> must fail because 0 rows updated
+        await expect(
+          adapter.completeProcessingExportJob(
+            client,
+            workspace1Id,
+            exportId,
+            mismatchedJobId,
+            {
+              objectPath: 'path',
+              downloadUrl: 'url',
+              expiresAt: new Date(),
+              completedAt: new Date(),
+            },
+          ),
+        ).rejects.toThrow('Export job could not be completed.');
+
+        await client.query('rollback');
+      } finally {
+        client.release();
       }
     });
   });
