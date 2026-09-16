@@ -20,6 +20,7 @@ import { ScenariosModule } from './scenarios/scenarios.module.js';
 import { ForecastsModule } from './forecasts/forecasts.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { ApprovalsModule } from './approvals/approvals.module.js';
+import { NotificationsModule } from './notifications/notifications.module.js';
 
 @Module({
   controllers: [HealthController],
@@ -43,6 +44,7 @@ import { ApprovalsModule } from './approvals/approvals.module.js';
     ForecastsModule,
     ReportsModule,
     ApprovalsModule,
+    NotificationsModule,
   ],
 })
 export class AppModule {}
