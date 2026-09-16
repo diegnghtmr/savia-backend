@@ -579,6 +579,59 @@ describe('Report runs integration contract and endpoint suite', () => {
       );
       expect(convertedCell?.value).toBe('11000');
     });
+
+    it('selects exchange rates at the frozen as-of instant, not a later-effective rate', async () => {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: {
+            from: '2026-06-01',
+            to: '2026-06-30',
+          },
+        },
+      });
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body) as { id: string };
+      const link = await admin.query<{ job_id: string; asOf: string }>(
+        `select r.job_id::text as job_id, j.payload->>'asOf' as "asOf"
+           from public.report_runs r
+           join public.jobs j on j.id = r.job_id
+          where r.id = $1::uuid`,
+        [body.id],
+      );
+      const asOf = link.rows[0]?.asOf;
+      if (!asOf) {
+        throw new Error('Expected a frozen asOf on the queued report job');
+      }
+      const laterEffectiveAt = new Date(
+        new Date(asOf).getTime() + 1,
+      ).toISOString();
+      await admin.query(
+        `insert into public.exchange_rates (
+           workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by
+         ) values ($1, 'EUR', 'USD', 2.00, $2::timestamptz, 'manual', $3)`,
+        [workspace1Id, laterEffectiveAt, ownerId],
+      );
+      const finished = await drainUntilRunTerminal(body.id);
+      expect(finished.jobStatus).toBe('completed');
+      const artifactPath = `${workspace1Id}/${body.id}.json`;
+      const uploaded = inMemoryStorage.uploaded.get(artifactPath);
+      expect(uploaded).toBeDefined();
+      const grid = JSON.parse(uploaded!.content.toString('utf8')) as ReportGrid;
+      const eurRow = grid.rows.find((r) => r.key.includes(catExpenseId));
+      const convertedCell = eurRow?.cells.find(
+        (c) => c.measure === 'converted_value',
+      );
+      expect(convertedCell?.value).toBe('11000');
+    });
   });
 
   describe('FIX 2: Budget join and empty budget policy', () => {

@@ -84,6 +84,7 @@ export class ReportJobHandler
       context.workspaceId,
       payload.periodStart,
       payload.periodTo,
+      new Date(payload.asOf),
       payload.shapeTypeFilter ?? undefined,
       payload.callerType ?? undefined,
     );

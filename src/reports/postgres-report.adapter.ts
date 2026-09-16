@@ -170,6 +170,7 @@ limit $4`;
     workspaceId: string,
     from: string,
     to: string,
+    asOf: Date,
     typeFilter?: string,
     callerTypeFilter?: string,
   ): Promise<readonly ReportSourceRow[]> {
@@ -196,7 +197,7 @@ left join lateral (
 left join lateral (
   select rate::text as rate from public.exchange_rates
    where workspace_id = t.workspace_id and base_currency = t.currency and quote_currency = w.base_currency
-   order by (effective_at <= now()) desc, case when effective_at <= now() then effective_at end desc, effective_at asc, id desc
+   order by (effective_at <= $5::timestamptz) desc, case when effective_at <= $5::timestamptz then effective_at end desc, effective_at asc, id desc
    limit 1
 ) rates on t.currency <> w.base_currency
 where t.workspace_id = $1::uuid
@@ -214,7 +215,7 @@ where t.workspace_id = $1::uuid
   and (t.occurred_at at time zone 'utc')::date between $2::date and $3::date
   and ($4::text is null or t.type = $4::text)
 order by t.occurred_at asc, t.id asc
-limit $5`;
+limit $6`;
     const cap = getReportSourceRowCap();
     const limitValue = Number.isFinite(cap) ? cap + 1 : null;
     const result = await client.query<Record<string, unknown>>(sql, [
@@ -222,6 +223,7 @@ limit $5`;
       from,
       to,
       types || null,
+      asOf.toISOString(),
       limitValue,
     ]);
     if (Number.isFinite(cap) && result.rows.length > cap) {

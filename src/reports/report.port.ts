@@ -215,6 +215,7 @@ export interface ReportStore {
     workspaceId: string,
     from: string,
     to: string,
+    asOf: Date,
     typeFilter?: string,
     callerTypeFilter?: string,
   ): Promise<readonly ReportSourceRow[]>;

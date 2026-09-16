@@ -8,6 +8,7 @@ import { ReportMissingRateError } from '../../src/reports/report.port.js';
 describe('PostgresReportAdapter report-run queries', () => {
   const workspaceId = 'aaaaaaaa-0000-4000-8000-000000000001';
   const subject = '11111111-0000-4000-8000-000000000001';
+  const asOf = new Date('2026-09-15T12:00:00.000Z');
 
   function clientWithRows(rows: readonly Record<string, unknown>[]) {
     const query = vi.fn().mockResolvedValue({ rows });
@@ -38,6 +39,7 @@ describe('PostgresReportAdapter report-run queries', () => {
       workspaceId,
       '2026-01-01',
       '2026-09-05',
+      asOf,
       'expense',
     );
 
@@ -54,11 +56,15 @@ describe('PostgresReportAdapter report-run queries', () => {
     );
     expect(sql).toContain('and not exists (');
     expect(sql).toContain("p2.status not in ('confirmed', 'reconciled')");
+    expect(sql).not.toMatch(/\bnow\s*\(\s*\)/i);
+    expect(sql).not.toMatch(/\bcurrent_date\b/i);
+    expect(sql).toMatch(/effective_at\s*<=\s*\$5::timestamptz/);
     expect(values).toEqual([
       workspaceId,
       '2026-01-01',
       '2026-09-05',
       'expense',
+      '2026-09-15T12:00:00.000Z',
       50001,
     ]);
   });
@@ -72,6 +78,7 @@ describe('PostgresReportAdapter report-run queries', () => {
         workspaceId,
         '2026-01-01',
         '2026-09-05',
+        asOf,
       ),
     ).rejects.toEqual(new ReportMissingRateError('EUR', 'USD'));
   });
@@ -83,6 +90,7 @@ describe('PostgresReportAdapter report-run queries', () => {
       workspaceId,
       '2026-01-01',
       '2026-09-05',
+      asOf,
       'expense',
       'income',
     );
@@ -101,6 +109,7 @@ describe('PostgresReportAdapter report-run queries', () => {
       workspaceId,
       '2026-01-01',
       '2026-09-05',
+      asOf,
     );
 
     expect(rows[0]?.convertedMinor).toBe(1100n);

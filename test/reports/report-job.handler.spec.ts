@@ -64,12 +64,23 @@ function createStorage(): ArtifactStorage & {
 function createStore(role = 'editor') {
   const processing: string[] = [];
   const completed: string[] = [];
+  const sourceRowAsOf: Date[] = [];
   return {
     role,
     processing,
     completed,
+    sourceRowAsOf,
     readActiveRole: async () => role,
-    readReportSourceRows: async () => [],
+    readReportSourceRows: async (
+      _client: TransactionClient,
+      _workspaceId: string,
+      _from: string,
+      _to: string,
+      asOf: Date,
+    ) => {
+      sourceRowAsOf.push(asOf);
+      return [];
+    },
     readBudgetedMinorByBucket: async () => new Map(),
     beginProcessingReportRun: async (
       _client: TransactionClient,
@@ -109,6 +120,16 @@ describe('ReportJobHandler', () => {
         workspaceId: 'bbbbbbbb-0000-4000-8000-000000000001',
       }),
     ).toThrow(/objectKey must match the job workspace/);
+  });
+
+  it('passes the frozen as-of instant into source-row selection', async () => {
+    const store = createStore();
+    const handler = new ReportJobHandler(
+      store as unknown as PostgresReportAdapter,
+      createStorage(),
+    );
+    await handler.compute(context, {} as TransactionClient);
+    expect(store.sourceRowAsOf).toEqual([new Date(payload.asOf)]);
   });
 
   it('uploads to the reserved object key rather than a per-attempt key', async () => {
