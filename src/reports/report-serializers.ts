@@ -85,11 +85,7 @@ async function serializePdf(
   });
   const abandon = (): void => {
     document.removeAllListeners();
-    try {
-      document.destroy();
-    } catch {
-      // A single pdfkit text() or end() flush has no abort hook.
-    }
+    // pdfkit has no abort hook: a started text() or end() flush keeps running.
   };
   try {
     const columns = headers(grid);
