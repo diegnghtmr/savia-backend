@@ -10,7 +10,10 @@ import type {
   QueueMessage,
 } from '../../src/platform/job-queue.port.js';
 import { JobRunner } from '../../src/platform/job-runner.js';
-import type { JobWriter } from '../../src/platform/job-writer.port.js';
+import {
+  JOB_WRITER_TYPES,
+  type JobWriter,
+} from '../../src/platform/job-writer.port.js';
 import type {
   PgTransaction,
   TransactionClient,
@@ -342,6 +345,53 @@ describe('JobRunner unit spec (S2)', () => {
     expect(storeTimeouts).toEqual([30_000]);
     expect(probeHandler.render).toHaveBeenCalledOnce();
     expect(probeHandler.store).toHaveBeenCalledOnce();
+  });
+
+  it('bounds export job render with exportSerializeTimeoutMs rather than pdfRenderTimeoutMs', async () => {
+    const customConfig = new WorkerConfig(
+      1,
+      300,
+      1000,
+      30,
+      undefined,
+      5000,
+      5,
+      15_000,
+      180_000,
+      60_000,
+      20_000,
+      10_000,
+      1_000,
+      8_000,
+      30_000,
+      45_000,
+      12_000,
+    );
+    const { runner, probeHandler } = createTestHarness({
+      config: customConfig,
+      jobRow: {
+        id: jobId,
+        workspace_id: wsId,
+        created_by: actorId,
+        type: JOB_WRITER_TYPES.EXPORT_JOB,
+        status: 'queued',
+        payload: { format: 'csv' },
+        role: 'owner',
+      },
+    });
+    (probeHandler as { jobType: string }).jobType = JOB_WRITER_TYPES.EXPORT_JOB;
+    runner.registerHandler(probeHandler);
+    const renderTimeouts: number[] = [];
+    probeHandler.render = vi.fn(async (_context, _computed, timeoutMs) => {
+      renderTimeouts.push(timeoutMs);
+      return { content: Buffer.from('{}'), contentType: 'application/json' };
+    });
+    probeHandler.store = vi.fn(async () => ({ result: 84 }));
+
+    const processed = await runner.runOnce();
+    expect(processed).toBe(1);
+    expect(renderTimeouts).toEqual([12_000]);
+    expect(probeHandler.render).toHaveBeenCalledOnce();
   });
 
   it('skips a job already terminal at re-check and acks it without running compute or persist', async () => {

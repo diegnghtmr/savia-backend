@@ -26,7 +26,11 @@ import {
   errorHasSqlstate,
   JOB_ERROR_CLASSIFICATIONS,
 } from './job-retry-policy.js';
-import { JOB_WRITER, type JobWriter } from './job-writer.port.js';
+import {
+  JOB_WRITER,
+  JOB_WRITER_TYPES,
+  type JobWriter,
+} from './job-writer.port.js';
 import { ActorVerificationError, PgTransaction } from './pg-transaction.js';
 import { UUID_PATTERN } from './uuid.js';
 import { WorkerConfig } from './worker-config.js';
@@ -509,9 +513,11 @@ export class JobRunner implements BeforeApplicationShutdown {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
         }
-        const renderTimeoutMs = deadline.forWork(
-          this.config.pdfRenderTimeoutMs,
-        );
+        const configuredRenderTimeoutMs =
+          handler.jobType === JOB_WRITER_TYPES.EXPORT_JOB
+            ? this.config.exportSerializeTimeoutMs
+            : this.config.pdfRenderTimeoutMs;
+        const renderTimeoutMs = deadline.forWork(configuredRenderTimeoutMs);
         if (renderTimeoutMs < this.config.minOperationMs) {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
