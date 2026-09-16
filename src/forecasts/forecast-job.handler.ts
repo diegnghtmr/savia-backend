@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import type {
   JobExecutionContext,
-  JobHandler,
+  NonRenderingJobHandler,
 } from '../platform/job-handler.port.js';
 import { PROBLEM_TYPES } from '../platform/problem-details.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
@@ -49,7 +49,8 @@ function isWriteRole(role: string | undefined): role is ForecastWriteRole {
 
 @Injectable()
 export class ForecastJobHandler
-  implements JobHandler<ForecastJobPayload, ForecastComputationResult>
+  implements
+    NonRenderingJobHandler<ForecastJobPayload, ForecastComputationResult>
 {
   public readonly jobType = JOB_WRITER_TYPES.BALANCE_FORECAST;
 

@@ -13,6 +13,7 @@ import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import {
   JOB_HANDLERS,
   type JobHandler,
+  type RenderingJobHandler,
 } from '../../src/platform/job-handler.port.js';
 import { JobRunner } from '../../src/platform/job-runner.js';
 import {
@@ -1372,8 +1373,9 @@ describe('Report runs integration contract and endpoint suite', () => {
       if (!original) {
         throw new Error('Expected a registered report_run handler');
       }
-      const misbound: JobHandler = {
+      const misbound: RenderingJobHandler = {
         jobType: original.jobType,
+        renderBudget: (original as RenderingJobHandler).renderBudget,
         parsePayload: (raw, execution) => {
           const record = raw as Record<string, unknown>;
           return original.parsePayload(
@@ -1483,8 +1485,9 @@ describe('Report runs integration contract and endpoint suite', () => {
       if (!original) {
         throw new Error('Expected a registered report_run handler');
       }
-      const swapped: JobHandler = {
+      const swapped: RenderingJobHandler = {
         jobType: original.jobType,
+        renderBudget: (original as RenderingJobHandler).renderBudget,
         parsePayload: (raw, execution) => {
           const record = raw as Record<string, unknown>;
           if (record.reportRunId === runA.id) {
@@ -1538,8 +1541,9 @@ describe('Report runs integration contract and endpoint suite', () => {
       if (!original) {
         throw new Error('Expected a registered report_run handler');
       }
-      const racing: JobHandler = {
+      const racing: RenderingJobHandler = {
         jobType: original.jobType,
+        renderBudget: (original as RenderingJobHandler).renderBudget,
         parsePayload: (raw, execution) => original.parsePayload(raw, execution),
         compute: (context, client) => original.compute(context, client),
         render: original.render?.bind(original),

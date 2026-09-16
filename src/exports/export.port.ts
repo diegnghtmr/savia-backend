@@ -132,6 +132,45 @@ export interface ExportStore {
     workspaceId: string,
     id: string,
   ): Promise<ExportJob | undefined>;
+  insertQueuedExportJob?(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    data: {
+      readonly id: string;
+      readonly format: ExportFormat;
+      readonly resource: ExportResource;
+      readonly resourceId: string | null;
+      readonly from: string | null;
+      readonly to: string | null;
+      readonly jobId: string;
+    },
+  ): Promise<ExportJob>;
+  readExportJobBinding?(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ): Promise<
+    { readonly jobId: string | null; readonly status: string } | undefined
+  >;
+  beginProcessingExportJob?(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    jobId: string,
+  ): Promise<void>;
+  completeProcessingExportJob?(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    jobId: string,
+    completion: {
+      readonly objectPath: string;
+      readonly downloadUrl: string;
+      readonly expiresAt: Date;
+      readonly completedAt: Date;
+    },
+  ): Promise<ExportJob>;
 }
 export interface ExportsPort {
   createExportJob(

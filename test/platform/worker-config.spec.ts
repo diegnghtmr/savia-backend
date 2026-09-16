@@ -371,6 +371,109 @@ describe('WorkerConfig', () => {
     ).toThrow(WorkerConfigurationError);
   });
 
+  it('validates exportSerializeTimeoutMs bounds, cap-sum with storage, and environment loading', () => {
+    // 1. Rejects exportSerializeTimeoutMs < 1
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          8_000,
+          30_000,
+          30_000,
+          0,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // 2. Rejects exportSerializeTimeoutMs >= visibility timeout
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          8_000,
+          30_000,
+          30_000,
+          300_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // 3. Rejects exportSerializeTimeoutMs + storageUploadTimeoutMs when sum is unsafe
+    // (140_000 + 140_000 + 20_000 + 10_000 + 3 * 1_000 = 313_000 >= 300_000)
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          8_000,
+          140_000,
+          30_000,
+          140_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // 4. Accepts valid exportSerializeTimeoutMs and storageUploadTimeoutMs cap sum
+    const safeConfig = new WorkerConfig(
+      1,
+      300,
+      1000,
+      30,
+      undefined,
+      5000,
+      5,
+      15_000,
+      180_000,
+      60_000,
+      20_000,
+      10_000,
+      1_000,
+      8_000,
+      30_000,
+      30_000,
+      30_000,
+    );
+    expect(safeConfig.exportSerializeTimeoutMs).toBe(30_000);
+
+    // 5. Loads custom SAVIA_WORKER_EXPORT_SERIALIZE_TIMEOUT_MS from environment
+    const envConfig = WorkerConfig.fromEnvironment({
+      SAVIA_WORKER_EXPORT_SERIALIZE_TIMEOUT_MS: '45000',
+    });
+    expect(envConfig.exportSerializeTimeoutMs).toBe(45_000);
+  });
+
   it('ensures the removed optional phaseDeadlinesSeconds path no longer exists', () => {
     const envConfig = WorkerConfig.fromEnvironment({
       SAVIA_WORKER_PHASE_DEADLINES: '50,100,50',

@@ -1,16 +1,21 @@
 import type { Logger } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
-import type {
-  JobExecutionContext,
-  JobHandler,
+import {
+  JOB_RENDER_BUDGETS,
+  type JobExecutionContext,
+  type JobHandler,
+  type RenderingJobHandler,
 } from '../../src/platform/job-handler.port.js';
 import type {
   JobQueue,
   QueueMessage,
 } from '../../src/platform/job-queue.port.js';
 import { JobRunner } from '../../src/platform/job-runner.js';
-import type { JobWriter } from '../../src/platform/job-writer.port.js';
+import {
+  JOB_WRITER_TYPES,
+  type JobWriter,
+} from '../../src/platform/job-writer.port.js';
 import type {
   PgTransaction,
   TransactionClient,
@@ -327,21 +332,117 @@ describe('JobRunner unit spec (S2)', () => {
     const { runner, probeHandler } = createTestHarness();
     const renderTimeouts: number[] = [];
     const storeTimeouts: number[] = [];
-    probeHandler.render = vi.fn(async (_context, _computed, timeoutMs) => {
-      renderTimeouts.push(timeoutMs);
-      return { content: Buffer.from('{}'), contentType: 'application/json' };
-    });
-    probeHandler.store = vi.fn(async (_context, _rendered, timeoutMs) => {
-      storeTimeouts.push(timeoutMs);
-      return { result: 84 };
-    });
+    const renderingHandler: RenderingJobHandler<
+      { value: number },
+      { result: number }
+    > = {
+      ...probeHandler,
+      renderBudget: JOB_RENDER_BUDGETS.PDF_RENDER,
+      render: vi.fn(async (_context, _computed, timeoutMs) => {
+        renderTimeouts.push(timeoutMs);
+        return { content: Buffer.from('{}'), contentType: 'application/json' };
+      }),
+      store: vi.fn(async (_context, _rendered, timeoutMs) => {
+        storeTimeouts.push(timeoutMs);
+        return { result: 84 };
+      }),
+    };
+    runner.registerHandler(renderingHandler);
 
     const processed = await runner.runOnce();
     expect(processed).toBe(1);
     expect(renderTimeouts).toEqual([30_000]);
     expect(storeTimeouts).toEqual([30_000]);
-    expect(probeHandler.render).toHaveBeenCalledOnce();
-    expect(probeHandler.store).toHaveBeenCalledOnce();
+    expect(renderingHandler.render).toHaveBeenCalledOnce();
+    expect(renderingHandler.store).toHaveBeenCalledOnce();
+  });
+
+  it('bounds export job render with exportSerializeTimeoutMs rather than pdfRenderTimeoutMs', async () => {
+    const customConfig = new WorkerConfig(
+      1,
+      300,
+      1000,
+      30,
+      undefined,
+      5000,
+      5,
+      15_000,
+      180_000,
+      60_000,
+      20_000,
+      10_000,
+      1_000,
+      8_000,
+      30_000,
+      45_000,
+      12_000,
+    );
+    const { runner, probeHandler } = createTestHarness({
+      config: customConfig,
+      jobRow: {
+        id: jobId,
+        workspace_id: wsId,
+        created_by: actorId,
+        type: JOB_WRITER_TYPES.EXPORT_JOB,
+        status: 'queued',
+        payload: { format: 'csv' },
+        role: 'owner',
+      },
+    });
+    const renderTimeouts: number[] = [];
+    const renderingHandler: RenderingJobHandler<
+      { value: number },
+      { result: number }
+    > = {
+      ...probeHandler,
+      jobType: JOB_WRITER_TYPES.EXPORT_JOB,
+      renderBudget: JOB_RENDER_BUDGETS.EXPORT_SERIALIZE,
+      render: vi.fn(async (_context, _computed, timeoutMs) => {
+        renderTimeouts.push(timeoutMs);
+        return { content: Buffer.from('{}'), contentType: 'application/json' };
+      }),
+      store: vi.fn(async () => ({ result: 84 })),
+    };
+    runner.registerHandler(renderingHandler);
+
+    const processed = await runner.runOnce();
+    expect(processed).toBe(1);
+    expect(renderTimeouts).toEqual([12_000]);
+    expect(renderingHandler.render).toHaveBeenCalledOnce();
+  });
+
+  it('refuses registration at startup when rendering handler has unknown renderBudget', () => {
+    const { runner, probeHandler } = createTestHarness();
+    const badHandler = {
+      ...probeHandler,
+      renderBudget: 'unknown_budget',
+      render: vi.fn(async () => ({})),
+    };
+    expect(() =>
+      runner.registerHandler(badHandler as unknown as JobHandler),
+    ).toThrow(/unknown or missing render budget/i);
+  });
+
+  it('refuses registration at startup when rendering handler is missing renderBudget', () => {
+    const { runner, probeHandler } = createTestHarness();
+    const badHandler = {
+      ...probeHandler,
+      render: vi.fn(async () => ({})),
+    };
+    expect(() =>
+      runner.registerHandler(badHandler as unknown as JobHandler),
+    ).toThrow(/unknown or missing render budget/i);
+
+    expect(() =>
+      // @ts-expect-error Rendering handler without renderBudget must fail to compile
+      runner.registerHandler({
+        jobType: 'test',
+        parsePayload: () => ({}),
+        compute: async () => ({}),
+        persist: async () => {},
+        render: async () => ({}),
+      }),
+    ).toThrow(/unknown or missing render budget/i);
   });
 
   it('skips a job already terminal at re-check and acks it without running compute or persist', async () => {

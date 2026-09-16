@@ -12,32 +12,27 @@ import {
 import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { PROBLEM_TYPES } from '../platform/problem-details.js';
-import type { ReportGrid } from './report-engine.js';
-import { computePreparedReportGrid } from './report-computation.js';
 import {
-  parseReportJobPayload,
-  ReportJobPayloadError,
-  type ReportJobPayload,
-} from './report-job-payload.js';
-import { PostgresReportAdapter } from './postgres-report.adapter.js';
-import {
-  serializeReport,
-  type SerializedReport,
-} from './report-serializers.js';
-import { REPORT_RUN_STATUS, ReportBudgetMissingError } from './report.port.js';
+  parseExportJobPayload,
+  ExportJobPayloadError,
+  type ExportJobPayload,
+} from './export-job-payload.js';
+import { PostgresExportAdapter } from './postgres-export.adapter.js';
+import { serialize } from './export-serializers.js';
+import type { ExportRows } from './export.port.js';
 
-const REPORT_WRITE_ROLES = {
+const EXPORT_WRITE_ROLES = {
   OWNER: 'owner',
   ADMINISTRATOR: 'administrator',
   EDITOR: 'editor',
 } as const;
 
-type ReportWriteRole =
-  (typeof REPORT_WRITE_ROLES)[keyof typeof REPORT_WRITE_ROLES];
+type ExportWriteRole =
+  (typeof EXPORT_WRITE_ROLES)[keyof typeof EXPORT_WRITE_ROLES];
 
-const WRITE_ROLE_VALUES: readonly string[] = Object.values(REPORT_WRITE_ROLES);
+const WRITE_ROLE_VALUES: readonly string[] = Object.values(EXPORT_WRITE_ROLES);
 
-export class ReportWriteForbiddenError extends Error {
+export class ExportWriteForbiddenError extends Error {
   public readonly isDomainError = true;
   public readonly type = PROBLEM_TYPES.FORBIDDEN;
   public readonly title = 'Forbidden';
@@ -46,41 +41,49 @@ export class ReportWriteForbiddenError extends Error {
 
   public constructor() {
     super('Workspace access forbidden');
-    this.name = 'ReportWriteForbiddenError';
+    this.name = 'ExportWriteForbiddenError';
   }
 }
 
-function isWriteRole(role: string | undefined): role is ReportWriteRole {
+function isWriteRole(role: string | undefined): role is ExportWriteRole {
   return WRITE_ROLE_VALUES.includes(role ?? '');
 }
 
-function isSerializedReport(value: unknown): value is SerializedReport {
+export interface SerializedExport {
+  readonly content: Buffer;
+  readonly contentType: string;
+  readonly extension: string;
+}
+
+function isSerializedExport(value: unknown): value is SerializedExport {
   if (typeof value !== 'object' || value === null) {
     return false;
   }
-  const candidate = value as Partial<SerializedReport>;
+  const candidate = value as Partial<SerializedExport>;
   return (
     Buffer.isBuffer(candidate.content) &&
-    typeof candidate.contentType === 'string'
+    typeof candidate.contentType === 'string' &&
+    typeof candidate.extension === 'string'
   );
 }
 
-export interface ReportJobComputed {
+export interface ExportJobComputed {
   readonly downloadUrl: string;
   readonly expiresAt: Date;
   readonly completedAt: Date;
+  readonly objectPath: string;
 }
 
 @Injectable()
-export class ReportJobHandler
+export class ExportJobHandler
   implements
-    RenderingJobHandler<ReportJobPayload, ReportGrid, ReportJobComputed>
+    RenderingJobHandler<ExportJobPayload, ExportRows, ExportJobComputed>
 {
-  public readonly jobType = JOB_WRITER_TYPES.REPORT_RUN;
-  public readonly renderBudget = JOB_RENDER_BUDGETS.PDF_RENDER;
+  public readonly jobType = JOB_WRITER_TYPES.EXPORT_JOB;
+  public readonly renderBudget = JOB_RENDER_BUDGETS.EXPORT_SERIALIZE;
 
   public constructor(
-    private readonly reports: PostgresReportAdapter,
+    private readonly exports: PostgresExportAdapter,
     @Inject(ARTIFACT_STORAGE) private readonly storage: ArtifactStorage,
     private readonly clock: () => Date = () => new Date(),
   ) {}
@@ -88,82 +91,62 @@ export class ReportJobHandler
   public parsePayload(
     raw: unknown,
     execution?: Pick<JobExecutionContext<unknown>, 'workspaceId'>,
-  ): ReportJobPayload {
-    return parseReportJobPayload(raw, execution?.workspaceId);
+  ): ExportJobPayload {
+    return parseExportJobPayload(raw, execution?.workspaceId);
   }
 
   public async compute(
-    context: JobExecutionContext<ReportJobPayload>,
+    context: JobExecutionContext<ExportJobPayload>,
     client: TransactionClient,
-  ): Promise<ReportGrid> {
+  ): Promise<ExportRows> {
     const payload = context.payload;
-    const binding = await this.reports.readReportRunBinding(
+    const binding = await this.exports.readExportJobBinding(
       client,
       context.workspaceId,
-      payload.reportRunId,
+      payload.exportJobId,
     );
     if (
       binding === undefined ||
       binding.jobId !== context.jobId ||
-      (binding.status !== REPORT_RUN_STATUS.QUEUED &&
-        binding.status !== REPORT_RUN_STATUS.PROCESSING)
+      (binding.status !== 'queued' && binding.status !== 'processing')
     ) {
-      throw new ReportJobPayloadError(
-        'Report job payload reportRunId is not bound to this job.',
+      throw new ExportJobPayloadError(
+        'Export job payload exportJobId is not bound to this job.',
       );
     }
-    const rows = await this.reports.readReportSourceRows(
-      client,
-      context.workspaceId,
-      payload.periodStart,
-      payload.periodTo,
-      new Date(payload.asOf),
-      payload.shapeTypeFilter ?? undefined,
-      payload.callerType ?? undefined,
-    );
-    const budget = await this.reports.readBudgetedMinorByBucket(
-      client,
-      context.workspaceId,
-      payload.periodStart,
-      payload.periodTo,
-      payload.dimensions,
-    );
-    if (payload.preset === 'budget' && budget.size === 0) {
-      throw new ReportBudgetMissingError();
-    }
-    return computePreparedReportGrid({
-      rows,
-      dimensions: payload.dimensions,
-      measures: payload.measures,
-      baseCurrency: payload.baseCurrency,
-      budgetedMinorByBucket: budget,
-      preset: payload.preset,
+    return this.exports.readRows(client, context.workspaceId, {
+      format: payload.format,
+      resource: payload.resource,
+      resourceId: payload.resourceId,
+      from: payload.from,
+      to: payload.to,
     });
   }
 
   public async render(
-    context: JobExecutionContext<ReportJobPayload>,
-    computed: ReportGrid,
+    context: JobExecutionContext<ExportJobPayload>,
+    computed: ExportRows,
     timeoutMs: number,
-  ): Promise<SerializedReport> {
+  ): Promise<SerializedExport> {
     return this.runBounded(
       timeoutMs,
       async (signal, remainingMs) =>
-        serializeReport(context.payload.format, computed, {
+        serialize(context.payload.format, computed, {
           signal,
           remainingMs,
+          asOf: context.payload.asOf,
         }),
-      'Report rendering exceeded the delivery work cap.',
+      'Export rendering exceeded the delivery work cap.',
     );
   }
 
   public async store(
-    context: JobExecutionContext<ReportJobPayload>,
+    context: JobExecutionContext<ExportJobPayload>,
     rendered: unknown,
     timeoutMs: number,
-  ): Promise<ReportJobComputed> {
-    if (!isSerializedReport(rendered)) {
-      throw new Error('Report store received an invalid rendered artifact.');
+  ): Promise<ExportJobComputed> {
+    if (!isSerializedExport(rendered)) {
+      throw new Error('Export store received an invalid rendered artifact.');
     }
     const artifact = rendered;
     return this.runBounded(
@@ -185,9 +168,10 @@ export class ReportJobHandler
           downloadUrl: signature.url,
           expiresAt: signature.expiresAt,
           completedAt,
+          objectPath: context.payload.objectKey,
         };
       },
-      'Report storage exceeded the delivery work cap.',
+      'Export storage exceeded the delivery work cap.',
     );
   }
 
@@ -230,31 +214,32 @@ export class ReportJobHandler
   }
 
   public async persist(
-    context: JobExecutionContext<ReportJobPayload>,
-    computed: ReportJobComputed,
+    context: JobExecutionContext<ExportJobPayload>,
+    computed: ExportJobComputed,
     client: TransactionClient,
   ): Promise<string> {
-    const role = await this.reports.readActiveRole(client, context.workspaceId);
+    const role = await this.exports.readActiveRole(client, context.workspaceId);
     if (!isWriteRole(role)) {
-      throw new ReportWriteForbiddenError();
+      throw new ExportWriteForbiddenError();
     }
-    await this.reports.beginProcessingReportRun(
+    await this.exports.beginProcessingExportJob(
       client,
       context.workspaceId,
-      context.payload.reportRunId,
+      context.payload.exportJobId,
       context.jobId,
     );
-    await this.reports.completeProcessingReportRun(
+    await this.exports.completeProcessingExportJob(
       client,
       context.workspaceId,
-      context.payload.reportRunId,
+      context.payload.exportJobId,
       context.jobId,
       {
+        objectPath: computed.objectPath,
         downloadUrl: computed.downloadUrl,
         expiresAt: computed.expiresAt,
         completedAt: computed.completedAt,
       },
     );
-    return context.payload.reportRunId;
+    return context.payload.exportJobId;
   }
 }
