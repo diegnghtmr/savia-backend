@@ -4,15 +4,18 @@ import {
   FastifyAdapter,
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
-import { Test } from '@nestjs/testing';
+import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import {
   ARTIFACT_STORAGE,
+  ArtifactStorageClientError,
   type ArtifactStorage,
 } from '../../src/platform/artifact-storage.port.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
+import { JobRunner } from '../../src/platform/job-runner.js';
+import { WorkerModule } from '../../src/worker.module.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -26,7 +29,9 @@ class TestStorage implements ArtifactStorage {
     path: string,
     expiresAt: Date,
   ): Promise<{ url: string; expiresAt: Date }> {
-    if (this.failSigning) throw new Error('signing failed');
+    if (this.failSigning) {
+      throw new ArtifactStorageClientError(403, 'signing failed');
+    }
     return { url: `https://storage.example.test/${path}`, expiresAt };
   }
 
@@ -36,6 +41,8 @@ class TestStorage implements ArtifactStorage {
 describe('export completion over Fastify HTTP and disposable PostgreSQL', () => {
   let admin: Pool;
   let app: NestFastifyApplication;
+  let workerModule: TestingModule;
+  let runner: JobRunner;
   let storage: TestStorage;
   const subject = '11111111-0000-4000-8000-000000000071';
   const workspace = '22222222-0000-4000-8000-000000000072';
@@ -89,6 +96,15 @@ describe('export completion over Fastify HTTP and disposable PostgreSQL', () => 
     registerProblemFilter(app);
     await app.init();
     await app.getHttpAdapter().getInstance().ready();
+
+    workerModule = await Test.createTestingModule({
+      imports: [WorkerModule],
+    })
+      .overrideProvider(ARTIFACT_STORAGE)
+      .useValue(storage)
+      .compile();
+    await workerModule.init();
+    runner = workerModule.get(JobRunner);
   });
 
   afterEach(async () => {
@@ -103,6 +119,7 @@ describe('export completion over Fastify HTTP and disposable PostgreSQL', () => 
   });
 
   afterAll(async () => {
+    await workerModule?.close();
     await app?.close();
     await admin?.query('delete from public.workspaces where id=$1', [
       workspace,
@@ -111,7 +128,7 @@ describe('export completion over Fastify HTTP and disposable PostgreSQL', () => 
     await admin?.end();
   });
 
-  it('completes a real export and persists its download URL', async () => {
+  it('completes an asynchronous export via worker drain and persists its download URL', async () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/export-jobs',
@@ -122,18 +139,26 @@ describe('export completion over Fastify HTTP and disposable PostgreSQL', () => 
     const body = JSON.parse(response.payload) as {
       id: string;
       status: string;
-      downloadUrl: string;
+      downloadUrl: string | null;
     };
-    expect(body.status).toBe('completed');
-    expect(body.downloadUrl).toContain('https://storage.example.test/');
-    const row = await admin.query<{ status: string }>(
-      'select status from public.export_jobs where id=$1',
-      [body.id],
-    );
+    expect(body.status).toBe('queued');
+    expect(body.downloadUrl).toBeNull();
+
+    await runner.drainOnce();
+
+    const row = await admin.query<{
+      status: string;
+      download_url: string | null;
+    }>('select status, download_url from public.export_jobs where id=$1', [
+      body.id,
+    ]);
     expect(row.rows[0]?.status).toBe('completed');
+    expect(row.rows[0]?.download_url).toContain(
+      'https://storage.example.test/',
+    );
   });
 
-  it('marks the reserved export failed when signing fails', async () => {
+  it('marks the asynchronous export failed when worker signing fails', async () => {
     storage.failSigning = true;
     const response = await app.inject({
       method: 'POST',
@@ -143,7 +168,10 @@ describe('export completion over Fastify HTTP and disposable PostgreSQL', () => 
     });
     expect(response.statusCode).toBe(202);
     const body = JSON.parse(response.payload) as { id: string; status: string };
-    expect(body.status).toBe('failed');
+    expect(body.status).toBe('queued');
+
+    await runner.drainOnce();
+
     const row = await admin.query<{ status: string }>(
       'select status from public.export_jobs where id=$1',
       [body.id],

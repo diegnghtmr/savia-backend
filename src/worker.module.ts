@@ -8,9 +8,16 @@ import { JOB_WRITER } from './platform/job-writer.port.js';
 import { WorkerPlatformModule } from './platform/worker-platform.module.js';
 import { ReportJobHandler } from './reports/report-job.handler.js';
 import { ReportWorkerModule } from './reports/report-worker.module.js';
+import { ExportJobHandler } from './exports/export-job.handler.js';
+import { ExportWorkerModule } from './exports/export-worker.module.js';
 
 @Module({
-  imports: [WorkerPlatformModule, ForecastWorkerModule, ReportWorkerModule],
+  imports: [
+    WorkerPlatformModule,
+    ForecastWorkerModule,
+    ReportWorkerModule,
+    ExportWorkerModule,
+  ],
   providers: [
     PostgresJobsAdapter,
     {
@@ -19,11 +26,12 @@ import { ReportWorkerModule } from './reports/report-worker.module.js';
     },
     {
       provide: JOB_HANDLERS,
-      inject: [ForecastJobHandler, ReportJobHandler],
-      useFactory: (forecast: ForecastJobHandler, report: ReportJobHandler) => [
-        forecast,
-        report,
-      ],
+      inject: [ForecastJobHandler, ReportJobHandler, ExportJobHandler],
+      useFactory: (
+        forecast: ForecastJobHandler,
+        report: ReportJobHandler,
+        exportJob: ExportJobHandler,
+      ) => [forecast, report, exportJob],
     },
     JobRunner,
   ],
