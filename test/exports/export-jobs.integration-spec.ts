@@ -382,13 +382,26 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
         proconfig: string[] | null;
         has_public_exec: boolean;
         has_elevated_exec: boolean;
+        execute_grantees: string[];
       }>(
         `select
            r.rolname as owner,
            p.prosecdef,
            p.proconfig,
            has_function_privilege('public', p.oid, 'execute') as has_public_exec,
-           has_function_privilege('savia_elevated', p.oid, 'execute') as has_elevated_exec
+           has_function_privilege('savia_elevated', p.oid, 'execute') as has_elevated_exec,
+            coalesce(
+              (
+                select array_agg(
+                  (case when a.grantee = 0 then 'PUBLIC' else gr.rolname end)::text
+                  order by case when a.grantee = 0 then 'PUBLIC' else gr.rolname end
+                )
+                from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                left join pg_roles gr on gr.oid = a.grantee
+                where a.privilege_type = 'EXECUTE'
+              ),
+              '{}'::text[]
+            ) as execute_grantees
          from pg_proc p
          join pg_roles r on r.oid = p.proowner
          join pg_namespace n on n.oid = p.pronamespace
@@ -402,6 +415,7 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       expect(row?.proconfig).toEqual(['search_path=pg_catalog, public']);
       expect(row?.has_public_exec).toBe(false);
       expect(row?.has_elevated_exec).toBe(true);
+      expect(row?.execute_grantees).toEqual(['savia_elevated']);
     });
 
     it('pins project_export_job_failure trigger binding on public.jobs', async () => {
