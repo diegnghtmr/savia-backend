@@ -127,7 +127,12 @@ export class ExportJobHandler
   ): Promise<SerializedExport> {
     return this.runBounded(
       timeoutMs,
-      async () => serialize(context.payload.format, computed),
+      async (signal, remainingMs) =>
+        serialize(context.payload.format, computed, {
+          signal,
+          remainingMs,
+          asOf: context.payload.asOf,
+        }),
       'Export rendering exceeded the delivery work cap.',
     );
   }
