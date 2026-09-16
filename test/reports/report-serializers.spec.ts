@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import {
   REPORT_DIMENSION,
   REPORT_MEASURE,
@@ -38,4 +39,26 @@ describe('serializeReport', () => {
     expect(result.contentType).toBe('application/pdf');
     expect(result.content.subarray(0, 5).toString()).toBe('%PDF-');
   });
+
+  it('aborts a large PDF when the remaining budget is exhausted', async () => {
+    const large: ReportGrid = {
+      dimensions: [REPORT_DIMENSION.PAYEE],
+      measures: [REPORT_MEASURE.CONVERTED_VALUE],
+      baseCurrency: 'USD',
+      warnings: [],
+      rows: Array.from({ length: 10_000 }, (_, index) => ({
+        key: [`Payee ${String(index).padStart(5, '0')} ${'n'.repeat(24)}`],
+        cells: [
+          { measure: REPORT_MEASURE.CONVERTED_VALUE, value: String(index) },
+        ],
+      })),
+    };
+    const started = performance.now();
+    await expect(
+      serializeReport('pdf', large, {
+        remainingMs: () => 1 - (performance.now() - started),
+      }),
+    ).rejects.toBeInstanceOf(DeliveryDeadlineExceededError);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  }, 10_000);
 });

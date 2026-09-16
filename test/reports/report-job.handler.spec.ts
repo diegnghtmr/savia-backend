@@ -46,6 +46,28 @@ const emptyGrid: ReportGrid = {
   baseCurrency: 'USD',
 };
 
+const pdfContext = {
+  ...context,
+  payload: {
+    ...payload,
+    format: 'pdf' as const,
+    objectKey: payload.objectKey.replace(/\.json$/, '.pdf'),
+  },
+};
+
+function largePdfGrid(rowCount: number): ReportGrid {
+  return {
+    dimensions: ['category'],
+    measures: ['converted_value'],
+    warnings: [],
+    baseCurrency: 'USD',
+    rows: Array.from({ length: rowCount }, (_, index) => ({
+      key: [`Category ${String(index).padStart(5, '0')} ${'n'.repeat(24)}`],
+      cells: [{ measure: 'converted_value', value: String(1_000 + index) }],
+    })),
+  };
+}
+
 function createStorage(): ArtifactStorage & {
   uploaded: string[];
 } {
@@ -187,6 +209,30 @@ describe('ReportJobHandler', () => {
     );
     await handler.store({ ...context, attemptCount: 2 }, second, 5_000);
     expect(storage.uploaded).toEqual([payload.objectKey, payload.objectKey]);
+  });
+
+  it('rejects a large PDF render when its phase cap elapses', async () => {
+    const handler = new ReportJobHandler(
+      createStore() as unknown as PostgresReportAdapter,
+      createStorage(),
+      () => new Date('2026-09-15T12:00:00.000Z'),
+    );
+    const started = performance.now();
+    await expect(
+      handler.render(pdfContext, largePdfGrid(10_000), 5),
+    ).rejects.toBeInstanceOf(DeliveryDeadlineExceededError);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  }, 10_000);
+
+  it('renders a normal-size PDF under a normal cap', async () => {
+    const handler = new ReportJobHandler(
+      createStore() as unknown as PostgresReportAdapter,
+      createStorage(),
+      () => new Date('2026-09-15T12:00:00.000Z'),
+    );
+    const rendered = await handler.render(pdfContext, emptyGrid, 5_000);
+    expect(rendered.contentType).toBe('application/pdf');
+    expect(rendered.content.subarray(0, 5).toString()).toBe('%PDF-');
   });
 
   it('fails the render phase when it exceeds its own cap without uploading', async () => {

@@ -23,10 +23,7 @@ import {
   serializeReport,
   type SerializedReport,
 } from './report-serializers.js';
-import {
-  REPORT_RUN_STATUS,
-  ReportBudgetMissingError,
-} from './report.port.js';
+import { REPORT_RUN_STATUS, ReportBudgetMissingError } from './report.port.js';
 
 const REPORT_WRITE_ROLES = {
   OWNER: 'owner',
@@ -148,7 +145,11 @@ export class ReportJobHandler
   ): Promise<SerializedReport> {
     return this.runBounded(
       timeoutMs,
-      async () => serializeReport(context.payload.format, computed),
+      async (signal, remainingMs) =>
+        serializeReport(context.payload.format, computed, {
+          signal,
+          remainingMs,
+        }),
       'Report rendering exceeded the delivery work cap.',
     );
   }
@@ -189,25 +190,36 @@ export class ReportJobHandler
 
   private async runBounded<T>(
     timeoutMs: number,
-    work: (signal: AbortSignal) => Promise<T>,
+    work: (signal: AbortSignal, remainingMs: () => number) => Promise<T>,
     message: string,
   ): Promise<T> {
     const controller = new AbortController();
+    let remainingMs = (): number => Number.POSITIVE_INFINITY;
     let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<T>((_, reject) => {
+      const deadlineAt = performance.now() + timeoutMs;
+      remainingMs = () => deadlineAt - performance.now();
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new DeliveryDeadlineExceededError(message));
+      }, timeoutMs);
+    });
+    void timeout.catch(() => undefined);
     try {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      if (controller.signal.aborted) {
+        throw new DeliveryDeadlineExceededError(message);
+      }
       return await Promise.race([
-        work(controller.signal).catch((error: unknown) => {
+        work(controller.signal, remainingMs).catch((error: unknown) => {
           if (controller.signal.aborted) {
             throw new DeliveryDeadlineExceededError(message, { cause: error });
           }
           throw error;
         }),
-        new Promise<T>((_, reject) => {
-          timer = setTimeout(() => {
-            controller.abort();
-            reject(new DeliveryDeadlineExceededError(message));
-          }, timeoutMs);
-        }),
+        timeout,
       ]);
     } finally {
       if (timer) clearTimeout(timer);
