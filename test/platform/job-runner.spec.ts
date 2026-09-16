@@ -323,6 +323,27 @@ describe('JobRunner unit spec (S2)', () => {
     ]);
   });
 
+  it('bounds render and storage with independent caps rather than a summed budget', async () => {
+    const { runner, probeHandler } = createTestHarness();
+    const renderTimeouts: number[] = [];
+    const storeTimeouts: number[] = [];
+    probeHandler.render = vi.fn(async (_context, _computed, timeoutMs) => {
+      renderTimeouts.push(timeoutMs);
+      return { content: Buffer.from('{}'), contentType: 'application/json' };
+    });
+    probeHandler.store = vi.fn(async (_context, _rendered, timeoutMs) => {
+      storeTimeouts.push(timeoutMs);
+      return { result: 84 };
+    });
+
+    const processed = await runner.runOnce();
+    expect(processed).toBe(1);
+    expect(renderTimeouts).toEqual([30_000]);
+    expect(storeTimeouts).toEqual([30_000]);
+    expect(probeHandler.render).toHaveBeenCalledOnce();
+    expect(probeHandler.store).toHaveBeenCalledOnce();
+  });
+
   it('skips a job already terminal at re-check and acks it without running compute or persist', async () => {
     const { runner, mockQueue, mockJobWriter, probeHandler, callLog } =
       createTestHarness({

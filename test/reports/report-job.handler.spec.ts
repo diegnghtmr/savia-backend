@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import type { ArtifactStorage } from '../../src/platform/artifact-storage.port.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
@@ -8,6 +9,7 @@ import {
 import type { ReportJobPayload } from '../../src/reports/report-job-payload.js';
 import { PostgresReportAdapter } from '../../src/reports/postgres-report.adapter.js';
 import type { ReportGrid } from '../../src/reports/report-engine.js';
+import * as serializers from '../../src/reports/report-serializers.js';
 
 const payload: ReportJobPayload = {
   version: 1,
@@ -139,14 +141,51 @@ describe('ReportJobHandler', () => {
       storage,
       () => new Date('2026-09-15T12:00:00.000Z'),
     );
-    await handler.materialize(context, emptyGrid, 5_000);
+    const first = await handler.render(context, emptyGrid, 5_000);
+    await handler.store(context, first, 5_000);
     expect(storage.uploaded).toEqual([payload.objectKey]);
-    await handler.materialize(
+    const second = await handler.render(
       { ...context, attemptCount: 2 },
       emptyGrid,
       5_000,
     );
+    await handler.store({ ...context, attemptCount: 2 }, second, 5_000);
     expect(storage.uploaded).toEqual([payload.objectKey, payload.objectKey]);
+  });
+
+  it('fails the render phase when it exceeds its own cap without uploading', async () => {
+    const storage = createStorage();
+    const handler = new ReportJobHandler(
+      createStore() as unknown as PostgresReportAdapter,
+      storage,
+      () => new Date('2026-09-15T12:00:00.000Z'),
+    );
+    vi.spyOn(serializers, 'serializeReport').mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    try {
+      await expect(
+        handler.render(context, emptyGrid, 20),
+      ).rejects.toBeInstanceOf(DeliveryDeadlineExceededError);
+      expect(storage.uploaded).toEqual([]);
+      expect(storage.upload).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('fails the storage phase when it exceeds its own cap', async () => {
+    const storage = createStorage();
+    storage.upload = vi.fn(async () => new Promise<void>(() => undefined));
+    const handler = new ReportJobHandler(
+      createStore() as unknown as PostgresReportAdapter,
+      storage,
+      () => new Date('2026-09-15T12:00:00.000Z'),
+    );
+    const rendered = await handler.render(context, emptyGrid, 5_000);
+    await expect(handler.store(context, rendered, 20)).rejects.toBeInstanceOf(
+      DeliveryDeadlineExceededError,
+    );
   });
 
   it('refuses persist when the actor no longer has a write role', async () => {

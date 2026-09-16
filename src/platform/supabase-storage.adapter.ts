@@ -34,6 +34,7 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
     path: string,
     content: Buffer,
     contentType: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const c = this.getConfig();
     let response: Response;
@@ -48,6 +49,7 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
             'x-upsert': 'true',
           },
           body: new Uint8Array(content),
+          signal,
         },
       );
     } catch (error) {
@@ -70,6 +72,7 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
   public async sign(
     path: string,
     expiresAt: Date,
+    signal?: AbortSignal,
   ): Promise<{ url: string; expiresAt: Date }> {
     const c = this.getConfig();
     const seconds = Math.max(
@@ -84,6 +87,7 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
           method: 'POST',
           headers: { ...this.headers(), 'content-type': 'application/json' },
           body: JSON.stringify({ expiresIn: seconds }),
+          signal,
         },
       );
     } catch (error) {

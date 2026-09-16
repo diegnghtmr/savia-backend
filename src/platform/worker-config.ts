@@ -121,6 +121,14 @@ export class WorkerConfig {
         `leaseSafetyMs (${leaseSafetyMs}ms) + terminalReserveMs (${terminalReserveMs}ms) + 3·minOperationMs (3·${minOperationMs}ms = ${3 * minOperationMs}ms) = ${minDeadlineOverheadMs}ms must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
       );
     }
+
+    const deliveryIoCapsMs = pdfRenderTimeoutMs + storageUploadTimeoutMs;
+    const deliveryIoBudgetMs = deliveryIoCapsMs + minDeadlineOverheadMs;
+    if (deliveryIoBudgetMs >= visibilityMs) {
+      throw new WorkerConfigurationError(
+        `pdfRenderTimeoutMs (${pdfRenderTimeoutMs}ms) + storageUploadTimeoutMs (${storageUploadTimeoutMs}ms) + leaseSafetyMs (${leaseSafetyMs}ms) + terminalReserveMs (${terminalReserveMs}ms) + 3·minOperationMs (3·${minOperationMs}ms = ${3 * minOperationMs}ms) = ${deliveryIoBudgetMs}ms must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
+      );
+    }
   }
 
   public static fromEnvironment(

@@ -1383,7 +1383,8 @@ describe('Report runs integration contract and endpoint suite', () => {
           );
         },
         compute: (context, client) => original.compute(context, client),
-        materialize: original.materialize?.bind(original),
+        render: original.render?.bind(original),
+        store: original.store?.bind(original),
         persist: (context, computed, client) =>
           original.persist(context, computed, client),
       };
@@ -1497,7 +1498,8 @@ describe('Report runs integration contract and endpoint suite', () => {
           return original.parsePayload(raw, execution);
         },
         compute: (context, client) => original.compute(context, client),
-        materialize: original.materialize?.bind(original),
+        render: original.render?.bind(original),
+        store: original.store?.bind(original),
         persist: (context, computed, client) =>
           original.persist(context, computed, client),
       };
@@ -1528,7 +1530,8 @@ describe('Report runs integration contract and endpoint suite', () => {
         jobType: original.jobType,
         parsePayload: (raw, execution) => original.parsePayload(raw, execution),
         compute: (context, client) => original.compute(context, client),
-        materialize: original.materialize?.bind(original),
+        render: original.render?.bind(original),
+        store: original.store?.bind(original),
         persist: async (context, computed, client) => {
           await original.persist(context, computed, client);
           throw new Error('refuse after persist');

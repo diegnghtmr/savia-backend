@@ -18,7 +18,10 @@ import {
   type ReportJobPayload,
 } from './report-job-payload.js';
 import { PostgresReportAdapter } from './postgres-report.adapter.js';
-import { serializeReport } from './report-serializers.js';
+import {
+  serializeReport,
+  type SerializedReport,
+} from './report-serializers.js';
 import { ReportBudgetMissingError } from './report.port.js';
 
 const REPORT_WRITE_ROLES = {
@@ -49,6 +52,17 @@ function isWriteRole(role: string | undefined): role is ReportWriteRole {
   return WRITE_ROLE_VALUES.includes(role ?? '');
 }
 
+function isSerializedReport(value: unknown): value is SerializedReport {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const candidate = value as Partial<SerializedReport>;
+  return (
+    Buffer.isBuffer(candidate.content) &&
+    typeof candidate.contentType === 'string'
+  );
+}
+
 export interface ReportJobComputed {
   readonly downloadUrl: string;
   readonly expiresAt: Date;
@@ -62,7 +76,7 @@ export class ReportJobHandler
   public readonly jobType = JOB_WRITER_TYPES.REPORT_RUN;
 
   public constructor(
-    private readonly store: PostgresReportAdapter,
+    private readonly reports: PostgresReportAdapter,
     @Inject(ARTIFACT_STORAGE) private readonly storage: ArtifactStorage,
     private readonly clock: () => Date = () => new Date(),
   ) {}
@@ -79,7 +93,7 @@ export class ReportJobHandler
     client: TransactionClient,
   ): Promise<ReportGrid> {
     const payload = context.payload;
-    const rows = await this.store.readReportSourceRows(
+    const rows = await this.reports.readReportSourceRows(
       client,
       context.workspaceId,
       payload.periodStart,
@@ -88,7 +102,7 @@ export class ReportJobHandler
       payload.shapeTypeFilter ?? undefined,
       payload.callerType ?? undefined,
     );
-    const budget = await this.store.readBudgetedMinorByBucket(
+    const budget = await this.reports.readBudgetedMinorByBucket(
       client,
       context.workspaceId,
       payload.periodStart,
@@ -108,46 +122,71 @@ export class ReportJobHandler
     });
   }
 
-  public async materialize(
+  public async render(
     context: JobExecutionContext<ReportJobPayload>,
     computed: ReportGrid,
     timeoutMs: number,
+  ): Promise<SerializedReport> {
+    return this.runBounded(
+      timeoutMs,
+      async () => serializeReport(context.payload.format, computed),
+      'Report rendering exceeded the delivery work cap.',
+    );
+  }
+
+  public async store(
+    context: JobExecutionContext<ReportJobPayload>,
+    rendered: unknown,
+    timeoutMs: number,
   ): Promise<ReportJobComputed> {
-    return this.runBounded(timeoutMs, async () => {
-      const artifact = await serializeReport(context.payload.format, computed);
-      await this.storage.upload(
-        context.payload.objectKey,
-        artifact.content,
-        artifact.contentType,
-      );
-      const completedAt = this.clock();
-      const signature = await this.storage.sign(
-        context.payload.objectKey,
-        new Date(completedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
-      );
-      return {
-        downloadUrl: signature.url,
-        expiresAt: signature.expiresAt,
-        completedAt,
-      };
-    });
+    if (!isSerializedReport(rendered)) {
+      throw new Error('Report store received an invalid rendered artifact.');
+    }
+    const artifact = rendered;
+    return this.runBounded(
+      timeoutMs,
+      async (signal) => {
+        await this.storage.upload(
+          context.payload.objectKey,
+          artifact.content,
+          artifact.contentType,
+          signal,
+        );
+        const completedAt = this.clock();
+        const signature = await this.storage.sign(
+          context.payload.objectKey,
+          new Date(completedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
+          signal,
+        );
+        return {
+          downloadUrl: signature.url,
+          expiresAt: signature.expiresAt,
+          completedAt,
+        };
+      },
+      'Report storage exceeded the delivery work cap.',
+    );
   }
 
   private async runBounded<T>(
     timeoutMs: number,
-    work: () => Promise<T>,
+    work: (signal: AbortSignal) => Promise<T>,
+    message: string,
   ): Promise<T> {
+    const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
-        work(),
+        work(controller.signal).catch((error: unknown) => {
+          if (controller.signal.aborted) {
+            throw new DeliveryDeadlineExceededError(message, { cause: error });
+          }
+          throw error;
+        }),
         new Promise<T>((_, reject) => {
           timer = setTimeout(() => {
-            reject(
-              new DeliveryDeadlineExceededError(
-                'Report artifact I/O exceeded the delivery work cap.',
-              ),
-            );
+            controller.abort();
+            reject(new DeliveryDeadlineExceededError(message));
           }, timeoutMs);
         }),
       ]);
@@ -161,17 +200,17 @@ export class ReportJobHandler
     computed: ReportJobComputed,
     client: TransactionClient,
   ): Promise<string> {
-    const role = await this.store.readActiveRole(client, context.workspaceId);
+    const role = await this.reports.readActiveRole(client, context.workspaceId);
     if (!isWriteRole(role)) {
       throw new ReportWriteForbiddenError();
     }
-    await this.store.beginProcessingReportRun(
+    await this.reports.beginProcessingReportRun(
       client,
       context.workspaceId,
       context.payload.reportRunId,
       context.jobId,
     );
-    await this.store.completeProcessingReportRun(
+    await this.reports.completeProcessingReportRun(
       client,
       context.workspaceId,
       context.payload.reportRunId,

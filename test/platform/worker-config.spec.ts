@@ -347,6 +347,30 @@ describe('WorkerConfig', () => {
     ).toThrow(WorkerConfigurationError);
   });
 
+  it('rejects individually valid render and storage caps whose sum is unsafe', () => {
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          8_000,
+          140_000,
+          140_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
+  });
+
   it('ensures the removed optional phaseDeadlinesSeconds path no longer exists', () => {
     const envConfig = WorkerConfig.fromEnvironment({
       SAVIA_WORKER_PHASE_DEADLINES: '50,100,50',

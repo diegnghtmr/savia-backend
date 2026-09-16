@@ -504,22 +504,38 @@ export class JobRunner implements BeforeApplicationShutdown {
         async (readClient) => handler.compute(context, readClient),
         deadline.forWork(this.config.computeTimeoutMs),
       );
-      if (handler.materialize) {
+      if (handler.render && handler.store) {
         if (deadline.isWorkExhausted()) {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
         }
-        const uploadTimeoutMs = deadline.forWork(
-          this.config.pdfRenderTimeoutMs + this.config.storageUploadTimeoutMs,
+        const renderTimeoutMs = deadline.forWork(
+          this.config.pdfRenderTimeoutMs,
         );
-        if (uploadTimeoutMs < this.config.minOperationMs) {
+        if (renderTimeoutMs < this.config.minOperationMs) {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
         }
-        computedResult = await handler.materialize(
+        const rendered = await handler.render(
           context,
           computedResult,
-          uploadTimeoutMs,
+          renderTimeoutMs,
+        );
+        if (deadline.isWorkExhausted()) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        const storageTimeoutMs = deadline.forWork(
+          this.config.storageUploadTimeoutMs,
+        );
+        if (storageTimeoutMs < this.config.minOperationMs) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        computedResult = await handler.store(
+          context,
+          rendered,
+          storageTimeoutMs,
         );
       }
     } catch (computeError) {
