@@ -260,6 +260,9 @@ jobs:
       - name: exports completion integration
         shell: bash
         run: pnpm test:integration:exports-completion
+      - name: export jobs integration
+        shell: bash
+        run: pnpm test:integration:export-jobs
       - name: imports integration
         shell: bash
         run: pnpm test:integration:imports
