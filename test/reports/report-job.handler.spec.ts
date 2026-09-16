@@ -55,6 +55,15 @@ const pdfContext = {
   },
 };
 
+const csvContext = {
+  ...context,
+  payload: {
+    ...payload,
+    format: 'csv' as const,
+    objectKey: payload.objectKey.replace(/\.json$/, '.csv'),
+  },
+};
+
 function largePdfGrid(rowCount: number): ReportGrid {
   return {
     dimensions: ['category'],
@@ -234,6 +243,32 @@ describe('ReportJobHandler', () => {
     expect(rendered.contentType).toBe('application/pdf');
     expect(rendered.content.subarray(0, 5).toString()).toBe('%PDF-');
   });
+
+  it('rejects a large JSON render when its phase cap elapses', async () => {
+    const handler = new ReportJobHandler(
+      createStore() as unknown as PostgresReportAdapter,
+      createStorage(),
+      () => new Date('2026-09-15T12:00:00.000Z'),
+    );
+    const started = performance.now();
+    await expect(
+      handler.render(context, largePdfGrid(50_000), 5),
+    ).rejects.toBeInstanceOf(DeliveryDeadlineExceededError);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  }, 10_000);
+
+  it('rejects a large CSV render when its phase cap elapses', async () => {
+    const handler = new ReportJobHandler(
+      createStore() as unknown as PostgresReportAdapter,
+      createStorage(),
+      () => new Date('2026-09-15T12:00:00.000Z'),
+    );
+    const started = performance.now();
+    await expect(
+      handler.render(csvContext, largePdfGrid(50_000), 5),
+    ).rejects.toBeInstanceOf(DeliveryDeadlineExceededError);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  }, 10_000);
 
   it('fails the render phase when it exceeds its own cap without uploading', async () => {
     const storage = createStorage();
