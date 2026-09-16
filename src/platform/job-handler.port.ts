@@ -12,7 +12,10 @@ export interface JobExecutionContext<P> {
 
 export interface JobHandler<P = unknown, C = unknown, R = C> {
   readonly jobType: string;
-  parsePayload(raw: unknown): P;
+  parsePayload(
+    raw: unknown,
+    execution?: Pick<JobExecutionContext<unknown>, 'workspaceId'>,
+  ): P;
   compute(
     context: JobExecutionContext<P>,
     client: TransactionClient,

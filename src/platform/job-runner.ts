@@ -428,7 +428,7 @@ export class JobRunner implements BeforeApplicationShutdown {
 
     let parsedPayload: unknown;
     try {
-      parsedPayload = handler.parsePayload(jobPayload);
+      parsedPayload = handler.parsePayload(jobPayload, { workspaceId });
     } catch (parseError) {
       if (deadline.isWorkExhausted()) {
         this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);

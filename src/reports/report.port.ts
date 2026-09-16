@@ -235,11 +235,13 @@ export interface ReportStore {
     client: TransactionClient,
     workspaceId: string,
     reportRunId: string,
+    jobId: string,
   ): Promise<void>;
   completeProcessingReportRun?(
     client: TransactionClient,
     workspaceId: string,
     reportRunId: string,
+    jobId: string,
     data: CompleteProcessingReportRunRecord,
   ): Promise<ReportRun>;
   findReportRun?(

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import { PostgresReportAdapter } from '../../src/reports/postgres-report.adapter.js';
+import { ReportJobPayloadError } from '../../src/reports/report-job-payload.js';
 import { reportArtifactObjectKey } from '../../src/reports/report-run-snapshot.js';
 import { ReportMissingRateError } from '../../src/reports/report.port.js';
 
@@ -201,6 +202,7 @@ describe('PostgresReportAdapter report-run queries', () => {
         client,
         workspaceId,
         reportRunId,
+        'aaaaaaaa-0000-4000-8000-000000000099',
         {
           downloadUrl: 'https://storage.example.test/rewritten.json',
           expiresAt: new Date('2026-09-22T00:00:00.000Z'),
@@ -229,6 +231,7 @@ describe('PostgresReportAdapter report-run queries', () => {
       client,
       workspaceId,
       'eeeeeeee-0000-4000-8000-000000000001',
+      'aaaaaaaa-0000-4000-8000-000000000099',
       {
         downloadUrl: 'https://storage.example.test/report.json',
         expiresAt: new Date('2026-09-22T00:00:00.000Z'),
@@ -237,5 +240,45 @@ describe('PostgresReportAdapter report-run queries', () => {
     );
     const [sql] = query.mock.calls[0] as [string];
     expect(sql).toMatch(/where[\s\S]*status\s*=\s*'processing'/);
+    expect(sql).toMatch(/job_id\s*=\s*\$6::uuid/);
+  });
+
+  it('STRUCTURAL: begin processing requires the linked job_id', async () => {
+    const reportRunId = 'eeeeeeee-0000-4000-8000-000000000001';
+    const jobId = 'aaaaaaaa-0000-4000-8000-000000000099';
+    const { client, query } = clientWithRows([{ id: reportRunId }]);
+    await new PostgresReportAdapter().beginProcessingReportRun(
+      client,
+      workspaceId,
+      reportRunId,
+      jobId,
+    );
+    const [sql, values] = query.mock.calls[0] as [string, readonly unknown[]];
+    expect(sql).toMatch(/job_id\s*=\s*\$3::uuid/);
+    expect(values).toEqual([workspaceId, reportRunId, jobId]);
+  });
+
+  it('refuses to process a run linked to a different job', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (/update\s+public\.report_runs/i.test(sql)) {
+        return { rows: [] };
+      }
+      return {
+        rows: [
+          {
+            jobId: 'aaaaaaaa-0000-4000-8000-000000000098',
+            status: 'queued',
+          },
+        ],
+      };
+    });
+    await expect(
+      new PostgresReportAdapter().beginProcessingReportRun(
+        { query } as unknown as TransactionClient,
+        workspaceId,
+        'eeeeeeee-0000-4000-8000-000000000001',
+        'aaaaaaaa-0000-4000-8000-000000000099',
+      ),
+    ).rejects.toBeInstanceOf(ReportJobPayloadError);
   });
 });

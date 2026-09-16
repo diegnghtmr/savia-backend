@@ -117,7 +117,10 @@ function isStringOrNull(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
 }
 
-export function parseReportJobPayload(raw: unknown): ReportJobPayload {
+export function parseReportJobPayload(
+  raw: unknown,
+  workspaceId?: string,
+): ReportJobPayload {
   if (!isRecord(raw)) {
     throw new ReportJobPayloadError('Report job payload must be an object.');
   }
@@ -237,6 +240,11 @@ export function parseReportJobPayload(raw: unknown): ReportJobPayload {
   ) {
     throw new ReportJobPayloadError(
       'Report job payload objectKey must match reportRunId and format.',
+    );
+  }
+  if (workspaceId !== undefined && parsedKey.workspaceId !== workspaceId) {
+    throw new ReportJobPayloadError(
+      'Report job payload objectKey must match the job workspace.',
     );
   }
 

@@ -117,4 +117,16 @@ describe('parseReportJobPayload', () => {
       }),
     ).toThrow(/objectKey must match/);
   });
+
+  it('rejects an object key bound to a foreign workspace', () => {
+    expect(() =>
+      parseReportJobPayload(valid, 'bbbbbbbb-0000-4000-8000-000000000001'),
+    ).toThrow(/objectKey must match the job workspace/);
+  });
+
+  it('accepts an object key bound to the job workspace', () => {
+    expect(
+      parseReportJobPayload(valid, 'aaaaaaaa-0000-4000-8000-000000000001'),
+    ).toEqual(valid);
+  });
 });

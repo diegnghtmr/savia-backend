@@ -1308,6 +1308,160 @@ describe('Report runs integration contract and endpoint suite', () => {
       expect(run.rows[0]?.error).toEqual(job.rows[0]?.error);
     });
 
+    it('fails permanently without uploading when the object key carries a foreign workspace prefix', async () => {
+      const handlers = workerModule.get<readonly JobHandler[] | JobHandler>(
+        JOB_HANDLERS,
+      );
+      const list = Array.isArray(handlers) ? handlers : [handlers];
+      const original = list.find((handler) => handler.jobType === 'report_run');
+      if (!original) {
+        throw new Error('Expected a registered report_run handler');
+      }
+      const misbound: JobHandler = {
+        jobType: original.jobType,
+        parsePayload: (raw, execution) => {
+          const record = raw as Record<string, unknown>;
+          return original.parsePayload(
+            {
+              ...record,
+              objectKey: `${workspace2Id}/${String(record.reportRunId)}.json`,
+            },
+            execution,
+          );
+        },
+        compute: (context, client) => original.compute(context, client),
+        materialize: original.materialize?.bind(original),
+        persist: (context, computed, client) =>
+          original.persist(context, computed, client),
+      };
+      runner.registerHandler(misbound);
+      const uploadsBefore = inMemoryStorage.uploadCallCount;
+      try {
+        const response = await application.inject({
+          method: 'POST',
+          url: '/v1/report-runs',
+          headers: {
+            authorization: 'Bearer editor-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': randomUUID(),
+          },
+          payload: {
+            preset: 'expenses',
+            format: 'json',
+            filters: { from: '2026-06-01', to: '2026-06-30' },
+          },
+        });
+        expect(response.statusCode).toBe(202);
+        const body = JSON.parse(response.body) as { id: string };
+        const foreignKey = `${workspace2Id}/${body.id}.json`;
+        const finished = await drainUntilRunTerminal(body.id);
+        expect(finished.jobStatus).toBe('failed');
+        expect(finished.jobError).toEqual(
+          expect.objectContaining({ code: 'invalid_payload' }),
+        );
+        expect(inMemoryStorage.uploadCallCount).toBe(uploadsBefore);
+        expect(inMemoryStorage.uploaded.has(foreignKey)).toBe(false);
+      } finally {
+        runner.registerHandler(original);
+      }
+    });
+
+    it('does not complete a different queued run in the same workspace', async () => {
+      const first = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: { from: '2026-06-01', to: '2026-06-30' },
+        },
+      });
+      const second = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: { from: '2026-06-01', to: '2026-06-30' },
+        },
+      });
+      expect(first.statusCode).toBe(202);
+      expect(second.statusCode).toBe(202);
+      const runA = JSON.parse(first.body) as { id: string };
+      const runB = JSON.parse(second.body) as { id: string };
+      const links = await admin.query<{ id: string; job_id: string }>(
+        `select id::text, job_id::text as job_id
+           from public.report_runs
+          where id = any($1::uuid[])`,
+        [[runA.id, runB.id]],
+      );
+      const jobB = links.rows.find((row) => row.id === runB.id)?.job_id;
+      const queuedB = await admin.query<{ msg_id: string }>(
+        `select msg_id::text as msg_id
+           from pgmq.q_savia_jobs
+          where (message->>'job_id')::uuid = $1::uuid`,
+        [jobB],
+      );
+      const msgId = queuedB.rows[0]?.msg_id;
+      if (!msgId) {
+        throw new Error('Expected a queued message for the second report run');
+      }
+      await admin.query(`select pgmq.delete('savia_jobs', $1::bigint)`, [
+        msgId,
+      ]);
+      const handlers = workerModule.get<readonly JobHandler[] | JobHandler>(
+        JOB_HANDLERS,
+      );
+      const list = Array.isArray(handlers) ? handlers : [handlers];
+      const original = list.find((handler) => handler.jobType === 'report_run');
+      if (!original) {
+        throw new Error('Expected a registered report_run handler');
+      }
+      const swapped: JobHandler = {
+        jobType: original.jobType,
+        parsePayload: (raw, execution) => {
+          const record = raw as Record<string, unknown>;
+          if (record.reportRunId === runA.id) {
+            return original.parsePayload(
+              {
+                ...record,
+                reportRunId: runB.id,
+                objectKey: `${workspace1Id}/${runB.id}.json`,
+              },
+              execution,
+            );
+          }
+          return original.parsePayload(raw, execution);
+        },
+        compute: (context, client) => original.compute(context, client),
+        materialize: original.materialize?.bind(original),
+        persist: (context, computed, client) =>
+          original.persist(context, computed, client),
+      };
+      runner.registerHandler(swapped);
+      try {
+        const finished = await drainUntilRunTerminal(runA.id);
+        expect(finished.jobStatus).toBe('failed');
+        const other = await admin.query<{ status: string }>(
+          `select status from public.report_runs where id = $1::uuid`,
+          [runB.id],
+        );
+        expect(other.rows[0]?.status).toBe('queued');
+      } finally {
+        runner.registerHandler(original);
+      }
+    });
+
     it('rolls back the report run completion when persist throws after writing', async () => {
       const handlers = workerModule.get<readonly JobHandler[] | JobHandler>(
         JOB_HANDLERS,
@@ -1319,7 +1473,7 @@ describe('Report runs integration contract and endpoint suite', () => {
       }
       const racing: JobHandler = {
         jobType: original.jobType,
-        parsePayload: (raw) => original.parsePayload(raw),
+        parsePayload: (raw, execution) => original.parsePayload(raw, execution),
         compute: (context, client) => original.compute(context, client),
         materialize: original.materialize?.bind(original),
         persist: async (context, computed, client) => {

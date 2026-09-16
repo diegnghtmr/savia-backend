@@ -67,8 +67,11 @@ export class ReportJobHandler
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
-  public parsePayload(raw: unknown): ReportJobPayload {
-    return parseReportJobPayload(raw);
+  public parsePayload(
+    raw: unknown,
+    execution?: Pick<JobExecutionContext<unknown>, 'workspaceId'>,
+  ): ReportJobPayload {
+    return parseReportJobPayload(raw, execution?.workspaceId);
   }
 
   public async compute(
@@ -165,11 +168,13 @@ export class ReportJobHandler
       client,
       context.workspaceId,
       context.payload.reportRunId,
+      context.jobId,
     );
     await this.store.completeProcessingReportRun(
       client,
       context.workspaceId,
       context.payload.reportRunId,
+      context.jobId,
       {
         downloadUrl: computed.downloadUrl,
         expiresAt: computed.expiresAt,

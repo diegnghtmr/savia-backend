@@ -99,6 +99,18 @@ describe('ReportJobHandler', () => {
     );
   });
 
+  it('rejects a payload whose object key carries a foreign workspace prefix', () => {
+    const handler = new ReportJobHandler(
+      createStore() as unknown as PostgresReportAdapter,
+      createStorage(),
+    );
+    expect(() =>
+      handler.parsePayload(payload, {
+        workspaceId: 'bbbbbbbb-0000-4000-8000-000000000001',
+      }),
+    ).toThrow(/objectKey must match the job workspace/);
+  });
+
   it('uploads to the reserved object key rather than a per-attempt key', async () => {
     const storage = createStorage();
     const handler = new ReportJobHandler(

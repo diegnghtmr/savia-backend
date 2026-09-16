@@ -15,6 +15,7 @@ import type {
   ReportRunFormat,
   ReportRunStatus,
 } from './report.port.js';
+import { ReportJobPayloadError } from './report-job-payload.js';
 import { reportArtifactObjectKey } from './report-run-snapshot.js';
 import type { ReportSourceRow } from './report.port.js';
 import {
@@ -317,17 +318,35 @@ limit $5`;
     client: TransactionClient,
     workspaceId: string,
     reportRunId: string,
+    jobId: string,
   ): Promise<void> {
     const result = await client.query<{ id: string }>(
       `update public.report_runs
           set status = 'processing'
         where workspace_id = $1::uuid
           and id = $2::uuid
+          and job_id = $3::uuid
           and status = 'queued'
        returning id::text`,
-      [workspaceId, reportRunId],
+      [workspaceId, reportRunId, jobId],
     );
     if (!result.rows[0]) {
+      const existing = await client.query<{
+        jobId: string | null;
+        status: string;
+      }>(
+        `select job_id::text as "jobId", status
+           from public.report_runs
+          where workspace_id = $1::uuid
+            and id = $2::uuid`,
+        [workspaceId, reportRunId],
+      );
+      const row = existing.rows[0];
+      if (row && row.jobId !== jobId) {
+        throw new ReportJobPayloadError(
+          'Report job payload reportRunId is not bound to this job.',
+        );
+      }
       throw new Error(
         'Report run could not be marked processing because it was not queued.',
       );
@@ -338,6 +357,7 @@ limit $5`;
     client: TransactionClient,
     workspaceId: string,
     reportRunId: string,
+    jobId: string,
     data: CompleteProcessingReportRunRecord,
   ): Promise<ReportRun> {
     const result = await client.query<ReportRunRow>(
@@ -348,6 +368,7 @@ limit $5`;
               completed_at = $5::timestamptz
         where workspace_id = $1::uuid
           and id = $2::uuid
+          and job_id = $6::uuid
           and status = 'processing'
        returning id::text, definition_id::text as "definitionId", preset, status, format, snapshot_id::text as "snapshotId", download_url as "downloadUrl",
                  to_char(expires_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "expiresAt",
@@ -358,6 +379,7 @@ limit $5`;
         data.downloadUrl,
         data.expiresAt.toISOString(),
         data.completedAt.toISOString(),
+        jobId,
       ],
     );
     const row = result.rows[0];
