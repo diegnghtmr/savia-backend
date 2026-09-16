@@ -45,6 +45,7 @@ class InMemoryArtifactStorage implements ArtifactStorage {
     { content: Buffer; contentType: string }
   >();
   public uploadCallCount = 0;
+  public signCallCount = 0;
   public removeCallCount = 0;
   public failRemove = false;
   public failNext: Array<'unavailable' | number> = [];
@@ -74,6 +75,7 @@ class InMemoryArtifactStorage implements ArtifactStorage {
     path: string,
     expiresAt: Date,
   ): Promise<{ url: string; expiresAt: Date }> {
+    this.signCallCount++;
     return { url: `https://storage.example.test/${path}`, expiresAt };
   }
 
@@ -1504,14 +1506,24 @@ describe('Report runs integration contract and endpoint suite', () => {
           original.persist(context, computed, client),
       };
       runner.registerHandler(swapped);
+      const uploadsBefore = inMemoryStorage.uploadCallCount;
+      const signsBefore = inMemoryStorage.signCallCount;
       try {
         const finished = await drainUntilRunTerminal(runA.id);
         expect(finished.jobStatus).toBe('failed');
+        expect(finished.jobError).toEqual(
+          expect.objectContaining({ code: 'invalid_payload' }),
+        );
         const other = await admin.query<{ status: string }>(
           `select status from public.report_runs where id = $1::uuid`,
           [runB.id],
         );
         expect(other.rows[0]?.status).toBe('queued');
+        expect(inMemoryStorage.uploadCallCount).toBe(uploadsBefore);
+        expect(inMemoryStorage.signCallCount).toBe(signsBefore);
+        expect(
+          inMemoryStorage.uploaded.has(`${workspace1Id}/${runB.id}.json`),
+        ).toBe(false);
       } finally {
         runner.registerHandler(original);
       }

@@ -286,6 +286,24 @@ limit $6`;
     );
   }
 
+  public async readReportRunBinding(
+    client: TransactionClient,
+    workspaceId: string,
+    reportRunId: string,
+  ): Promise<{ jobId: string | null; status: string } | undefined> {
+    const result = await client.query<{
+      jobId: string | null;
+      status: string;
+    }>(
+      `select job_id::text as "jobId", status
+         from public.report_runs
+        where workspace_id = $1::uuid
+          and id = $2::uuid`,
+      [workspaceId, reportRunId],
+    );
+    return result.rows[0];
+  }
+
   public async insertQueuedReportRun(
     client: TransactionClient,
     workspaceId: string,

@@ -84,6 +84,10 @@ function createStore(role = 'editor') {
       return [];
     },
     readBudgetedMinorByBucket: async () => new Map(),
+    readReportRunBinding: async () => ({
+      jobId: 'aaaaaaaa-0000-4000-8000-000000000099',
+      status: 'queued',
+    }),
     beginProcessingReportRun: async (
       _client: TransactionClient,
       _workspaceId: string,
@@ -122,6 +126,38 @@ describe('ReportJobHandler', () => {
         workspaceId: 'bbbbbbbb-0000-4000-8000-000000000001',
       }),
     ).toThrow(/objectKey must match the job workspace/);
+  });
+
+  it('refuses compute when the run is bound to a different job', async () => {
+    const store = createStore();
+    store.readReportRunBinding = async () => ({
+      jobId: 'aaaaaaaa-0000-4000-8000-000000000098',
+      status: 'queued',
+    });
+    const handler = new ReportJobHandler(
+      store as unknown as PostgresReportAdapter,
+      createStorage(),
+    );
+    await expect(
+      handler.compute(context, {} as TransactionClient),
+    ).rejects.toMatchObject({ code: 'invalid_payload' });
+    expect(store.sourceRowAsOf).toEqual([]);
+  });
+
+  it('refuses compute when the run is not queued or processing', async () => {
+    const store = createStore();
+    store.readReportRunBinding = async () => ({
+      jobId: context.jobId,
+      status: 'completed',
+    });
+    const handler = new ReportJobHandler(
+      store as unknown as PostgresReportAdapter,
+      createStorage(),
+    );
+    await expect(
+      handler.compute(context, {} as TransactionClient),
+    ).rejects.toMatchObject({ code: 'invalid_payload' });
+    expect(store.sourceRowAsOf).toEqual([]);
   });
 
   it('passes the frozen as-of instant into source-row selection', async () => {

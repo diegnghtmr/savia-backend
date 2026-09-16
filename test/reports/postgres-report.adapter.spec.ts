@@ -115,6 +115,28 @@ describe('PostgresReportAdapter report-run queries', () => {
     expect(rows[0]?.convertedMinor).toBe(1100n);
   });
 
+  it('STRUCTURAL: reads the job_id and status binding for a report run', async () => {
+    const reportRunId = 'eeeeeeee-0000-4000-8000-000000000001';
+    const { client, query } = clientWithRows([
+      { jobId: 'aaaaaaaa-0000-4000-8000-000000000099', status: 'queued' },
+    ]);
+    const binding = await new PostgresReportAdapter().readReportRunBinding(
+      client,
+      workspaceId,
+      reportRunId,
+    );
+    const [sql, values] = query.mock.calls[0] as [string, readonly unknown[]];
+    expect(sql).toMatch(/select\s+job_id::text as "jobId", status/i);
+    expect(sql).toMatch(
+      /from public\.report_runs\s+where workspace_id = \$1::uuid\s+and id = \$2::uuid/,
+    );
+    expect(values).toEqual([workspaceId, reportRunId]);
+    expect(binding).toEqual({
+      jobId: 'aaaaaaaa-0000-4000-8000-000000000099',
+      status: 'queued',
+    });
+  });
+
   it('STRUCTURAL: verifies SQL workspace scoping clause for report-run lookup', async () => {
     const { client, query } = clientWithRows([]);
     await new PostgresReportAdapter().findReportRun(

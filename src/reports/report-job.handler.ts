@@ -15,6 +15,7 @@ import type { ReportGrid } from './report-engine.js';
 import { computePreparedReportGrid } from './report-computation.js';
 import {
   parseReportJobPayload,
+  ReportJobPayloadError,
   type ReportJobPayload,
 } from './report-job-payload.js';
 import { PostgresReportAdapter } from './postgres-report.adapter.js';
@@ -22,7 +23,10 @@ import {
   serializeReport,
   type SerializedReport,
 } from './report-serializers.js';
-import { ReportBudgetMissingError } from './report.port.js';
+import {
+  REPORT_RUN_STATUS,
+  ReportBudgetMissingError,
+} from './report.port.js';
 
 const REPORT_WRITE_ROLES = {
   OWNER: 'owner',
@@ -93,6 +97,21 @@ export class ReportJobHandler
     client: TransactionClient,
   ): Promise<ReportGrid> {
     const payload = context.payload;
+    const binding = await this.reports.readReportRunBinding(
+      client,
+      context.workspaceId,
+      payload.reportRunId,
+    );
+    if (
+      binding === undefined ||
+      binding.jobId !== context.jobId ||
+      (binding.status !== REPORT_RUN_STATUS.QUEUED &&
+        binding.status !== REPORT_RUN_STATUS.PROCESSING)
+    ) {
+      throw new ReportJobPayloadError(
+        'Report job payload reportRunId is not bound to this job.',
+      );
+    }
     const rows = await this.reports.readReportSourceRows(
       client,
       context.workspaceId,

@@ -13,7 +13,10 @@ export const REPORT_JOB_PAYLOAD_VERSION = 1 as const;
 
 export class ReportJobPayloadError extends Error {
   public readonly isDomainError = true;
-  public readonly code = 'INVALID_PAYLOAD';
+  public readonly type = 'https://savia.app/problems/invalid-payload';
+  public readonly title = 'Invalid Payload';
+  public readonly status = 400;
+  public readonly code = 'invalid_payload';
 
   public constructor(message: string) {
     super(message);
