@@ -433,14 +433,16 @@ describe('JobRunner unit spec (S2)', () => {
       runner.registerHandler(badHandler as unknown as JobHandler),
     ).toThrow(/unknown or missing render budget/i);
 
-    // @ts-expect-error Rendering handler without renderBudget must fail to compile
-    runner.registerHandler({
-      jobType: 'test',
-      parsePayload: () => ({}),
-      compute: async () => ({}),
-      persist: async () => {},
-      render: async () => ({}),
-    });
+    expect(() =>
+      // @ts-expect-error Rendering handler without renderBudget must fail to compile
+      runner.registerHandler({
+        jobType: 'test',
+        parsePayload: () => ({}),
+        compute: async () => ({}),
+        persist: async () => {},
+        render: async () => ({}),
+      }),
+    ).toThrow(/unknown or missing render budget/i);
   });
 
   it('skips a job already terminal at re-check and acks it without running compute or persist', async () => {
