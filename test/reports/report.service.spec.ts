@@ -12,7 +12,7 @@ import {
   type ReportRun,
   type ReportStore,
 } from '../../src/reports/report.port.js';
-import type { ArtifactStorage } from '../../src/platform/artifact-storage.port.js';
+import type { JobWriter } from '../../src/platform/job-writer.port.js';
 import {
   ReportService,
   type ReportTransaction,
@@ -97,13 +97,15 @@ describe('ReportService', () => {
     id: 'eeeeeeee-0000-4000-8000-000000000001',
     definitionId: null,
     preset: 'expenses',
-    status: 'completed',
+    status: 'queued',
     format: 'json',
-    snapshotId: 'ffffffff-0000-4000-8000-000000000001',
-    downloadUrl: 'https://storage.example.test/report.json',
-    expiresAt: '2026-09-12T00:00:00.000Z',
+    snapshotId: 'aaaaaaaa-0000-4000-8000-000000000099',
+    downloadUrl: null,
+    expiresAt: null,
     createdAt: '2026-09-05T00:00:00.000Z',
   };
+
+  const queuedJobId = 'aaaaaaaa-0000-4000-8000-000000000099';
 
   function createRunStore(): ReportStore {
     return {
@@ -112,22 +114,15 @@ describe('ReportService', () => {
       readWorkspaceBaseCurrency: vi.fn().mockResolvedValue('USD'),
       readReportSourceRows: vi.fn().mockResolvedValue([]),
       readBudgetedMinorByBucket: vi.fn().mockResolvedValue(new Map()),
-      insertReportRun: vi.fn().mockResolvedValue(sampleRun),
+      insertQueuedReportRun: vi.fn().mockResolvedValue(sampleRun),
       findReportRun: vi.fn().mockResolvedValue(sampleRun),
     };
   }
 
-  function createStorageMock(): ArtifactStorage & {
-    remove: ReturnType<typeof vi.fn>;
-  } {
+  function createJobsMock(): JobWriter {
     return {
-      upload: vi.fn().mockResolvedValue(undefined),
-      sign: vi.fn().mockResolvedValue({
-        url: sampleRun.downloadUrl,
-        expiresAt: new Date('2026-09-12T00:00:00.000Z'),
-      }),
-      remove: vi.fn().mockResolvedValue(undefined),
-    };
+      createQueuedJob: vi.fn().mockResolvedValue({ id: queuedJobId }),
+    } as unknown as JobWriter;
   }
 
   describe('createReportDefinition', () => {
@@ -136,7 +131,12 @@ describe('ReportService', () => {
       const store = createStoreMock();
       vi.mocked(store.readActiveRole).mockResolvedValue('viewer');
       const idempotency = createIdempotencyMock();
-      const service = new ReportService(tx, store, idempotency);
+      const service = new ReportService(
+        tx,
+        store,
+        idempotency,
+        createJobsMock(),
+      );
 
       const outcome = await service.createReportDefinition(
         subject,
@@ -154,7 +154,12 @@ describe('ReportService', () => {
         const store = createStoreMock();
         vi.mocked(store.readActiveRole).mockResolvedValue(role);
         const idempotency = createIdempotencyMock();
-        const service = new ReportService(tx, store, idempotency);
+        const service = new ReportService(
+          tx,
+          store,
+          idempotency,
+          createJobsMock(),
+        );
 
         const outcome = await service.createReportDefinition(
           subject,
@@ -170,7 +175,12 @@ describe('ReportService', () => {
       const tx = createTxMock();
       const store = createStoreMock();
       const idempotency = createIdempotencyMock();
-      const service = new ReportService(tx, store, idempotency);
+      const service = new ReportService(
+        tx,
+        store,
+        idempotency,
+        createJobsMock(),
+      );
 
       const outcome = await service.createReportDefinition(
         subject,
@@ -205,7 +215,12 @@ describe('ReportService', () => {
       const tx = createTxMock();
       const store = createStoreMock();
       const idempotency = createIdempotencyMock();
-      const service = new ReportService(tx, store, idempotency);
+      const service = new ReportService(
+        tx,
+        store,
+        idempotency,
+        createJobsMock(),
+      );
 
       // First run to get fingerprint
       await service.createReportDefinition(subject, workspaceId, command, key);
@@ -243,7 +258,12 @@ describe('ReportService', () => {
         responseEtag: null,
         responseBody: sampleDefinition,
       });
-      const service = new ReportService(tx, store, idempotency);
+      const service = new ReportService(
+        tx,
+        store,
+        idempotency,
+        createJobsMock(),
+      );
 
       const outcome = await service.createReportDefinition(
         subject,
@@ -271,7 +291,12 @@ describe('ReportService', () => {
         });
       vi.mocked(idempotency.write).mockResolvedValue(false); // write fails due to race
 
-      const service = new ReportService(tx, store, idempotency);
+      const service = new ReportService(
+        tx,
+        store,
+        idempotency,
+        createJobsMock(),
+      );
       const outcome = await service.createReportDefinition(
         subject,
         workspaceId,
@@ -292,7 +317,12 @@ describe('ReportService', () => {
       const tx = createTxMock();
       const store = createStoreMock();
       const idempotency = createIdempotencyMock();
-      const service = new ReportService(tx, store, idempotency);
+      const service = new ReportService(
+        tx,
+        store,
+        idempotency,
+        createJobsMock(),
+      );
 
       vi.mocked(idempotency.read)
         .mockResolvedValueOnce(undefined)
@@ -322,7 +352,12 @@ describe('ReportService', () => {
       const store = createStoreMock();
       vi.mocked(store.readActiveRole).mockResolvedValue(undefined);
       const idempotency = createIdempotencyMock();
-      const service = new ReportService(tx, store, idempotency);
+      const service = new ReportService(
+        tx,
+        store,
+        idempotency,
+        createJobsMock(),
+      );
 
       const outcome = await service.listReportDefinitions(subject, {
         workspaceId,
@@ -338,7 +373,12 @@ describe('ReportService', () => {
         const store = createStoreMock();
         vi.mocked(store.readActiveRole).mockResolvedValue(role);
         const idempotency = createIdempotencyMock();
-        const service = new ReportService(tx, store, idempotency);
+        const service = new ReportService(
+          tx,
+          store,
+          idempotency,
+          createJobsMock(),
+        );
 
         const outcome = await service.listReportDefinitions(subject, {
           workspaceId,
@@ -359,7 +399,12 @@ describe('ReportService', () => {
       ];
       vi.mocked(store.listReportDefinitions).mockResolvedValue(items);
       const idempotency = createIdempotencyMock();
-      const service = new ReportService(tx, store, idempotency);
+      const service = new ReportService(
+        tx,
+        store,
+        idempotency,
+        createJobsMock(),
+      );
 
       const outcome = await service.listReportDefinitions(subject, {
         workspaceId,
@@ -397,7 +442,12 @@ describe('ReportService', () => {
       // limit is 1, store returns 2 items
       vi.mocked(store.listReportDefinitions).mockResolvedValue([item1, item2]);
       const idempotency = createIdempotencyMock();
-      const service = new ReportService(tx, store, idempotency);
+      const service = new ReportService(
+        tx,
+        store,
+        idempotency,
+        createJobsMock(),
+      );
 
       const outcome = await service.listReportDefinitions(subject, {
         workspaceId,
@@ -414,14 +464,16 @@ describe('ReportService', () => {
   });
 
   describe('createReportRun', () => {
-    it('passes the preset type filter and prevents a caller from widening it', async () => {
+    it('freezes the preset type filter without reading source rows', async () => {
       const tx = createTxMock();
       const store = createRunStore();
+      const jobs = createJobsMock();
       const service = new ReportService(
         tx,
         store,
         createIdempotencyMock(),
-        createStorageMock(),
+        jobs,
+        () => new Date('2026-09-15T12:00:00.000Z'),
       );
 
       const outcome = await service.createReportRun(
@@ -435,19 +487,23 @@ describe('ReportService', () => {
       );
 
       expect(outcome.kind).toBe(REPORT_RUN_OUTCOMES.CREATED);
-      expect(store.readReportSourceRows).toHaveBeenCalledWith(
+      expect(store.readReportSourceRows).not.toHaveBeenCalled();
+      expect(jobs.createQueuedJob).toHaveBeenCalledWith(
         expect.anything(),
         workspaceId,
-        expect.any(String),
-        expect.any(String),
-        'expense',
-        'income',
+        subject,
+        'report_run',
+        expect.objectContaining({
+          shapeTypeFilter: 'expense',
+          callerType: 'income',
+        }),
       );
     });
 
-    it('intersects definition filters (type, from, to) with caller filters and prevents caller from widening them', async () => {
+    it('freezes intersected definition filters without reading source rows', async () => {
       const tx = createTxMock();
       const store = createRunStore();
+      const jobs = createJobsMock();
       const savedDefinition: ReportDefinition = {
         id: 'dddddddd-0000-4000-8000-000000000001',
         name: 'Expense Q2',
@@ -466,7 +522,8 @@ describe('ReportService', () => {
         tx,
         store,
         createIdempotencyMock(),
-        createStorageMock(),
+        jobs,
+        () => new Date('2026-09-15T12:00:00.000Z'),
       );
 
       const outcome = await service.createReportRun(
@@ -485,24 +542,30 @@ describe('ReportService', () => {
       );
 
       expect(outcome.kind).toBe(REPORT_RUN_OUTCOMES.CREATED);
-      expect(store.readReportSourceRows).toHaveBeenCalledWith(
+      expect(store.readReportSourceRows).not.toHaveBeenCalled();
+      expect(jobs.createQueuedJob).toHaveBeenCalledWith(
         expect.anything(),
         workspaceId,
-        '2026-04-01',
-        '2026-06-30',
-        'expense',
-        'income',
+        subject,
+        'report_run',
+        expect.objectContaining({
+          periodStart: '2026-04-01',
+          periodTo: '2026-06-30',
+          shapeTypeFilter: 'expense',
+          callerType: 'income',
+        }),
       );
     });
 
-    it('returns UNPROCESSABLE for an unknown definition without reading source rows', async () => {
+    it('returns UNPROCESSABLE for an unknown definition without enqueueing', async () => {
       const tx = createTxMock();
       const store = createRunStore();
+      const jobs = createJobsMock();
       const service = new ReportService(
         tx,
         store,
         createIdempotencyMock(),
-        createStorageMock(),
+        jobs,
       );
 
       const outcome = await service.createReportRun(
@@ -525,14 +588,15 @@ describe('ReportService', () => {
           },
         ],
       });
+      expect(jobs.createQueuedJob).not.toHaveBeenCalled();
       expect(store.readReportSourceRows).not.toHaveBeenCalled();
     });
 
-    it('rolls back the insert transaction for a concurrent replay and cleans up storage', async () => {
+    it('rolls back the enqueue transaction for a concurrent replay', async () => {
       const tx = createTxMock();
       const store = createRunStore();
       const idempotency = createIdempotencyMock();
-      const storage = createStorageMock();
+      const jobs = createJobsMock();
       const fingerprint = computeRequestFingerprint(runCommand);
       vi.mocked(idempotency.write).mockResolvedValue(false);
       vi.mocked(idempotency.read)
@@ -544,7 +608,7 @@ describe('ReportService', () => {
           responseBody: sampleRun,
         });
 
-      const service = new ReportService(tx, store, idempotency, storage);
+      const service = new ReportService(tx, store, idempotency, jobs);
       const outcome = await service.createReportRun(
         subject,
         workspaceId,
@@ -558,52 +622,14 @@ describe('ReportService', () => {
         etag: null,
         body: sampleRun,
       });
-      expect(tx.state.events).toEqual(['commit', 'rollback']);
-      expect(storage.remove).toHaveBeenCalledWith(
-        expect.stringMatching(new RegExp(`^${workspaceId}/`)),
-      );
+      expect(tx.state.events).toEqual(['rollback']);
     });
 
-    it('returns replay outcome even when storage cleanup fails', async () => {
+    it('rolls back the enqueue transaction for a concurrent conflict', async () => {
       const tx = createTxMock();
       const store = createRunStore();
       const idempotency = createIdempotencyMock();
-      const storage = createStorageMock();
-      vi.mocked(storage.remove).mockRejectedValue(new Error('cleanup failed'));
-      const fingerprint = computeRequestFingerprint(runCommand);
-      vi.mocked(idempotency.write).mockResolvedValue(false);
-      vi.mocked(idempotency.read)
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValueOnce({
-          requestFingerprint: fingerprint,
-          responseStatus: 202,
-          responseEtag: null,
-          responseBody: sampleRun,
-        });
-
-      const service = new ReportService(tx, store, idempotency, storage);
-      const outcome = await service.createReportRun(
-        subject,
-        workspaceId,
-        runCommand,
-        key,
-      );
-
-      expect(outcome).toEqual({
-        kind: REPORT_RUN_OUTCOMES.REPLAYED,
-        status: 202,
-        etag: null,
-        body: sampleRun,
-      });
-      expect(tx.state.events).toEqual(['commit', 'rollback']);
-      expect(storage.remove).toHaveBeenCalled();
-    });
-
-    it('rolls back the insert transaction for a concurrent conflict', async () => {
-      const tx = createTxMock();
-      const store = createRunStore();
-      const idempotency = createIdempotencyMock();
-      const storage = createStorageMock();
+      const jobs = createJobsMock();
       vi.mocked(idempotency.write).mockResolvedValue(false);
       vi.mocked(idempotency.read)
         .mockResolvedValueOnce(undefined)
@@ -614,11 +640,11 @@ describe('ReportService', () => {
           responseBody: sampleRun,
         });
 
-      const service = new ReportService(tx, store, idempotency, storage);
+      const service = new ReportService(tx, store, idempotency, jobs);
       await expect(
         service.createReportRun(subject, workspaceId, runCommand, key),
       ).resolves.toEqual({ kind: REPORT_RUN_OUTCOMES.CONFLICT });
-      expect(tx.state.events).toEqual(['commit', 'rollback']);
+      expect(tx.state.events).toEqual(['rollback']);
     });
   });
 });

@@ -108,6 +108,8 @@ describe('WorkerConfig', () => {
     expect(config.terminalReserveMs).toBe(10_000);
     expect(config.minOperationMs).toBe(1_000);
     expect(config.queueTimeoutMs).toBe(8_000);
+    expect(config.storageUploadTimeoutMs).toBe(30_000);
+    expect(config.pdfRenderTimeoutMs).toBe(30_000);
     expect(config.visibilityTimeoutSeconds).toBe(300);
 
     // Each cap < visibilityMs
@@ -342,6 +344,30 @@ describe('WorkerConfig', () => {
       WorkerConfig.fromEnvironment({
         SAVIA_WORKER_PERSIST_TIMEOUT_MS: 'invalid',
       }),
+    ).toThrow(WorkerConfigurationError);
+  });
+
+  it('rejects individually valid render and storage caps whose sum is unsafe', () => {
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          8_000,
+          140_000,
+          140_000,
+        ),
     ).toThrow(WorkerConfigurationError);
   });
 

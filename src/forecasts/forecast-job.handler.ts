@@ -53,7 +53,7 @@ export class ForecastJobHandler
 {
   public readonly jobType = JOB_WRITER_TYPES.BALANCE_FORECAST;
 
-  public constructor(private readonly store: PostgresForecastAdapter) {}
+  public constructor(private readonly forecasts: PostgresForecastAdapter) {}
 
   public parsePayload(raw: unknown): ForecastJobPayload {
     return parseForecastJobPayload(raw);
@@ -72,14 +72,14 @@ export class ForecastJobHandler
       .toISOString()
       .slice(0, 10);
 
-    const flowRows = await this.store.readTransactionsInPeriod(
+    const flowRows = await this.forecasts.readTransactionsInPeriod(
       client,
       context.workspaceId,
       periodStart,
       periodEnd,
       payload.effectiveAccountIds,
     );
-    const accountBalances = await this.store.readAccountNativeBalances(
+    const accountBalances = await this.forecasts.readAccountNativeBalances(
       client,
       context.workspaceId,
       payload.effectiveAccountIds,
@@ -98,7 +98,7 @@ export class ForecastJobHandler
       }
     }
     for (const curr of neededCurrencies) {
-      const rate = await this.store.findExchangeRate(
+      const rate = await this.forecasts.findExchangeRate(
         client,
         context.workspaceId,
         curr,
@@ -113,10 +113,11 @@ export class ForecastJobHandler
 
     let appliedScenarioRun = null;
     if (payload.includeScenarios) {
-      const scenarioRun = await this.store.findMostRecentCompletedScenarioRun(
-        client,
-        context.workspaceId,
-      );
+      const scenarioRun =
+        await this.forecasts.findMostRecentCompletedScenarioRun(
+          client,
+          context.workspaceId,
+        );
       if (scenarioRun) {
         appliedScenarioRun = {
           id: scenarioRun.id,
@@ -143,13 +144,16 @@ export class ForecastJobHandler
     computed: ForecastComputationResult,
     client: TransactionClient,
   ): Promise<string> {
-    const role = await this.store.readActiveRole(client, context.workspaceId);
+    const role = await this.forecasts.readActiveRole(
+      client,
+      context.workspaceId,
+    );
     if (!isWriteRole(role)) {
       throw new ForecastWriteForbiddenError();
     }
 
     const forecastId = randomUUID();
-    await this.store.createForecast(
+    await this.forecasts.createForecast(
       client,
       context.workspaceId,
       context.actorId,

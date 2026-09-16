@@ -10,12 +10,25 @@ export interface JobExecutionContext<P> {
   readonly payload: P;
 }
 
-export interface JobHandler<P = unknown, R = unknown> {
+export interface JobHandler<P = unknown, C = unknown, R = C> {
   readonly jobType: string;
-  parsePayload(raw: unknown): P;
+  parsePayload(
+    raw: unknown,
+    execution?: Pick<JobExecutionContext<unknown>, 'workspaceId'>,
+  ): P;
   compute(
     context: JobExecutionContext<P>,
     client: TransactionClient,
+  ): Promise<C>;
+  render?(
+    context: JobExecutionContext<P>,
+    computed: C,
+    timeoutMs: number,
+  ): Promise<unknown>;
+  store?(
+    context: JobExecutionContext<P>,
+    rendered: unknown,
+    timeoutMs: number,
   ): Promise<R>;
   persist(
     context: JobExecutionContext<P>,

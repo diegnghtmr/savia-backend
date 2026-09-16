@@ -215,6 +215,7 @@ export interface ReportStore {
     workspaceId: string,
     from: string,
     to: string,
+    asOf: Date,
     typeFilter?: string,
     callerTypeFilter?: string,
   ): Promise<readonly ReportSourceRow[]>;
@@ -225,16 +226,23 @@ export interface ReportStore {
     to: string,
     dimensions: readonly ReportDimension[],
   ): Promise<ReadonlyMap<string, bigint>>;
-  insertReportRun?(
+  insertQueuedReportRun?(
     client: TransactionClient,
     workspaceId: string,
     subject: string,
-    data: CreateReportRunRecord,
+    data: CreateQueuedReportRunRecord,
   ): Promise<ReportRun>;
+  beginProcessingReportRun?(
+    client: TransactionClient,
+    workspaceId: string,
+    reportRunId: string,
+    jobId: string,
+  ): Promise<void>;
   completeProcessingReportRun?(
     client: TransactionClient,
     workspaceId: string,
     reportRunId: string,
+    jobId: string,
     data: CompleteProcessingReportRunRecord,
   ): Promise<ReportRun>;
   findReportRun?(
@@ -244,17 +252,14 @@ export interface ReportStore {
   ): Promise<ReportRun | undefined>;
 }
 
-export interface CreateReportRunRecord {
+export interface CreateQueuedReportRunRecord {
   readonly id: string;
   readonly definitionId: string | null;
   readonly preset: string | null;
   readonly format: ReportRunFormat;
   readonly filters: Record<string, unknown>;
   readonly snapshotId: string;
-  readonly downloadUrl: string;
-  readonly expiresAt: Date;
-  readonly completedAt: Date;
-  readonly jobId?: string | null;
+  readonly jobId: string;
 }
 
 export interface CompleteProcessingReportRunRecord {
@@ -323,6 +328,8 @@ export function setReportMaxCellStringLength(max: number): void {
 }
 
 export class ReportRowCapExceededError extends Error {
+  public readonly isDomainError = true;
+
   public constructor(public readonly cap: number) {
     super(
       `Report matched more source rows than the limit of ${cap} allowed for synchronous execution. Please specify a narrower period or additional filters.`,
@@ -332,6 +339,8 @@ export class ReportRowCapExceededError extends Error {
 }
 
 export class ReportCellCapExceededError extends Error {
+  public readonly isDomainError = true;
+
   public constructor(
     public readonly cap: number,
     public readonly actual: number,
@@ -344,6 +353,8 @@ export class ReportCellCapExceededError extends Error {
 }
 
 export class ReportCellStringLengthExceededError extends Error {
+  public readonly isDomainError = true;
+
   public constructor(public readonly maxLength: number) {
     super(
       `Report cell string length exceeded maximum allowed length of ${maxLength} characters.`,
@@ -353,12 +364,23 @@ export class ReportCellStringLengthExceededError extends Error {
 }
 
 export class ReportMissingRateError extends Error {
+  public readonly isDomainError = true;
+
   public constructor(
     public readonly fromCurrency: string,
     public readonly toCurrency: string,
   ) {
     super(`Missing exchange rate from ${fromCurrency} to ${toCurrency}`);
     this.name = 'ReportMissingRateError';
+  }
+}
+
+export class ReportBudgetMissingError extends Error {
+  public readonly isDomainError = true;
+
+  public constructor() {
+    super('No budget exists for the requested period.');
+    this.name = 'ReportBudgetMissingError';
   }
 }
 

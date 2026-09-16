@@ -824,7 +824,7 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
 
       const racingHandler: JobHandler = {
         jobType: original.jobType,
-        parsePayload: (raw) => original.parsePayload(raw),
+        parsePayload: (raw, execution) => original.parsePayload(raw, execution),
         compute: async (context, client) => {
           const computed = await original.compute(context, client);
           await transaction.run(context.actorId, async (writeClient) => {

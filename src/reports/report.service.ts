@@ -1,24 +1,21 @@
+import { randomUUID } from 'node:crypto';
 import { encodeCursor } from '../platform/cursor.js';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
+import type { JobWriter } from '../platform/job-writer.port.js';
+import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
-import { randomUUID } from 'node:crypto';
-import type { ArtifactStorage } from '../platform/artifact-storage.port.js';
 import {
-  computePreparedReportGrid,
   resolveReportPeriod,
   resolveShapeTypeFilter,
   type ReportComputationShape,
 } from './report-computation.js';
 import { REPORT_PRESETS } from './report-presets.js';
-import { reportArtifactObjectKey } from './report-run-snapshot.js';
-import { serializeReport } from './report-serializers.js';
 import {
-  ReportMissingRateError,
-  ReportRowCapExceededError,
-  ReportCellCapExceededError,
-  ReportCellStringLengthExceededError,
-} from './report.port.js';
+  freezeReportJobPayload,
+  REPORT_JOB_PAYLOAD_VERSION,
+} from './report-job-payload.js';
+import { reportArtifactObjectKey } from './report-run-snapshot.js';
 import {
   REPORT_OUTCOMES,
   type CreateReportDefinitionRequest,
@@ -73,7 +70,7 @@ export class ReportService implements ReportsPort {
     private readonly tx: ReportTransaction,
     private readonly store: ReportStore,
     private readonly idempotency: IdempotencyStore,
-    private readonly storage?: ArtifactStorage,
+    private readonly jobs: JobWriter,
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
@@ -221,12 +218,12 @@ export class ReportService implements ReportsPort {
   ): Promise<ReportRunCreateOutcome> {
     const route = 'POST /v1/report-runs';
     const fingerprint = computeRequestFingerprint(command);
-    let uploadedPath: string | undefined;
     try {
-      const prepared = await this.tx.run(subject, async (client) => {
+      return await this.tx.run(subject, async (client) => {
         const role = await this.store.readActiveRole(client, workspaceId);
-        if (!['owner', 'administrator', 'editor'].includes(role ?? ''))
-          return { kind: REPORT_RUN_OUTCOMES.FORBIDDEN } as const;
+        if (!['owner', 'administrator', 'editor'].includes(role ?? '')) {
+          return { kind: REPORT_RUN_OUTCOMES.FORBIDDEN };
+        }
         const existing = await this.idempotency.read(
           client,
           subject,
@@ -236,13 +233,13 @@ export class ReportService implements ReportsPort {
         );
         if (existing) {
           return existing.requestFingerprint === fingerprint
-            ? ({
+            ? {
                 kind: REPORT_RUN_OUTCOMES.REPLAYED,
                 status: existing.responseStatus,
                 etag: existing.responseEtag,
                 body: existing.responseBody,
-              } as const)
-            : ({ kind: REPORT_RUN_OUTCOMES.CONFLICT } as const);
+              }
+            : { kind: REPORT_RUN_OUTCOMES.CONFLICT };
         }
         const shape = command.definitionId
           ? await this.store.readReportDefinition!(
@@ -253,7 +250,7 @@ export class ReportService implements ReportsPort {
           : command.preset
             ? REPORT_PRESETS[command.preset as keyof typeof REPORT_PRESETS]
             : undefined;
-        if (!shape)
+        if (!shape) {
           return {
             kind: REPORT_RUN_OUTCOMES.UNPROCESSABLE,
             violations: [
@@ -262,7 +259,8 @@ export class ReportService implements ReportsPort {
                 message: 'Report definition was not found.',
               },
             ],
-          } as const;
+          };
+        }
         const computationShape = shape as ReportComputationShape;
         const defFilters =
           'filters' in shape &&
@@ -270,114 +268,53 @@ export class ReportService implements ReportsPort {
           shape.filters !== null
             ? (shape.filters as Record<string, unknown>)
             : undefined;
+        const now = this.clock();
         const { periodStart, periodTo } = resolveReportPeriod(
-          this.clock(),
+          now,
           defFilters,
           command.filters,
         );
-        const shapeTypeFilter = resolveShapeTypeFilter(computationShape);
-        const callerType =
-          typeof command.filters.type === 'string'
-            ? command.filters.type
-            : undefined;
-        let rows;
-        try {
-          rows = await this.store.readReportSourceRows!(
-            client,
-            workspaceId,
-            periodStart,
-            periodTo,
-            shapeTypeFilter,
-            callerType,
-          );
-        } catch (error) {
-          if (error instanceof ReportRowCapExceededError) {
-            return {
-              kind: REPORT_RUN_OUTCOMES.UNPROCESSABLE,
-              detail: error.message,
-              violations: [{ field: 'filters', message: error.message }],
-            } as const;
-          }
-          throw error;
-        }
         const baseCurrency = await this.store.readWorkspaceBaseCurrency!(
           client,
           workspaceId,
         );
-        if (!baseCurrency)
-          return { kind: REPORT_RUN_OUTCOMES.FORBIDDEN } as const;
-        const budget = await this.store.readBudgetedMinorByBucket!(
+        if (!baseCurrency) {
+          return { kind: REPORT_RUN_OUTCOMES.FORBIDDEN };
+        }
+        const reportRunId = randomUUID();
+        const objectKey = reportArtifactObjectKey(
+          workspaceId,
+          reportRunId,
+          command.format,
+        );
+        const jobRecord = await this.jobs.createQueuedJob(
           client,
           workspaceId,
-          periodStart,
-          periodTo,
-          shape.dimensions,
-        );
-        if (command.preset === 'budget' && budget.size === 0) {
-          return {
-            kind: REPORT_RUN_OUTCOMES.UNPROCESSABLE,
-            detail: 'No budget exists for the requested period.',
-            violations: [
-              {
-                field: 'preset',
-                message: 'No budget exists for the requested period.',
-              },
-            ],
-          } as const;
-        }
-        let grid;
-        try {
-          grid = computePreparedReportGrid({
-            rows,
-            dimensions: shape.dimensions,
-            measures: shape.measures,
+          subject,
+          JOB_WRITER_TYPES.REPORT_RUN,
+          freezeReportJobPayload({
+            version: REPORT_JOB_PAYLOAD_VERSION,
+            asOf: now.toISOString(),
+            reportRunId,
+            format: command.format,
+            definitionId: command.definitionId ?? null,
+            preset: command.preset ?? null,
+            filters: command.filters,
+            periodStart,
+            periodTo,
+            shapeTypeFilter: resolveShapeTypeFilter(computationShape) ?? null,
+            callerType:
+              typeof command.filters.type === 'string'
+                ? command.filters.type
+                : null,
+            dimensions: [...shape.dimensions],
+            measures: [...shape.measures],
+            objectKey,
             baseCurrency,
-            budgetedMinorByBucket: budget,
-            preset: command.preset,
-          });
-        } catch (error) {
-          if (
-            error instanceof ReportCellCapExceededError ||
-            error instanceof ReportCellStringLengthExceededError
-          ) {
-            return {
-              kind: REPORT_RUN_OUTCOMES.UNPROCESSABLE,
-              detail: error.message,
-              violations: [{ field: 'filters', message: error.message }],
-            } as const;
-          }
-          throw error;
-        }
-        return {
-          kind: 'prepared' as const,
-          grid,
-          shape,
-          periodStart,
-          to: periodTo,
-        };
-      });
-      if (prepared.kind !== 'prepared') return prepared;
-      if (!this.storage)
-        throw new Error('Report artifact storage is not configured.');
-      const reportRunId = randomUUID();
-      uploadedPath = reportArtifactObjectKey(
-        workspaceId,
-        reportRunId,
-        command.format,
-      );
-      const artifact = await serializeReport(command.format, prepared.grid);
-      await this.storage.upload(
-        uploadedPath,
-        artifact.content,
-        artifact.contentType,
-      );
-      const signature = await this.storage.sign(
-        uploadedPath,
-        new Date(this.clock().getTime() + 7 * 24 * 60 * 60 * 1000),
-      );
-      const snapshotId = randomUUID();
-      const reportRun = await this.tx.run(subject, async (client) => {
-        const created = await this.store.insertReportRun!(
+          }),
+        );
+        const jobId = String(jobRecord.id);
+        const created = await this.store.insertQueuedReportRun!(
           client,
           workspaceId,
           subject,
@@ -387,10 +324,8 @@ export class ReportService implements ReportsPort {
             preset: command.preset ?? null,
             format: command.format,
             filters: command.filters,
-            snapshotId,
-            downloadUrl: signature.url,
-            expiresAt: signature.expiresAt,
-            completedAt: this.clock(),
+            snapshotId: jobId,
+            jobId,
           },
         );
         const written = await this.idempotency.write(
@@ -412,33 +347,20 @@ export class ReportService implements ReportsPort {
             key,
             workspaceId,
           );
-          if (reread?.requestFingerprint === fingerprint)
+          if (reread?.requestFingerprint === fingerprint) {
             throw new ReportRunCreateRollbackError(
               'replayed',
               reread.responseStatus,
               reread.responseEtag,
               reread.responseBody,
             );
+          }
           if (reread) throw new ReportRunCreateRollbackError('conflict');
           throw new Error('Report run idempotency record could not be reread.');
         }
-        return created;
+        return { kind: REPORT_RUN_OUTCOMES.CREATED, reportRun: created };
       });
-      return { kind: REPORT_RUN_OUTCOMES.CREATED, reportRun };
     } catch (error) {
-      if (uploadedPath !== undefined && this.storage) {
-        try {
-          await this.storage.remove(uploadedPath);
-        } catch {
-          // Best-effort cleanup must never mask or replace the primary error
-        }
-      }
-      if (error instanceof ReportMissingRateError)
-        return {
-          kind: REPORT_RUN_OUTCOMES.MISSING_RATE,
-          fromCurrency: error.fromCurrency,
-          toCurrency: error.toCurrency,
-        };
       if (error instanceof ReportRunCreateRollbackError) {
         return error.outcome === 'replayed'
           ? {

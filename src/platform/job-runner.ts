@@ -428,7 +428,7 @@ export class JobRunner implements BeforeApplicationShutdown {
 
     let parsedPayload: unknown;
     try {
-      parsedPayload = handler.parsePayload(jobPayload);
+      parsedPayload = handler.parsePayload(jobPayload, { workspaceId });
     } catch (parseError) {
       if (deadline.isWorkExhausted()) {
         this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
@@ -504,6 +504,40 @@ export class JobRunner implements BeforeApplicationShutdown {
         async (readClient) => handler.compute(context, readClient),
         deadline.forWork(this.config.computeTimeoutMs),
       );
+      if (handler.render && handler.store) {
+        if (deadline.isWorkExhausted()) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        const renderTimeoutMs = deadline.forWork(
+          this.config.pdfRenderTimeoutMs,
+        );
+        if (renderTimeoutMs < this.config.minOperationMs) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        const rendered = await handler.render(
+          context,
+          computedResult,
+          renderTimeoutMs,
+        );
+        if (deadline.isWorkExhausted()) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        const storageTimeoutMs = deadline.forWork(
+          this.config.storageUploadTimeoutMs,
+        );
+        if (storageTimeoutMs < this.config.minOperationMs) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        computedResult = await handler.store(
+          context,
+          rendered,
+          storageTimeoutMs,
+        );
+      }
     } catch (computeError) {
       if (computeError instanceof DeliveryDeadlineExceededError) {
         this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
