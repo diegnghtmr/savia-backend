@@ -42,6 +42,7 @@
     "test:integration:account-currency-invariant": "bash scripts/run-disposable-database-suite.sh test/accounts/account-currency-invariant.integration-spec.ts",
     "test:integration:transactions-schema": "bash scripts/run-disposable-database-suite.sh test/identity/transactions-schema.integration-spec.ts",
     "test:integration:ledger-postings-schema": "bash scripts/run-disposable-database-suite.sh test/identity/ledger-postings-schema.integration-spec.ts",
+    "test:integration:posting-currency-invariant": "bash scripts/run-disposable-database-suite.sh test/ledger/posting-currency-invariant.integration-spec.ts",
     "test:integration:transactions-create": "bash scripts/run-disposable-database-suite.sh test/ledger/transactions-create.integration-spec.ts",
     "test:integration:transactions-get": "bash scripts/run-disposable-database-suite.sh test/ledger/transactions-get.integration-spec.ts",
     "test:integration:transactions-list": "bash scripts/run-disposable-database-suite.sh test/ledger/transactions-list.integration-spec.ts",

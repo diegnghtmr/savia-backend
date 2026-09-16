@@ -9,7 +9,11 @@ if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 const subject = (number: number) =>
   `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
 
-type CapturedPgError = { code?: string; message?: string };
+type CapturedPgError = {
+  code?: string;
+  message?: string;
+  constraint?: string;
+};
 
 async function capturePgError(
   run: () => Promise<unknown>,
@@ -997,7 +1001,10 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         'ledger_postings_account_leg_parity_check',
       );
 
-      const accountWithoutAccountErr = await capturePgError(() =>
+      // With the posting-currency trigger active, a null account_id on an account
+      // leg is caught by the BEFORE trigger with 23514 (null account currency).
+      // Disabling the trigger proves the underlying CHECK constraint also refuses it.
+      const triggerAccountWithoutAccountErr = await capturePgError(() =>
         seedPosting({
           workspaceId: ws1Id,
           transactionId: transaction1Id,
@@ -1006,6 +1013,33 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
           amountMinor: '100',
         }),
       );
+      expect(triggerAccountWithoutAccountErr.code).toBe('23514');
+      expect(triggerAccountWithoutAccountErr.constraint).toBe(
+        'ledger_postings_currency_matches_account',
+      );
+      expect(triggerAccountWithoutAccountErr.message ?? '').toContain(
+        'ledger posting currency must match its account currency',
+      );
+
+      await admin.query(
+        'alter table public.ledger_postings disable trigger enforce_ledger_posting_currency_matches_account_trigger',
+      );
+      let accountWithoutAccountErr: CapturedPgError;
+      try {
+        accountWithoutAccountErr = await capturePgError(() =>
+          seedPosting({
+            workspaceId: ws1Id,
+            transactionId: transaction1Id,
+            accountId: null,
+            legKind: 'account',
+            amountMinor: '100',
+          }),
+        );
+      } finally {
+        await admin.query(
+          'alter table public.ledger_postings enable trigger enforce_ledger_posting_currency_matches_account_trigger',
+        );
+      }
       expect(accountWithoutAccountErr.code).toBe('23514');
       expect(accountWithoutAccountErr.message ?? '').toContain(
         'ledger_postings_account_leg_parity_check',
@@ -1055,11 +1089,55 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       );
       expect(err.code).toBe('23514');
     });
+
+    it('16b. posting currency invariant trigger refuses account leg differing from account currency with 23514 naming ledger_postings_currency_matches_account; structure pinned in catalog', async () => {
+      const mismatchErr = await capturePgError(() =>
+        seedPosting({
+          workspaceId: ws1Id,
+          transactionId: transaction1Id,
+          accountId: account1Id,
+          legKind: 'account',
+          amountMinor: '100',
+          currency: 'EUR',
+        }),
+      );
+      expect(mismatchErr.code).toBe('23514');
+      expect(mismatchErr.constraint).toBe(
+        'ledger_postings_currency_matches_account',
+      );
+      expect(mismatchErr.message ?? '').toContain(
+        'ledger posting currency must match its account currency',
+      );
+
+      // Structural catalog check for trigger definition
+      const trigRes = await admin.query<{
+        proname: string;
+        prosecdef: boolean;
+        proowner: string;
+      }>(
+        `select p.proname::text as proname,
+                p.prosecdef,
+                p.proowner::regrole::text as proowner
+           from pg_trigger t
+           join pg_proc p on p.oid = t.tgfoid
+          where t.tgrelid = 'public.ledger_postings'::regclass
+            and t.tgname = 'enforce_ledger_posting_currency_matches_account_trigger'`,
+      );
+      expect(trigRes.rows).toHaveLength(1);
+      expect(trigRes.rows[0].proname).toBe(
+        'enforce_ledger_posting_currency_matches_account',
+      );
+      expect(trigRes.rows[0].prosecdef).toBe(true);
+      expect(trigRes.rows[0].proowner).toBe('savia_elevated');
+    });
   });
 
   describe('Composite foreign keys (RULING 48, superuser isolation: only the FK can refuse)', () => {
     it('17. A posting whose account belongs to a DIFFERENT workspace is refused with 23503 naming ledger_postings_account_workspace_fkey — RI checks bypass row security, so only the COMPOSITE key closes the hole', async () => {
-      const crossErr = await capturePgError(() =>
+      // With the posting-currency trigger active, the BEFORE trigger catches the
+      // cross-workspace account first (it does not exist in workspace 1) and raises
+      // 23514 naming ledger_postings_currency_matches_account.
+      const triggerCrossErr = await capturePgError(() =>
         seedPosting({
           workspaceId: ws1Id,
           transactionId: transaction1Id,
@@ -1068,6 +1146,35 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
           amountMinor: '100',
         }),
       );
+      expect(triggerCrossErr.code).toBe('23514');
+      expect(triggerCrossErr.constraint).toBe(
+        'ledger_postings_currency_matches_account',
+      );
+      expect(triggerCrossErr.message ?? '').toContain(
+        'ledger posting currency must match its account currency',
+      );
+
+      // Under superuser isolation with the currency trigger disabled, the COMPOSITE FK
+      // itself refuses the insert with 23503.
+      await admin.query(
+        'alter table public.ledger_postings disable trigger enforce_ledger_posting_currency_matches_account_trigger',
+      );
+      let crossErr: CapturedPgError;
+      try {
+        crossErr = await capturePgError(() =>
+          seedPosting({
+            workspaceId: ws1Id,
+            transactionId: transaction1Id,
+            accountId: account2Id,
+            legKind: 'account',
+            amountMinor: '100',
+          }),
+        );
+      } finally {
+        await admin.query(
+          'alter table public.ledger_postings enable trigger enforce_ledger_posting_currency_matches_account_trigger',
+        );
+      }
       expect(crossErr.code).toBe('23503');
       expect(crossErr.message ?? '').toContain(
         'violates foreign key constraint',
