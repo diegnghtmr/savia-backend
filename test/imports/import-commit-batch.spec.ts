@@ -1,7 +1,13 @@
 import type { QueryResult } from 'pg';
 import { describe, expect, it } from 'vitest';
 import { PostgresTransactionAdapter } from '../../src/ledger/postgres-transaction.adapter.js';
-import { ImportService } from '../../src/imports/import.service.js';
+import { PostgresImportAdapter } from '../../src/imports/postgres-import.adapter.js';
+import { IMPORT_COMMIT_BATCH_SIZE } from '../../src/platform/import-batch-policy.js';
+import {
+  IMPORT_COMMIT_CALLBACK_TIMEOUT_MS,
+  IMPORT_COMMIT_STATEMENT_TIMEOUT_MS,
+  ImportService,
+} from '../../src/imports/import.service.js';
 import type { ImportJob, ImportStore } from '../../src/imports/import.port.js';
 import type { IdempotencyStore } from '../../src/platform/idempotency.port.js';
 import type { JobWriter } from '../../src/platform/job-writer.port.js';
@@ -24,7 +30,32 @@ function mockQueryResult<Row extends Record<string, unknown>>(
 }
 
 describe('import commit statement bounding', () => {
-  const BATCH_SIZE = 2_500;
+  const BATCH_SIZE = IMPORT_COMMIT_BATCH_SIZE;
+
+  it('shares a single batch-size source across adapters and service', () => {
+    expect(PostgresTransactionAdapter.BATCH_SIZE).toBe(
+      IMPORT_COMMIT_BATCH_SIZE,
+    );
+    expect(PostgresImportAdapter.BATCH_SIZE).toBe(IMPORT_COMMIT_BATCH_SIZE);
+    expect(IMPORT_COMMIT_BATCH_SIZE).toBe(2_500);
+  });
+
+  it('pins separate statement and callback timeouts with derived arithmetic', () => {
+    const batches = Math.ceil(10_000 / IMPORT_COMMIT_BATCH_SIZE);
+    const budgetedPerBatchMs = 1_000;
+    const fixedOverheadMs = 1_000;
+    const derivedCallbackTimeoutMs =
+      batches * budgetedPerBatchMs + fixedOverheadMs;
+
+    expect(IMPORT_COMMIT_STATEMENT_TIMEOUT_MS).toBe(2_000);
+    expect(IMPORT_COMMIT_STATEMENT_TIMEOUT_MS).toBeLessThanOrEqual(2_000);
+    expect(IMPORT_COMMIT_CALLBACK_TIMEOUT_MS).toBe(derivedCallbackTimeoutMs);
+    expect(IMPORT_COMMIT_CALLBACK_TIMEOUT_MS).toBe(5_000);
+    expect(IMPORT_COMMIT_STATEMENT_TIMEOUT_MS).not.toBe(
+      IMPORT_COMMIT_CALLBACK_TIMEOUT_MS,
+    );
+  });
+
   const dummyTerminalJob: Record<string, unknown> = {
     id: '00000000-0000-4000-8000-000000000099',
     type: 'import_commit',

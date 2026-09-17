@@ -7,6 +7,7 @@ import type {
   ParsedImportRow,
 } from './import.port.js';
 import { normalizeImportDescription } from './import-parsers.js';
+import { IMPORT_COMMIT_BATCH_SIZE } from '../platform/import-batch-policy.js';
 function iso(value: Date | string): string {
   return value instanceof Date
     ? value.toISOString()
@@ -41,6 +42,8 @@ function map(row: JobRow): ImportJob {
   };
 }
 export class PostgresImportAdapter implements ImportStore {
+  public static readonly BATCH_SIZE = IMPORT_COMMIT_BATCH_SIZE;
+
   public readActiveRole(
     client: TransactionClient,
     workspaceId: string,
@@ -214,7 +217,7 @@ export class PostgresImportAdapter implements ImportStore {
     rows: readonly { date: string; amountMinor: string; description: string }[],
   ): Promise<ReadonlySet<number>> {
     if (!rows.length) return new Set();
-    const batchSize = 2_500;
+    const batchSize = PostgresImportAdapter.BATCH_SIZE;
     const existingIndexes = new Set<number>();
     for (
       let batchStart = 0;
