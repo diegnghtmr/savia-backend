@@ -51,6 +51,7 @@ interface BrowserGeneration {
 export interface PlaywrightPdfRendererOptions {
   readonly renderSettleTimeoutMs: number;
   readonly pdfRenderTimeoutMs?: number;
+  readonly rendererLaunchTimeoutMs?: number;
   readonly observer?: RenderPhaseObserver;
   readonly browserLauncher?: () => Promise<Browser>;
   readonly logger?: Logger;
@@ -66,6 +67,7 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
   private renderSequence = 0;
   public readonly renderSettleTimeoutMs: number;
   public readonly pdfRenderTimeoutMs: number;
+  public readonly rendererLaunchTimeoutMs: number;
   private readonly observer?: RenderPhaseObserver;
   private readonly browserLauncher: () => Promise<Browser>;
   private readonly logger: Logger;
@@ -77,8 +79,13 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     if (typeof optionsOrTimeout === 'number') {
       this.renderSettleTimeoutMs = optionsOrTimeout;
       this.pdfRenderTimeoutMs = 30_000;
+      this.rendererLaunchTimeoutMs = 10_000;
       this.observer = observer;
-      this.browserLauncher = () => chromium.launch({ headless: true });
+      this.browserLauncher = () =>
+        chromium.launch({
+          headless: true,
+          timeout: this.rendererLaunchTimeoutMs,
+        });
       this.logger = new Logger(PlaywrightPdfRenderer.name);
     } else {
       if (
@@ -91,10 +98,16 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
       }
       this.renderSettleTimeoutMs = optionsOrTimeout.renderSettleTimeoutMs;
       this.pdfRenderTimeoutMs = optionsOrTimeout.pdfRenderTimeoutMs ?? 30_000;
+      this.rendererLaunchTimeoutMs =
+        optionsOrTimeout.rendererLaunchTimeoutMs ?? 10_000;
       this.observer = optionsOrTimeout.observer ?? observer;
       this.browserLauncher =
         optionsOrTimeout.browserLauncher ??
-        (() => chromium.launch({ headless: true }));
+        (() =>
+          chromium.launch({
+            headless: true,
+            timeout: this.rendererLaunchTimeoutMs,
+          }));
       this.logger =
         optionsOrTimeout.logger ?? new Logger(PlaywrightPdfRenderer.name);
     }
@@ -139,6 +152,59 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     } finally {
       if (this.inFlightLaunchPromise === promise) {
         this.inFlightLaunchPromise = undefined;
+      }
+    }
+  }
+
+  /**
+   * Races getHealthyGeneration() against the caller's remaining budget and
+   * abort signal. The shared launch keeps running for lifecycle cleanup;
+   * only the caller's wait is cancelled on timeout or abort.
+   */
+  private async raceAcquisition(
+    remainingMs: number,
+    signal?: AbortSignal,
+  ): Promise<BrowserGeneration> {
+    let timer: NodeJS.Timeout | undefined;
+    let abortHandler: (() => void) | undefined;
+    const TIMEOUT_SENTINEL = Symbol('acquisitionTimeout');
+    const ABORT_SENTINEL = Symbol('acquisitionAbort');
+
+    try {
+      const result = await Promise.race([
+        this.getHealthyGeneration(),
+        new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
+          timer = setTimeout(() => resolve(TIMEOUT_SENTINEL), remainingMs);
+        }),
+        ...(signal
+          ? [
+              new Promise<typeof ABORT_SENTINEL>((resolve) => {
+                if (signal.aborted) {
+                  resolve(ABORT_SENTINEL);
+                  return;
+                }
+                abortHandler = () => resolve(ABORT_SENTINEL);
+                signal.addEventListener('abort', abortHandler, { once: true });
+              }),
+            ]
+          : []),
+      ]);
+
+      if (result === TIMEOUT_SENTINEL) {
+        throw new PdfRenderTimeoutError();
+      }
+      if (result === ABORT_SENTINEL) {
+        throw new DeliveryDeadlineExceededError(
+          'PDF render aborted: budget exhausted before start.',
+        );
+      }
+      return result;
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      if (abortHandler !== undefined && signal !== undefined) {
+        signal.removeEventListener('abort', abortHandler);
       }
     }
   }
@@ -199,7 +265,19 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
       if (this.closing) {
         throw new DeliveryDeadlineExceededError('Renderer is closing.');
       }
-      generation = await this.getHealthyGeneration();
+
+      const remainingMs = options.timeoutMs - (performance.now() - startMs);
+      if (remainingMs <= 0) {
+        throw new PdfRenderTimeoutError();
+      }
+      if (options.signal?.aborted) {
+        throw new DeliveryDeadlineExceededError(
+          'PDF render aborted: budget exhausted before start.',
+        );
+      }
+
+      generation = await this.raceAcquisition(remainingMs, options.signal);
+
       if (this.closing) {
         throw new DeliveryDeadlineExceededError('Renderer is closing.');
       }
@@ -533,9 +611,12 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
 
   /**
    * Shuts down the renderer: aborts further renders, clears all drain timers,
-   * waits boundedly (up to renderSettleTimeoutMs) for any in-flight browser launch,
-   * and closes all active browser generations boundedly (up to renderSettleTimeoutMs).
-   * Total shutdown time is bounded by at most 2 * renderSettleTimeoutMs.
+   * waits boundedly (up to rendererLaunchTimeoutMs) for any in-flight browser
+   * launch, then closes every browser — including one that launch produced —
+   * through closeBrowserBounded (up to renderSettleTimeoutMs).
+   *
+   * Total shutdown time is bounded by at most
+   * rendererLaunchTimeoutMs + renderSettleTimeoutMs.
    */
   public async onModuleDestroy(): Promise<void> {
     this.closing = true;
@@ -551,7 +632,7 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     if (this.inFlightLaunchPromise !== undefined) {
       let timer: NodeJS.Timeout | undefined;
       const timeoutPromise = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, this.renderSettleTimeoutMs);
+        timer = setTimeout(resolve, this.rendererLaunchTimeoutMs);
       });
       try {
         await Promise.race([

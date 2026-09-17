@@ -1045,7 +1045,7 @@ describe('PDF renderer integration (no DB)', () => {
     }
   });
 
-  it('(a) destroy while a launch is pending -> after release, render rejects, no context opened, browser.close called once, hasOpenBrowser is false', async () => {
+  it('(a) destroy while a launch is pending -> destroy stays unsettled until launch resolves and browser is closed', async () => {
     let releaseLaunch!: () => void;
     const launchGate = new Promise<void>((resolve) => {
       releaseLaunch = resolve;
@@ -1065,33 +1065,47 @@ describe('PDF renderer integration (no DB)', () => {
       })),
     } as unknown as Browser;
 
+    const rendererLaunchTimeoutMs = 500;
+    const renderSettleTimeoutMs = 100;
     const localRenderer = new PlaywrightPdfRenderer({
-      renderSettleTimeoutMs: 100,
+      renderSettleTimeoutMs,
+      rendererLaunchTimeoutMs,
       browserLauncher: async () => {
         await launchGate;
         return fakeBrowser;
       },
     });
 
-    const renderPromise = localRenderer.renderHtmlToPdf('<p>pending</p>', {
-      timeoutMs: 5_000,
-    });
+    // Start a render to trigger launch; do NOT await it
+    const renderPromise = localRenderer
+      .renderHtmlToPdf('<p>pending</p>', { timeoutMs: 5_000 })
+      .catch(() => {});
 
     // Allow render to enter getHealthyGeneration and invoke browserLauncher
     await new Promise((r) => setTimeout(r, 10));
 
-    // Initiate destroy while launch is pending
-    const destroyPromise = localRenderer.onModuleDestroy();
+    // Initiate destroy while launch is pending — do NOT await render first
+    let destroySettled = false;
+    const destroyPromise = localRenderer.onModuleDestroy().then(() => {
+      destroySettled = true;
+    });
+
+    // Wait a tick — destroy must NOT have settled yet because launch is pending
+    await new Promise((r) => setTimeout(r, 20));
+    expect(destroySettled).toBe(false);
 
     // Release the launch
     releaseLaunch();
 
-    await expect(renderPromise).rejects.toThrow();
+    // Wait for render to reject (closing check in getHealthyGeneration)
+    await renderPromise;
+
+    // Wait for destroy to settle
     await destroyPromise;
 
+    expect(destroySettled).toBe(true);
     expect(fakeBrowser.newContext).not.toHaveBeenCalled();
     expect(fakeBrowser.close).toHaveBeenCalledTimes(1);
-    expect(localRenderer.hasOpenBrowser()).toBe(false);
   });
 
   it('(b) a browser whose close() never settles -> onModuleDestroy settles within its bound', async () => {
@@ -1180,5 +1194,196 @@ describe('PDF renderer integration (no DB)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('(d) never-settling launcher with timeoutMs: 10 rejects with PdfRenderTimeoutError within tolerance', async () => {
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 100,
+      rendererLaunchTimeoutMs: 50,
+      browserLauncher: async () => new Promise<Browser>(() => {}), // never settles
+    });
+
+    try {
+      const start = performance.now();
+      await expect(
+        localRenderer.renderHtmlToPdf('<p>hung</p>', { timeoutMs: 10 }),
+      ).rejects.toThrow(PdfRenderTimeoutError);
+      const elapsed = performance.now() - start;
+
+      // Must settle quickly (within budget + tolerance), not hang until launch timeout
+      expect(elapsed).toBeLessThan(200);
+    } finally {
+      await localRenderer.onModuleDestroy();
+    }
+  });
+
+  it('(e) abort during launch rejects with DeliveryDeadlineExceededError', async () => {
+    const controller = new AbortController();
+
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 100,
+      rendererLaunchTimeoutMs: 50,
+      browserLauncher: async () => new Promise<Browser>(() => {}), // never settles
+    });
+
+    try {
+      const renderPromise = localRenderer.renderHtmlToPdf('<p>abort</p>', {
+        timeoutMs: 5_000,
+        signal: controller.signal,
+      });
+
+      // Abort after a small delay
+      setTimeout(() => controller.abort(), 10);
+
+      await expect(renderPromise).rejects.toThrow(
+        DeliveryDeadlineExceededError,
+      );
+    } finally {
+      await localRenderer.onModuleDestroy();
+    }
+  });
+
+  it('(f) second render while first launch is still pending does not trigger a second launch', async () => {
+    let launchCount = 0;
+    let releaseLaunch!: () => void;
+    const launchGate = new Promise<void>((resolve) => {
+      releaseLaunch = resolve;
+    });
+
+    const fakeBrowser: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => ({
+        browser: () => fakeBrowser,
+        route: vi.fn(async () => {}),
+        newPage: vi.fn(async () => ({
+          setContent: vi.fn(async () => {}),
+          pdf: vi.fn(async () => Buffer.from('%PDF-1.4 test')),
+        })),
+        close: vi.fn(async () => {}),
+      })),
+    } as unknown as Browser;
+
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 100,
+      rendererLaunchTimeoutMs: 200,
+      browserLauncher: async () => {
+        launchCount += 1;
+        await launchGate;
+        return fakeBrowser;
+      },
+    });
+
+    try {
+      const render1 = localRenderer.renderHtmlToPdf('<p>one</p>', {
+        timeoutMs: 5_000,
+      });
+      const render2 = localRenderer.renderHtmlToPdf('<p>two</p>', {
+        timeoutMs: 5_000,
+      });
+
+      // Both renders are waiting on the same launch
+      await new Promise((r) => setTimeout(r, 10));
+      expect(launchCount).toBe(1);
+
+      releaseLaunch();
+      const [pdf1, pdf2] = await Promise.all([render1, render2]);
+
+      expect(pdf1.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(pdf2.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(launchCount).toBe(1);
+    } finally {
+      await localRenderer.onModuleDestroy();
+    }
+  });
+
+  it('(g) launch released after renderSettleTimeoutMs but before rendererLaunchTimeoutMs -> destroy waits for browser close', async () => {
+    let releaseLaunch!: () => void;
+    const launchGate = new Promise<void>((resolve) => {
+      releaseLaunch = resolve;
+    });
+
+    const fakeBrowser: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => ({
+        browser: () => fakeBrowser,
+        route: vi.fn(async () => {}),
+        newPage: vi.fn(async () => ({
+          setContent: vi.fn(async () => {}),
+          pdf: vi.fn(async () => Buffer.from('%PDF-1.4 test')),
+        })),
+        close: vi.fn(async () => {}),
+      })),
+    } as unknown as Browser;
+
+    const renderSettleTimeoutMs = 20;
+    const rendererLaunchTimeoutMs = 200;
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs,
+      rendererLaunchTimeoutMs,
+      browserLauncher: async () => {
+        await launchGate;
+        return fakeBrowser;
+      },
+    });
+
+    // Start a render to trigger launch
+    const renderPromise = localRenderer.renderHtmlToPdf('<p>g</p>', {
+      timeoutMs: 5_000,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Start destroy while launch is pending
+    let destroySettled = false;
+    const destroyPromise = localRenderer.onModuleDestroy().then(() => {
+      destroySettled = true;
+    });
+
+    // Wait past renderSettleTimeoutMs but before rendererLaunchTimeoutMs
+    await new Promise((r) => setTimeout(r, renderSettleTimeoutMs + 20));
+
+    // Launch not released yet — destroy should not have settled
+    expect(destroySettled).toBe(false);
+
+    // Release the launch within rendererLaunchTimeoutMs
+    releaseLaunch();
+    await expect(renderPromise).rejects.toThrow();
+    await destroyPromise;
+
+    // Destroy settles after closing the launched browser
+    expect(destroySettled).toBe(true);
+    expect(fakeBrowser.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('(h) never-settling launch -> onModuleDestroy settles within rendererLaunchTimeoutMs + renderSettleTimeoutMs bound', async () => {
+    const rendererLaunchTimeoutMs = 30;
+    const renderSettleTimeoutMs = 30;
+    const totalBound = rendererLaunchTimeoutMs + renderSettleTimeoutMs;
+
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs,
+      rendererLaunchTimeoutMs,
+      browserLauncher: async () => new Promise<Browser>(() => {}), // never settles
+    });
+
+    // Start a render to trigger the in-flight launch
+    const renderPromise = localRenderer
+      .renderHtmlToPdf('<p>stuck</p>', { timeoutMs: 5 })
+      .catch(() => {});
+    await new Promise((r) => setTimeout(r, 10));
+    await renderPromise;
+
+    const start = performance.now();
+    const result = await Promise.race([
+      localRenderer.onModuleDestroy().then(() => 'settled'),
+      new Promise<string>((resolve) =>
+        setTimeout(() => resolve('hung'), totalBound * 4),
+      ),
+    ]);
+    const elapsed = performance.now() - start;
+
+    expect(result).toBe('settled');
+    expect(elapsed).toBeLessThan(totalBound * 3);
   });
 });

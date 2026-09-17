@@ -594,4 +594,68 @@ describe('WorkerConfig', () => {
     });
     expect(envConfig.renderSettleTimeoutMs).toBe(4_000);
   });
+
+  it('validates rendererLaunchTimeoutMs bounds and environment loading', () => {
+    // 1. Defaults to 10_000ms
+    const defaultConfig = WorkerConfig.fromEnvironment({});
+    expect(defaultConfig.rendererLaunchTimeoutMs).toBe(10_000);
+
+    // 2. Rejects rendererLaunchTimeoutMs < 1
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          8_000,
+          30_000,
+          30_000,
+          30_000,
+          2_000,
+          0,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // 3. Rejects rendererLaunchTimeoutMs >= visibility timeout
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          8_000,
+          30_000,
+          30_000,
+          30_000,
+          2_000,
+          300_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // 4. Loads custom SAVIA_WORKER_RENDERER_LAUNCH_TIMEOUT_MS from environment
+    const envConfig = WorkerConfig.fromEnvironment({
+      SAVIA_WORKER_RENDERER_LAUNCH_TIMEOUT_MS: '15000',
+    });
+    expect(envConfig.rendererLaunchTimeoutMs).toBe(15_000);
+  });
 });

@@ -27,7 +27,10 @@ import { WorkerPlatformModule } from '../platform/worker-platform.module.js';
       provide: PlaywrightPdfRenderer,
       inject: [WorkerConfig],
       useFactory: (config: WorkerConfig): PlaywrightPdfRenderer =>
-        new PlaywrightPdfRenderer(config.renderSettleTimeoutMs),
+        new PlaywrightPdfRenderer({
+          renderSettleTimeoutMs: config.renderSettleTimeoutMs,
+          rendererLaunchTimeoutMs: config.rendererLaunchTimeoutMs,
+        }),
     },
     {
       provide: PDF_RENDERER,

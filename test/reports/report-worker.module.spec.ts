@@ -16,10 +16,11 @@ describe('ReportWorkerModule settlement composition', () => {
     process.env = originalEnv;
   });
 
-  it('resolves WorkerConfig, ReportJobHandler, and PlaywrightPdfRenderer holding the configured settlement timeout', async () => {
+  it('resolves WorkerConfig, ReportJobHandler, and PlaywrightPdfRenderer holding the configured settlement and launch timeouts', async () => {
     process.env.DATABASE_URL =
       'postgresql://postgres:postgres@127.0.0.1:5432/test';
     process.env.SAVIA_WORKER_RENDER_SETTLE_TIMEOUT_MS = '1234';
+    process.env.SAVIA_WORKER_RENDERER_LAUNCH_TIMEOUT_MS = '5678';
 
     const moduleRef = await Test.createTestingModule({
       imports: [WorkerModule],
@@ -32,5 +33,7 @@ describe('ReportWorkerModule settlement composition', () => {
     expect(config.renderSettleTimeoutMs).toBe(1234);
     expect(handler.renderSettleTimeoutMs).toBe(1234);
     expect(renderer.renderSettleTimeoutMs).toBe(1234);
+    expect(config.rendererLaunchTimeoutMs).toBe(5678);
+    expect(renderer.rendererLaunchTimeoutMs).toBe(5678);
   });
 });
