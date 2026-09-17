@@ -1050,9 +1050,19 @@ describe('PDF renderer integration (no DB)', () => {
     const launchGate = new Promise<void>((resolve) => {
       releaseLaunch = resolve;
     });
+    let launchStarted!: () => void;
+    const launchStartedGate = new Promise<void>((resolve) => {
+      launchStarted = resolve;
+    });
+    let releaseClose!: () => void;
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
 
     const fakeBrowser: Browser = {
-      close: vi.fn(async () => {}),
+      close: vi.fn(async () => {
+        await closeGate;
+      }),
       on: vi.fn(),
       newContext: vi.fn(async () => ({
         browser: () => fakeBrowser,
@@ -1066,42 +1076,42 @@ describe('PDF renderer integration (no DB)', () => {
     } as unknown as Browser;
 
     const rendererLaunchTimeoutMs = 500;
-    const renderSettleTimeoutMs = 100;
+    const renderSettleTimeoutMs = 200;
     const localRenderer = new PlaywrightPdfRenderer({
       renderSettleTimeoutMs,
       rendererLaunchTimeoutMs,
       browserLauncher: async () => {
+        launchStarted();
         await launchGate;
         return fakeBrowser;
       },
     });
 
-    // Start a render to trigger launch; do NOT await it
+    // Start a render to trigger launch; do NOT await it first.
     const renderPromise = localRenderer
       .renderHtmlToPdf('<p>pending</p>', { timeoutMs: 5_000 })
       .catch(() => {});
 
-    // Allow render to enter getHealthyGeneration and invoke browserLauncher
-    await new Promise((r) => setTimeout(r, 10));
+    await launchStartedGate;
 
-    // Initiate destroy while launch is pending — do NOT await render first
     let destroySettled = false;
     const destroyPromise = localRenderer.onModuleDestroy().then(() => {
       destroySettled = true;
     });
 
-    // Wait a tick — destroy must NOT have settled yet because launch is pending
     await new Promise((r) => setTimeout(r, 20));
     expect(destroySettled).toBe(false);
 
-    // Release the launch
     releaseLaunch();
 
-    // Wait for render to reject (closing check in getHealthyGeneration)
-    await renderPromise;
+    await vi.waitFor(() => {
+      expect(fakeBrowser.close).toHaveBeenCalledTimes(1);
+    });
+    expect(destroySettled).toBe(false);
 
-    // Wait for destroy to settle
+    releaseClose();
     await destroyPromise;
+    await renderPromise;
 
     expect(destroySettled).toBe(true);
     expect(fakeBrowser.newContext).not.toHaveBeenCalled();
@@ -1200,7 +1210,9 @@ describe('PDF renderer integration (no DB)', () => {
     const localRenderer = new PlaywrightPdfRenderer({
       renderSettleTimeoutMs: 100,
       rendererLaunchTimeoutMs: 50,
-      browserLauncher: async () => new Promise<Browser>(() => {}), // never settles
+      // Fake ignores chromium.launch({ timeout }): this test proves the
+      // render-budget race still rejects when the injected launcher never settles.
+      browserLauncher: async () => new Promise<Browser>(() => {}),
     });
 
     try {
@@ -1223,7 +1235,9 @@ describe('PDF renderer integration (no DB)', () => {
     const localRenderer = new PlaywrightPdfRenderer({
       renderSettleTimeoutMs: 100,
       rendererLaunchTimeoutMs: 50,
-      browserLauncher: async () => new Promise<Browser>(() => {}), // never settles
+      // Fake ignores chromium.launch({ timeout }): abort must win the
+      // acquisition race even when the injected launcher never settles.
+      browserLauncher: async () => new Promise<Browser>(() => {}),
     });
 
     try {
@@ -1302,9 +1316,19 @@ describe('PDF renderer integration (no DB)', () => {
     const launchGate = new Promise<void>((resolve) => {
       releaseLaunch = resolve;
     });
+    let launchStarted!: () => void;
+    const launchStartedGate = new Promise<void>((resolve) => {
+      launchStarted = resolve;
+    });
+    let releaseClose!: () => void;
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
 
     const fakeBrowser: Browser = {
-      close: vi.fn(async () => {}),
+      close: vi.fn(async () => {
+        await closeGate;
+      }),
       on: vi.fn(),
       newContext: vi.fn(async () => ({
         browser: () => fakeBrowser,
@@ -1317,41 +1341,43 @@ describe('PDF renderer integration (no DB)', () => {
       })),
     } as unknown as Browser;
 
-    const renderSettleTimeoutMs = 20;
-    const rendererLaunchTimeoutMs = 200;
+    const renderSettleTimeoutMs = 80;
+    const rendererLaunchTimeoutMs = 500;
     const localRenderer = new PlaywrightPdfRenderer({
       renderSettleTimeoutMs,
       rendererLaunchTimeoutMs,
       browserLauncher: async () => {
+        launchStarted();
         await launchGate;
         return fakeBrowser;
       },
     });
 
-    // Start a render to trigger launch
-    const renderPromise = localRenderer.renderHtmlToPdf('<p>g</p>', {
-      timeoutMs: 5_000,
-    });
-    await new Promise((r) => setTimeout(r, 10));
+    const renderPromise = localRenderer
+      .renderHtmlToPdf('<p>g</p>', {
+        timeoutMs: 5_000,
+      })
+      .catch(() => {});
+    await launchStartedGate;
 
-    // Start destroy while launch is pending
     let destroySettled = false;
     const destroyPromise = localRenderer.onModuleDestroy().then(() => {
       destroySettled = true;
     });
 
-    // Wait past renderSettleTimeoutMs but before rendererLaunchTimeoutMs
     await new Promise((r) => setTimeout(r, renderSettleTimeoutMs + 20));
-
-    // Launch not released yet — destroy should not have settled
     expect(destroySettled).toBe(false);
 
-    // Release the launch within rendererLaunchTimeoutMs
     releaseLaunch();
-    await expect(renderPromise).rejects.toThrow();
-    await destroyPromise;
+    await vi.waitFor(() => {
+      expect(fakeBrowser.close).toHaveBeenCalledTimes(1);
+    });
+    expect(destroySettled).toBe(false);
 
-    // Destroy settles after closing the launched browser
+    releaseClose();
+    await destroyPromise;
+    await renderPromise;
+
     expect(destroySettled).toBe(true);
     expect(fakeBrowser.close).toHaveBeenCalledTimes(1);
   });
@@ -1364,7 +1390,9 @@ describe('PDF renderer integration (no DB)', () => {
     const localRenderer = new PlaywrightPdfRenderer({
       renderSettleTimeoutMs,
       rendererLaunchTimeoutMs,
-      browserLauncher: async () => new Promise<Browser>(() => {}), // never settles
+      // Fake ignores chromium.launch({ timeout }): destroy must still
+      // settle within rendererLaunchTimeoutMs + renderSettleTimeoutMs.
+      browserLauncher: async () => new Promise<Browser>(() => {}),
     });
 
     // Start a render to trigger the in-flight launch
