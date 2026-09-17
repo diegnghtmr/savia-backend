@@ -135,4 +135,45 @@ describe('DeliveryDeadline', () => {
     expect(error.name).toBe('DeliveryDeadlineExceededError');
     expect(error.message).toBe('Deadline exceeded');
   });
+
+  it('reserving settle wait up front leaves the full queueTimeoutMs for forTerminal after work exhaustion and settlement tail', () => {
+    const clock = createFakeClock(0);
+    const visibilityTimeoutSeconds = 300;
+    const leaseSafetyMs = 20_000;
+    const terminalReserveMs = 10_000;
+    const minOperationMs = 1_000;
+    const queueTimeoutMs = 8_000;
+    const renderSettleTimeoutMs = 2_000;
+    const renderCapMs = 30_000;
+
+    const deadline = new DeliveryDeadline({
+      visibilityTimeoutSeconds,
+      leaseSafetyMs,
+      terminalReserveMs,
+      minOperationMs,
+      clock: clock.now,
+    });
+
+    // Advance clock so remaining work time is tight, e.g., exactly available = 7_000ms
+    // expiresAt = 280_000. If clock is at 263_000:
+    // remaining = 17_000, available for work = 17_000 - 10_000 = 7_000
+    clock.advance(263_000);
+
+    // The render phase reserves renderSettleTimeoutMs up front:
+    const availableForWork = deadline.forWork(renderCapMs); // 7_000
+    const renderTimeoutMs = availableForWork - renderSettleTimeoutMs; // 5_000 >= minOperationMs (1_000)
+    expect(renderTimeoutMs).toBe(5_000);
+
+    // Render work runs and exhausts its allocated renderTimeoutMs:
+    clock.advance(renderTimeoutMs);
+
+    // Settle wait runs and consumes the full settle grace (renderSettleTimeoutMs):
+    clock.advance(renderSettleTimeoutMs);
+
+    // Even after work exhaustion AND the full settlement tail:
+    // Remaining time must still be at least terminalReserveMs (10_000ms)
+    expect(deadline.remaining()).toBeGreaterThanOrEqual(terminalReserveMs);
+    // And forTerminal(queueTimeoutMs) returns the FULL configured queueTimeoutMs (8_000ms)!
+    expect(deadline.forTerminal(queueTimeoutMs)).toBe(queueTimeoutMs);
+  });
 });

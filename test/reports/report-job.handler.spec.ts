@@ -1,15 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import type { ArtifactStorage } from '../../src/platform/artifact-storage.port.js';
+import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
+import type { ReportJobPayload } from '../../src/reports/report-job-payload.js';
 import {
   ReportJobHandler,
   ReportWriteForbiddenError,
 } from '../../src/reports/report-job.handler.js';
-import type { ReportJobPayload } from '../../src/reports/report-job-payload.js';
 import { PostgresReportAdapter } from '../../src/reports/postgres-report.adapter.js';
 import type { ReportGrid } from '../../src/reports/report-engine.js';
 import * as serializers from '../../src/reports/report-serializers.js';
+import { ReportPdfRowCapExceededError } from '../../src/reports/report.port.js';
+import type {
+  PdfRenderer,
+  PdfRenderOptions,
+} from '../../src/platform/pdf-renderer.port.js';
+import { FakePdfRenderer } from '../support/fake-pdf-renderer.js';
 
 const payload: ReportJobPayload = {
   version: 1,
@@ -94,6 +100,67 @@ function createStorage(): ArtifactStorage & {
   };
 }
 
+class GatedSettleFakeRenderer implements PdfRenderer {
+  public closeStarted = false;
+  private resolveGate: (() => void) | undefined;
+  private readonly gatePromise: Promise<void>;
+
+  public constructor() {
+    this.gatePromise = new Promise<void>((resolve) => {
+      this.resolveGate = resolve;
+    });
+  }
+
+  public releaseGate(): void {
+    this.resolveGate?.();
+  }
+
+  public async renderHtmlToPdf(
+    _html: string,
+    options: PdfRenderOptions,
+  ): Promise<Buffer> {
+    return new Promise<Buffer>((_resolve, reject) => {
+      const onAbort = (): void => {
+        this.closeStarted = true;
+        void this.gatePromise.then(() => {
+          reject(
+            new DeliveryDeadlineExceededError(
+              'PDF render aborted by delivery deadline.',
+            ),
+          );
+        });
+      };
+      if (options.signal?.aborted) {
+        onAbort();
+        return;
+      }
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+}
+
+function createHandler<R extends PdfRenderer = FakePdfRenderer>(
+  store: ReturnType<typeof createStore> = createStore(),
+  storage: ReturnType<typeof createStorage> = createStorage(),
+  clock?: () => Date,
+  pdfRenderer: R = new FakePdfRenderer() as unknown as R,
+  renderSettleTimeoutMs = 2_000,
+): {
+  handler: ReportJobHandler;
+  pdfRenderer: R;
+  store: ReturnType<typeof createStore>;
+  storage: ReturnType<typeof createStorage>;
+} {
+  const handler = new ReportJobHandler(
+    store as unknown as PostgresReportAdapter,
+    storage,
+    pdfRenderer,
+    clock ?? (() => new Date()),
+    renderSettleTimeoutMs,
+  );
+  return { handler, pdfRenderer, store, storage };
+}
+
 function createStore(role = 'editor') {
   const processing: string[] = [];
   const completed: string[] = [];
@@ -138,20 +205,14 @@ function createStore(role = 'editor') {
 
 describe('ReportJobHandler', () => {
   it('rejects an invalid frozen payload', () => {
-    const handler = new ReportJobHandler(
-      createStore() as unknown as PostgresReportAdapter,
-      createStorage(),
-    );
+    const { handler } = createHandler();
     expect(() => handler.parsePayload({ nope: true })).toThrow(
       /unknown or missing fields/,
     );
   });
 
   it('rejects a payload whose object key carries a foreign workspace prefix', () => {
-    const handler = new ReportJobHandler(
-      createStore() as unknown as PostgresReportAdapter,
-      createStorage(),
-    );
+    const { handler } = createHandler();
     expect(() =>
       handler.parsePayload(payload, {
         workspaceId: 'bbbbbbbb-0000-4000-8000-000000000001',
@@ -165,10 +226,7 @@ describe('ReportJobHandler', () => {
       jobId: 'aaaaaaaa-0000-4000-8000-000000000098',
       status: 'queued',
     });
-    const handler = new ReportJobHandler(
-      store as unknown as PostgresReportAdapter,
-      createStorage(),
-    );
+    const { handler } = createHandler(store);
     await expect(
       handler.compute(context, {} as TransactionClient),
     ).rejects.toMatchObject({ code: 'invalid_payload' });
@@ -181,10 +239,7 @@ describe('ReportJobHandler', () => {
       jobId: context.jobId,
       status: 'completed',
     });
-    const handler = new ReportJobHandler(
-      store as unknown as PostgresReportAdapter,
-      createStorage(),
-    );
+    const { handler } = createHandler(store);
     await expect(
       handler.compute(context, {} as TransactionClient),
     ).rejects.toMatchObject({ code: 'invalid_payload' });
@@ -193,18 +248,15 @@ describe('ReportJobHandler', () => {
 
   it('passes the frozen as-of instant into source-row selection', async () => {
     const store = createStore();
-    const handler = new ReportJobHandler(
-      store as unknown as PostgresReportAdapter,
-      createStorage(),
-    );
+    const { handler } = createHandler(store);
     await handler.compute(context, {} as TransactionClient);
     expect(store.sourceRowAsOf).toEqual([new Date(payload.asOf)]);
   });
 
   it('uploads to the reserved object key rather than a per-attempt key', async () => {
     const storage = createStorage();
-    const handler = new ReportJobHandler(
-      createStore() as unknown as PostgresReportAdapter,
+    const { handler } = createHandler(
+      createStore(),
       storage,
       () => new Date('2026-09-15T12:00:00.000Z'),
     );
@@ -220,33 +272,47 @@ describe('ReportJobHandler', () => {
     expect(storage.uploaded).toEqual([payload.objectKey, payload.objectKey]);
   });
 
-  it('rejects a large PDF render when its phase cap elapses', async () => {
-    const handler = new ReportJobHandler(
-      createStore() as unknown as PostgresReportAdapter,
+  it('fails PDF render permanently when the grid exceeds REPORT_PDF_ROW_CAP', async () => {
+    const { handler, pdfRenderer } = createHandler(
+      createStore(),
+      createStorage(),
+      () => new Date('2026-09-15T12:00:00.000Z'),
+    );
+    await expect(
+      handler.render(pdfContext, largePdfGrid(2_001), 5_000),
+    ).rejects.toBeInstanceOf(ReportPdfRowCapExceededError);
+    expect(pdfRenderer.calls).toHaveLength(0);
+  });
+
+  it('rejects a PDF render when its phase cap elapses without calling the renderer', async () => {
+    const { handler, pdfRenderer } = createHandler(
+      createStore(),
       createStorage(),
       () => new Date('2026-09-15T12:00:00.000Z'),
     );
     const started = performance.now();
     await expect(
-      handler.render(pdfContext, largePdfGrid(10_000), 5),
+      handler.render(pdfContext, emptyGrid, 0),
     ).rejects.toBeInstanceOf(DeliveryDeadlineExceededError);
     expect(performance.now() - started).toBeLessThan(2_000);
+    expect(pdfRenderer.calls).toHaveLength(0);
   }, 10_000);
 
   it('renders a normal-size PDF under a normal cap', async () => {
-    const handler = new ReportJobHandler(
-      createStore() as unknown as PostgresReportAdapter,
+    const { handler, pdfRenderer } = createHandler(
+      createStore(),
       createStorage(),
       () => new Date('2026-09-15T12:00:00.000Z'),
     );
     const rendered = await handler.render(pdfContext, emptyGrid, 5_000);
     expect(rendered.contentType).toBe('application/pdf');
     expect(rendered.content.subarray(0, 5).toString()).toBe('%PDF-');
+    expect(pdfRenderer.calls).toHaveLength(1);
   });
 
   it('rejects a large JSON render when its phase cap elapses', async () => {
-    const handler = new ReportJobHandler(
-      createStore() as unknown as PostgresReportAdapter,
+    const { handler } = createHandler(
+      createStore(),
       createStorage(),
       () => new Date('2026-09-15T12:00:00.000Z'),
     );
@@ -258,8 +324,8 @@ describe('ReportJobHandler', () => {
   }, 10_000);
 
   it('rejects a large CSV render when its phase cap elapses', async () => {
-    const handler = new ReportJobHandler(
-      createStore() as unknown as PostgresReportAdapter,
+    const { handler } = createHandler(
+      createStore(),
       createStorage(),
       () => new Date('2026-09-15T12:00:00.000Z'),
     );
@@ -272,8 +338,8 @@ describe('ReportJobHandler', () => {
 
   it('fails the render phase when it exceeds its own cap without uploading', async () => {
     const storage = createStorage();
-    const handler = new ReportJobHandler(
-      createStore() as unknown as PostgresReportAdapter,
+    const { handler } = createHandler(
+      createStore(),
       storage,
       () => new Date('2026-09-15T12:00:00.000Z'),
     );
@@ -291,26 +357,96 @@ describe('ReportJobHandler', () => {
     }
   });
 
-  it('fails the storage phase when it exceeds its own cap', async () => {
+  it('fails the storage phase immediately when it exceeds its own cap without settle grace', async () => {
     const storage = createStorage();
     storage.upload = vi.fn(async () => new Promise<void>(() => undefined));
-    const handler = new ReportJobHandler(
-      createStore() as unknown as PostgresReportAdapter,
+    const { handler } = createHandler(
+      createStore(),
       storage,
       () => new Date('2026-09-15T12:00:00.000Z'),
     );
     const rendered = await handler.render(context, emptyGrid, 5_000);
+    const start = performance.now();
     await expect(handler.store(context, rendered, 20)).rejects.toBeInstanceOf(
       DeliveryDeadlineExceededError,
     );
+    const elapsed = performance.now() - start;
+    // Must reject promptly at timeout (20ms), never waiting for the 2,000ms render settle tail
+    expect(elapsed).toBeLessThan(100);
+  });
+
+  it('handler waits for renderer settlement before rejecting with DeliveryDeadlineExceededError', async () => {
+    const fakeRenderer = new GatedSettleFakeRenderer();
+    const { handler } = createHandler(
+      createStore(),
+      createStorage(),
+      undefined,
+      fakeRenderer,
+      1_000,
+    );
+
+    const renderPromise = handler.render(pdfContext, emptyGrid, 20);
+    let settled = false;
+    renderPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await vi.waitFor(() => {
+      expect(fakeRenderer.closeStarted).toBe(true);
+    });
+    // Yield a tick: if runBounded rejected immediately without waiting, settled would be true here
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(settled).toBe(false);
+
+    fakeRenderer.releaseGate();
+    await expect(renderPromise).rejects.toBeInstanceOf(
+      DeliveryDeadlineExceededError,
+    );
+    expect(settled).toBe(true);
+  });
+
+  it('handler rejects with DeliveryDeadlineExceededError after the settle cap if gate is never released', async () => {
+    const fakeRenderer = new GatedSettleFakeRenderer();
+    const { handler } = createHandler(
+      createStore(),
+      createStorage(),
+      undefined,
+      fakeRenderer,
+      200,
+    );
+
+    const renderPromise = handler.render(pdfContext, emptyGrid, 20);
+    let settled = false;
+    renderPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await vi.waitFor(() => {
+      expect(fakeRenderer.closeStarted).toBe(true);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+
+    // Wait past the 40ms settle cap
+    await expect(renderPromise).rejects.toBeInstanceOf(
+      DeliveryDeadlineExceededError,
+    );
+    expect(settled).toBe(true);
   });
 
   it('refuses persist when the actor no longer has a write role', async () => {
     const store = createStore('viewer');
-    const handler = new ReportJobHandler(
-      store as unknown as PostgresReportAdapter,
-      createStorage(),
-    );
+    const { handler } = createHandler(store);
     await expect(
       handler.persist(
         context,
@@ -328,10 +464,7 @@ describe('ReportJobHandler', () => {
 
   it('marks the run processing then completed after re-checking the write role', async () => {
     const store = createStore('editor');
-    const handler = new ReportJobHandler(
-      store as unknown as PostgresReportAdapter,
-      createStorage(),
-    );
+    const { handler } = createHandler(store);
     const id = await handler.persist(
       context,
       {

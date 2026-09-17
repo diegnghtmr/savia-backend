@@ -269,6 +269,12 @@ export interface CompleteProcessingReportRunRecord {
 }
 
 /**
+ * Maximum rows allowed in a PDF report render. Beyond this, the grid must be
+ * exported as json/csv. This is a permanent-failure condition.
+ */
+export const REPORT_PDF_ROW_CAP = 2_000;
+
+/**
  * Maximum source rows allowed in a synchronous report run to prevent heap exhaustion
  * and event-loop monopolization. 50,000 rows provides rich analytics coverage for
  * multi-year workspace history while keeping memory and processing within safe request bounds.
@@ -381,6 +387,20 @@ export class ReportBudgetMissingError extends Error {
   public constructor() {
     super('No budget exists for the requested period.');
     this.name = 'ReportBudgetMissingError';
+  }
+}
+
+export class ReportPdfRowCapExceededError extends Error {
+  public readonly isDomainError = true;
+
+  public constructor(
+    public readonly cap: number,
+    public readonly actual: number,
+  ) {
+    super(
+      `Report grid contains ${actual} rows, exceeding the PDF render limit of ${cap}. Use json or csv format for large reports.`,
+    );
+    this.name = 'ReportPdfRowCapExceededError';
   }
 }
 

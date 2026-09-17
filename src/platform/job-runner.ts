@@ -526,7 +526,11 @@ export class JobRunner implements BeforeApplicationShutdown {
         const configuredRenderTimeoutMs = this.resolveRenderTimeoutMs(
           handler as RenderingJobHandler,
         );
-        const renderTimeoutMs = deadline.forWork(configuredRenderTimeoutMs);
+        const settleReserveMs = this.resolveRenderSettleTimeoutMs(
+          handler as RenderingJobHandler,
+        );
+        const renderTimeoutMs =
+          deadline.forWork(configuredRenderTimeoutMs) - settleReserveMs;
         if (renderTimeoutMs < this.config.minOperationMs) {
           this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
           return false;
@@ -912,6 +916,17 @@ export class JobRunner implements BeforeApplicationShutdown {
         throw new Error(
           `Refusing execution for rendering handler "${handler.jobType}": unknown or missing render budget "${String((handler as unknown as { renderBudget?: unknown }).renderBudget)}"`,
         );
+    }
+  }
+
+  private resolveRenderSettleTimeoutMs(handler: RenderingJobHandler): number {
+    switch (handler.renderBudget) {
+      case JOB_RENDER_BUDGETS.PDF_RENDER:
+        return this.config.renderSettleTimeoutMs;
+      case JOB_RENDER_BUDGETS.EXPORT_SERIALIZE:
+        return 0;
+      default:
+        return 0;
     }
   }
 

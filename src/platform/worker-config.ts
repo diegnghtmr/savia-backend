@@ -26,6 +26,8 @@ export class WorkerConfig {
     public readonly storageUploadTimeoutMs: number = 30_000,
     public readonly pdfRenderTimeoutMs: number = 30_000,
     public readonly exportSerializeTimeoutMs: number = 30_000,
+    public readonly renderSettleTimeoutMs: number = 2_000,
+    public readonly rendererLaunchTimeoutMs: number = 10_000,
   ) {
     if (batchSize > 10) {
       throw new WorkerConfigurationError('batchSize must not exceed 10.');
@@ -82,6 +84,16 @@ export class WorkerConfig {
         'exportSerializeTimeoutMs must be at least 1.',
       );
     }
+    if (renderSettleTimeoutMs < 1) {
+      throw new WorkerConfigurationError(
+        'renderSettleTimeoutMs must be at least 1.',
+      );
+    }
+    if (rendererLaunchTimeoutMs < 1) {
+      throw new WorkerConfigurationError(
+        'rendererLaunchTimeoutMs must be at least 1.',
+      );
+    }
     if (queueTimeoutMs >= terminalReserveMs) {
       throw new WorkerConfigurationError(
         `queueTimeoutMs (${queueTimeoutMs}ms) must be strictly less than terminalReserveMs (${terminalReserveMs}ms).`,
@@ -124,6 +136,16 @@ export class WorkerConfig {
         `exportSerializeTimeoutMs (${exportSerializeTimeoutMs}ms) must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
       );
     }
+    if (renderSettleTimeoutMs >= visibilityMs) {
+      throw new WorkerConfigurationError(
+        `renderSettleTimeoutMs (${renderSettleTimeoutMs}ms) must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
+      );
+    }
+    if (rendererLaunchTimeoutMs >= visibilityMs) {
+      throw new WorkerConfigurationError(
+        `rendererLaunchTimeoutMs (${rendererLaunchTimeoutMs}ms) must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
+      );
+    }
 
     const minDeadlineOverheadMs =
       leaseSafetyMs + terminalReserveMs + 3 * minOperationMs;
@@ -133,11 +155,12 @@ export class WorkerConfig {
       );
     }
 
-    const deliveryIoCapsMs = pdfRenderTimeoutMs + storageUploadTimeoutMs;
+    const deliveryIoCapsMs =
+      pdfRenderTimeoutMs + renderSettleTimeoutMs + storageUploadTimeoutMs;
     const deliveryIoBudgetMs = deliveryIoCapsMs + minDeadlineOverheadMs;
     if (deliveryIoBudgetMs >= visibilityMs) {
       throw new WorkerConfigurationError(
-        `pdfRenderTimeoutMs (${pdfRenderTimeoutMs}ms) + storageUploadTimeoutMs (${storageUploadTimeoutMs}ms) + leaseSafetyMs (${leaseSafetyMs}ms) + terminalReserveMs (${terminalReserveMs}ms) + 3·minOperationMs (3·${minOperationMs}ms = ${3 * minOperationMs}ms) = ${deliveryIoBudgetMs}ms must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
+        `pdfRenderTimeoutMs (${pdfRenderTimeoutMs}ms) + renderSettleTimeoutMs (${renderSettleTimeoutMs}ms) + storageUploadTimeoutMs (${storageUploadTimeoutMs}ms) + leaseSafetyMs (${leaseSafetyMs}ms) + terminalReserveMs (${terminalReserveMs}ms) + 3·minOperationMs (3·${minOperationMs}ms = ${3 * minOperationMs}ms) = ${deliveryIoBudgetMs}ms must be strictly less than visibilityTimeoutSeconds (${visibilityTimeoutSeconds}s = ${visibilityMs}ms).`,
       );
     }
 
@@ -243,6 +266,20 @@ export class WorkerConfig {
       3_600_000,
     );
 
+    const renderSettleTimeoutMs = readPositiveInteger(
+      environment.SAVIA_WORKER_RENDER_SETTLE_TIMEOUT_MS,
+      2_000,
+      'SAVIA_WORKER_RENDER_SETTLE_TIMEOUT_MS',
+      3_600_000,
+    );
+
+    const rendererLaunchTimeoutMs = readPositiveInteger(
+      environment.SAVIA_WORKER_RENDERER_LAUNCH_TIMEOUT_MS,
+      10_000,
+      'SAVIA_WORKER_RENDERER_LAUNCH_TIMEOUT_MS',
+      3_600_000,
+    );
+
     return new WorkerConfig(
       batchSize,
       readPositiveInteger(
@@ -281,6 +318,8 @@ export class WorkerConfig {
       storageUploadTimeoutMs,
       pdfRenderTimeoutMs,
       exportSerializeTimeoutMs,
+      renderSettleTimeoutMs,
+      rendererLaunchTimeoutMs,
     );
   }
 }

@@ -10,10 +10,15 @@ import {
   type RenderingJobHandler,
 } from '../platform/job-handler.port.js';
 import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
+import {
+  PDF_RENDERER,
+  type PdfRenderer,
+} from '../platform/pdf-renderer.port.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { PROBLEM_TYPES } from '../platform/problem-details.js';
 import type { ReportGrid } from './report-engine.js';
 import { computePreparedReportGrid } from './report-computation.js';
+import { renderReportHtml } from './report-html-template.js';
 import {
   parseReportJobPayload,
   ReportJobPayloadError,
@@ -24,7 +29,12 @@ import {
   serializeReport,
   type SerializedReport,
 } from './report-serializers.js';
-import { REPORT_RUN_STATUS, ReportBudgetMissingError } from './report.port.js';
+import {
+  REPORT_PDF_ROW_CAP,
+  REPORT_RUN_STATUS,
+  ReportBudgetMissingError,
+  ReportPdfRowCapExceededError,
+} from './report.port.js';
 
 const REPORT_WRITE_ROLES = {
   OWNER: 'owner',
@@ -78,12 +88,17 @@ export class ReportJobHandler
 {
   public readonly jobType = JOB_WRITER_TYPES.REPORT_RUN;
   public readonly renderBudget = JOB_RENDER_BUDGETS.PDF_RENDER;
+  private readonly clock: () => Date;
 
   public constructor(
     private readonly reports: PostgresReportAdapter,
     @Inject(ARTIFACT_STORAGE) private readonly storage: ArtifactStorage,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    @Inject(PDF_RENDERER) private readonly pdfRenderer: PdfRenderer,
+    clock: (() => Date) | undefined,
+    public readonly renderSettleTimeoutMs: number,
+  ) {
+    this.clock = clock ?? (() => new Date());
+  }
 
   public parsePayload(
     raw: unknown,
@@ -146,6 +161,35 @@ export class ReportJobHandler
     computed: ReportGrid,
     timeoutMs: number,
   ): Promise<SerializedReport> {
+    if (context.payload.format === 'pdf') {
+      if (computed.rows.length > REPORT_PDF_ROW_CAP) {
+        throw new ReportPdfRowCapExceededError(
+          REPORT_PDF_ROW_CAP,
+          computed.rows.length,
+        );
+      }
+      return this.runBounded(
+        timeoutMs,
+        async (signal, remainingMs) => {
+          const html = renderReportHtml(computed, { signal, remainingMs });
+          const effectiveTimeout = Math.min(
+            timeoutMs,
+            Math.max(0, remainingMs()),
+          );
+          const pdfBuffer = await this.pdfRenderer.renderHtmlToPdf(html, {
+            timeoutMs: effectiveTimeout,
+            signal,
+          });
+          return {
+            content: pdfBuffer,
+            contentType: 'application/pdf',
+            extension: 'pdf' as const,
+          };
+        },
+        'Report rendering exceeded the delivery work cap.',
+        this.renderSettleTimeoutMs,
+      );
+    }
     return this.runBounded(
       timeoutMs,
       async (signal, remainingMs) =>
@@ -154,6 +198,7 @@ export class ReportJobHandler
           remainingMs,
         }),
       'Report rendering exceeded the delivery work cap.',
+      0,
     );
   }
 
@@ -188,6 +233,7 @@ export class ReportJobHandler
         };
       },
       'Report storage exceeded the delivery work cap.',
+      0,
     );
   }
 
@@ -195,19 +241,34 @@ export class ReportJobHandler
     timeoutMs: number,
     work: (signal: AbortSignal, remainingMs: () => number) => Promise<T>,
     message: string,
+    settleWaitMs = 0,
   ): Promise<T> {
     const controller = new AbortController();
     let remainingMs = (): number => Number.POSITIVE_INFINITY;
     let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<T>((_, reject) => {
+    let fallbackTimer: NodeJS.Timeout | undefined;
+    let workPromise: Promise<T> | undefined;
+
+    const timeout = new Promise<never>((_, reject) => {
       const deadlineAt = performance.now() + timeoutMs;
       remainingMs = () => deadlineAt - performance.now();
-      timer = setTimeout(() => {
+      timer = setTimeout(async () => {
         controller.abort();
+        if (settleWaitMs > 0 && workPromise !== undefined) {
+          const settled = workPromise.then(
+            () => undefined,
+            () => undefined,
+          );
+          const fallback = new Promise<void>((resolve) => {
+            fallbackTimer = setTimeout(resolve, settleWaitMs);
+          });
+          await Promise.race([settled, fallback]);
+        }
         reject(new DeliveryDeadlineExceededError(message));
       }, timeoutMs);
     });
     void timeout.catch(() => undefined);
+
     try {
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
@@ -215,8 +276,9 @@ export class ReportJobHandler
       if (controller.signal.aborted) {
         throw new DeliveryDeadlineExceededError(message);
       }
+      workPromise = work(controller.signal, remainingMs);
       return await Promise.race([
-        work(controller.signal, remainingMs).catch((error: unknown) => {
+        workPromise.catch((error: unknown) => {
           if (controller.signal.aborted) {
             throw new DeliveryDeadlineExceededError(message, { cause: error });
           }
@@ -226,6 +288,7 @@ export class ReportJobHandler
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
     }
   }
 

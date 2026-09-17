@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import {
   calculateBackoffDelay,
   classifyJobError,
@@ -7,6 +8,8 @@ import {
   isTransientError,
   JOB_ERROR_CLASSIFICATIONS,
 } from '../../src/platform/job-retry-policy.js';
+import { PdfRenderTimeoutError } from '../../src/platform/pdf-renderer.port.js';
+import { ReportPdfRowCapExceededError } from '../../src/reports/report.port.js';
 
 describe('Job retry policy unit spec (S3)', () => {
   describe('Error classification', () => {
@@ -218,6 +221,25 @@ describe('Job retry policy unit spec (S3)', () => {
       expect(classifyJobError({ code: 'INVALID_PAYLOAD' })).toBe(
         JOB_ERROR_CLASSIFICATIONS.PERMANENT,
       );
+      expect(
+        classifyJobError(new ReportPdfRowCapExceededError(2000, 2001)),
+      ).toBe(JOB_ERROR_CLASSIFICATIONS.PERMANENT);
+    });
+
+    it('classifies PDF renderer timeout and delivery-deadline abort as transient', () => {
+      expect(classifyJobError(new PdfRenderTimeoutError())).toBe(
+        JOB_ERROR_CLASSIFICATIONS.TRANSIENT,
+      );
+      expect(
+        classifyJobError(
+          new DeliveryDeadlineExceededError(
+            'PDF render aborted by delivery deadline.',
+          ),
+        ),
+      ).toBe(JOB_ERROR_CLASSIFICATIONS.TRANSIENT);
+    });
+
+    it('classifies invalid_payload objects as permanent', () => {
       expect(isPermanentError({ code: 'invalid_payload' })).toBe(true);
     });
 

@@ -351,10 +351,66 @@ describe('JobRunner unit spec (S2)', () => {
 
     const processed = await runner.runOnce();
     expect(processed).toBe(1);
-    expect(renderTimeouts).toEqual([30_000]);
+    expect(renderTimeouts).toEqual([28_000]);
     expect(storeTimeouts).toEqual([30_000]);
     expect(renderingHandler.render).toHaveBeenCalledOnce();
     expect(renderingHandler.store).toHaveBeenCalledOnce();
+  });
+
+  it('refuses render phase as exhausted when available time minus renderSettleTimeoutMs is less than minOperationMs', async () => {
+    const customConfig = new WorkerConfig(
+      1,
+      300,
+      1000,
+      30,
+      undefined,
+      5000,
+      5,
+      15_000,
+      180_000,
+      60_000,
+      20_000,
+      10_000,
+      2_000,
+      8_000,
+      30_000,
+      2_500,
+      30_000,
+      2_000,
+    );
+    const { runner, probeHandler, mockQueue, mockJobWriter } =
+      createTestHarness({
+        config: customConfig,
+      });
+    const renderingHandler: RenderingJobHandler<
+      { value: number },
+      { result: number }
+    > = {
+      ...probeHandler,
+      renderBudget: JOB_RENDER_BUDGETS.PDF_RENDER,
+      render: vi.fn(async () => ({
+        content: Buffer.from('{}'),
+        contentType: 'application/json',
+      })),
+      store: vi.fn(async () => ({ result: 84 })),
+    };
+    runner.registerHandler(renderingHandler);
+
+    const warnSpy = vi.spyOn(
+      (runner as unknown as { logger: { warn: (...args: unknown[]) => void } })
+        .logger,
+      'warn',
+    );
+
+    const processed = await runner.runOnce();
+    expect(processed).toBe(1);
+    expect(renderingHandler.render).not.toHaveBeenCalled();
+    expect(renderingHandler.store).not.toHaveBeenCalled();
+    expect(mockQueue.ack).not.toHaveBeenCalled();
+    expect(mockJobWriter.completeJob).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('delivery_deadline_exhausted'),
+    );
   });
 
   it('bounds export job render with exportSerializeTimeoutMs rather than pdfRenderTimeoutMs', async () => {

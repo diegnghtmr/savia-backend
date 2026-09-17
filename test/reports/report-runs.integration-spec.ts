@@ -534,6 +534,154 @@ describe('Report runs integration contract and endpoint suite', () => {
     });
   });
 
+  describe('Failure projection privilege boundary catalog pins', () => {
+    it('pins savia_elevated role attributes: rolcanlogin = false, rolbypassrls = false', async () => {
+      const roleRes = await admin.query<{
+        rolcanlogin: boolean;
+        rolbypassrls: boolean;
+      }>(
+        `select rolcanlogin, rolbypassrls from pg_roles where rolname = 'savia_elevated'`,
+      );
+      expect(roleRes.rows).toHaveLength(1);
+      expect(roleRes.rows[0]?.rolcanlogin).toBe(false);
+      expect(roleRes.rows[0]?.rolbypassrls).toBe(false);
+    });
+
+    it('pins project_report_run_job_failure function owner, security definer, search_path, and execute privilege', async () => {
+      const procRes = await admin.query<{
+        owner: string;
+        prosecdef: boolean;
+        proconfig: string[] | null;
+        has_public_exec: boolean;
+        has_elevated_exec: boolean;
+        execute_grantees: string[];
+      }>(
+        `select
+           r.rolname as owner,
+           p.prosecdef,
+           p.proconfig,
+           has_function_privilege('public', p.oid, 'execute') as has_public_exec,
+           has_function_privilege('savia_elevated', p.oid, 'execute') as has_elevated_exec,
+            coalesce(
+              (
+                select array_agg(
+                  (case when a.grantee = 0 then 'PUBLIC' else gr.rolname end)::text
+                  order by case when a.grantee = 0 then 'PUBLIC' else gr.rolname end
+                )
+                from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                left join pg_roles gr on gr.oid = a.grantee
+                where a.privilege_type = 'EXECUTE'
+              ),
+              '{}'::text[]
+            ) as execute_grantees
+         from pg_proc p
+         join pg_roles r on r.oid = p.proowner
+         join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public'
+          and p.proname = 'project_report_run_job_failure'`,
+      );
+      expect(procRes.rows).toHaveLength(1);
+      const row = procRes.rows[0];
+      expect(row?.owner).toBe('savia_elevated');
+      expect(row?.prosecdef).toBe(true);
+      expect(row?.proconfig).toEqual(['search_path=pg_catalog, public']);
+      expect(row?.has_public_exec).toBe(false);
+      expect(row?.has_elevated_exec).toBe(true);
+      expect(row?.execute_grantees).toEqual(['savia_elevated']);
+    });
+
+    it('pins project_report_run_job_failure trigger binding on public.jobs', async () => {
+      const trigRes = await admin.query<{
+        tgname: string;
+        triggerdef: string;
+      }>(
+        `select tgname, pg_get_triggerdef(oid) as triggerdef
+           from pg_trigger
+          where tgrelid = 'public.jobs'::regclass
+            and tgname = 'project_report_run_job_failure'`,
+      );
+      expect(trigRes.rows).toHaveLength(1);
+      const trig = trigRes.rows[0];
+      expect(trig?.tgname).toBe('project_report_run_job_failure');
+      expect(trig?.triggerdef).toContain(
+        'AFTER UPDATE OF status ON public.jobs',
+      );
+      expect(trig?.triggerdef).toContain('project_report_run_job_failure()');
+    });
+
+    it('pins the exact set of savia_elevated policies on report_runs', async () => {
+      const policiesRes = await admin.query<{
+        policyname: string;
+        cmd: string;
+        qual: string;
+        with_check: string | null;
+      }>(
+        `select policyname, cmd, qual, with_check
+           from pg_policies
+          where tablename = 'report_runs'
+            and 'savia_elevated' = any(roles)
+          order by policyname`,
+      );
+      expect(policiesRes.rows).toEqual([
+        {
+          policyname: 'elevated_reads_report_runs',
+          cmd: 'SELECT',
+          qual: 'true',
+          with_check: null,
+        },
+        {
+          policyname: 'elevated_updates_report_runs',
+          cmd: 'UPDATE',
+          qual: 'true',
+          with_check: "(status = 'failed'::text)",
+        },
+      ]);
+    });
+
+    it('pins savia_elevated table and column privileges on report_runs exactly', async () => {
+      const tablePrivRes = await admin.query<{ privilege_type: string }>(
+        `select privilege_type
+           from information_schema.table_privileges
+          where table_name = 'report_runs'
+            and grantee = 'savia_elevated'
+          order by privilege_type`,
+      );
+      expect(tablePrivRes.rows.map((r) => r.privilege_type)).toEqual([
+        'SELECT',
+      ]);
+
+      const colPrivRes = await admin.query<{
+        column_name: string;
+        privilege_type: string;
+      }>(
+        `select column_name, privilege_type
+           from information_schema.column_privileges
+          where table_name = 'report_runs'
+            and grantee = 'savia_elevated'
+            and privilege_type = 'UPDATE'
+          order by column_name, privilege_type`,
+      );
+      expect(colPrivRes.rows).toEqual([
+        { column_name: 'completed_at', privilege_type: 'UPDATE' },
+        { column_name: 'error', privilege_type: 'UPDATE' },
+        { column_name: 'status', privilege_type: 'UPDATE' },
+      ]);
+    });
+
+    it('pins that savia_elevated retains no schema CREATE on public after migration', async () => {
+      const privRes = await admin.query<{
+        has_create: boolean;
+        has_usage: boolean;
+      }>(
+        `select
+           has_schema_privilege('savia_elevated', 'public', 'create') as has_create,
+           has_schema_privilege('savia_elevated', 'public', 'usage') as has_usage`,
+      );
+      expect(privRes.rows[0]?.has_create).toBe(false);
+      expect(privRes.rows[0]?.has_usage).toBe(true);
+    });
+  });
+
   describe('FIX 1: Exchange rate conversion direction', () => {
     it('converts EUR to USD using the available EUR/USD rate', async () => {
       const response = await application.inject({
