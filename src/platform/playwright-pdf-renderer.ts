@@ -99,34 +99,33 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
       return await this.currentGenerationPromise;
     }
     const genId = ++this.generationSequence;
-    let promise: Promise<BrowserGeneration> | undefined;
-    promise = (async () => {
-      try {
-        const browser = await this.browserLauncher();
-        const gen: BrowserGeneration = {
-          id: genId,
-          browser,
-          activeContexts: 0,
-          unhealthy: false,
-        };
-        this.activeGenerations.add(gen);
-        this.currentGeneration = gen;
-        browser.on('disconnected', () => {
-          if (this.currentGeneration === gen) {
-            this.currentGeneration = undefined;
-            this.currentGenerationPromise = undefined;
-          }
-          this.activeGenerations.delete(gen);
-        });
-        return gen;
-      } finally {
-        if (this.currentGenerationPromise === promise) {
+    const promise = (async () => {
+      const browser = await this.browserLauncher();
+      const gen: BrowserGeneration = {
+        id: genId,
+        browser,
+        activeContexts: 0,
+        unhealthy: false,
+      };
+      this.activeGenerations.add(gen);
+      this.currentGeneration = gen;
+      browser.on('disconnected', () => {
+        if (this.currentGeneration === gen) {
+          this.currentGeneration = undefined;
           this.currentGenerationPromise = undefined;
         }
-      }
+        this.activeGenerations.delete(gen);
+      });
+      return gen;
     })();
     this.currentGenerationPromise = promise;
-    return await promise;
+    try {
+      return await promise;
+    } finally {
+      if (this.currentGenerationPromise === promise) {
+        this.currentGenerationPromise = undefined;
+      }
+    }
   }
 
   public hasOpenBrowser(): boolean {
