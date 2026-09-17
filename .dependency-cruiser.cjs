@@ -141,6 +141,18 @@ module.exports = {
         path: '^src/(main\\.ts|app\\.module\\.ts|platform/platform\\.module\\.ts|.+/.*controller\\.ts)',
       },
     },
+    {
+      name: 'no-http-to-playwright',
+      severity: 'error',
+      comment:
+        'HTTP application roots and HTTP modules must not import playwright-core; it belongs to the worker only',
+      from: {
+        path: '^src/(main\\.ts|app\\.module\\.ts|platform/platform\\.module\\.ts|.+/.*controller\\.ts)',
+      },
+      to: {
+        path: 'playwright-core',
+      },
+    },
   ],
   // NOTE: `pnpm architecture:check` cruises `src` only. test/, scripts/ and
   // supabase/ are NOT governed by these rules -- do not mistake a green gate for

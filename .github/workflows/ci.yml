@@ -308,6 +308,12 @@ jobs:
       - name: report runs integration
         shell: bash
         run: pnpm test:integration:report-runs
+      - name: install Playwright Chromium for PDF renderer
+        shell: bash
+        run: pnpm exec playwright-core install --with-deps chromium
+      - name: PDF renderer integration
+        shell: bash
+        run: pnpm test:integration:pdf-renderer
       - name: report runs schema integration
         shell: bash
         run: pnpm test:integration:report-runs-schema

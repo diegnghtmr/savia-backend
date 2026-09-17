@@ -100,6 +100,7 @@
     "test:integration:cli-device": "bash scripts/run-disposable-database-suite.sh test/cli-device/cli-device.integration-spec.ts",
     "test:integration:cli-token": "bash scripts/run-disposable-database-suite.sh test/cli-device/cli-device-token.integration-spec.ts",
     "test:integration:cli-scope": "bash scripts/run-disposable-database-suite.sh test/cli-device/cli-scope.integration-spec.ts",
+    "test:integration:pdf-renderer": "vitest run --config vitest.integration.config.ts test/reports/pdf-renderer.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",
     "build": "tsc -p tsconfig.build.json",
@@ -119,6 +120,7 @@
     "jose": "6.2.3",
     "pdfkit": "0.20.2",
     "pg": "8.22.0",
+    "playwright-core": "1.61.1",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2"
   },
