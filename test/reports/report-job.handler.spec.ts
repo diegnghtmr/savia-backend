@@ -11,6 +11,10 @@ import { PostgresReportAdapter } from '../../src/reports/postgres-report.adapter
 import type { ReportGrid } from '../../src/reports/report-engine.js';
 import * as serializers from '../../src/reports/report-serializers.js';
 import { ReportPdfRowCapExceededError } from '../../src/reports/report.port.js';
+import type {
+  PdfRenderer,
+  PdfRenderOptions,
+} from '../../src/platform/pdf-renderer.port.js';
 import { FakePdfRenderer } from '../support/fake-pdf-renderer.js';
 
 const payload: ReportJobPayload = {
@@ -96,30 +100,64 @@ function createStorage(): ArtifactStorage & {
   };
 }
 
-function createHandler(
+class GatedSettleFakeRenderer implements PdfRenderer {
+  public closeStarted = false;
+  private resolveGate: (() => void) | undefined;
+  private readonly gatePromise: Promise<void>;
+
+  public constructor() {
+    this.gatePromise = new Promise<void>((resolve) => {
+      this.resolveGate = resolve;
+    });
+  }
+
+  public releaseGate(): void {
+    this.resolveGate?.();
+  }
+
+  public async renderHtmlToPdf(
+    _html: string,
+    options: PdfRenderOptions,
+  ): Promise<Buffer> {
+    return new Promise<Buffer>((_resolve, reject) => {
+      const onAbort = (): void => {
+        this.closeStarted = true;
+        void this.gatePromise.then(() => {
+          reject(
+            new DeliveryDeadlineExceededError(
+              'PDF render aborted by delivery deadline.',
+            ),
+          );
+        });
+      };
+      if (options.signal?.aborted) {
+        onAbort();
+        return;
+      }
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+}
+
+function createHandler<R extends PdfRenderer = FakePdfRenderer>(
   store: ReturnType<typeof createStore> = createStore(),
   storage: ReturnType<typeof createStorage> = createStorage(),
   clock?: () => Date,
-  pdfRenderer: FakePdfRenderer = new FakePdfRenderer(),
+  pdfRenderer: R = new FakePdfRenderer() as unknown as R,
+  renderSettleTimeoutMs = 2_000,
 ): {
   handler: ReportJobHandler;
-  pdfRenderer: FakePdfRenderer;
+  pdfRenderer: R;
   store: ReturnType<typeof createStore>;
   storage: ReturnType<typeof createStorage>;
 } {
-  const handler =
-    clock === undefined
-      ? new ReportJobHandler(
-          store as unknown as PostgresReportAdapter,
-          storage,
-          pdfRenderer,
-        )
-      : new ReportJobHandler(
-          store as unknown as PostgresReportAdapter,
-          storage,
-          pdfRenderer,
-          clock,
-        );
+  const handler = new ReportJobHandler(
+    store as unknown as PostgresReportAdapter,
+    storage,
+    pdfRenderer,
+    clock ?? (() => new Date()),
+    renderSettleTimeoutMs,
+  );
   return { handler, pdfRenderer, store, storage };
 }
 
@@ -335,6 +373,75 @@ describe('ReportJobHandler', () => {
     const elapsed = performance.now() - start;
     // Must reject promptly at timeout (20ms), never waiting for the 2,000ms render settle tail
     expect(elapsed).toBeLessThan(100);
+  });
+
+  it('handler waits for renderer settlement before rejecting with DeliveryDeadlineExceededError', async () => {
+    const fakeRenderer = new GatedSettleFakeRenderer();
+    const { handler } = createHandler(
+      createStore(),
+      createStorage(),
+      undefined,
+      fakeRenderer,
+      1_000,
+    );
+
+    const renderPromise = handler.render(pdfContext, emptyGrid, 20);
+    let settled = false;
+    renderPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await vi.waitFor(() => {
+      expect(fakeRenderer.closeStarted).toBe(true);
+    });
+    // Yield a tick: if runBounded rejected immediately without waiting, settled would be true here
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(settled).toBe(false);
+
+    fakeRenderer.releaseGate();
+    await expect(renderPromise).rejects.toBeInstanceOf(
+      DeliveryDeadlineExceededError,
+    );
+    expect(settled).toBe(true);
+  });
+
+  it('handler rejects with DeliveryDeadlineExceededError after the settle cap if gate is never released', async () => {
+    const fakeRenderer = new GatedSettleFakeRenderer();
+    const { handler } = createHandler(
+      createStore(),
+      createStorage(),
+      undefined,
+      fakeRenderer,
+      200,
+    );
+
+    const renderPromise = handler.render(pdfContext, emptyGrid, 20);
+    let settled = false;
+    renderPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await vi.waitFor(() => {
+      expect(fakeRenderer.closeStarted).toBe(true);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+
+    // Wait past the 40ms settle cap
+    await expect(renderPromise).rejects.toBeInstanceOf(
+      DeliveryDeadlineExceededError,
+    );
+    expect(settled).toBe(true);
   });
 
   it('refuses persist when the actor no longer has a write role', async () => {
