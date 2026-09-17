@@ -2301,6 +2301,52 @@ components:
         createdAt:
           $ref: '#/components/schemas/DateTime'
       additionalProperties: false
+    McpGrant:
+      type: object
+      required: [id, clientName, scopes, status, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        clientName: { type: string }
+        scopes: { type: array, items: { type: string } }
+        workspaceIds:
+          { type: array, items: { $ref: '#/components/schemas/Uuid' } }
+        accountIds:
+          { type: array, items: { $ref: '#/components/schemas/Uuid' } }
+        maxWriteAmount:
+          anyOf: [{ $ref: '#/components/schemas/Money' }, { type: 'null' }]
+        status: { type: string, enum: [active, revoked, expired] }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+      additionalProperties: false
+    CreateMcpGrantRequest:
+      type: object
+      required: [clientName, scopes, workspaceIds]
+      properties:
+        clientName: { type: string, minLength: 1, maxLength: 120 }
+        scopes:
+          {
+            type: array,
+            items: { type: string },
+            minItems: 1,
+            uniqueItems: true,
+          }
+        workspaceIds:
+          {
+            type: array,
+            items: { $ref: '#/components/schemas/Uuid' },
+            minItems: 1,
+            uniqueItems: true,
+          }
+        accountIds:
+          {
+            type: array,
+            items: { $ref: '#/components/schemas/Uuid' },
+            uniqueItems: true,
+          }
+        maxWriteAmount:
+          anyOf: [{ $ref: '#/components/schemas/Money' }, { type: 'null' }]
+        expiresAt: { type: [string, 'null'], format: date-time }
+      additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
 paths:
@@ -7593,3 +7639,85 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/mcp/grants:
+    get:
+      operationId: listMcpGrants
+      summary: List MCP authorization grants
+      tags: [MCP Grants]
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: MCP grant page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pageInfo]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: '#/components/schemas/McpGrant' },
+                    }
+                  pageInfo: { $ref: '#/components/schemas/PageInfo' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createMcpGrant
+      summary: Create restricted MCP grant
+      tags: [MCP Grants]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, format: uuid, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          {
+            application/json:
+              {
+                schema: { $ref: '#/components/schemas/CreateMcpGrantRequest' },
+              },
+          }
+      responses:
+        '201':
+          description: MCP grant created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/McpGrant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /v1/mcp/grants/{grantId}:
+    parameters:
+      - {
+          name: grantId,
+          in: path,
+          required: true,
+          schema: { $ref: '#/components/schemas/Uuid' },
+        }
+    delete:
+      operationId: revokeMcpGrant
+      summary: Revoke MCP grant
+      tags: [MCP Grants]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, format: uuid, maxLength: 255 }
+      responses:
+        '204': { description: MCP grant revoked. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }

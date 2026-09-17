@@ -160,6 +160,9 @@ describe('health endpoint', () => {
       'POST /v1/receipts',
       'GET /v1/receipts/:receiptId',
       'POST /v1/receipts/:receiptId/confirm',
+      'GET /v1/mcp/grants',
+      'POST /v1/mcp/grants',
+      'DELETE /v1/mcp/grants/:grantId',
     ]);
 
     await app.close();

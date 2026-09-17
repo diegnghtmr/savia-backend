@@ -79,6 +79,7 @@ case "$spec" in
   test/approvals/approvals.integration-spec.ts) ;;
   test/notifications/notifications.integration-spec.ts) ;;
   test/receipts/receipts.integration-spec.ts) ;;
+  test/mcp/mcp-grants.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
 

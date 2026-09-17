@@ -9,6 +9,7 @@ import {
   type StoredResponse,
 } from '../../src/identity/idempotency.port.js';
 import {
+  canonicalJson,
   computeRequestFingerprint,
   IdempotencyService,
   type IdempotencyTransaction,
@@ -42,6 +43,26 @@ function createMockStore(
 }
 
 describe('computeRequestFingerprint', () => {
+  it('preserves canonical JSON bytes for ordinary JSON values', () => {
+    expect(
+      canonicalJson({
+        z: null,
+        nested: { b: 2, a: 1 },
+        items: [true, 'text', { d: 4, c: 3 }],
+        omitted: undefined,
+      }),
+    ).toBe(
+      '{"items":[true,"text",{"c":3,"d":4}],"nested":{"a":1,"b":2},"z":null}',
+    );
+  });
+
+  it.each([new Date('2026-01-01T00:00:00.000Z'), new Map(), new Set()])(
+    'rejects non-plain object %s instead of canonicalizing it as {}',
+    (value) => {
+      expect(() => canonicalJson(value)).toThrow(TypeError);
+    },
+  );
+
   it('is field-order independent', () => {
     const payloadA = { name: 'Acme', baseCurrency: 'USD', kind: 'shared' };
     const payloadB = { kind: 'shared', name: 'Acme', baseCurrency: 'USD' };

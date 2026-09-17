@@ -24,6 +24,9 @@ function canonicalizeValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(canonicalizeValue);
   }
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new TypeError('Idempotency payloads must contain only plain objects');
+  }
   const obj = value as Record<string, unknown>;
   const sortedKeys = Object.keys(obj).sort();
   const result: Record<string, unknown> = {};

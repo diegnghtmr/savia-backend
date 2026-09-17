@@ -401,6 +401,21 @@
       "operationId": "confirmReceipt",
       "method": "POST",
       "path": "/v1/receipts/{receiptId}/confirm"
+    },
+    {
+      "operationId": "listMcpGrants",
+      "method": "GET",
+      "path": "/v1/mcp/grants"
+    },
+    {
+      "operationId": "createMcpGrant",
+      "method": "POST",
+      "path": "/v1/mcp/grants"
+    },
+    {
+      "operationId": "revokeMcpGrant",
+      "method": "DELETE",
+      "path": "/v1/mcp/grants/{grantId}"
     }
   ]
 }
