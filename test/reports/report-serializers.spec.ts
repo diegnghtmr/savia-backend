@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import {
@@ -6,6 +8,26 @@ import {
 } from '../../src/reports/report.port.js';
 import type { ReportGrid } from '../../src/reports/report-engine.js';
 import { serializeReport } from '../../src/reports/report-serializers.js';
+
+function getSourceFiles(dir: string): string[] {
+  const entries = readdirSync(dir, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const fullPath = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...getSourceFiles(fullPath));
+    } else if (
+      entry.isFile() &&
+      (entry.name.endsWith('.ts') ||
+        entry.name.endsWith('.js') ||
+        entry.name.endsWith('.mts') ||
+        entry.name.endsWith('.cjs'))
+    ) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
 
 const grid: ReportGrid = {
   dimensions: [REPORT_DIMENSION.PAYEE],
@@ -88,10 +110,9 @@ describe('serializeReport', () => {
     );
   });
 
-  it('renders a PDF with the PDF magic bytes', async () => {
-    const result = await serializeReport('pdf', grid);
-    expect(result.contentType).toBe('application/pdf');
-    expect(result.content.subarray(0, 5).toString()).toBe('%PDF-');
+  it('accepts only json and csv formats at the type level', async () => {
+    // @ts-expect-error 'pdf' format is no longer accepted by serializeReport
+    await serializeReport('pdf', grid);
   });
 
   it('produces byte-identical output for a pinned multi-row fixture in JSON and CSV', async () => {
@@ -160,7 +181,7 @@ describe('serializeReport', () => {
     expect(performance.now() - started).toBeLessThan(2_000);
   }, 10_000);
 
-  it('serializes normal-size grids under a normal cap for JSON, CSV, and PDF', async () => {
+  it('serializes normal-size grids under a normal cap for JSON and CSV', async () => {
     const options = { remainingMs: () => 5_000 };
     const jsonResult = await serializeReport('json', grid, options);
     expect(jsonResult.contentType).toBe('application/json');
@@ -171,20 +192,46 @@ describe('serializeReport', () => {
     const csvResult = await serializeReport('csv', grid, options);
     expect(csvResult.contentType).toBe('text/csv');
     expect(csvResult.content.toString('utf8')).toContain('Payee');
-
-    const pdfResult = await serializeReport('pdf', grid, options);
-    expect(pdfResult.contentType).toBe('application/pdf');
-    expect(pdfResult.content.subarray(0, 5).toString('utf8')).toBe('%PDF-');
   });
 
-  it('aborts a large PDF when the remaining budget is exhausted', async () => {
-    const large = largeGrid(10_000);
-    const started = performance.now();
-    await expect(
-      serializeReport('pdf', large, {
-        remainingMs: () => 1 - (performance.now() - started),
-      }),
-    ).rejects.toBeInstanceOf(DeliveryDeadlineExceededError);
-    expect(performance.now() - started).toBeLessThan(2_000);
-  }, 10_000);
+  it('manifest scan: asserts package.json has neither pdfkit nor @types/pdfkit in any dependency map', () => {
+    const rootDir = process.cwd();
+    const packageJsonPath = resolve(rootDir, 'package.json');
+    const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
+
+    const depMaps = [
+      pkg.dependencies ?? {},
+      pkg.devDependencies ?? {},
+      pkg.peerDependencies ?? {},
+      pkg.optionalDependencies ?? {},
+    ];
+
+    for (const map of depMaps) {
+      expect(map).not.toHaveProperty('pdfkit');
+      expect(map).not.toHaveProperty('@types/pdfkit');
+    }
+  });
+
+  it('source scan: asserts no file under src/ imports pdfkit', () => {
+    const rootDir = process.cwd();
+    const srcDir = resolve(rootDir, 'src');
+    const files = getSourceFiles(srcDir);
+    const pdfkitImportRegex =
+      /\bfrom\s+['"]pdfkit(?:\/.*)?['"]|\bimport\s+['"]pdfkit(?:\/.*)?['"]|\brequire\(['"]pdfkit(?:\/.*)?['"]\)|\bimport\(['"]pdfkit(?:\/.*)?['"]\)/;
+    const violations: string[] = [];
+
+    for (const file of files) {
+      const content = readFileSync(file, 'utf8');
+      if (pdfkitImportRegex.test(content)) {
+        violations.push(file);
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
 });

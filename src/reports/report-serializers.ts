@@ -1,4 +1,3 @@
-import PDFDocument from 'pdfkit';
 import { escapeCsvField } from '../platform/csv.js';
 import { DeliveryDeadlineExceededError } from '../platform/delivery-deadline.js';
 import type { ReportGrid } from './report-engine.js';
@@ -33,13 +32,6 @@ const JSON_ROW_BATCH_SIZE = 250;
 
 function headers(grid: ReportGrid): readonly string[] {
   return [...grid.dimensions, ...grid.measures];
-}
-
-function values(grid: ReportGrid): readonly (string | null)[][] {
-  return grid.rows.map((row) => [
-    ...row.key,
-    ...row.cells.map((cell) => cell.value),
-  ]);
 }
 
 function serializeJson(
@@ -97,57 +89,8 @@ function serializeCsv(
   return Buffer.from(lines.join('\n'));
 }
 
-async function serializePdf(
-  grid: ReportGrid,
-  options?: SerializeReportOptions,
-): Promise<Buffer> {
-  const document = new PDFDocument({ margin: 36 });
-  const chunks: Buffer[] = [];
-  let settled = false;
-  const done = new Promise<Buffer>((resolve, reject) => {
-    document.on('data', (chunk: Buffer) => {
-      chunks.push(chunk);
-    });
-    document.on('end', () => {
-      if (!settled) {
-        settled = true;
-        resolve(Buffer.concat(chunks));
-      }
-    });
-    document.on('error', (error: Error) => {
-      if (!settled) {
-        settled = true;
-        reject(error);
-      }
-    });
-  });
-  const abandon = (): void => {
-    document.removeAllListeners();
-    // pdfkit has no abort hook: a started text() or end() flush keeps running.
-  };
-  try {
-    throwIfRenderBudgetExhausted(options);
-    const columns = headers(grid);
-    document.fontSize(10).text(columns.join(' | '));
-    const rows = values(grid);
-    for (let index = 0; index < rows.length; index += 1) {
-      throwIfRenderBudgetExhausted(options);
-      const row = rows[index];
-      if (row === undefined) {
-        continue;
-      }
-      document.moveDown(0.25).text(row.map((item) => item ?? '').join(' | '));
-    }
-    document.end();
-    return await done;
-  } catch (error) {
-    abandon();
-    throw error;
-  }
-}
-
 export async function serializeReport(
-  format: 'json' | 'csv' | 'pdf',
+  format: 'json' | 'csv',
   grid: ReportGrid,
   options?: SerializeReportOptions,
 ): Promise<SerializedReport> {
@@ -158,16 +101,9 @@ export async function serializeReport(
       extension: 'json',
     };
   }
-  if (format === 'csv') {
-    return {
-      content: serializeCsv(grid, options),
-      contentType: 'text/csv',
-      extension: 'csv',
-    };
-  }
   return {
-    content: await serializePdf(grid, options),
-    contentType: 'application/pdf',
-    extension: 'pdf',
+    content: serializeCsv(grid, options),
+    contentType: 'text/csv',
+    extension: 'csv',
   };
 }

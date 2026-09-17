@@ -161,7 +161,8 @@ export class ReportJobHandler
     computed: ReportGrid,
     timeoutMs: number,
   ): Promise<SerializedReport> {
-    if (context.payload.format === 'pdf') {
+    const { format } = context.payload;
+    if (format === 'pdf') {
       if (computed.rows.length > REPORT_PDF_ROW_CAP) {
         throw new ReportPdfRowCapExceededError(
           REPORT_PDF_ROW_CAP,
@@ -193,7 +194,7 @@ export class ReportJobHandler
     return this.runBounded(
       timeoutMs,
       async (signal, remainingMs) =>
-        serializeReport(context.payload.format, computed, {
+        serializeReport(format, computed, {
           signal,
           remainingMs,
         }),
