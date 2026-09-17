@@ -116,7 +116,7 @@ describe('PDF renderer integration (no DB)', () => {
   let renderer: PlaywrightPdfRenderer;
 
   beforeAll(() => {
-    renderer = new PlaywrightPdfRenderer();
+    renderer = new PlaywrightPdfRenderer(2_000);
   });
 
   afterAll(async () => {
@@ -173,7 +173,7 @@ describe('PDF renderer integration (no DB)', () => {
   });
 
   it('throws DeliveryDeadlineExceededError for an already-exhausted budget without launching', async () => {
-    const isolated = new PlaywrightPdfRenderer();
+    const isolated = new PlaywrightPdfRenderer(2_000);
     try {
       await expect(
         isolated.renderHtmlToPdf('<html></html>', { timeoutMs: 0 }),
@@ -250,6 +250,7 @@ describe('PDF renderer integration (no DB)', () => {
     const controller = new AbortController();
     let abortTime = 0;
     const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 2_000,
       observer: (_renderId, phase) => {
         phases.push(phase);
         if (phase === RENDER_PHASES.SET_CONTENT_STARTED) {
@@ -292,6 +293,7 @@ describe('PDF renderer integration (no DB)', () => {
   it('attributes render phases to the correct per-render id for overlapping renders', async () => {
     const events: Array<{ renderId: string; phase: RenderPhase }> = [];
     const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 2_000,
       observer: (renderId, phase) => {
         events.push({ renderId, phase });
       },
@@ -346,6 +348,8 @@ describe('PDF renderer integration (no DB)', () => {
       {} as PostgresReportAdapter,
       {} as ArtifactStorage,
       renderer,
+      undefined,
+      2_000,
     );
     const grid = makeGrid(2000);
     const jobContext = {

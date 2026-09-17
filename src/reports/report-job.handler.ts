@@ -88,14 +88,17 @@ export class ReportJobHandler
 {
   public readonly jobType = JOB_WRITER_TYPES.REPORT_RUN;
   public readonly renderBudget = JOB_RENDER_BUDGETS.PDF_RENDER;
+  private readonly clock: () => Date;
 
   public constructor(
     private readonly reports: PostgresReportAdapter,
     @Inject(ARTIFACT_STORAGE) private readonly storage: ArtifactStorage,
     @Inject(PDF_RENDERER) private readonly pdfRenderer: PdfRenderer,
-    private readonly clock: () => Date = () => new Date(),
-    private readonly renderSettleTimeoutMs: number = 2_000,
-  ) {}
+    clock: (() => Date) | undefined,
+    public readonly renderSettleTimeoutMs: number,
+  ) {
+    this.clock = clock ?? (() => new Date());
+  }
 
   public parsePayload(
     raw: unknown,

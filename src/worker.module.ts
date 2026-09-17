@@ -35,7 +35,12 @@ import { ExportWorkerModule } from './exports/export-worker.module.js';
     },
     JobRunner,
   ],
-  exports: [WorkerPlatformModule, JOB_WRITER, JobRunner],
+  exports: [
+    WorkerPlatformModule,
+    JOB_WRITER,
+    JobRunner,
+    ReportWorkerModule,
+  ],
 })
 export class WorkerModule {
   public constructor(private readonly runner: JobRunner) {}

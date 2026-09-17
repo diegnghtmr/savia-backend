@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 import { DeliveryDeadlineExceededError } from './delivery-deadline.js';
@@ -24,7 +24,8 @@ export type RenderPhaseObserver = (
 ) => void;
 
 export interface PlaywrightPdfRendererOptions {
-  readonly renderSettleTimeoutMs?: number;
+  readonly renderSettleTimeoutMs: number;
+  readonly pdfRenderTimeoutMs?: number;
   readonly observer?: RenderPhaseObserver;
   readonly browserLauncher?: () => Promise<Browser>;
   readonly logger?: Logger;
@@ -37,31 +38,39 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
   private closing = false;
   private renderSequence = 0;
   public lastAbortedRequestCount = 0;
-  private readonly renderSettleTimeoutMs: number;
+  public readonly renderSettleTimeoutMs: number;
+  public readonly pdfRenderTimeoutMs: number;
   private readonly observer?: RenderPhaseObserver;
   private readonly browserLauncher: () => Promise<Browser>;
   private readonly logger: Logger;
 
   public constructor(
-    @Optional()
-    optionsOrTimeout?: number | PlaywrightPdfRendererOptions,
-    @Optional()
+    optionsOrTimeout: number | PlaywrightPdfRendererOptions,
     observer?: RenderPhaseObserver,
   ) {
     if (typeof optionsOrTimeout === 'number') {
       this.renderSettleTimeoutMs = optionsOrTimeout;
+      this.pdfRenderTimeoutMs = 30_000;
       this.observer = observer;
       this.browserLauncher = () => chromium.launch({ headless: true });
       this.logger = new Logger(PlaywrightPdfRenderer.name);
     } else {
-      this.renderSettleTimeoutMs =
-        optionsOrTimeout?.renderSettleTimeoutMs ?? 2_000;
-      this.observer = optionsOrTimeout?.observer ?? observer;
+      if (
+        optionsOrTimeout == null ||
+        typeof optionsOrTimeout.renderSettleTimeoutMs !== 'number'
+      ) {
+        throw new TypeError(
+          'renderSettleTimeoutMs is a required constructor input.',
+        );
+      }
+      this.renderSettleTimeoutMs = optionsOrTimeout.renderSettleTimeoutMs;
+      this.pdfRenderTimeoutMs = optionsOrTimeout.pdfRenderTimeoutMs ?? 30_000;
+      this.observer = optionsOrTimeout.observer ?? observer;
       this.browserLauncher =
-        optionsOrTimeout?.browserLauncher ??
+        optionsOrTimeout.browserLauncher ??
         (() => chromium.launch({ headless: true }));
       this.logger =
-        optionsOrTimeout?.logger ?? new Logger(PlaywrightPdfRenderer.name);
+        optionsOrTimeout.logger ?? new Logger(PlaywrightPdfRenderer.name);
     }
   }
 
