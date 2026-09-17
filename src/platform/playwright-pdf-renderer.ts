@@ -7,6 +7,18 @@ import { PdfRenderTimeoutError } from './pdf-renderer.port.js';
 
 export { PdfRenderTimeoutError } from './pdf-renderer.port.js';
 
+export class PdfRenderAdmissionError extends Error {
+  public constructor(
+    message = 'Failed to acquire a healthy browser generation for PDF rendering.',
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = 'PdfRenderAdmissionError';
+  }
+}
+
+export const MAX_ADMISSION_RETRIES = 5;
+
 export const CONTEXT_CLOSE_CAP_MS = 2_000;
 
 export const RENDER_PHASES = {
@@ -172,12 +184,42 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
   ): Promise<Buffer> {
     const invocationId = `render-${++this.renderSequence}`;
     const correlationId = options.correlationId ?? options.renderId;
+    const startMs = performance.now();
     this.throwIfBudgetExhausted(options);
 
-    const generation = await this.getHealthyGeneration();
-    this.throwIfBudgetExhausted(options);
+    let generation: BrowserGeneration;
+    let attempts = 0;
+    while (true) {
+      if (this.closing) {
+        throw new DeliveryDeadlineExceededError('Renderer is closing.');
+      }
+      generation = await this.getHealthyGeneration();
+      if (this.closing) {
+        throw new DeliveryDeadlineExceededError('Renderer is closing.');
+      }
 
-    generation.activeContexts += 1;
+      // In the same synchronous step (no await between check and increment):
+      if (!generation.unhealthy && generation === this.currentGeneration) {
+        generation.activeContexts += 1;
+        break;
+      }
+
+      attempts += 1;
+      if (options.signal?.aborted) {
+        throw new DeliveryDeadlineExceededError(
+          'PDF render aborted: budget exhausted before start.',
+        );
+      }
+      if (performance.now() - startMs >= options.timeoutMs) {
+        throw new PdfRenderTimeoutError();
+      }
+      if (attempts >= MAX_ADMISSION_RETRIES) {
+        throw new PdfRenderAdmissionError(
+          `Failed to acquire a healthy browser generation after ${attempts} attempts.`,
+        );
+      }
+    }
+
     let context: BrowserContext;
     try {
       context = await generation.browser.newContext({
@@ -212,8 +254,6 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
   ): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     let didTimeout = false;
-    let didReject = false;
-    let closeError: unknown;
     const timeoutPromise = new Promise<void>((resolve) => {
       timer = setTimeout(() => {
         didTimeout = true;
@@ -223,17 +263,13 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     try {
       await Promise.race([
         context.close().catch((err: unknown) => {
-          didReject = true;
-          closeError = err;
+          const errorClassName = (err as object)?.constructor?.name || 'Error';
+          this.quarantineGeneration(generation, errorClassName);
         }),
         timeoutPromise,
       ]);
       if (didTimeout) {
         this.quarantineGeneration(generation, 'TimeoutError');
-      } else if (didReject) {
-        const errorClassName =
-          (closeError as object)?.constructor?.name || 'Error';
-        this.quarantineGeneration(generation, errorClassName);
       }
     } finally {
       if (timer !== undefined) {

@@ -968,4 +968,80 @@ describe('PDF renderer integration (no DB)', () => {
       await localRenderer.onModuleDestroy();
     }
   });
+
+  it('revalidates generation admission after await: render A close rejects and render B starts immediately -> gen 1 gets 1 context, B runs on gen 2', async () => {
+    let launchCount = 0;
+    let triggerCloseReject!: () => void;
+    const closePromise = new Promise<void>((_, reject) => {
+      triggerCloseReject = () =>
+        reject(new Error('Forced context close rejection for render A'));
+    });
+
+    let renderACloseStartedResolve!: () => void;
+    const renderACloseStarted = new Promise<void>((resolve) => {
+      renderACloseStartedResolve = resolve;
+    });
+
+    const fakeBrowser1: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => ({
+        browser: () => fakeBrowser1,
+        route: vi.fn(async () => {}),
+        newPage: vi.fn(async () => ({
+          setContent: vi.fn(async () => {}),
+          pdf: vi.fn(async () => Buffer.from('%PDF-1.4 renderA')),
+        })),
+        close: vi.fn(() => {
+          renderACloseStartedResolve();
+          return closePromise;
+        }),
+      })),
+    } as unknown as Browser;
+
+    const fakeBrowser2: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => ({
+        browser: () => fakeBrowser2,
+        route: vi.fn(async () => {}),
+        newPage: vi.fn(async () => ({
+          setContent: vi.fn(async () => {}),
+          pdf: vi.fn(async () => Buffer.from('%PDF-1.4 renderB')),
+        })),
+        close: vi.fn(async () => {}),
+      })),
+    } as unknown as Browser;
+
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 100,
+      browserLauncher: async () => {
+        launchCount += 1;
+        return launchCount === 1 ? fakeBrowser1 : fakeBrowser2;
+      },
+    });
+
+    try {
+      const promiseA = localRenderer.renderHtmlToPdf('<p>A</p>', {
+        timeoutMs: 5_000,
+      });
+      await renderACloseStarted;
+
+      // Reject render A's context close and immediately start render B before the rejection microtask drains
+      triggerCloseReject();
+      const promiseB = localRenderer.renderHtmlToPdf('<p>B</p>', {
+        timeoutMs: 5_000,
+      });
+
+      const [pdfA, pdfB] = await Promise.all([promiseA, promiseB]);
+
+      expect(pdfA.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(pdfB.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(fakeBrowser1.newContext).toHaveBeenCalledTimes(1);
+      expect(fakeBrowser2.newContext).toHaveBeenCalledTimes(1);
+      expect(launchCount).toBe(2);
+    } finally {
+      await localRenderer.onModuleDestroy();
+    }
+  });
 });
