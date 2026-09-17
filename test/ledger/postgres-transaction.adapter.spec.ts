@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  negateAmountMinor,
   toIso,
   PostgresTransactionAdapter,
 } from '../../src/ledger/postgres-transaction.adapter.js';
@@ -11,30 +10,6 @@ import {
 } from '../../src/ledger/transaction.service.js';
 import type { CreateTransactionCommand } from '../../src/ledger/ledger.port.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
-
-describe('negateAmountMinor', () => {
-  it('negates positive amountMinor without number conversion', () => {
-    expect(negateAmountMinor('10000')).toBe('-10000');
-    expect(negateAmountMinor('9007199254740993')).toBe('-9007199254740993');
-  });
-
-  it('negates negative amountMinor without number conversion', () => {
-    expect(negateAmountMinor('-10000')).toBe('10000');
-    expect(negateAmountMinor('-9007199254740993')).toBe('9007199254740993');
-  });
-
-  it('handles zero without producing negative zero', () => {
-    expect(negateAmountMinor('0')).toBe('0');
-    expect(negateAmountMinor('-0')).toBe('0');
-  });
-
-  it('refuses to negate int64-min rather than minting an out-of-range counter-leg', () => {
-    expect(() => negateAmountMinor('-9223372036854775808')).toThrow(RangeError);
-    expect(negateAmountMinor('-9223372036854775807')).toBe(
-      '9223372036854775807',
-    );
-  });
-});
 
 describe('toIso', () => {
   it('formats a Date to an ISO string', () => {

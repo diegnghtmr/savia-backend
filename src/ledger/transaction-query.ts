@@ -128,7 +128,7 @@ export function createTransactionListQuery(
 
   let query: string | undefined;
   if (input.queryParam !== undefined) {
-    if (input.queryParam.length > 200) {
+    if ([...input.queryParam].length > 200) {
       violations.push(
         Object.freeze({
           field: 'query',
