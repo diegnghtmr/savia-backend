@@ -10,6 +10,9 @@ import {
   REPORT_DIMENSION,
   REPORT_MEASURE,
 } from '../../src/reports/report.port.js';
+import type { ArtifactStorage } from '../../src/platform/artifact-storage.port.js';
+import type { PostgresReportAdapter } from '../../src/reports/postgres-report.adapter.js';
+import { ReportJobHandler } from '../../src/reports/report-job.handler.js';
 
 function makeGrid(rowCount: number): ReportGrid {
   const rows = Array.from({ length: rowCount }, (_, i) => ({
@@ -220,5 +223,91 @@ describe('PDF renderer integration (no DB)', () => {
     console.log(
       `2000-row render completed in ${String(Math.round(elapsed))}ms`,
     );
+  });
+
+  it('closes browser context before renderer hard timeout rejects', async () => {
+    const html = renderReportHtml(makeGrid(500));
+
+    let error: unknown;
+    try {
+      await renderer.renderHtmlToPdf(html, { timeoutMs: 1 });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(PdfRenderTimeoutError);
+    expect(renderer.openContextCount()).toBe(0);
+  });
+
+  it('closes browser context before rejecting an abort that lands during setContent', async () => {
+    const controller = new AbortController();
+    const rows = Array.from(
+      { length: 10_000 },
+      (_, i) => `<tr><td>row ${String(i)}</td></tr>`,
+    ).join('');
+    const html = `<!DOCTYPE html><html><body><table>${rows}</table></body></html>`;
+    let abortTime = 0;
+    const pending = renderer.renderHtmlToPdf(html, {
+      timeoutMs: 30_000,
+      signal: controller.signal,
+    });
+    setTimeout(() => {
+      abortTime = performance.now();
+      controller.abort();
+    }, 5);
+
+    let error: unknown;
+    try {
+      await pending;
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(DeliveryDeadlineExceededError);
+    expect(renderer.openContextCount()).toBe(0);
+    expect(renderer.lastSetContentCompleted).toBe(false);
+    expect(performance.now() - abortTime).toBeLessThan(45);
+  });
+
+  it('handler-level render with tiny phase cap on 2000-row grid rejects with DeliveryDeadlineExceededError and 0 open contexts', async () => {
+    const handler = new ReportJobHandler(
+      {} as PostgresReportAdapter,
+      {} as ArtifactStorage,
+      renderer,
+    );
+    const grid = makeGrid(2000);
+    const jobContext = {
+      jobId: '11111111-1111-4111-8111-111111111111',
+      workspaceId: '22222222-2222-4222-8222-222222222222',
+      actorId: '33333333-3333-4333-8333-333333333333',
+      attemptCount: 1,
+      payload: {
+        version: 1 as const,
+        asOf: '2026-09-15T12:00:00.000Z',
+        reportRunId: '44444444-4444-4444-8444-444444444444',
+        format: 'pdf' as const,
+        definitionId: null,
+        preset: 'expenses' as const,
+        filters: { from: '2026-06-01', to: '2026-06-30' },
+        periodStart: '2026-06-01',
+        periodTo: '2026-06-30',
+        shapeTypeFilter: 'expense' as const,
+        callerType: null,
+        dimensions: [REPORT_DIMENSION.MONTH],
+        measures: [REPORT_MEASURE.CONVERTED_VALUE, REPORT_MEASURE.COUNT],
+        objectKey: 'workspace/report.pdf',
+        baseCurrency: 'USD',
+      },
+    };
+
+    let error: unknown;
+    try {
+      await handler.render(jobContext, grid, 12);
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(DeliveryDeadlineExceededError);
+    expect(renderer.openContextCount()).toBe(0);
   });
 });

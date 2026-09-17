@@ -10,23 +10,30 @@ import {
 
 export { PdfRenderTimeoutError } from './pdf-renderer.port.js';
 
+export const CONTEXT_CLOSE_CAP_MS = 2_000;
+
 @Injectable()
 export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
   private browserPromise: Promise<Browser> | undefined;
+  private browser: Browser | undefined;
   private closing = false;
   public lastAbortedRequestCount = 0;
+  public lastSetContentCompleted = false;
 
   private launchBrowser(): Promise<Browser> {
     const promise = chromium.launch({ headless: true });
     void promise.then(
       (browser) => {
+        this.browser = browser;
         browser.on('disconnected', () => {
+          this.browser = undefined;
           if (!this.closing && this.browserPromise === promise) {
             this.browserPromise = undefined;
           }
         });
       },
       () => {
+        this.browser = undefined;
         if (this.browserPromise === promise) {
           this.browserPromise = undefined;
         }
@@ -46,32 +53,23 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     return this.browserPromise !== undefined;
   }
 
+  public openContextCount(): number {
+    return this.browser ? this.browser.contexts().length : 0;
+  }
+
   public async renderHtmlToPdf(
     html: string,
     options: PdfRenderOptions,
   ): Promise<Buffer> {
     this.lastAbortedRequestCount = 0;
+    this.lastSetContentCompleted = false;
     this.throwIfBudgetExhausted(options);
 
     const browser = await this.getBrowser();
     this.throwIfBudgetExhausted(options);
 
-    let context: BrowserContext | undefined;
-    try {
-      context = await browser.newContext({ javaScriptEnabled: false });
-      await context.route('**/*', (route) => {
-        this.lastAbortedRequestCount += 1;
-        return route.abort();
-      });
-      const page = await context.newPage();
-      await page.setContent(html, { waitUntil: 'domcontentloaded' });
-      const pdfBuffer = await this.pdfWithBudget(page, options);
-      return Buffer.from(pdfBuffer);
-    } finally {
-      if (context !== undefined) {
-        await context.close().catch(() => undefined);
-      }
-    }
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    return await this.renderInContext(context, html, options);
   }
 
   private throwIfBudgetExhausted(options: PdfRenderOptions): void {
@@ -82,10 +80,72 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     }
   }
 
-  private async pdfWithBudget(
-    page: Page,
+  private async closeContextBounded(context: BrowserContext): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    let didTimeout = false;
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        didTimeout = true;
+        resolve();
+      }, CONTEXT_CLOSE_CAP_MS);
+    });
+    try {
+      await Promise.race([
+        context.close().catch(() => undefined),
+        timeoutPromise,
+      ]);
+      if (didTimeout) {
+        process.stderr.write(
+          `[PlaywrightPdfRenderer] Browser context close exceeded ${String(CONTEXT_CLOSE_CAP_MS)}ms cap.\n`,
+        );
+      }
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  private async renderInContext(
+    context: BrowserContext,
+    html: string,
     options: PdfRenderOptions,
-  ): Promise<Uint8Array> {
+  ): Promise<Buffer> {
+    let closed = false;
+    const closeOnce = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      await this.closeContextBounded(context);
+    };
+
+    try {
+      if (options.signal?.aborted || options.timeoutMs <= 0) {
+        await closeOnce();
+        throw new DeliveryDeadlineExceededError(
+          'PDF render aborted: budget exhausted before start.',
+        );
+      }
+
+      await context.route('**/*', (route) => {
+        this.lastAbortedRequestCount += 1;
+        return route.abort();
+      });
+
+      const page = await context.newPage();
+
+      return await this.runRacedRender(page, html, options, closeOnce);
+    } catch (error) {
+      await closeOnce();
+      throw error;
+    }
+  }
+
+  private async runRacedRender(
+    page: Page,
+    html: string,
+    options: PdfRenderOptions,
+    closeOnce: () => Promise<void>,
+  ): Promise<Buffer> {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
@@ -101,73 +161,81 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
       }
     };
 
-    try {
-      return await new Promise<Uint8Array>((resolve, reject) => {
-        const settle = (error: unknown, value?: Uint8Array): void => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          cleanup();
-          if (error !== undefined) {
-            reject(error);
-            return;
-          }
-          if (value === undefined) {
-            reject(new PdfRenderTimeoutError('PDF render produced no bytes.'));
-            return;
-          }
-          resolve(value);
-        };
-
-        timer = setTimeout(() => {
-          settle(new PdfRenderTimeoutError());
-        }, options.timeoutMs);
-
-        if (options.signal !== undefined) {
-          abortListener = (): void => {
-            settle(
-              new DeliveryDeadlineExceededError(
-                'PDF render aborted by delivery deadline.',
-              ),
-            );
-          };
-          if (options.signal.aborted) {
-            abortListener();
-            return;
-          }
-          options.signal.addEventListener('abort', abortListener, {
-            once: true,
-          });
+    return await new Promise<Buffer>((resolve, reject) => {
+      const handleSettle = async (
+        error: unknown,
+        result?: Buffer,
+      ): Promise<void> => {
+        if (settled) {
+          return;
         }
+        settled = true;
+        cleanup();
+        try {
+          await closeOnce();
+        } catch {
+          // closeOnce handles errors internally
+        }
+        if (error !== undefined) {
+          reject(error);
+        } else if (result !== undefined) {
+          resolve(result);
+        } else {
+          reject(new PdfRenderTimeoutError('PDF render produced no bytes.'));
+        }
+      };
 
-        void page
-          .pdf({
+      timer = setTimeout(() => {
+        void handleSettle(new PdfRenderTimeoutError());
+      }, options.timeoutMs);
+
+      if (options.signal !== undefined) {
+        abortListener = (): void => {
+          void handleSettle(
+            new DeliveryDeadlineExceededError(
+              'PDF render aborted by delivery deadline.',
+            ),
+          );
+        };
+        if (options.signal.aborted) {
+          abortListener();
+          return;
+        }
+        options.signal.addEventListener('abort', abortListener, {
+          once: true,
+        });
+      }
+
+      void (async () => {
+        try {
+          await page.setContent(html, { waitUntil: 'domcontentloaded' });
+          if (settled) return;
+          this.lastSetContentCompleted = true;
+          const pdfBuffer = await page.pdf({
             format: 'A4',
             printBackground: true,
-          })
-          .then(
-            (buffer) => {
-              settle(undefined, buffer);
-            },
-            (error: unknown) => {
-              const message =
-                error instanceof Error ? error.message : String(error);
-              if (/timeout/i.test(message)) {
-                settle(new PdfRenderTimeoutError(undefined, { cause: error }));
-                return;
-              }
-              settle(error);
-            },
-          );
-      });
-    } finally {
-      cleanup();
-    }
+          });
+          if (settled) return;
+          await handleSettle(undefined, Buffer.from(pdfBuffer));
+        } catch (error: unknown) {
+          if (settled) return;
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (/timeout/i.test(message)) {
+            await handleSettle(
+              new PdfRenderTimeoutError(undefined, { cause: error }),
+            );
+            return;
+          }
+          await handleSettle(error);
+        }
+      })();
+    });
   }
 
   public async onModuleDestroy(): Promise<void> {
     this.closing = true;
+    this.browser = undefined;
     if (this.browserPromise !== undefined) {
       const promise = this.browserPromise;
       this.browserPromise = undefined;

@@ -238,15 +238,29 @@ export class ReportJobHandler
     const controller = new AbortController();
     let remainingMs = (): number => Number.POSITIVE_INFINITY;
     let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<T>((_, reject) => {
+    let fallbackTimer: NodeJS.Timeout | undefined;
+    let workPromise: Promise<T> | undefined;
+
+    const timeout = new Promise<never>((_, reject) => {
       const deadlineAt = performance.now() + timeoutMs;
       remainingMs = () => deadlineAt - performance.now();
-      timer = setTimeout(() => {
+      timer = setTimeout(async () => {
         controller.abort();
+        if (workPromise !== undefined) {
+          const settled = workPromise.then(
+            () => undefined,
+            () => undefined,
+          );
+          const fallback = new Promise<void>((resolve) => {
+            fallbackTimer = setTimeout(resolve, 2_000);
+          });
+          await Promise.race([settled, fallback]);
+        }
         reject(new DeliveryDeadlineExceededError(message));
       }, timeoutMs);
     });
     void timeout.catch(() => undefined);
+
     try {
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
@@ -254,8 +268,9 @@ export class ReportJobHandler
       if (controller.signal.aborted) {
         throw new DeliveryDeadlineExceededError(message);
       }
+      workPromise = work(controller.signal, remainingMs);
       return await Promise.race([
-        work(controller.signal, remainingMs).catch((error: unknown) => {
+        workPromise.catch((error: unknown) => {
           if (controller.signal.aborted) {
             throw new DeliveryDeadlineExceededError(message, { cause: error });
           }
@@ -265,6 +280,7 @@ export class ReportJobHandler
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
     }
   }
 
