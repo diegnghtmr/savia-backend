@@ -27,6 +27,7 @@ import type { LedgerWriter } from '../platform/ledger-writer.port.js';
           // bounded set-based statements; keep their deliberate synchronous
           // budget local to the import commit path.
           callbackTimeoutMs: IMPORT_COMMIT_CALLBACK_TIMEOUT_MS,
+          statementTimeoutMs: IMPORT_COMMIT_CALLBACK_TIMEOUT_MS,
         }),
     },
     {

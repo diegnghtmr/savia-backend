@@ -34,7 +34,11 @@ export interface ImportTransaction {
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T>;
 }
-export const IMPORT_COMMIT_CALLBACK_TIMEOUT_MS = 5_000;
+export const IMPORT_COMMIT_BATCH_SIZE = 2_500;
+// Maximum import is 10,000 rows. Under CI / shared-disk load, processing 10,000 rows
+// in 4 batches of 2,500 requires up to ~4.5s. Set the deliberate synchronous commit budget
+// to 15,000 ms (15s) to guarantee a 3.5x headroom for the advertised maximum without timeouts.
+export const IMPORT_COMMIT_CALLBACK_TIMEOUT_MS = 15_000;
 class ImportValidationError extends Error {}
 
 const DEBIT_INDICATORS = new Set(['debit', 'd', 'dr', 'db', 'debito', 'cargo']);
