@@ -5,6 +5,8 @@ export interface PdfRenderOptions {
   readonly timeoutMs: number;
   /** AbortSignal from the delivery deadline. */
   readonly signal?: AbortSignal;
+  /** Optional correlation id for render phase observability. */
+  readonly renderId?: string;
 }
 
 /**

@@ -2,8 +2,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
-import { PdfRenderTimeoutError } from '../../src/platform/pdf-renderer.port.js';
-import { PlaywrightPdfRenderer } from '../../src/platform/playwright-pdf-renderer.js';
+import {
+  PdfRenderTimeoutError,
+  PlaywrightPdfRenderer,
+  RENDER_PHASES,
+  type RenderPhase,
+} from '../../src/platform/playwright-pdf-renderer.js';
 import type { ReportGrid } from '../../src/reports/report-engine.js';
 import { renderReportHtml } from '../../src/reports/report-html-template.js';
 import {
@@ -240,33 +244,99 @@ describe('PDF renderer integration (no DB)', () => {
   });
 
   it('closes browser context before rejecting an abort that lands during setContent', async () => {
+    const phases: RenderPhase[] = [];
     const controller = new AbortController();
-    const rows = Array.from(
-      { length: 10_000 },
-      (_, i) => `<tr><td>row ${String(i)}</td></tr>`,
-    ).join('');
-    const html = `<!DOCTYPE html><html><body><table>${rows}</table></body></html>`;
     let abortTime = 0;
-    const pending = renderer.renderHtmlToPdf(html, {
-      timeoutMs: 30_000,
-      signal: controller.signal,
+    const localRenderer = new PlaywrightPdfRenderer({
+      observer: (_renderId, phase) => {
+        phases.push(phase);
+        if (phase === RENDER_PHASES.SET_CONTENT_STARTED) {
+          abortTime = performance.now();
+          controller.abort();
+        }
+      },
     });
-    setTimeout(() => {
-      abortTime = performance.now();
-      controller.abort();
-    }, 5);
 
-    let error: unknown;
     try {
-      await pending;
-    } catch (err) {
-      error = err;
-    }
+      const rows = Array.from(
+        { length: 10_000 },
+        (_, i) => `<tr><td>row ${String(i)}</td></tr>`,
+      ).join('');
+      const html = `<!DOCTYPE html><html><body><table>${rows}</table></body></html>`;
+      const pending = localRenderer.renderHtmlToPdf(html, {
+        timeoutMs: 30_000,
+        signal: controller.signal,
+      });
 
-    expect(error).toBeInstanceOf(DeliveryDeadlineExceededError);
-    expect(renderer.openContextCount()).toBe(0);
-    expect(renderer.lastSetContentCompleted).toBe(false);
-    expect(performance.now() - abortTime).toBeLessThan(45);
+      let error: unknown;
+      try {
+        await pending;
+      } catch (err) {
+        error = err;
+      }
+
+      expect(error).toBeInstanceOf(DeliveryDeadlineExceededError);
+      expect(localRenderer.openContextCount()).toBe(0);
+      expect(phases).toContain(RENDER_PHASES.SET_CONTENT_STARTED);
+      expect(phases).toContain(RENDER_PHASES.CONTEXT_CLOSED);
+      expect(phases).not.toContain(RENDER_PHASES.SET_CONTENT_SETTLED);
+      expect(phases).not.toContain(RENDER_PHASES.PDF_STARTED);
+      expect(performance.now() - abortTime).toBeLessThan(45);
+    } finally {
+      await localRenderer.onModuleDestroy();
+    }
+  });
+
+  it('attributes render phases to the correct per-render id for overlapping renders', async () => {
+    const events: Array<{ renderId: string; phase: RenderPhase }> = [];
+    const localRenderer = new PlaywrightPdfRenderer({
+      observer: (renderId, phase) => {
+        events.push({ renderId, phase });
+      },
+    });
+
+    try {
+      const html1 =
+        '<!DOCTYPE html><html><body><h1>Render 1</h1></body></html>';
+      const html2 =
+        '<!DOCTYPE html><html><body><h1>Render 2</h1></body></html>';
+
+      const [pdf1, pdf2] = await Promise.all([
+        localRenderer.renderHtmlToPdf(html1, {
+          timeoutMs: 10_000,
+          renderId: 'render-a',
+        }),
+        localRenderer.renderHtmlToPdf(html2, {
+          timeoutMs: 10_000,
+          renderId: 'render-b',
+        }),
+      ]);
+
+      expect(pdf1.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(pdf2.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+
+      const renderAPhases = events
+        .filter((e) => e.renderId === 'render-a')
+        .map((e) => e.phase);
+      const renderBPhases = events
+        .filter((e) => e.renderId === 'render-b')
+        .map((e) => e.phase);
+
+      expect(renderAPhases).toEqual([
+        RENDER_PHASES.SET_CONTENT_STARTED,
+        RENDER_PHASES.SET_CONTENT_SETTLED,
+        RENDER_PHASES.PDF_STARTED,
+        RENDER_PHASES.CONTEXT_CLOSED,
+      ]);
+      expect(renderBPhases).toEqual([
+        RENDER_PHASES.SET_CONTENT_STARTED,
+        RENDER_PHASES.SET_CONTENT_SETTLED,
+        RENDER_PHASES.PDF_STARTED,
+        RENDER_PHASES.CONTEXT_CLOSED,
+      ]);
+    } finally {
+      await localRenderer.onModuleDestroy();
+    }
   });
 
   it('handler-level render with tiny phase cap on 2000-row grid rejects with DeliveryDeadlineExceededError and 0 open contexts', async () => {

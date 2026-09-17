@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 import { DeliveryDeadlineExceededError } from './delivery-deadline.js';
@@ -12,16 +12,62 @@ export { PdfRenderTimeoutError } from './pdf-renderer.port.js';
 
 export const CONTEXT_CLOSE_CAP_MS = 2_000;
 
+export const RENDER_PHASES = {
+  SET_CONTENT_STARTED: 'set_content_started',
+  SET_CONTENT_SETTLED: 'set_content_settled',
+  PDF_STARTED: 'pdf_started',
+  CONTEXT_CLOSED: 'context_closed',
+} as const;
+
+export type RenderPhase = (typeof RENDER_PHASES)[keyof typeof RENDER_PHASES];
+
+export type RenderPhaseObserver = (
+  renderId: string,
+  phase: RenderPhase,
+) => void;
+
+export interface PlaywrightPdfRendererOptions {
+  readonly renderSettleTimeoutMs?: number;
+  readonly observer?: RenderPhaseObserver;
+  readonly browserLauncher?: () => Promise<Browser>;
+  readonly logger?: Logger;
+}
+
 @Injectable()
 export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
   private browserPromise: Promise<Browser> | undefined;
   private browser: Browser | undefined;
   private closing = false;
+  private renderSequence = 0;
   public lastAbortedRequestCount = 0;
-  public lastSetContentCompleted = false;
+  private readonly renderSettleTimeoutMs: number;
+  private readonly observer?: RenderPhaseObserver;
+  private readonly browserLauncher: () => Promise<Browser>;
+  private readonly logger: Logger;
+
+  public constructor(
+    optionsOrTimeout?: number | PlaywrightPdfRendererOptions,
+    observer?: RenderPhaseObserver,
+  ) {
+    if (typeof optionsOrTimeout === 'number') {
+      this.renderSettleTimeoutMs = optionsOrTimeout;
+      this.observer = observer;
+      this.browserLauncher = () => chromium.launch({ headless: true });
+      this.logger = new Logger(PlaywrightPdfRenderer.name);
+    } else {
+      this.renderSettleTimeoutMs =
+        optionsOrTimeout?.renderSettleTimeoutMs ?? 2_000;
+      this.observer = optionsOrTimeout?.observer ?? observer;
+      this.browserLauncher =
+        optionsOrTimeout?.browserLauncher ??
+        (() => chromium.launch({ headless: true }));
+      this.logger =
+        optionsOrTimeout?.logger ?? new Logger(PlaywrightPdfRenderer.name);
+    }
+  }
 
   private launchBrowser(): Promise<Browser> {
-    const promise = chromium.launch({ headless: true });
+    const promise = this.browserLauncher();
     void promise.then(
       (browser) => {
         this.browser = browser;
@@ -61,15 +107,15 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     html: string,
     options: PdfRenderOptions,
   ): Promise<Buffer> {
+    const renderId = options.renderId ?? `render-${++this.renderSequence}`;
     this.lastAbortedRequestCount = 0;
-    this.lastSetContentCompleted = false;
     this.throwIfBudgetExhausted(options);
 
     const browser = await this.getBrowser();
     this.throwIfBudgetExhausted(options);
 
     const context = await browser.newContext({ javaScriptEnabled: false });
-    return await this.renderInContext(context, html, options);
+    return await this.renderInContext(context, html, options, renderId);
   }
 
   private throwIfBudgetExhausted(options: PdfRenderOptions): void {
@@ -87,7 +133,7 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
       timer = setTimeout(() => {
         didTimeout = true;
         resolve();
-      }, CONTEXT_CLOSE_CAP_MS);
+      }, this.renderSettleTimeoutMs);
     });
     try {
       await Promise.race([
@@ -96,7 +142,7 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
       ]);
       if (didTimeout) {
         process.stderr.write(
-          `[PlaywrightPdfRenderer] Browser context close exceeded ${String(CONTEXT_CLOSE_CAP_MS)}ms cap.\n`,
+          `[PlaywrightPdfRenderer] Browser context close exceeded ${String(this.renderSettleTimeoutMs)}ms cap.\n`,
         );
       }
     } finally {
@@ -110,12 +156,17 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     context: BrowserContext,
     html: string,
     options: PdfRenderOptions,
+    renderId: string,
   ): Promise<Buffer> {
     let closed = false;
     const closeOnce = async (): Promise<void> => {
       if (closed) return;
       closed = true;
-      await this.closeContextBounded(context);
+      try {
+        await this.closeContextBounded(context);
+      } finally {
+        this.observer?.(renderId, RENDER_PHASES.CONTEXT_CLOSED);
+      }
     };
 
     try {
@@ -133,7 +184,13 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
 
       const page = await context.newPage();
 
-      return await this.runRacedRender(page, html, options, closeOnce);
+      return await this.runRacedRender(
+        page,
+        html,
+        options,
+        closeOnce,
+        renderId,
+      );
     } catch (error) {
       await closeOnce();
       throw error;
@@ -145,6 +202,7 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     html: string,
     options: PdfRenderOptions,
     closeOnce: () => Promise<void>,
+    renderId: string,
   ): Promise<Buffer> {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -208,9 +266,11 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
 
       void (async () => {
         try {
+          this.observer?.(renderId, RENDER_PHASES.SET_CONTENT_STARTED);
           await page.setContent(html, { waitUntil: 'domcontentloaded' });
           if (settled) return;
-          this.lastSetContentCompleted = true;
+          this.observer?.(renderId, RENDER_PHASES.SET_CONTENT_SETTLED);
+          this.observer?.(renderId, RENDER_PHASES.PDF_STARTED);
           const pdfBuffer = await page.pdf({
             format: 'A4',
             printBackground: true,
