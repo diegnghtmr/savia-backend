@@ -145,12 +145,13 @@ module.exports = {
       name: 'no-http-to-playwright',
       severity: 'error',
       comment:
-        'HTTP application roots and HTTP modules must not import playwright-core; it belongs to the worker only',
+        'HTTP application roots and HTTP modules must not reach playwright-core; it belongs to the worker only',
       from: {
-        path: '^src/(main\\.ts|app\\.module\\.ts|platform/platform\\.module\\.ts|.+/.*controller\\.ts)',
+        path: '^src/main\\.ts$',
       },
       to: {
         path: 'playwright-core',
+        reachable: true,
       },
     },
   ],

@@ -83,4 +83,17 @@ describe('architecture fitness functions (dependency-cruiser)', () => {
     expect(result.output).toContain('src/identity/a.ts');
     expect(result.output).toContain('src/identity/b.ts');
   });
+
+  it('rejects HTTP graph reaching playwright-core (rule: no-http-to-playwright)', () => {
+    const fixtureDir = resolve(
+      root,
+      'test/architecture/fixtures/http-to-playwright-violation',
+    );
+    const result = runDepcruise(fixtureDir);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('no-http-to-playwright');
+    expect(result.output).toContain('src/main.ts');
+    expect(result.output).toContain('playwright-core');
+  });
 });
