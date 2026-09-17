@@ -27,6 +27,15 @@ export interface RenderObserverEvent {
 
 export type RenderPhaseObserver = (event: RenderObserverEvent) => void;
 
+interface BrowserGeneration {
+  readonly id: number;
+  readonly browser: Browser;
+  activeContexts: number;
+  unhealthy: boolean;
+  drainTimer?: NodeJS.Timeout;
+  closed?: boolean;
+}
+
 export interface PlaywrightPdfRendererOptions {
   readonly renderSettleTimeoutMs: number;
   readonly pdfRenderTimeoutMs?: number;
@@ -37,8 +46,10 @@ export interface PlaywrightPdfRendererOptions {
 
 @Injectable()
 export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
-  private browserPromise: Promise<Browser> | undefined;
-  private browser: Browser | undefined;
+  private currentGeneration: BrowserGeneration | undefined;
+  private currentGenerationPromise: Promise<BrowserGeneration> | undefined;
+  private readonly activeGenerations = new Set<BrowserGeneration>();
+  private generationSequence = 0;
   private closing = false;
   private renderSequence = 0;
   public readonly renderSettleTimeoutMs: number;
@@ -77,41 +88,65 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     }
   }
 
-  private launchBrowser(): Promise<Browser> {
-    const promise = this.browserLauncher();
-    void promise.then(
-      (browser) => {
-        this.browser = browser;
-        browser.on('disconnected', () => {
-          this.browser = undefined;
-          if (!this.closing && this.browserPromise === promise) {
-            this.browserPromise = undefined;
-          }
-        });
-      },
-      () => {
-        this.browser = undefined;
-        if (this.browserPromise === promise) {
-          this.browserPromise = undefined;
-        }
-      },
-    );
-    return promise;
-  }
-
-  private getBrowser(): Promise<Browser> {
-    if (this.browserPromise === undefined) {
-      this.browserPromise = this.launchBrowser();
+  private async getHealthyGeneration(): Promise<BrowserGeneration> {
+    if (this.closing) {
+      throw new DeliveryDeadlineExceededError('Renderer is closing.');
     }
-    return this.browserPromise;
+    if (this.currentGeneration && !this.currentGeneration.unhealthy) {
+      return this.currentGeneration;
+    }
+    if (this.currentGenerationPromise) {
+      return await this.currentGenerationPromise;
+    }
+    const genId = ++this.generationSequence;
+    let promise: Promise<BrowserGeneration> | undefined;
+    promise = (async () => {
+      try {
+        const browser = await this.browserLauncher();
+        const gen: BrowserGeneration = {
+          id: genId,
+          browser,
+          activeContexts: 0,
+          unhealthy: false,
+        };
+        this.activeGenerations.add(gen);
+        this.currentGeneration = gen;
+        browser.on('disconnected', () => {
+          if (this.currentGeneration === gen) {
+            this.currentGeneration = undefined;
+            this.currentGenerationPromise = undefined;
+          }
+          this.activeGenerations.delete(gen);
+        });
+        return gen;
+      } finally {
+        if (this.currentGenerationPromise === promise) {
+          this.currentGenerationPromise = undefined;
+        }
+      }
+    })();
+    this.currentGenerationPromise = promise;
+    return await promise;
   }
 
   public hasOpenBrowser(): boolean {
-    return this.browserPromise !== undefined;
+    return (
+      (this.currentGeneration !== undefined &&
+        !this.currentGeneration.unhealthy) ||
+      this.currentGenerationPromise !== undefined
+    );
   }
 
   public openContextCount(): number {
-    return this.browser ? this.browser.contexts().length : 0;
+    let count = 0;
+    for (const gen of this.activeGenerations) {
+      try {
+        count += gen.browser.contexts().length;
+      } catch {
+        // Browser may be closed.
+      }
+    }
+    return count;
   }
 
   private notifyObserver(
@@ -140,12 +175,23 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     const correlationId = options.correlationId ?? options.renderId;
     this.throwIfBudgetExhausted(options);
 
-    const browser = await this.getBrowser();
+    const generation = await this.getHealthyGeneration();
     this.throwIfBudgetExhausted(options);
 
-    const context = await browser.newContext({ javaScriptEnabled: false });
+    generation.activeContexts += 1;
+    let context: BrowserContext;
+    try {
+      context = await generation.browser.newContext({
+        javaScriptEnabled: false,
+      });
+    } catch (error) {
+      this.decrementActiveContexts(generation);
+      throw error;
+    }
+
     return await this.renderInContext(
       context,
+      generation,
       html,
       options,
       invocationId,
@@ -161,7 +207,10 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     }
   }
 
-  private async closeContextBounded(context: BrowserContext): Promise<void> {
+  private async closeContextBounded(
+    context: BrowserContext,
+    generation: BrowserGeneration,
+  ): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     let didTimeout = false;
     let didReject = false;
@@ -181,17 +230,11 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
         timeoutPromise,
       ]);
       if (didTimeout) {
-        this.quarantineBrowser(
-          context,
-          `Browser context close exceeded ${String(this.renderSettleTimeoutMs)}ms cap.`,
-        );
+        this.quarantineGeneration(generation, 'TimeoutError');
       } else if (didReject) {
-        const message =
-          closeError instanceof Error ? closeError.message : String(closeError);
-        this.quarantineBrowser(
-          context,
-          `Browser context close rejected: ${message}`,
-        );
+        const errorClassName =
+          (closeError as object)?.constructor?.name || 'Error';
+        this.quarantineGeneration(generation, errorClassName);
       }
     } finally {
       if (timer !== undefined) {
@@ -200,19 +243,56 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     }
   }
 
-  private quarantineBrowser(context: BrowserContext, reason: string): void {
-    const contextBrowser =
-      typeof context.browser === 'function' ? context.browser() : null;
-    const oldBrowser = contextBrowser ?? this.browser;
-    this.browser = undefined;
-    this.browserPromise = undefined;
-    this.logger.warn(`Quarantining browser: ${reason}`);
-    if (oldBrowser != null) {
-      void this.closeBrowserBounded(oldBrowser);
+  private quarantineGeneration(
+    generation: BrowserGeneration,
+    errorClassName: string,
+  ): void {
+    generation.unhealthy = true;
+    this.logger.warn(
+      `Quarantining browser generation ${generation.id}: ${errorClassName}`,
+    );
+
+    if (this.currentGeneration === generation) {
+      this.currentGeneration = undefined;
+      this.currentGenerationPromise = undefined;
+    }
+
+    if (generation.activeContexts === 0) {
+      this.triggerGenerationClose(generation);
+      return;
+    }
+
+    if (generation.drainTimer === undefined && !generation.closed) {
+      const drainCapMs = this.pdfRenderTimeoutMs + this.renderSettleTimeoutMs;
+      generation.drainTimer = setTimeout(() => {
+        this.triggerGenerationClose(generation);
+      }, drainCapMs);
     }
   }
 
-  private async closeBrowserBounded(browser: Browser): Promise<void> {
+  private triggerGenerationClose(generation: BrowserGeneration): void {
+    if (generation.closed) {
+      return;
+    }
+    generation.closed = true;
+    if (generation.drainTimer !== undefined) {
+      clearTimeout(generation.drainTimer);
+      generation.drainTimer = undefined;
+    }
+    void this.closeBrowserBounded(generation.browser, generation.id);
+  }
+
+  private decrementActiveContexts(generation: BrowserGeneration): void {
+    generation.activeContexts = Math.max(0, generation.activeContexts - 1);
+    if (generation.unhealthy && generation.activeContexts === 0) {
+      this.triggerGenerationClose(generation);
+    }
+  }
+
+  private async closeBrowserBounded(
+    browser: Browser,
+    generationId: number,
+  ): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     const timeoutPromise = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, this.renderSettleTimeoutMs);
@@ -220,8 +300,10 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     try {
       await Promise.race([
         browser.close().catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`Quarantined browser close rejected: ${message}`);
+          const errorClassName = (err as object)?.constructor?.name || 'Error';
+          this.logger.warn(
+            `Quarantined browser generation ${generationId} close rejected: ${errorClassName}`,
+          );
         }),
         timeoutPromise,
       ]);
@@ -229,11 +311,18 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
       if (timer !== undefined) {
         clearTimeout(timer);
       }
+      for (const gen of this.activeGenerations) {
+        if (gen.id === generationId) {
+          this.activeGenerations.delete(gen);
+          break;
+        }
+      }
     }
   }
 
   private async renderInContext(
     context: BrowserContext,
+    generation: BrowserGeneration,
     html: string,
     options: PdfRenderOptions,
     invocationId: string,
@@ -244,8 +333,9 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
       if (closed) return;
       closed = true;
       try {
-        await this.closeContextBounded(context);
+        await this.closeContextBounded(context, generation);
       } finally {
+        this.decrementActiveContexts(generation);
         this.notifyObserver(
           invocationId,
           RENDER_PHASES.CONTEXT_CLOSED,
@@ -398,13 +488,17 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
 
   public async onModuleDestroy(): Promise<void> {
     this.closing = true;
-    this.browser = undefined;
-    if (this.browserPromise !== undefined) {
-      const promise = this.browserPromise;
-      this.browserPromise = undefined;
+    this.currentGeneration = undefined;
+    this.currentGenerationPromise = undefined;
+    const gens = [...this.activeGenerations];
+    this.activeGenerations.clear();
+    for (const gen of gens) {
+      if (gen.drainTimer !== undefined) {
+        clearTimeout(gen.drainTimer);
+        gen.drainTimer = undefined;
+      }
       try {
-        const browser = await promise;
-        await browser.close();
+        await gen.browser.close();
       } catch {
         // Browser may have already disconnected.
       }

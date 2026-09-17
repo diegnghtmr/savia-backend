@@ -377,15 +377,40 @@ describe('PDF renderer integration (no DB)', () => {
     const testHtml =
       '<!DOCTYPE html><html><body><p>Observer resilience</p><img src="http://127.0.0.1:9999/test-img.png" /></body></html>';
 
-    const baselineRenderer = new PlaywrightPdfRenderer(2_000);
-    let baselineBytes: Buffer;
-    try {
-      baselineBytes = await baselineRenderer.renderHtmlToPdf(testHtml, {
-        timeoutMs: 15_000,
-      });
-    } finally {
-      await baselineRenderer.onModuleDestroy();
-    }
+    const baselineBytes = Buffer.from(
+      '%PDF-1.4 fixed deterministic test pdf bytes',
+    );
+
+    const createDeterministicFakeBrowser = (): Browser => {
+      let registeredRouteHandler:
+        | ((route: { abort: () => Promise<void> }) => Promise<void>)
+        | undefined;
+      const fakeBrowser: Browser = {
+        close: vi.fn(async () => {}),
+        on: vi.fn(),
+        newContext: vi.fn(async () => ({
+          browser: () => fakeBrowser,
+          route: vi.fn(
+            async (
+              _url: unknown,
+              handler: (route: { abort: () => Promise<void> }) => Promise<void>,
+            ) => {
+              registeredRouteHandler = handler;
+            },
+          ),
+          newPage: vi.fn(async () => ({
+            setContent: vi.fn(async () => {
+              if (registeredRouteHandler) {
+                await registeredRouteHandler({ abort: vi.fn(async () => {}) });
+              }
+            }),
+            pdf: vi.fn(async () => baselineBytes),
+          })),
+          close: vi.fn(async () => {}),
+        })),
+      } as unknown as Browser;
+      return fakeBrowser;
+    };
 
     for (const failingPhase of Object.values(RENDER_PHASES)) {
       const warnLogs: string[] = [];
@@ -400,6 +425,7 @@ describe('PDF renderer integration (no DB)', () => {
       const throwingRenderer = new PlaywrightPdfRenderer({
         renderSettleTimeoutMs: 2_000,
         logger: mockLogger,
+        browserLauncher: async () => createDeterministicFakeBrowser(),
         observer: (event) => {
           if (event.phase === failingPhase) {
             throw new CustomObserverError(failingPhase);
@@ -542,12 +568,12 @@ describe('PDF renderer integration (no DB)', () => {
       // Verify browser 1 was closed in background
       expect(fakeBrowser1.close).toHaveBeenCalled();
 
-      // Verify warning logged
+      // Verify warning logged with fixed text and error class name only (never error message)
       expect(
         warnLogs.some(
           (l) =>
-            l.includes('Quarantining browser') &&
-            l.includes('Forced context close rejection'),
+            l.includes('Quarantining browser generation 1: Error') &&
+            !l.includes('Forced context close rejection'),
         ),
       ).toBe(true);
 
@@ -633,10 +659,10 @@ describe('PDF renderer integration (no DB)', () => {
       // Verify browser 1 close was called
       expect(fakeBrowser1.close).toHaveBeenCalled();
 
-      // Verify warning logged
+      // Verify warning logged with fixed text and error class name only
       expect(
-        warnLogs.some(
-          (l) => l.includes('Quarantining browser') && l.includes('cap'),
+        warnLogs.some((l) =>
+          l.includes('Quarantining browser generation 1: TimeoutError'),
         ),
       ).toBe(true);
 
@@ -649,6 +675,296 @@ describe('PDF renderer integration (no DB)', () => {
       expect(launchCount).toBe(2);
       expect(fakeBrowser2.newContext).toHaveBeenCalled();
     } finally {
+      await localRenderer.onModuleDestroy();
+    }
+  });
+
+  it('(a) overlapping renders: render A close fails while render B is still running on same generation -> B completes and browser closed only after B finishes', async () => {
+    let bRenderDone = false;
+    let oldBrowserClosedBeforeB = false;
+
+    let bPdfRelease: () => void;
+    const bPdfGate = new Promise<void>((resolve) => {
+      bPdfRelease = resolve;
+    });
+
+    let bContextCreatedResolve: () => void;
+    const bContextCreatedGate = new Promise<void>((resolve) => {
+      bContextCreatedResolve = resolve;
+    });
+
+    const fakeBrowser1: Browser = {
+      close: vi.fn(async () => {
+        if (!bRenderDone) {
+          oldBrowserClosedBeforeB = true;
+        }
+      }),
+      on: vi.fn(),
+      newContext: vi
+        .fn()
+        .mockImplementationOnce(async () => ({
+          browser: () => fakeBrowser1,
+          route: vi.fn(async () => {}),
+          newPage: vi.fn(async () => ({
+            setContent: vi.fn(async () => {}),
+            pdf: vi.fn(async () => Buffer.from('%PDF-1.4 renderA')),
+          })),
+          close: vi.fn(async () => {
+            await bContextCreatedGate;
+            throw new Error('Forced context close failure for render A');
+          }),
+        }))
+        .mockImplementationOnce(async () => {
+          bContextCreatedResolve();
+          return {
+            browser: () => fakeBrowser1,
+            route: vi.fn(async () => {}),
+            newPage: vi.fn(async () => ({
+              setContent: vi.fn(async () => {}),
+              pdf: vi.fn(async () => {
+                await bPdfGate;
+                bRenderDone = true;
+                return Buffer.from('%PDF-1.4 renderB');
+              }),
+            })),
+            close: vi.fn(async () => {}),
+          };
+        }),
+    } as unknown as Browser;
+
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 100,
+      browserLauncher: async () => fakeBrowser1,
+    });
+
+    try {
+      const promiseA = localRenderer.renderHtmlToPdf('<p>A</p>', {
+        timeoutMs: 5_000,
+      });
+      const promiseB = localRenderer.renderHtmlToPdf('<p>B</p>', {
+        timeoutMs: 5_000,
+      });
+
+      const pdfA = await promiseA;
+      expect(pdfA.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+
+      // Generation 1 is quarantined, but render B is still running!
+      expect(fakeBrowser1.close).not.toHaveBeenCalled();
+      expect(oldBrowserClosedBeforeB).toBe(false);
+
+      // Now release render B's gate
+      bPdfRelease!();
+      const pdfB = await promiseB;
+
+      expect(pdfB.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      await new Promise((r) => setTimeout(r, 20));
+      expect(fakeBrowser1.close).toHaveBeenCalled();
+      expect(oldBrowserClosedBeforeB).toBe(false);
+    } finally {
+      await localRenderer.onModuleDestroy();
+    }
+  });
+
+  it('(b) generation 1 quarantined, generation 2 launched, then late close failure from generation 1 leaves generation 2 cached', async () => {
+    let launchCount = 0;
+    let lateCloseReject: (err: Error) => void;
+    const lateClosePromise = new Promise<void>((_, reject) => {
+      lateCloseReject = reject;
+    });
+
+    let render2ContextCreatedResolve: () => void;
+    const render2ContextCreatedGate = new Promise<void>((resolve) => {
+      render2ContextCreatedResolve = resolve;
+    });
+
+    const fakeBrowser1: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi
+        .fn()
+        .mockImplementationOnce(async () => ({
+          browser: () => fakeBrowser1,
+          route: vi.fn(async () => {}),
+          newPage: vi.fn(async () => ({
+            setContent: vi.fn(async () => {}),
+            pdf: vi.fn(async () => Buffer.from('%PDF-1.4 gen1-render1')),
+          })),
+          close: vi.fn(async () => {
+            await render2ContextCreatedGate;
+            throw new Error('Immediate failure on context 1');
+          }),
+        }))
+        .mockImplementationOnce(async () => {
+          render2ContextCreatedResolve();
+          return {
+            browser: () => fakeBrowser1,
+            route: vi.fn(async () => {}),
+            newPage: vi.fn(async () => ({
+              setContent: vi.fn(async () => {}),
+              pdf: vi.fn(async () => Buffer.from('%PDF-1.4 gen1-render2')),
+            })),
+            close: vi.fn(async () => lateClosePromise),
+          };
+        }),
+    } as unknown as Browser;
+
+    const fakeBrowser2: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => ({
+        browser: () => fakeBrowser2,
+        route: vi.fn(async () => {}),
+        newPage: vi.fn(async () => ({
+          setContent: vi.fn(async () => {}),
+          pdf: vi.fn(async () => Buffer.from('%PDF-1.4 gen2-render')),
+        })),
+        close: vi.fn(async () => {}),
+      })),
+    } as unknown as Browser;
+
+    const fakeBrowser3: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => ({
+        browser: () => fakeBrowser3,
+        route: vi.fn(async () => {}),
+        newPage: vi.fn(async () => ({
+          setContent: vi.fn(async () => {}),
+          pdf: vi.fn(async () => Buffer.from('%PDF-1.4 gen3-render')),
+        })),
+        close: vi.fn(async () => {}),
+      })),
+    } as unknown as Browser;
+
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 100,
+      browserLauncher: async () => {
+        launchCount += 1;
+        if (launchCount === 1) return fakeBrowser1;
+        if (launchCount === 2) return fakeBrowser2;
+        return fakeBrowser3;
+      },
+    });
+
+    try {
+      const promise1 = localRenderer.renderHtmlToPdf('<p>gen1-1</p>', {
+        timeoutMs: 5_000,
+      });
+      const promise2 = localRenderer.renderHtmlToPdf('<p>gen1-2</p>', {
+        timeoutMs: 5_000,
+      });
+
+      await promise1;
+      expect(launchCount).toBe(1);
+
+      // Gen 1 is quarantined, next render launches gen 2
+      const pdf3 = await localRenderer.renderHtmlToPdf('<p>gen2-1</p>', {
+        timeoutMs: 5_000,
+      });
+      expect(pdf3.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(launchCount).toBe(2);
+
+      // Now late close failure from gen 1 context 2 occurs
+      lateCloseReject!(new Error('Late failure from gen 1 context 2'));
+      await promise2;
+
+      // Render 4 starts -> must use cached gen 2, not launch browser 3
+      const pdf4 = await localRenderer.renderHtmlToPdf('<p>gen2-2</p>', {
+        timeoutMs: 5_000,
+      });
+      expect(pdf4.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(launchCount).toBe(2);
+      expect(fakeBrowser3.newContext).not.toHaveBeenCalled();
+    } finally {
+      await localRenderer.onModuleDestroy();
+    }
+  });
+
+  it('(c) drain cap elapses with a render still stuck -> old browser is closed in background', async () => {
+    let browser1CloseCalled = false;
+    let browser1ClosedResolve: () => void;
+    const browser1ClosedPromise = new Promise<void>((resolve) => {
+      browser1ClosedResolve = resolve;
+    });
+
+    let stuckContextCreatedResolve: () => void;
+    const stuckContextCreatedGate = new Promise<void>((resolve) => {
+      stuckContextCreatedResolve = resolve;
+    });
+
+    const fakeBrowser1: Browser = {
+      close: vi.fn(async () => {
+        browser1CloseCalled = true;
+        browser1ClosedResolve();
+      }),
+      on: vi.fn(),
+      newContext: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          stuckContextCreatedResolve();
+          return {
+            browser: () => fakeBrowser1,
+            route: vi.fn(async () => {}),
+            newPage: vi.fn(async () => ({
+              setContent: vi.fn(async () => {}),
+              pdf: vi.fn(async () => new Promise<Buffer>(() => {})), // stuck render
+            })),
+            close: vi.fn(async () => {}),
+          };
+        })
+        .mockImplementationOnce(async () => ({
+          browser: () => fakeBrowser1,
+          route: vi.fn(async () => {}),
+          newPage: vi.fn(async () => ({
+            setContent: vi.fn(async () => {}),
+            pdf: vi.fn(async () => Buffer.from('%PDF-1.4 renderA')),
+          })),
+          close: vi.fn(async () => {
+            throw new Error('Close failed immediately');
+          }),
+        })),
+    } as unknown as Browser;
+
+    const renderSettleTimeoutMs = 25;
+    const pdfRenderTimeoutMs = 35; // drain cap = 60ms
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs,
+      pdfRenderTimeoutMs,
+      browserLauncher: async () => fakeBrowser1,
+    });
+
+    const controller = new AbortController();
+
+    try {
+      const stuckPromise = localRenderer
+        .renderHtmlToPdf('<p>stuck</p>', {
+          timeoutMs: 5_000,
+          signal: controller.signal,
+        })
+        .catch(() => {});
+
+      // Wait until stuck render has created context on fakeBrowser1
+      await stuckContextCreatedGate;
+
+      // Render A runs and its context close fails immediately, quarantining fakeBrowser1
+      await localRenderer.renderHtmlToPdf('<p>A</p>', { timeoutMs: 5_000 });
+
+      // Stuck render is still active on fakeBrowser1, so fakeBrowser1 must not be closed yet
+      expect(fakeBrowser1.close).not.toHaveBeenCalled();
+
+      // Wait for drain cap (60ms) to trigger background browser close
+      await Promise.race([
+        browser1ClosedPromise,
+        new Promise((r) => setTimeout(r, 500)),
+      ]);
+
+      expect(browser1CloseCalled).toBe(true);
+      expect(fakeBrowser1.close).toHaveBeenCalled();
+
+      controller.abort();
+      await stuckPromise;
+    } finally {
+      controller.abort();
       await localRenderer.onModuleDestroy();
     }
   });
