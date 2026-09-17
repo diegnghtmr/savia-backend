@@ -1,12 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 import { DeliveryDeadlineExceededError } from './delivery-deadline.js';
-import {
-  PdfRenderTimeoutError,
-  type PdfRenderer,
-  type PdfRenderOptions,
-} from './pdf-renderer.port.js';
+import type { PdfRenderer, PdfRenderOptions } from './pdf-renderer.port.js';
+import { PdfRenderTimeoutError } from './pdf-renderer.port.js';
 
 export { PdfRenderTimeoutError } from './pdf-renderer.port.js';
 
@@ -46,7 +43,9 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
   private readonly logger: Logger;
 
   public constructor(
+    @Optional()
     optionsOrTimeout?: number | PlaywrightPdfRendererOptions,
+    @Optional()
     observer?: RenderPhaseObserver,
   ) {
     if (typeof optionsOrTimeout === 'number') {
