@@ -71,8 +71,8 @@ import { LEDGER_WRITER } from '../platform/ledger-writer.port.js';
     { provide: LEDGER_PORT, useExisting: TransactionService },
     { provide: TRANSFER_PORT, useExisting: TransferService },
     { provide: CURRENCY_EXCHANGE_PORT, useExisting: CurrencyExchangeService },
-    { provide: LEDGER_WRITER, useExisting: PostgresTransactionAdapter },
+    { provide: LEDGER_WRITER, useExisting: TransactionService },
   ],
-  exports: [LEDGER_WRITER],
+  exports: [LEDGER_WRITER, LEDGER_PORT],
 })
 export class LedgerModule {}
