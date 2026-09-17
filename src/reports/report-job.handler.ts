@@ -10,10 +10,15 @@ import {
   type RenderingJobHandler,
 } from '../platform/job-handler.port.js';
 import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
+import {
+  PDF_RENDERER,
+  type PdfRenderer,
+} from '../platform/pdf-renderer.port.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { PROBLEM_TYPES } from '../platform/problem-details.js';
 import type { ReportGrid } from './report-engine.js';
 import { computePreparedReportGrid } from './report-computation.js';
+import { renderReportHtml } from './report-html-template.js';
 import {
   parseReportJobPayload,
   ReportJobPayloadError,
@@ -24,7 +29,12 @@ import {
   serializeReport,
   type SerializedReport,
 } from './report-serializers.js';
-import { REPORT_RUN_STATUS, ReportBudgetMissingError } from './report.port.js';
+import {
+  REPORT_PDF_ROW_CAP,
+  REPORT_RUN_STATUS,
+  ReportBudgetMissingError,
+  ReportPdfRowCapExceededError,
+} from './report.port.js';
 
 const REPORT_WRITE_ROLES = {
   OWNER: 'owner',
@@ -82,6 +92,7 @@ export class ReportJobHandler
   public constructor(
     private readonly reports: PostgresReportAdapter,
     @Inject(ARTIFACT_STORAGE) private readonly storage: ArtifactStorage,
+    @Inject(PDF_RENDERER) private readonly pdfRenderer: PdfRenderer,
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
@@ -146,6 +157,34 @@ export class ReportJobHandler
     computed: ReportGrid,
     timeoutMs: number,
   ): Promise<SerializedReport> {
+    if (context.payload.format === 'pdf') {
+      if (computed.rows.length > REPORT_PDF_ROW_CAP) {
+        throw new ReportPdfRowCapExceededError(
+          REPORT_PDF_ROW_CAP,
+          computed.rows.length,
+        );
+      }
+      return this.runBounded(
+        timeoutMs,
+        async (signal, remainingMs) => {
+          const html = renderReportHtml(computed, { signal, remainingMs });
+          const effectiveTimeout = Math.min(
+            timeoutMs,
+            Math.max(0, remainingMs()),
+          );
+          const pdfBuffer = await this.pdfRenderer.renderHtmlToPdf(html, {
+            timeoutMs: effectiveTimeout,
+            signal,
+          });
+          return {
+            content: pdfBuffer,
+            contentType: 'application/pdf',
+            extension: 'pdf' as const,
+          };
+        },
+        'Report rendering exceeded the delivery work cap.',
+      );
+    }
     return this.runBounded(
       timeoutMs,
       async (signal, remainingMs) =>
