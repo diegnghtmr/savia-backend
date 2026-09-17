@@ -14,14 +14,18 @@ export const RENDER_PHASES = {
   SET_CONTENT_SETTLED: 'set_content_settled',
   PDF_STARTED: 'pdf_started',
   CONTEXT_CLOSED: 'context_closed',
+  REQUEST_ABORTED: 'request_aborted',
 } as const;
 
 export type RenderPhase = (typeof RENDER_PHASES)[keyof typeof RENDER_PHASES];
 
-export type RenderPhaseObserver = (
-  renderId: string,
-  phase: RenderPhase,
-) => void;
+export interface RenderObserverEvent {
+  readonly invocationId: string;
+  readonly phase: RenderPhase;
+  readonly correlationId?: string;
+}
+
+export type RenderPhaseObserver = (event: RenderObserverEvent) => void;
 
 export interface PlaywrightPdfRendererOptions {
   readonly renderSettleTimeoutMs: number;
@@ -37,7 +41,6 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
   private browser: Browser | undefined;
   private closing = false;
   private renderSequence = 0;
-  public lastAbortedRequestCount = 0;
   public readonly renderSettleTimeoutMs: number;
   public readonly pdfRenderTimeoutMs: number;
   private readonly observer?: RenderPhaseObserver;
@@ -111,19 +114,43 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     return this.browser ? this.browser.contexts().length : 0;
   }
 
+  private notifyObserver(
+    invocationId: string,
+    phase: RenderPhase,
+    correlationId?: string,
+  ): void {
+    if (!this.observer) {
+      return;
+    }
+    try {
+      this.observer({ invocationId, phase, correlationId });
+    } catch (err: unknown) {
+      const errorClassName = (err as object)?.constructor?.name || 'Error';
+      this.logger.warn(
+        `Render observer failed at phase ${phase}: ${errorClassName}`,
+      );
+    }
+  }
+
   public async renderHtmlToPdf(
     html: string,
     options: PdfRenderOptions,
   ): Promise<Buffer> {
-    const renderId = options.renderId ?? `render-${++this.renderSequence}`;
-    this.lastAbortedRequestCount = 0;
+    const invocationId = `render-${++this.renderSequence}`;
+    const correlationId = options.correlationId ?? options.renderId;
     this.throwIfBudgetExhausted(options);
 
     const browser = await this.getBrowser();
     this.throwIfBudgetExhausted(options);
 
     const context = await browser.newContext({ javaScriptEnabled: false });
-    return await this.renderInContext(context, html, options, renderId);
+    return await this.renderInContext(
+      context,
+      html,
+      options,
+      invocationId,
+      correlationId,
+    );
   }
 
   private throwIfBudgetExhausted(options: PdfRenderOptions): void {
@@ -209,7 +236,8 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     context: BrowserContext,
     html: string,
     options: PdfRenderOptions,
-    renderId: string,
+    invocationId: string,
+    correlationId?: string,
   ): Promise<Buffer> {
     let closed = false;
     const closeOnce = async (): Promise<void> => {
@@ -218,7 +246,11 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
       try {
         await this.closeContextBounded(context);
       } finally {
-        this.observer?.(renderId, RENDER_PHASES.CONTEXT_CLOSED);
+        this.notifyObserver(
+          invocationId,
+          RENDER_PHASES.CONTEXT_CLOSED,
+          correlationId,
+        );
       }
     };
 
@@ -231,7 +263,11 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
       }
 
       await context.route('**/*', (route) => {
-        this.lastAbortedRequestCount += 1;
+        this.notifyObserver(
+          invocationId,
+          RENDER_PHASES.REQUEST_ABORTED,
+          correlationId,
+        );
         return route.abort();
       });
 
@@ -242,7 +278,8 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
         html,
         options,
         closeOnce,
-        renderId,
+        invocationId,
+        correlationId,
       );
     } catch (error) {
       await closeOnce();
@@ -255,7 +292,8 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     html: string,
     options: PdfRenderOptions,
     closeOnce: () => Promise<void>,
-    renderId: string,
+    invocationId: string,
+    correlationId?: string,
   ): Promise<Buffer> {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -319,11 +357,23 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
 
       void (async () => {
         try {
-          this.observer?.(renderId, RENDER_PHASES.SET_CONTENT_STARTED);
+          this.notifyObserver(
+            invocationId,
+            RENDER_PHASES.SET_CONTENT_STARTED,
+            correlationId,
+          );
           await page.setContent(html, { waitUntil: 'domcontentloaded' });
           if (settled) return;
-          this.observer?.(renderId, RENDER_PHASES.SET_CONTENT_SETTLED);
-          this.observer?.(renderId, RENDER_PHASES.PDF_STARTED);
+          this.notifyObserver(
+            invocationId,
+            RENDER_PHASES.SET_CONTENT_SETTLED,
+            correlationId,
+          );
+          this.notifyObserver(
+            invocationId,
+            RENDER_PHASES.PDF_STARTED,
+            correlationId,
+          );
           const pdfBuffer = await page.pdf({
             format: 'A4',
             printBackground: true,

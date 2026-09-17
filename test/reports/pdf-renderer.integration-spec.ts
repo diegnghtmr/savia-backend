@@ -8,6 +8,7 @@ import {
   PdfRenderTimeoutError,
   PlaywrightPdfRenderer,
   RENDER_PHASES,
+  type RenderObserverEvent,
   type RenderPhase,
 } from '../../src/platform/playwright-pdf-renderer.js';
 import type { ReportGrid } from '../../src/reports/report-engine.js';
@@ -144,6 +145,16 @@ describe('PDF renderer integration (no DB)', () => {
 
   it('blocks page resource requests to external URLs', async () => {
     const { server, port, requestCount } = await listenLocal();
+    const abortedEvents: RenderObserverEvent[] = [];
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 2_000,
+      observer: (event) => {
+        if (event.phase === RENDER_PHASES.REQUEST_ABORTED) {
+          abortedEvents.push(event);
+        }
+      },
+    });
+
     try {
       const html = `<!DOCTYPE html>
 <html><head></head><body>
@@ -151,11 +162,18 @@ describe('PDF renderer integration (no DB)', () => {
 <link rel="stylesheet" href="http://127.0.0.1:${String(port)}/style.css" />
 </body></html>`;
 
-      await renderer.renderHtmlToPdf(html, { timeoutMs: 15_000 });
+      await localRenderer.renderHtmlToPdf(html, {
+        timeoutMs: 15_000,
+        correlationId: 'block-req',
+      });
 
-      expect(renderer.lastAbortedRequestCount).toBeGreaterThan(0);
+      expect(abortedEvents.length).toBeGreaterThan(0);
+      expect(abortedEvents.every((e) => e.correlationId === 'block-req')).toBe(
+        true,
+      );
       expect(requestCount.value).toBe(0);
     } finally {
+      await localRenderer.onModuleDestroy();
       await new Promise<void>((resolve) => {
         server.close(() => {
           resolve();
@@ -251,9 +269,9 @@ describe('PDF renderer integration (no DB)', () => {
     let abortTime = 0;
     const localRenderer = new PlaywrightPdfRenderer({
       renderSettleTimeoutMs: 2_000,
-      observer: (_renderId, phase) => {
-        phases.push(phase);
-        if (phase === RENDER_PHASES.SET_CONTENT_STARTED) {
+      observer: (event) => {
+        phases.push(event.phase);
+        if (event.phase === RENDER_PHASES.SET_CONTENT_STARTED) {
           abortTime = performance.now();
           controller.abort();
         }
@@ -290,12 +308,12 @@ describe('PDF renderer integration (no DB)', () => {
     }
   });
 
-  it('attributes render phases to the correct per-render id for overlapping renders', async () => {
-    const events: Array<{ renderId: string; phase: RenderPhase }> = [];
+  it('attributes render phases to distinct invocation ids for overlapping renders with the same caller correlation id', async () => {
+    const events: RenderObserverEvent[] = [];
     const localRenderer = new PlaywrightPdfRenderer({
       renderSettleTimeoutMs: 2_000,
-      observer: (renderId, phase) => {
-        events.push({ renderId, phase });
+      observer: (event) => {
+        events.push(event);
       },
     });
 
@@ -308,38 +326,106 @@ describe('PDF renderer integration (no DB)', () => {
       const [pdf1, pdf2] = await Promise.all([
         localRenderer.renderHtmlToPdf(html1, {
           timeoutMs: 10_000,
-          renderId: 'render-a',
+          correlationId: 'same-correlation-id',
         }),
         localRenderer.renderHtmlToPdf(html2, {
           timeoutMs: 10_000,
-          renderId: 'render-b',
+          correlationId: 'same-correlation-id',
         }),
       ]);
 
       expect(pdf1.subarray(0, 5).toString('ascii')).toBe('%PDF-');
       expect(pdf2.subarray(0, 5).toString('ascii')).toBe('%PDF-');
 
-      const renderAPhases = events
-        .filter((e) => e.renderId === 'render-a')
+      const invocationIds = [...new Set(events.map((e) => e.invocationId))];
+      expect(invocationIds).toHaveLength(2);
+      const [id1, id2] = invocationIds;
+
+      const render1Phases = events
+        .filter((e) => e.invocationId === id1)
         .map((e) => e.phase);
-      const renderBPhases = events
-        .filter((e) => e.renderId === 'render-b')
+      const render2Phases = events
+        .filter((e) => e.invocationId === id2)
         .map((e) => e.phase);
 
-      expect(renderAPhases).toEqual([
+      const expectedPhases = [
         RENDER_PHASES.SET_CONTENT_STARTED,
         RENDER_PHASES.SET_CONTENT_SETTLED,
         RENDER_PHASES.PDF_STARTED,
         RENDER_PHASES.CONTEXT_CLOSED,
-      ]);
-      expect(renderBPhases).toEqual([
-        RENDER_PHASES.SET_CONTENT_STARTED,
-        RENDER_PHASES.SET_CONTENT_SETTLED,
-        RENDER_PHASES.PDF_STARTED,
-        RENDER_PHASES.CONTEXT_CLOSED,
-      ]);
+      ];
+
+      expect(render1Phases).toEqual(expectedPhases);
+      expect(render2Phases).toEqual(expectedPhases);
+
+      for (const event of events) {
+        expect(event.correlationId).toBe('same-correlation-id');
+      }
     } finally {
       await localRenderer.onModuleDestroy();
+    }
+  });
+
+  it('continues rendering successfully and returns identical PDF bytes when observer throws at any phase', async () => {
+    class CustomObserverError extends Error {
+      public constructor(phase: string) {
+        super(`Observer threw at phase ${phase}`);
+        this.name = 'CustomObserverError';
+      }
+    }
+
+    const testHtml =
+      '<!DOCTYPE html><html><body><p>Observer resilience</p><img src="http://127.0.0.1:9999/test-img.png" /></body></html>';
+
+    const baselineRenderer = new PlaywrightPdfRenderer(2_000);
+    let baselineBytes: Buffer;
+    try {
+      baselineBytes = await baselineRenderer.renderHtmlToPdf(testHtml, {
+        timeoutMs: 15_000,
+      });
+    } finally {
+      await baselineRenderer.onModuleDestroy();
+    }
+
+    for (const failingPhase of Object.values(RENDER_PHASES)) {
+      const warnLogs: string[] = [];
+      const mockLogger = {
+        warn: (msg: string) => warnLogs.push(msg),
+        log: () => {},
+        error: () => {},
+        debug: () => {},
+        verbose: () => {},
+      } as unknown as Logger;
+
+      const throwingRenderer = new PlaywrightPdfRenderer({
+        renderSettleTimeoutMs: 2_000,
+        logger: mockLogger,
+        observer: (event) => {
+          if (event.phase === failingPhase) {
+            throw new CustomObserverError(failingPhase);
+          }
+        },
+      });
+
+      try {
+        const pdf = await throwingRenderer.renderHtmlToPdf(testHtml, {
+          timeoutMs: 15_000,
+        });
+
+        expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+        expect(Buffer.compare(pdf, baselineBytes)).toBe(0);
+
+        expect(
+          warnLogs.some(
+            (msg) =>
+              msg.includes(
+                `Render observer failed at phase ${failingPhase}: CustomObserverError`,
+              ) && !msg.includes('Observer threw at phase'),
+          ),
+        ).toBe(true);
+      } finally {
+        await throwingRenderer.onModuleDestroy();
+      }
     }
   });
 
