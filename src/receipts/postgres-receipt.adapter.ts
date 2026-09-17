@@ -34,6 +34,7 @@ export class PostgresReceiptAdapter implements ReceiptStore {
     id: string,
     command: ReceiptUploadCommand,
     storagePath: string,
+    jobId?: string,
   ): Promise<Receipt> {
     const location =
       command.processingPreference ===
@@ -45,8 +46,8 @@ export class PostgresReceiptAdapter implements ReceiptStore {
           : RECEIPT_PROCESSING_LOCATIONS.SAVIA;
     const fields = toReceiptFields(command.deviceOcrResult);
     const result = await client.query<ReceiptRow>(
-      `insert into public.receipts (id, workspace_id, status, file_name, processing_location, storage_path, merchant, date, currency, total, created_by)
-       values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11::uuid)
+      `insert into public.receipts (id, workspace_id, status, file_name, processing_location, storage_path, merchant, date, currency, total, created_by, job_id)
+       values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11::uuid, $12::uuid)
        returning id::text, status, file_name as "fileName", processing_location as "processingLocation", merchant, date, currency, total, transaction_id::text as "transactionId", created_at as "createdAt"`,
       [
         id,
@@ -63,6 +64,7 @@ export class PostgresReceiptAdapter implements ReceiptStore {
         fields.currency,
         fields.total,
         subject,
+        jobId ?? null,
       ],
     );
     return toReceipt(result.rows[0]);

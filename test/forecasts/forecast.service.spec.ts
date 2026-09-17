@@ -190,7 +190,7 @@ class FakeJobWriter implements JobWriter {
     _subject: string,
     type: string,
     payload?: Record<string, unknown> | null,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<Job> {
     this.createdQueuedPayloads.push(payload ?? null);
     const job: Job = {
       id: 'job-uuid-queued-1',
@@ -204,7 +204,7 @@ class FakeJobWriter implements JobWriter {
       completedAt: null,
     };
     this.createdJobs.push(job);
-    return job as unknown as Record<string, unknown>;
+    return job;
   }
 
   public async transitionToProcessing(

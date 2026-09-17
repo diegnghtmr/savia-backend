@@ -8,6 +8,7 @@ export const JOB_WRITER_TYPES = {
   BALANCE_FORECAST: 'balance_forecast',
   REPORT_RUN: 'report_run',
   EXPORT_JOB: 'export_job',
+  RECEIPT_OCR: 'receipt_ocr',
 } as const;
 
 export type JobWriterType =
@@ -46,7 +47,7 @@ export interface JobWriter {
     subject: string,
     type: JobWriterType,
     payload?: Record<string, unknown> | null,
-  ): Promise<Record<string, unknown>>;
+  ): Promise<JobRecord>;
 
   transitionToProcessing(
     client: TransactionClient,

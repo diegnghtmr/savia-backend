@@ -326,6 +326,9 @@ jobs:
       - name: receipts integration
         shell: bash
         run: pnpm test:integration:receipts
+      - name: receipt foundation integration
+        shell: bash
+        run: pnpm test:integration:receipt-foundation
       - name: MCP grants integration
         shell: bash
         run: pnpm test:integration:mcp-grants

@@ -68,6 +68,7 @@ export interface ReceiptStore {
     id: string,
     command: ReceiptUploadCommand,
     storagePath: string,
+    jobId?: string,
   ): Promise<Receipt>;
   find(
     client: TransactionClient,
