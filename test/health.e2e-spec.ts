@@ -170,6 +170,8 @@ describe('health endpoint', () => {
       'PATCH /v1/ai/credentials/:id',
       'DELETE /v1/ai/credentials/:id',
       'PUT /v1/ai/default-model',
+      'GET /v1/agent/conversations',
+      'POST /v1/agent/conversations',
     ]);
 
     await app.close();

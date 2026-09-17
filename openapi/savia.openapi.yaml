@@ -2442,6 +2442,23 @@ components:
         expiresAt: { type: [string, 'null'], format: date-time }
         createdAt: { $ref: '#/components/schemas/DateTime' }
       additionalProperties: false
+    AgentConversation:
+      type: object
+      required: [id, title, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        title: { type: string }
+        modelRef: { type: [string, 'null'] }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+      additionalProperties: false
+    CreateAgentConversationRequest:
+      type: object
+      properties:
+        title: { type: [string, 'null'], maxLength: 120 }
+        modelRef: { type: [string, 'null'] }
+        credentialId: { type: [string, 'null'], format: uuid }
+      additionalProperties: false
     CreateMcpGrantRequest:
       type: object
       required: [clientName, scopes, workspaceIds]
@@ -7941,6 +7958,63 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/agent/conversations:
+    get:
+      operationId: listAgentConversations
+      summary: List agent conversations
+      tags: [Agent]
+      parameters:
+        - { $ref: '#/components/parameters/WorkspaceIdHeader' }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Conversation page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pageInfo]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: '#/components/schemas/AgentConversation' },
+                    }
+                  pageInfo: { $ref: '#/components/schemas/PageInfo' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createAgentConversation
+      summary: Create agent conversation
+      tags: [Agent]
+      parameters:
+        - { $ref: '#/components/parameters/WorkspaceIdHeader' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            {
+              schema:
+                { $ref: '#/components/schemas/CreateAgentConversationRequest' },
+            }
+      responses:
+        '201':
+          description: Conversation created.
+          content:
+            application/json:
+              { schema: { $ref: '#/components/schemas/AgentConversation' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
   /v1/mcp/grants:
     get:
       operationId: listMcpGrants

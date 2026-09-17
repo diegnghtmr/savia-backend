@@ -311,6 +311,9 @@ jobs:
       - name: AI credentials integration
         shell: bash
         run: pnpm test:integration:ai-credentials
+      - name: Agent conversations integration
+        shell: bash
+        run: pnpm test:integration:agent-conversations
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction
