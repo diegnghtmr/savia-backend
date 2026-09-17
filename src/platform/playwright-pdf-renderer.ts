@@ -129,6 +129,8 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
   private async closeContextBounded(context: BrowserContext): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     let didTimeout = false;
+    let didReject = false;
+    let closeError: unknown;
     const timeoutPromise = new Promise<void>((resolve) => {
       timer = setTimeout(() => {
         didTimeout = true;
@@ -137,14 +139,57 @@ export class PlaywrightPdfRenderer implements PdfRenderer, OnModuleDestroy {
     });
     try {
       await Promise.race([
-        context.close().catch(() => undefined),
+        context.close().catch((err: unknown) => {
+          didReject = true;
+          closeError = err;
+        }),
         timeoutPromise,
       ]);
       if (didTimeout) {
-        process.stderr.write(
-          `[PlaywrightPdfRenderer] Browser context close exceeded ${String(this.renderSettleTimeoutMs)}ms cap.\n`,
+        this.quarantineBrowser(
+          context,
+          `Browser context close exceeded ${String(this.renderSettleTimeoutMs)}ms cap.`,
+        );
+      } else if (didReject) {
+        const message =
+          closeError instanceof Error ? closeError.message : String(closeError);
+        this.quarantineBrowser(
+          context,
+          `Browser context close rejected: ${message}`,
         );
       }
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  private quarantineBrowser(context: BrowserContext, reason: string): void {
+    const contextBrowser =
+      typeof context.browser === 'function' ? context.browser() : null;
+    const oldBrowser = contextBrowser ?? this.browser;
+    this.browser = undefined;
+    this.browserPromise = undefined;
+    this.logger.warn(`Quarantining browser: ${reason}`);
+    if (oldBrowser != null) {
+      void this.closeBrowserBounded(oldBrowser);
+    }
+  }
+
+  private async closeBrowserBounded(browser: Browser): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.renderSettleTimeoutMs);
+    });
+    try {
+      await Promise.race([
+        browser.close().catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`Quarantined browser close rejected: ${message}`);
+        }),
+        timeoutPromise,
+      ]);
     } finally {
       if (timer !== undefined) {
         clearTimeout(timer);

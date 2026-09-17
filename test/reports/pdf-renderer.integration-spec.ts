@@ -1,6 +1,8 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { Logger } from '@nestjs/common';
+import type { Browser, BrowserContext } from 'playwright-core';
 import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import {
   PdfRenderTimeoutError,
@@ -379,5 +381,185 @@ describe('PDF renderer integration (no DB)', () => {
 
     expect(error).toBeInstanceOf(DeliveryDeadlineExceededError);
     expect(renderer.openContextCount()).toBe(0);
+  });
+
+  it('quarantines browser and launches fresh browser on next render when context close rejects', async () => {
+    let launchCount = 0;
+    const warnLogs: string[] = [];
+
+    const mockLogger = {
+      warn: (msg: string) => warnLogs.push(msg),
+      log: () => {},
+      error: () => {},
+      debug: () => {},
+      verbose: () => {},
+    } as unknown as Logger;
+
+    const fakeBrowser1: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => {
+        return {
+          browser: () => fakeBrowser1,
+          route: vi.fn(async () => {}),
+          newPage: vi.fn(async () => ({
+            setContent: vi.fn(async () => {}),
+            pdf: vi.fn(async () => Buffer.from('%PDF-1.4 test1')),
+          })),
+          close: vi.fn(async () => {
+            throw new Error('Forced context close rejection');
+          }),
+        } as unknown as BrowserContext;
+      }),
+    } as unknown as Browser;
+
+    const fakeBrowser2: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => {
+        return {
+          browser: () => fakeBrowser2,
+          route: vi.fn(async () => {}),
+          newPage: vi.fn(async () => ({
+            setContent: vi.fn(async () => {}),
+            pdf: vi.fn(async () => Buffer.from('%PDF-1.4 test2')),
+          })),
+          close: vi.fn(async () => {}),
+        } as unknown as BrowserContext;
+      }),
+    } as unknown as Browser;
+
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 100,
+      browserLauncher: async () => {
+        launchCount += 1;
+        return launchCount === 1 ? fakeBrowser1 : fakeBrowser2;
+      },
+      logger: mockLogger,
+    });
+
+    try {
+      const start1 = performance.now();
+      const pdf1 = await localRenderer.renderHtmlToPdf('<p>one</p>', {
+        timeoutMs: 5_000,
+      });
+      const elapsed1 = performance.now() - start1;
+
+      expect(pdf1.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(elapsed1).toBeLessThan(100);
+      expect(launchCount).toBe(1);
+
+      // Verify browser 1 was closed in background
+      expect(fakeBrowser1.close).toHaveBeenCalled();
+
+      // Verify warning logged
+      expect(
+        warnLogs.some(
+          (l) =>
+            l.includes('Quarantining browser') &&
+            l.includes('Forced context close rejection'),
+        ),
+      ).toBe(true);
+
+      // Next render must use a fresh browser
+      const pdf2 = await localRenderer.renderHtmlToPdf('<p>two</p>', {
+        timeoutMs: 5_000,
+      });
+
+      expect(pdf2.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(launchCount).toBe(2);
+      expect(fakeBrowser2.newContext).toHaveBeenCalled();
+    } finally {
+      await localRenderer.onModuleDestroy();
+    }
+  });
+
+  it('quarantines browser and launches fresh browser on next render when context close never settles', async () => {
+    let launchCount = 0;
+    const warnLogs: string[] = [];
+
+    const mockLogger = {
+      warn: (msg: string) => warnLogs.push(msg),
+      log: () => {},
+      error: () => {},
+      debug: () => {},
+      verbose: () => {},
+    } as unknown as Logger;
+
+    const fakeBrowser1: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => {
+        return {
+          browser: () => fakeBrowser1,
+          route: vi.fn(async () => {}),
+          newPage: vi.fn(async () => ({
+            setContent: vi.fn(async () => {}),
+            pdf: vi.fn(async () => Buffer.from('%PDF-1.4 test1')),
+          })),
+          close: vi.fn(async () => new Promise<void>(() => {})),
+        } as unknown as BrowserContext;
+      }),
+    } as unknown as Browser;
+
+    const fakeBrowser2: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => {
+        return {
+          browser: () => fakeBrowser2,
+          route: vi.fn(async () => {}),
+          newPage: vi.fn(async () => ({
+            setContent: vi.fn(async () => {}),
+            pdf: vi.fn(async () => Buffer.from('%PDF-1.4 test2')),
+          })),
+          close: vi.fn(async () => {}),
+        } as unknown as BrowserContext;
+      }),
+    } as unknown as Browser;
+
+    const settleTimeoutMs = 60;
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: settleTimeoutMs,
+      browserLauncher: async () => {
+        launchCount += 1;
+        return launchCount === 1 ? fakeBrowser1 : fakeBrowser2;
+      },
+      logger: mockLogger,
+    });
+
+    try {
+      const start1 = performance.now();
+      const pdf1 = await localRenderer.renderHtmlToPdf('<p>one</p>', {
+        timeoutMs: 5_000,
+      });
+      const elapsed1 = performance.now() - start1;
+
+      expect(pdf1.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(elapsed1).toBeGreaterThanOrEqual(settleTimeoutMs - 10);
+      expect(elapsed1).toBeLessThan(settleTimeoutMs + 100);
+      expect(launchCount).toBe(1);
+
+      // Verify browser 1 close was called
+      expect(fakeBrowser1.close).toHaveBeenCalled();
+
+      // Verify warning logged
+      expect(
+        warnLogs.some(
+          (l) => l.includes('Quarantining browser') && l.includes('cap'),
+        ),
+      ).toBe(true);
+
+      // Next render must use a fresh browser
+      const pdf2 = await localRenderer.renderHtmlToPdf('<p>two</p>', {
+        timeoutMs: 5_000,
+      });
+
+      expect(pdf2.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(launchCount).toBe(2);
+      expect(fakeBrowser2.newContext).toHaveBeenCalled();
+    } finally {
+      await localRenderer.onModuleDestroy();
+    }
   });
 });
