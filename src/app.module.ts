@@ -23,6 +23,7 @@ import { ApprovalsModule } from './approvals/approvals.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { ReceiptsModule } from './receipts/receipts.module.js';
 import { McpGrantsModule } from './mcp/mcp-grants.module.js';
+import { AICredentialsModule } from './ai/ai-credentials.module.js';
 
 @Module({
   controllers: [HealthController],
@@ -49,6 +50,7 @@ import { McpGrantsModule } from './mcp/mcp-grants.module.js';
     NotificationsModule,
     ReceiptsModule,
     McpGrantsModule,
+    AICredentialsModule,
   ],
 })
 export class AppModule {}

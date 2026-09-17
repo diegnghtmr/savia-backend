@@ -4,5 +4,6 @@ export default defineConfig({
   test: {
     include: ['test/**/*.integration-spec.ts'],
     fileParallelism: false,
+    setupFiles: ['test/setup.ts'],
   },
 });

@@ -45,6 +45,11 @@ components:
         type: string
         format: uuid
         maxLength: 255
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      schema: { type: string, examples: ['"7"'] }
   responses:
     Unauthorized:
       description: Unauthorized.
@@ -71,6 +76,20 @@ components:
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/ProblemDetails' }
+    PreconditionFailed:
+      description: The supplied ETag does not match the current resource version.
+      content:
+        {
+          application/problem+json:
+            { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+        }
+    ServiceUnavailable:
+      description: A required service or provider is temporarily unavailable.
+      content:
+        {
+          application/problem+json:
+            { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+        }
   schemas:
     OnboardingRequest:
       type: object
@@ -2075,6 +2094,111 @@ components:
         filters:
           type: object
           additionalProperties: true
+      additionalProperties: false
+    AIProviderDescriptor:
+      type: object
+      required:
+        [providerId, displayName, credentialTypes, enabled, policyStatus]
+      properties:
+        providerId: { type: string }
+        displayName: { type: string }
+        credentialTypes:
+          {
+            type: array,
+            items:
+              {
+                type: string,
+                enum:
+                  [
+                    api_key,
+                    oauth,
+                    service_account,
+                    access_token,
+                    gateway_token,
+                    local_endpoint,
+                  ],
+              },
+          }
+        enabled: { type: boolean }
+        policyStatus:
+          {
+            type: string,
+            enum: [approved, restricted, disabled, pending_review],
+          }
+        models: { type: array, items: { type: string } }
+      additionalProperties: false
+    AICredentialMetadata:
+      type: object
+      required:
+        [
+          id,
+          ownerType,
+          providerId,
+          credentialType,
+          maskedIdentifier,
+          status,
+          createdAt,
+        ]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        ownerType: { type: string, enum: [user, workspace] }
+        providerId: { type: string }
+        credentialType:
+          {
+            type: string,
+            enum:
+              [
+                api_key,
+                oauth,
+                service_account,
+                access_token,
+                gateway_token,
+                local_endpoint,
+              ],
+          }
+        maskedIdentifier: { type: string }
+        alias: { type: [string, 'null'] }
+        status: { type: string, enum: [active, disabled, revoked] }
+        lastUsedAt: { type: [string, 'null'], format: date-time }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+      additionalProperties: false
+    CreateAICredentialRequest:
+      type: object
+      required: [ownerType, providerId, credentialType, secret]
+      properties:
+        ownerType: { type: string, enum: [user, workspace] }
+        providerId: { type: string }
+        credentialType:
+          {
+            type: string,
+            enum:
+              [
+                api_key,
+                service_account,
+                access_token,
+                gateway_token,
+                local_endpoint,
+              ],
+          }
+        secret: { type: string, minLength: 1, writeOnly: true }
+        alias: { type: [string, 'null'], maxLength: 120 }
+        metadata: { type: object, additionalProperties: { type: string } }
+      additionalProperties: false
+    UpdateAICredentialRequest:
+      type: object
+      properties:
+        alias: { type: [string, 'null'], maxLength: 120 }
+        status: { type: string, enum: [active, disabled] }
+        replacementSecret: { type: string, minLength: 1, writeOnly: true }
+      additionalProperties: false
+      minProperties: 1
+    SetDefaultAIModelRequest:
+      type: object
+      required: [modelRef]
+      properties:
+        modelRef: { type: string, pattern: '^[a-z0-9][a-z0-9-]*:.+$' }
+        credentialId: { type: [string, 'null'], format: uuid }
       additionalProperties: false
     ReportRun:
       type: object
@@ -7375,6 +7499,184 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/ai/providers:
+    get:
+      operationId: listAIProviders
+      summary: List supported AI providers
+      tags: [AI Providers]
+      responses:
+        '200':
+          {
+            description: Provider descriptors.,
+            content:
+              {
+                application/json:
+                  {
+                    schema:
+                      {
+                        type: array,
+                        items:
+                          { $ref: '#/components/schemas/AIProviderDescriptor' },
+                      },
+                  },
+              },
+          }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+      parameters: [{ $ref: '#/components/parameters/WorkspaceIdHeader' }]
+  /v1/ai/credentials:
+    get:
+      operationId: listAICredentials
+      summary: List masked AI credential metadata
+      tags: [AI Providers]
+      responses:
+        '200':
+          {
+            description: Credential metadata.,
+            content:
+              {
+                application/json:
+                  {
+                    schema:
+                      {
+                        type: array,
+                        items:
+                          { $ref: '#/components/schemas/AICredentialMetadata' },
+                      },
+                  },
+              },
+          }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+      parameters: [{ $ref: '#/components/parameters/WorkspaceIdHeader' }]
+    post:
+      operationId: createAICredential
+      summary: Register provider-specific credential
+      tags: [AI Providers]
+      responses:
+        '201':
+          {
+            description: Credential registered.,
+            content:
+              {
+                application/json:
+                  {
+                    schema:
+                      { $ref: '#/components/schemas/AICredentialMetadata' },
+                  },
+              },
+          }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+      parameters:
+        [
+          { $ref: '#/components/parameters/WorkspaceIdHeader' },
+          { $ref: '#/components/parameters/IdempotencyKey' },
+        ]
+      requestBody:
+        {
+          required: true,
+          content:
+            {
+              application/json:
+                {
+                  schema:
+                    { $ref: '#/components/schemas/CreateAICredentialRequest' },
+                },
+            },
+        }
+  /v1/ai/credentials/{credentialId}:
+    parameters:
+      - {
+          name: credentialId,
+          in: path,
+          required: true,
+          schema: { $ref: '#/components/schemas/Uuid' },
+        }
+      - { $ref: '#/components/parameters/WorkspaceIdHeader' }
+    patch:
+      operationId: updateAICredential
+      summary: Update, disable or rotate AI credential
+      tags: [AI Providers]
+      responses:
+        '200':
+          {
+            description: Credential updated.,
+            content:
+              {
+                application/json:
+                  {
+                    schema:
+                      { $ref: '#/components/schemas/AICredentialMetadata' },
+                  },
+              },
+          }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+      parameters:
+        [
+          { $ref: '#/components/parameters/IdempotencyKey' },
+          { $ref: '#/components/parameters/IfMatch' },
+        ]
+      requestBody:
+        {
+          required: true,
+          content:
+            {
+              application/json:
+                {
+                  schema:
+                    { $ref: '#/components/schemas/UpdateAICredentialRequest' },
+                },
+            },
+        }
+    delete:
+      operationId: revokeAICredential
+      summary: Revoke AI credential
+      tags: [AI Providers]
+      responses:
+        '204': { description: Credential revoked. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+  /v1/ai/default-model:
+    put:
+      operationId: setDefaultAIModel
+      summary: Set default provider and model
+      tags: [AI Providers]
+      responses:
+        '204': { description: Default model updated. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+      parameters:
+        [
+          { $ref: '#/components/parameters/WorkspaceIdHeader' },
+          { $ref: '#/components/parameters/IdempotencyKey' },
+        ]
+      requestBody:
+        {
+          required: true,
+          content:
+            {
+              application/json:
+                {
+                  schema:
+                    { $ref: '#/components/schemas/SetDefaultAIModelRequest' },
+                },
+            },
+        }
   /v1/approvals/{approvalId}:
     parameters:
       - name: approvalId
