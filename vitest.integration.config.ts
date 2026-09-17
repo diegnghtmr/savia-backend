@@ -5,6 +5,5 @@ export default defineConfig({
     include: ['test/**/*.integration-spec.ts'],
     fileParallelism: false,
     setupFiles: ['test/setup.ts'],
-    hookTimeout: 60_000,
   },
 });

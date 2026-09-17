@@ -1,4 +1,4 @@
-// Migrations under test: 202608240005_ledger_postings.sql, 202609170001_ledger_postings_deferred_balance.sql
+// Migrations under test: 202608240005_ledger_postings.sql, 202609170001_ledger_postings_deferred_balance.sql, 202609170002_ledger_balance_signal.sql
 import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -551,7 +551,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       expect(res.rows[0].data_type).toBe('bigint');
     });
 
-    it('8. The balance trigger architecture: row trigger records touched parents, deferred constraint trigger validates set-based at commit, both functions are SECURITY DEFINER owned by savia_elevated, and ledger_balance_pending is FORCED RLS', async () => {
+    it('8. The balance trigger architecture: row trigger records touched parents, deferred constraint trigger validates set-based at commit on ledger_balance_signal, both functions are SECURITY DEFINER owned by savia_elevated, and both bookkeeping tables are FORCED RLS', async () => {
       // 1. Row trigger on ledger_postings: records affected parents
       const rowTriggerRes = await admin.query<{
         tgname: string;
@@ -577,7 +577,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       expect(rowTrigger.proowner).toBe('savia_elevated');
       expect(rowTrigger.tgtype & 1).toBe(1); // ROW-level trigger
 
-      // 2. Deferred constraint trigger on ledger_balance_pending
+      // 2. Deferred constraint trigger on ledger_balance_signal
       const constraintTriggerRes = await admin.query<{
         tgisinternal: boolean;
         tgdeferrable: boolean;
@@ -594,7 +594,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
                 p.proowner::regrole::text as proowner
            from pg_trigger t
            join pg_proc p on p.oid = t.tgfoid
-          where t.tgrelid = 'public.ledger_balance_pending'::regclass
+          where t.tgrelid = 'public.ledger_balance_signal'::regclass
             and t.tgname = 'enforce_ledger_balance_pending_trigger'`,
       );
       expect(constraintTriggerRes.rows).toHaveLength(1);
@@ -606,43 +606,58 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       expect(constraintTrigger.prosecdef).toBe(true);
       expect(constraintTrigger.proowner).toBe('savia_elevated');
 
-      // 3. Forced RLS and privileges on ledger_balance_pending
-      const pendingSecurityRes = await admin.query<{
-        has_rls: boolean;
-        force_rls: boolean;
-        elevated_can_select: boolean;
-        elevated_can_insert: boolean;
-        elevated_can_delete: boolean;
-        app_can_select: boolean;
-        app_can_insert: boolean;
-        app_can_delete: boolean;
-        policy_count: number;
-      }>(
-        `select c.relrowsecurity as has_rls,
-                c.relforcerowsecurity as force_rls,
-                has_table_privilege('savia_elevated', 'public.ledger_balance_pending', 'select') as elevated_can_select,
-                has_table_privilege('savia_elevated', 'public.ledger_balance_pending', 'insert') as elevated_can_insert,
-                has_table_privilege('savia_elevated', 'public.ledger_balance_pending', 'delete') as elevated_can_delete,
-                has_table_privilege('savia_application', 'public.ledger_balance_pending', 'select') as app_can_select,
-                has_table_privilege('savia_application', 'public.ledger_balance_pending', 'insert') as app_can_insert,
-                has_table_privilege('savia_application', 'public.ledger_balance_pending', 'delete') as app_can_delete,
-                (select count(*)::int from pg_policy where polrelid = 'public.ledger_balance_pending'::regclass) as policy_count
-           from pg_class c
-          where c.oid = 'public.ledger_balance_pending'::regclass`,
+      // The detail table (ledger_balance_pending) MUST NOT have any constraint trigger
+      const pendingConstraintRes = await admin.query<{ count: number }>(
+        `select count(*)::int as count
+           from pg_trigger
+          where tgrelid = 'public.ledger_balance_pending'::regclass
+            and tgname = 'enforce_ledger_balance_pending_trigger'`,
       );
-      expect(pendingSecurityRes.rows).toHaveLength(1);
-      const sec = pendingSecurityRes.rows[0];
-      expect(sec.has_rls).toBe(true);
-      expect(sec.force_rls).toBe(true);
-      expect(sec.elevated_can_select).toBe(true);
-      expect(sec.elevated_can_insert).toBe(true);
-      expect(sec.elevated_can_delete).toBe(true);
-      // savia_application holds NO privileges on the bookkeeping table
-      expect(sec.app_can_select).toBe(false);
-      expect(sec.app_can_insert).toBe(false);
-      expect(sec.app_can_delete).toBe(false);
-      // exactly 1 policy (elevated_manages_ledger_balance_pending), no policy for app
-      expect(sec.policy_count).toBe(1);
+      expect(pendingConstraintRes.rows[0].count).toBe(0);
+
+      // 3. Forced RLS and privileges on both ledger_balance_pending and ledger_balance_signal
+      for (const table of [
+        'public.ledger_balance_pending',
+        'public.ledger_balance_signal',
+      ] as const) {
+        const securityRes = await admin.query<{
+          has_rls: boolean;
+          force_rls: boolean;
+          elevated_can_select: boolean;
+          elevated_can_insert: boolean;
+          elevated_can_delete: boolean;
+          app_can_select: boolean;
+          app_can_insert: boolean;
+          app_can_delete: boolean;
+          policy_count: number;
+        }>(
+          `select c.relrowsecurity as has_rls,
+                  c.relforcerowsecurity as force_rls,
+                  has_table_privilege('savia_elevated', $1, 'select') as elevated_can_select,
+                  has_table_privilege('savia_elevated', $1, 'insert') as elevated_can_insert,
+                  has_table_privilege('savia_elevated', $1, 'delete') as elevated_can_delete,
+                  has_table_privilege('savia_application', $1, 'select') as app_can_select,
+                  has_table_privilege('savia_application', $1, 'insert') as app_can_insert,
+                  has_table_privilege('savia_application', $1, 'delete') as app_can_delete,
+                  (select count(*)::int from pg_policy where polrelid = $1::regclass) as policy_count
+             from pg_class c
+            where c.oid = $1::regclass`,
+          [table],
+        );
+        expect(securityRes.rows).toHaveLength(1);
+        const sec = securityRes.rows[0];
+        expect(sec.has_rls).toBe(true);
+        expect(sec.force_rls).toBe(true);
+        expect(sec.elevated_can_select).toBe(true);
+        expect(sec.elevated_can_insert).toBe(true);
+        expect(sec.elevated_can_delete).toBe(true);
+        // savia_application holds NO privileges on bookkeeping tables
+        expect(sec.app_can_select).toBe(false);
+        expect(sec.app_can_insert).toBe(false);
+        expect(sec.app_can_delete).toBe(false);
+        // exactly 1 policy (elevated_manages_*), no policy for app
+        expect(sec.policy_count).toBe(1);
+      }
 
       // PUBLIC cannot execute either definer function
       const publicExecRes = await admin.query<{
@@ -1002,7 +1017,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       }
     });
 
-    it('12h. PRIVILEGE & BYPASS PROOF: savia_application cannot insert into or delete from the bookkeeping table (permission denied)', async () => {
+    it('12h. PRIVILEGE & BYPASS PROOF: savia_application cannot insert into or delete from the bookkeeping tables (permission denied)', async () => {
       const client = await admin.connect();
       try {
         await client.query('begin');
@@ -1035,6 +1050,37 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         );
         expect(deleteErr.code).toBe('42501');
         expect(deleteErr.message ?? '').toContain('permission denied');
+
+        await client.query('rollback');
+        await client.query('begin');
+        await client.query('set local role savia_application');
+        await client.query("select set_config('app.subject_id', $1, true)", [
+          ownerA,
+        ]);
+
+        const signalInsertErr = await capturePgError(() =>
+          client.query(
+            `insert into public.ledger_balance_signal (txid)
+             values (pg_current_xact_id())`,
+          ),
+        );
+        expect(signalInsertErr.code).toBe('42501');
+        expect(signalInsertErr.message ?? '').toContain('permission denied');
+
+        await client.query('rollback');
+        await client.query('begin');
+        await client.query('set local role savia_application');
+        await client.query("select set_config('app.subject_id', $1, true)", [
+          ownerA,
+        ]);
+
+        const signalDeleteErr = await capturePgError(() =>
+          client.query(
+            `delete from public.ledger_balance_signal where txid = pg_current_xact_id()`,
+          ),
+        );
+        expect(signalDeleteErr.code).toBe('42501');
+        expect(signalDeleteErr.message ?? '').toContain('permission denied');
       } finally {
         await client.query('rollback').catch(() => {});
         client.release();
@@ -1113,10 +1159,15 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       );
       await deletePostings(inserted.rows.map((r) => r.id));
 
-      const afterCommit = await admin.query<{ n: number }>(
+      const afterCommitPending = await admin.query<{ n: number }>(
         `select count(*)::int as n from public.ledger_balance_pending`,
       );
-      expect(afterCommit.rows[0].n).toBe(0);
+      expect(afterCommitPending.rows[0].n).toBe(0);
+
+      const afterCommitSignal = await admin.query<{ n: number }>(
+        `select count(*)::int as n from public.ledger_balance_signal`,
+      );
+      expect(afterCommitSignal.rows[0].n).toBe(0);
 
       // 2. After rollback
       const client = await admin.connect();
@@ -1133,13 +1184,18 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         client.release();
       }
 
-      const afterRollback = await admin.query<{ n: number }>(
+      const afterRollbackPending = await admin.query<{ n: number }>(
         `select count(*)::int as n from public.ledger_balance_pending`,
       );
-      expect(afterRollback.rows[0].n).toBe(0);
+      expect(afterRollbackPending.rows[0].n).toBe(0);
+
+      const afterRollbackSignal = await admin.query<{ n: number }>(
+        `select count(*)::int as n from public.ledger_balance_signal`,
+      );
+      expect(afterRollbackSignal.rows[0].n).toBe(0);
     });
 
-    it('12l. RUNS-ONCE PROOF: heavy check query runs exactly ONCE per transaction regardless of the number of affected parents', async () => {
+    it('12l. STRUCTURAL PROOF: exactly one signal row is queued for N parents in a transaction, and detail holds N rows', async () => {
       const client = await admin.connect();
       const parentCount = 5;
       const parentIds: string[] = [];
@@ -1162,9 +1218,6 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       const postingIds: string[] = [];
       try {
         await client.query('begin');
-        await client.query(
-          "select set_config('app.ledger_balance_check_invocations', '0', false)",
-        );
 
         for (const pid of parentIds) {
           const res = await client.query<{ id: string }>(
@@ -1178,12 +1231,34 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
           postingIds.push(...res.rows.map((r) => r.id));
         }
 
+        // Assert structural cardinality inside the active transaction using elevated connection:
+        // ledger_balance_signal has exactly 1 row for pg_current_xact_id()
+        // ledger_balance_pending has exactly N rows (5) for pg_current_xact_id()
+        const signalRes = await client.query<{ count: string }>(
+          `select count(*)::text as count
+             from public.ledger_balance_signal
+            where txid = pg_current_xact_id()`,
+        );
+        expect(signalRes.rows[0].count).toBe('1');
+
+        const pendingRes = await client.query<{ count: string }>(
+          `select count(*)::text as count
+             from public.ledger_balance_pending
+            where txid = pg_current_xact_id()`,
+        );
+        expect(pendingRes.rows[0].count).toBe(String(parentCount));
+
         await client.query('commit');
 
-        const invRes = await client.query<{ count: string }>(
-          "select current_setting('app.ledger_balance_check_invocations', true) as count",
+        // Verify cleanup after commit
+        const afterSignal = await admin.query<{ n: number }>(
+          `select count(*)::int as n from public.ledger_balance_signal`,
         );
-        expect(invRes.rows[0].count).toBe('1');
+        expect(afterSignal.rows[0].n).toBe(0);
+        const afterPending = await admin.query<{ n: number }>(
+          `select count(*)::int as n from public.ledger_balance_pending`,
+        );
+        expect(afterPending.rows[0].n).toBe(0);
       } finally {
         await client.query('rollback').catch(() => {});
         client.release();
@@ -1192,6 +1267,215 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
           'delete from public.transactions where id = any($1::uuid[])',
           [parentIds],
         );
+      }
+    });
+
+    it('12m. EARLY-FIRING CASE 1: new parent added after a forced early firing is caught at COMMIT', async () => {
+      const client = await admin.connect();
+      const parent2Id = '00000000-0000-0000-0000-00000000078a';
+      await admin.query(
+        `insert into public.transactions
+           (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
+         values ($1, $2, $3, 'expense', 'confirmed', '500', 'USD', '2026-08-24T12:00:00Z', $4)
+         on conflict do nothing`,
+        [parent2Id, ws1Id, account1Id, ownerA],
+      );
+      try {
+        await client.query('begin');
+        // 1. Insert a balanced pair for parent 1
+        await client.query(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           values ($1, $2, $3, 'account', '1000', 'USD', 'confirmed', '2026-08-24T12:00:00Z'),
+                  ($1, $2, null, 'external', '-1000', 'USD', 'confirmed', '2026-08-24T12:00:00Z')`,
+          [ws1Id, transaction1Id, account1Id],
+        );
+        // 2. Force early firing
+        await client.query(
+          'set constraints enforce_ledger_balance_pending_trigger immediate',
+        );
+        // 3. Return to deferred
+        await client.query(
+          'set constraints enforce_ledger_balance_pending_trigger deferred',
+        );
+        // 4. Insert an unbalanced leg for a NEW parent
+        await client.query(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           values ($1, $2, $3, 'account', '500', 'USD', 'confirmed', '2026-08-24T12:00:00Z')`,
+          [ws1Id, parent2Id, account1Id],
+        );
+        // 5. COMMIT must fail with 23514
+        const err = await capturePgError(() => client.query('commit'));
+        expect(err.code).toBe('23514');
+        expect(err.message ?? '').toContain(
+          'ledger postings must balance to zero per currency',
+        );
+      } finally {
+        await client.query('rollback').catch(() => {});
+        client.release();
+        await admin.query('delete from public.transactions where id = $1', [
+          parent2Id,
+        ]);
+      }
+    });
+
+    it('12n. EARLY-FIRING CASE 2: same parent updated with an unbalanced leg after forced early firing is caught at COMMIT', async () => {
+      const client = await admin.connect();
+      try {
+        await client.query('begin');
+        // 1. Insert a balanced pair for parent 1
+        await client.query(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           values ($1, $2, $3, 'account', '1000', 'USD', 'confirmed', '2026-08-24T12:00:00Z'),
+                  ($1, $2, null, 'external', '-1000', 'USD', 'confirmed', '2026-08-24T12:00:00Z')`,
+          [ws1Id, transaction1Id, account1Id],
+        );
+        // 2. Force early firing - checks parent 1 and deletes it from pending & signal
+        await client.query(
+          'set constraints enforce_ledger_balance_pending_trigger immediate',
+        );
+        // 3. Return to deferred
+        await client.query(
+          'set constraints enforce_ledger_balance_pending_trigger deferred',
+        );
+        // 4. Add an unbalanced leg to the SAME parent
+        await client.query(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           values ($1, $2, null, 'external', '250', 'USD', 'confirmed', '2026-08-24T12:00:00Z')`,
+          [ws1Id, transaction1Id],
+        );
+        // 5. COMMIT must fail with 23514
+        const err = await capturePgError(() => client.query('commit'));
+        expect(err.code).toBe('23514');
+        expect(err.message ?? '').toContain(
+          'ledger postings must balance to zero per currency',
+        );
+      } finally {
+        await client.query('rollback').catch(() => {});
+        client.release();
+      }
+    });
+
+    it('12o. STRUCTURAL OBSERVATION + UNBALANCED REFUSAL: one signal row observed, then unbalanced parent is refused at COMMIT', async () => {
+      const client = await admin.connect();
+      const parent2Id = '00000000-0000-0000-0000-00000000078b';
+      await admin.query(
+        `insert into public.transactions
+           (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
+         values ($1, $2, $3, 'expense', 'confirmed', '500', 'USD', '2026-08-24T12:00:00Z', $4)
+         on conflict do nothing`,
+        [parent2Id, ws1Id, account1Id, ownerA],
+      );
+      try {
+        await client.query('begin');
+        // Parent 1 is balanced
+        await client.query(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           values ($1, $2, $3, 'account', '1000', 'USD', 'confirmed', '2026-08-24T12:00:00Z'),
+                  ($1, $2, null, 'external', '-1000', 'USD', 'confirmed', '2026-08-24T12:00:00Z')`,
+          [ws1Id, transaction1Id, account1Id],
+        );
+        // Parent 2 is unbalanced (1 leg)
+        await client.query(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           values ($1, $2, $3, 'account', '500', 'USD', 'confirmed', '2026-08-24T12:00:00Z')`,
+          [ws1Id, parent2Id, account1Id],
+        );
+
+        // Structural check: exactly 1 signal row for this transaction, 2 detail rows
+        const signalRes = await client.query<{ count: string }>(
+          `select count(*)::text as count
+             from public.ledger_balance_signal
+            where txid = pg_current_xact_id()`,
+        );
+        expect(signalRes.rows[0].count).toBe('1');
+
+        const pendingRes = await client.query<{ count: string }>(
+          `select count(*)::text as count
+             from public.ledger_balance_pending
+            where txid = pg_current_xact_id()`,
+        );
+        expect(pendingRes.rows[0].count).toBe('2');
+
+        const err = await capturePgError(() => client.query('commit'));
+        expect(err.code).toBe('23514');
+        expect(err.message ?? '').toContain(
+          'ledger postings must balance to zero per currency',
+        );
+      } finally {
+        await client.query('rollback').catch(() => {});
+        client.release();
+        await admin.query('delete from public.transactions where id = $1', [
+          parent2Id,
+        ]);
+      }
+    });
+
+    it('12p. UPDATE PARENT CHANGE PROOF: moving one leg to another parent unbalances the old parent and fails at COMMIT with 23514', async () => {
+      const client = await admin.connect();
+      const parent2Id = '00000000-0000-0000-0000-00000000078c';
+      await admin.query(
+        `insert into public.transactions
+           (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
+         values ($1, $2, $3, 'expense', 'confirmed', '1000', 'USD', '2026-08-24T12:00:00Z', $4)
+         on conflict do nothing`,
+        [parent2Id, ws1Id, account1Id, ownerA],
+      );
+
+      // Seed parent 1 as a committed balanced pair (+1000, -1000)
+      const p1Postings = await admin.query<{ id: string }>(
+        `insert into public.ledger_postings
+           (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+         values ($1, $2, $3, 'account', '1000', 'USD', 'confirmed', '2026-08-24T12:00:00Z'),
+                ($1, $2, null, 'external', '-1000', 'USD', 'confirmed', '2026-08-24T12:00:00Z')
+         returning id`,
+        [ws1Id, transaction1Id, account1Id],
+      );
+
+      const p1Ids = p1Postings.rows.map((r) => r.id);
+      let p2LegId: string | null = null;
+      try {
+        await client.query('begin');
+        // Inside transaction: insert a lone balancing leg for parent 2 (-1000)
+        const p2Res = await client.query<{ id: string }>(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           values ($1, $2, null, 'external', '-1000', 'USD', 'confirmed', '2026-08-24T12:00:00Z')
+           returning id`,
+          [ws1Id, parent2Id],
+        );
+        p2LegId = p2Res.rows[0].id;
+
+        // Move +1000 leg from parent 1 to parent 2.
+        // After this move:
+        // - Parent 2 has +1000 and -1000 => BALANCED (sum=0, count=2)!
+        // - Parent 1 has only -1000 => UNBALANCED (count=1)!
+        await client.query(
+          `update public.ledger_postings
+              set transaction_id = $1
+            where id = $2`,
+          [parent2Id, p1Ids[0]],
+        );
+
+        // If the update trigger ignored OLD parent, only parent 2 would be checked (and it balances!).
+        // Because OLD parent is recorded, parent 1 is checked and COMMIT fails with 23514!
+        const err = await capturePgError(() => client.query('commit'));
+        expect(err.code).toBe('23514');
+        expect(err.message ?? '').toContain(
+          'ledger postings must balance to zero per currency',
+        );
+      } finally {
+        await client.query('rollback').catch(() => {});
+        client.release();
+        await deletePostings([...p1Ids, ...(p2LegId ? [p2LegId] : [])]);
+        await admin.query('delete from public.transactions where id = $1', [
+          parent2Id,
+        ]);
       }
     });
   });
