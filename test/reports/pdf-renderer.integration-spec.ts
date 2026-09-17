@@ -1044,4 +1044,141 @@ describe('PDF renderer integration (no DB)', () => {
       await localRenderer.onModuleDestroy();
     }
   });
+
+  it('(a) destroy while a launch is pending -> after release, render rejects, no context opened, browser.close called once, hasOpenBrowser is false', async () => {
+    let releaseLaunch!: () => void;
+    const launchGate = new Promise<void>((resolve) => {
+      releaseLaunch = resolve;
+    });
+
+    const fakeBrowser: Browser = {
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+      newContext: vi.fn(async () => ({
+        browser: () => fakeBrowser,
+        route: vi.fn(async () => {}),
+        newPage: vi.fn(async () => ({
+          setContent: vi.fn(async () => {}),
+          pdf: vi.fn(async () => Buffer.from('%PDF-1.4 test')),
+        })),
+        close: vi.fn(async () => {}),
+      })),
+    } as unknown as Browser;
+
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs: 100,
+      browserLauncher: async () => {
+        await launchGate;
+        return fakeBrowser;
+      },
+    });
+
+    const renderPromise = localRenderer.renderHtmlToPdf('<p>pending</p>', {
+      timeoutMs: 5_000,
+    });
+
+    // Allow render to enter getHealthyGeneration and invoke browserLauncher
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Initiate destroy while launch is pending
+    const destroyPromise = localRenderer.onModuleDestroy();
+
+    // Release the launch
+    releaseLaunch();
+
+    await expect(renderPromise).rejects.toThrow();
+    await destroyPromise;
+
+    expect(fakeBrowser.newContext).not.toHaveBeenCalled();
+    expect(fakeBrowser.close).toHaveBeenCalledTimes(1);
+    expect(localRenderer.hasOpenBrowser()).toBe(false);
+  });
+
+  it('(b) a browser whose close() never settles -> onModuleDestroy settles within its bound', async () => {
+    const fakeBrowser: Browser = {
+      close: vi.fn(async () => new Promise<void>(() => {})), // never settles
+      on: vi.fn(),
+      newContext: vi.fn(async () => ({
+        browser: () => fakeBrowser,
+        route: vi.fn(async () => {}),
+        newPage: vi.fn(async () => ({
+          setContent: vi.fn(async () => {}),
+          pdf: vi.fn(async () => Buffer.from('%PDF-1.4 test')),
+        })),
+        close: vi.fn(async () => {}),
+      })),
+    } as unknown as Browser;
+
+    const renderSettleTimeoutMs = 30;
+    const localRenderer = new PlaywrightPdfRenderer({
+      renderSettleTimeoutMs,
+      browserLauncher: async () => fakeBrowser,
+    });
+
+    await localRenderer.renderHtmlToPdf('<p>open</p>', { timeoutMs: 5_000 });
+
+    const start = performance.now();
+    const destroyRace = Promise.race([
+      localRenderer.onModuleDestroy().then(() => 'settled'),
+      new Promise<string>((resolve) =>
+        setTimeout(() => resolve('hung'), renderSettleTimeoutMs * 4),
+      ),
+    ]);
+
+    const result = await destroyRace;
+    const elapsed = performance.now() - start;
+
+    expect(result).toBe('settled');
+    expect(elapsed).toBeGreaterThanOrEqual(renderSettleTimeoutMs - 5);
+    expect(elapsed).toBeLessThan(renderSettleTimeoutMs * 3);
+  });
+
+  it('(c) no timer remains after destroy', async () => {
+    vi.useFakeTimers();
+    try {
+      let stuckPageResolve!: () => void;
+      const stuckPageGate = new Promise<void>((resolve) => {
+        stuckPageResolve = resolve;
+      });
+
+      const fakeBrowser: Browser = {
+        close: vi.fn(async () => {}),
+        on: vi.fn(),
+        newContext: vi.fn(async () => ({
+          browser: () => fakeBrowser,
+          route: vi.fn(async () => {}),
+          newPage: vi.fn(async () => {
+            stuckPageResolve();
+            return {
+              setContent: vi.fn(async () => {}),
+              pdf: vi.fn(async () => new Promise<Buffer>(() => {})),
+            };
+          }),
+          close: vi.fn(async () => {}),
+        })),
+      } as unknown as Browser;
+
+      const localRenderer = new PlaywrightPdfRenderer({
+        renderSettleTimeoutMs: 50,
+        pdfRenderTimeoutMs: 100,
+        browserLauncher: async () => fakeBrowser,
+      });
+
+      const renderPromise = localRenderer
+        .renderHtmlToPdf('<p>stuck</p>', { timeoutMs: 5_000 })
+        .catch(() => {});
+
+      await stuckPageGate;
+
+      // Destroy while active render / drain timers exist
+      const destroyPromise = localRenderer.onModuleDestroy();
+      await vi.runAllTimersAsync();
+      await destroyPromise;
+      await renderPromise;
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
