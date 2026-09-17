@@ -483,4 +483,115 @@ describe('WorkerConfig', () => {
     ).toBeUndefined();
     expect(WorkerConfig.fromEnvironment.length).toBeLessThanOrEqual(1);
   });
+
+  it('validates renderSettleTimeoutMs bounds, cap-sum with render and storage, and environment loading', () => {
+    // 1. Defaults to 2_000ms
+    const defaultConfig = new WorkerConfig(1, 300, 1000, 30);
+    expect(defaultConfig.renderSettleTimeoutMs).toBe(2_000);
+
+    // 2. Rejects renderSettleTimeoutMs < 1
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          8_000,
+          30_000,
+          30_000,
+          30_000,
+          0,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // 3. Rejects renderSettleTimeoutMs >= visibility timeout
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          8_000,
+          30_000,
+          30_000,
+          30_000,
+          300_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // 4. Rejects pdfRenderTimeoutMs + renderSettleTimeoutMs + storageUploadTimeoutMs when sum is unsafe
+    // (135_000 + 10_000 + 135_000 + 20_000 + 10_000 + 3 * 1_000 = 313_000 >= 300_000)
+    expect(
+      () =>
+        new WorkerConfig(
+          1,
+          300,
+          1000,
+          30,
+          undefined,
+          5000,
+          5,
+          15_000,
+          180_000,
+          60_000,
+          20_000,
+          10_000,
+          1_000,
+          8_000,
+          135_000,
+          135_000,
+          30_000,
+          10_000,
+        ),
+    ).toThrow(WorkerConfigurationError);
+
+    // 5. Accepts valid pdfRenderTimeoutMs + renderSettleTimeoutMs + storageUploadTimeoutMs cap sum
+    const safeConfig = new WorkerConfig(
+      1,
+      300,
+      1000,
+      30,
+      undefined,
+      5000,
+      5,
+      15_000,
+      180_000,
+      60_000,
+      20_000,
+      10_000,
+      1_000,
+      8_000,
+      30_000,
+      30_000,
+      30_000,
+      5_000,
+    );
+    expect(safeConfig.renderSettleTimeoutMs).toBe(5_000);
+
+    // 6. Loads custom SAVIA_WORKER_RENDER_SETTLE_TIMEOUT_MS from environment
+    const envConfig = WorkerConfig.fromEnvironment({
+      SAVIA_WORKER_RENDER_SETTLE_TIMEOUT_MS: '4000',
+    });
+    expect(envConfig.renderSettleTimeoutMs).toBe(4_000);
+  });
 });

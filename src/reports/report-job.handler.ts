@@ -94,6 +94,7 @@ export class ReportJobHandler
     @Inject(ARTIFACT_STORAGE) private readonly storage: ArtifactStorage,
     @Inject(PDF_RENDERER) private readonly pdfRenderer: PdfRenderer,
     private readonly clock: () => Date = () => new Date(),
+    private readonly renderSettleTimeoutMs: number = 2_000,
   ) {}
 
   public parsePayload(
@@ -183,6 +184,7 @@ export class ReportJobHandler
           };
         },
         'Report rendering exceeded the delivery work cap.',
+        this.renderSettleTimeoutMs,
       );
     }
     return this.runBounded(
@@ -193,6 +195,7 @@ export class ReportJobHandler
           remainingMs,
         }),
       'Report rendering exceeded the delivery work cap.',
+      0,
     );
   }
 
@@ -227,6 +230,7 @@ export class ReportJobHandler
         };
       },
       'Report storage exceeded the delivery work cap.',
+      0,
     );
   }
 
@@ -234,6 +238,7 @@ export class ReportJobHandler
     timeoutMs: number,
     work: (signal: AbortSignal, remainingMs: () => number) => Promise<T>,
     message: string,
+    settleWaitMs = 0,
   ): Promise<T> {
     const controller = new AbortController();
     let remainingMs = (): number => Number.POSITIVE_INFINITY;
@@ -246,13 +251,13 @@ export class ReportJobHandler
       remainingMs = () => deadlineAt - performance.now();
       timer = setTimeout(async () => {
         controller.abort();
-        if (workPromise !== undefined) {
+        if (settleWaitMs > 0 && workPromise !== undefined) {
           const settled = workPromise.then(
             () => undefined,
             () => undefined,
           );
           const fallback = new Promise<void>((resolve) => {
-            fallbackTimer = setTimeout(resolve, 2_000);
+            fallbackTimer = setTimeout(resolve, settleWaitMs);
           });
           await Promise.race([settled, fallback]);
         }

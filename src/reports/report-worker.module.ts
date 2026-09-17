@@ -11,6 +11,7 @@ import { PlaywrightPdfRenderer } from '../platform/playwright-pdf-renderer.js';
 import { SupabaseStorageAdapter } from '../platform/supabase-storage.adapter.js';
 import { ReportJobHandler } from './report-job.handler.js';
 import { PostgresReportAdapter } from './postgres-report.adapter.js';
+import { WorkerConfig } from '../platform/worker-config.js';
 
 @Module({
   providers: [
@@ -27,12 +28,25 @@ import { PostgresReportAdapter } from './postgres-report.adapter.js';
     },
     {
       provide: ReportJobHandler,
-      inject: [PostgresReportAdapter, ARTIFACT_STORAGE, PDF_RENDERER],
+      inject: [
+        PostgresReportAdapter,
+        ARTIFACT_STORAGE,
+        PDF_RENDERER,
+        { token: WorkerConfig, optional: true },
+      ],
       useFactory: (
         store: PostgresReportAdapter,
         storage: ArtifactStorage,
         pdfRenderer: PdfRenderer,
-      ) => new ReportJobHandler(store, storage, pdfRenderer),
+        config?: WorkerConfig,
+      ) =>
+        new ReportJobHandler(
+          store,
+          storage,
+          pdfRenderer,
+          undefined,
+          config?.renderSettleTimeoutMs ?? 2_000,
+        ),
     },
   ],
   exports: [ReportJobHandler, ARTIFACT_STORAGE],

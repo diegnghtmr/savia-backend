@@ -319,7 +319,7 @@ describe('ReportJobHandler', () => {
     }
   });
 
-  it('fails the storage phase when it exceeds its own cap', async () => {
+  it('fails the storage phase immediately when it exceeds its own cap without settle grace', async () => {
     const storage = createStorage();
     storage.upload = vi.fn(async () => new Promise<void>(() => undefined));
     const { handler } = createHandler(
@@ -328,9 +328,13 @@ describe('ReportJobHandler', () => {
       () => new Date('2026-09-15T12:00:00.000Z'),
     );
     const rendered = await handler.render(context, emptyGrid, 5_000);
+    const start = performance.now();
     await expect(handler.store(context, rendered, 20)).rejects.toBeInstanceOf(
       DeliveryDeadlineExceededError,
     );
+    const elapsed = performance.now() - start;
+    // Must reject promptly at timeout (20ms), never waiting for the 2,000ms render settle tail
+    expect(elapsed).toBeLessThan(100);
   });
 
   it('refuses persist when the actor no longer has a write role', async () => {
