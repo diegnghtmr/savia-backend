@@ -33,5 +33,6 @@ export interface ArtifactStorage {
     expiresAt: Date,
     signal?: AbortSignal,
   ): Promise<{ url: string; expiresAt: Date }>;
+  download(path: string, signal?: AbortSignal): Promise<Buffer>;
   remove(path: string): Promise<void>;
 }

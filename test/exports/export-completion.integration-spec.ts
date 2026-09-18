@@ -35,6 +35,10 @@ class TestStorage implements ArtifactStorage {
     return { url: `https://storage.example.test/${path}`, expiresAt };
   }
 
+  public async download(): Promise<Buffer> {
+    return Buffer.alloc(0);
+  }
+
   public async remove(): Promise<void> {}
 }
 

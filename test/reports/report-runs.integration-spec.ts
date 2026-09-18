@@ -80,6 +80,14 @@ class InMemoryArtifactStorage implements ArtifactStorage {
     return { url: `https://storage.example.test/${path}`, expiresAt };
   }
 
+  public async download(path: string): Promise<Buffer> {
+    const item = this.uploaded.get(path);
+    if (!item) {
+      throw new Error(`Artifact not found at path: ${path}`);
+    }
+    return item.content;
+  }
+
   public async remove(path: string): Promise<void> {
     this.removeCallCount++;
     if (this.failRemove) {
