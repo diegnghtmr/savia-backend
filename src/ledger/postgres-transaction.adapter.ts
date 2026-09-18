@@ -12,6 +12,7 @@ import type {
   TransactionCursor,
   UpdateTransactionCommand,
 } from './ledger.port.js';
+import { IMPORT_COMMIT_BATCH_SIZE } from '../platform/import-batch-policy.js';
 import {
   TransactionCategoryNotFoundError,
   TransactionPayeeNotFoundError,
@@ -55,6 +56,8 @@ export function toIso(value: unknown): string {
 }
 
 export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
+  public static readonly BATCH_SIZE = IMPORT_COMMIT_BATCH_SIZE;
+
   public async createImportedTransactions(
     client: TransactionClient,
     workspaceId: string,
@@ -62,7 +65,7 @@ export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
     commands: readonly ImportedTransactionCommand[],
   ): Promise<void> {
     if (!commands.length) return;
-    const batchSize = 2_500;
+    const batchSize = PostgresTransactionAdapter.BATCH_SIZE;
     for (
       let batchStart = 0;
       batchStart < commands.length;
