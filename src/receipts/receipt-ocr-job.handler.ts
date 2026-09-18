@@ -19,6 +19,7 @@ import {
   type ReceiptStore,
 } from './receipt.port.js';
 import { extractReceiptFields } from './receipt-field-extractor.js';
+import { validateReceiptImage } from './receipt-image-guard.js';
 import { ReceiptInvalidStoragePathError } from './receipt-invalid-storage-path.error.js';
 
 export class ReceiptOcrPayloadError extends Error {
@@ -150,6 +151,7 @@ export class ReceiptOcrJobHandler
     this.logger.log(
       `receipt_ocr_recognize: job ${context.jobId} workspace ${context.workspaceId}`,
     );
+    validateReceiptImage(downloaded);
     const result: OcrEngineResult = await this.ocrEngine.recognize(downloaded, {
       timeoutMs,
       signal,

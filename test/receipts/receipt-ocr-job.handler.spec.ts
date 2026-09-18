@@ -19,6 +19,23 @@ import {
   ReceiptOcrPayloadError,
 } from '../../src/receipts/receipt-ocr-job.handler.js';
 import { ReceiptInvalidStoragePathError } from '../../src/receipts/receipt-invalid-storage-path.error.js';
+import { ReceiptCorruptImageError } from '../../src/receipts/receipt-image-guard.js';
+
+function validPng(width = 80, height = 60): Buffer {
+  const buf = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buf, 0);
+  buf.writeUInt32BE(13, 8);
+  buf.write('IHDR', 12, 'ascii');
+  buf.writeUInt32BE(width, 16);
+  buf.writeUInt32BE(height, 20);
+  buf[24] = 8;
+  buf[25] = 2;
+  buf[26] = 0;
+  buf[27] = 0;
+  buf[28] = 0;
+  buf.writeUInt32BE(0x12345678, 29);
+  return buf;
+}
 
 function fakeClient(): TransactionClient {
   return {
@@ -95,7 +112,7 @@ describe('ReceiptOcrJobHandler', () => {
     storage = {
       upload: vi.fn(),
       sign: vi.fn(),
-      download: vi.fn().mockResolvedValue(Buffer.from('image-bytes')),
+      download: vi.fn().mockResolvedValue(validPng()),
       remove: vi.fn(),
     };
     ocrEngine = {
@@ -230,7 +247,7 @@ describe('ReceiptOcrJobHandler', () => {
       const binding = makeBinding();
       const signal = new AbortController().signal;
       const result = await handler.download(ctx, binding, 5000, signal);
-      expect(result).toEqual(Buffer.from('image-bytes'));
+      expect(result).toEqual(validPng());
       expect(storage.download).toHaveBeenCalledWith(
         binding.storagePath,
         signal,
@@ -241,7 +258,7 @@ describe('ReceiptOcrJobHandler', () => {
   describe('ocr', () => {
     it('runs OCR and extracts fields', async () => {
       const ctx = makeContext();
-      const buf = Buffer.from('image-bytes');
+      const buf = validPng();
       const signal = new AbortController().signal;
       const result = await handler.ocr(ctx, buf, 5000, signal);
       expect(ocrEngine.recognize).toHaveBeenCalledWith(buf, {
@@ -249,6 +266,15 @@ describe('ReceiptOcrJobHandler', () => {
         signal,
       });
       expect(result).toHaveProperty('merchant');
+    });
+
+    it('rejects a corrupt image before calling the OCR engine', async () => {
+      const ctx = makeContext();
+      const signal = new AbortController().signal;
+      await expect(
+        handler.ocr(ctx, Buffer.from([0xff, 0xd8, 0xff]), 5000, signal),
+      ).rejects.toBeInstanceOf(ReceiptCorruptImageError);
+      expect(ocrEngine.recognize).not.toHaveBeenCalled();
     });
   });
 
@@ -297,7 +323,7 @@ describe('ReceiptOcrJobHandler', () => {
 
       await handler.compute(ctx, client);
       await handler.download(ctx, binding, 5000, signal);
-      await handler.ocr(ctx, Buffer.from('data'), 5000, signal);
+      await handler.ocr(ctx, validPng(), 5000, signal);
       vi.mocked(store.updateOcrResultCas).mockResolvedValue(false);
       await handler.persist(
         ctx,
