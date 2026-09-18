@@ -2477,6 +2477,23 @@ components:
         expiresIn: { type: integer, minimum: 1 }
         interval: { type: integer, minimum: 1 }
       additionalProperties: false
+    CliDeviceTokenRequest:
+      type: object
+      required: [clientId, deviceCode]
+      properties:
+        clientId: { type: string }
+        deviceCode: { type: string }
+      additionalProperties: false
+    CliDeviceTokenResponse:
+      type: object
+      required: [accessToken, tokenType, expiresIn, scope]
+      properties:
+        accessToken: { type: string }
+        tokenType: { type: string, const: Bearer }
+        expiresIn: { type: integer, minimum: 1 }
+        scope: { type: string }
+        refreshToken: { type: string }
+      additionalProperties: false
     AgentMessageRequest:
       type: object
       required: [message]
@@ -8117,6 +8134,25 @@ paths:
               schema:
                 { $ref: '#/components/schemas/CliDeviceAuthorizationRequest' },
             }
+      security: []
+  /v1/cli/device/token:
+    post:
+      operationId: pollCliDeviceToken
+      summary: Poll CLI device authorization
+      tags: [CLI Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CliDeviceTokenRequest' }
+      responses:
+        '200':
+          description: CLI access token issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CliDeviceTokenResponse' }
+        '400': { description: 'Authorization is pending, denied or expired.' }
+        '429': { description: Rate limit exceeded. }
       security: []
   /v1/mcp/grants:
     get:
