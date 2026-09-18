@@ -710,6 +710,11 @@ describe('Receipt OCR end-to-end against a disposable database', () => {
     const row = await receiptRow(created.id);
     expect(row.job_id).not.toBeNull();
     await admin.query(
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+       values ($1, $2, 'owner', 'active')`,
+      [workspace, ownerB],
+    );
+    await admin.query(
       `update public.workspace_memberships
           set status = 'suspended'
         where workspace_id = $1 and profile_id = $2`,
