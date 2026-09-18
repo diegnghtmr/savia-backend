@@ -1,4 +1,4 @@
-// Migration under test: 202609170001_receipt_ocr.sql
+// Migration under test: 202609170003_receipt_ocr.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -27,7 +27,7 @@ async function capturePgError(
   throw new Error('Expected statement to fail, but it succeeded.');
 }
 
-describe('Receipt OCR foundation schema, constraints, grants, and trigger (202609170001_receipt_ocr.sql)', () => {
+describe('Receipt OCR foundation schema, constraints, grants, and trigger (202609170003_receipt_ocr.sql)', () => {
   let admin: Pool;
 
   const ownerA = subject(9101);
