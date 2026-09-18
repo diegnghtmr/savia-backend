@@ -6,9 +6,14 @@ import type {
   CreateTransactionCommand,
   LedgerWriter,
 } from '../platform/ledger-writer.port.js';
+import {
+  JOB_WRITER_TYPES,
+  type JobWriter,
+} from '../platform/job-writer.port.js';
 import { TRANSACTION_CREATE_OUTCOMES } from '../ledger/ledger.port.js';
 import {
   RECEIPT_OUTCOMES,
+  RECEIPT_PROCESSING_PREFERENCES,
   type ReceiptConfirmOutcome,
   type ReceiptCreateOutcome,
   type ReceiptGetOutcome,
@@ -36,6 +41,39 @@ export class ReceiptRollbackError extends Error {
   }
 }
 
+function isSupportedImage(bytes: Buffer): boolean {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    return true;
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return true;
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export class ReceiptService implements ReceiptsPort {
   public constructor(
     private readonly tx: ReceiptTransaction,
@@ -43,6 +81,7 @@ export class ReceiptService implements ReceiptsPort {
     private readonly idempotency: IdempotencyStore,
     private readonly storage: ArtifactStorage,
     private readonly ledgerWriter: LedgerWriter,
+    private readonly jobWriter: JobWriter,
   ) {}
 
   public async createReceipt(
@@ -86,6 +125,21 @@ export class ReceiptService implements ReceiptsPort {
         command.contentType,
       );
       try {
+        let jobId: string | undefined;
+        const shouldEnqueueOcr =
+          command.processingPreference ===
+            RECEIPT_PROCESSING_PREFERENCES.SAVIA &&
+          isSupportedImage(command.bytes);
+        if (shouldEnqueueOcr) {
+          const job = await this.jobWriter.createQueuedJob(
+            client,
+            workspaceId,
+            subject,
+            JOB_WRITER_TYPES.RECEIPT_OCR,
+            { receiptId: id, storagePath },
+          );
+          jobId = job.id;
+        }
         const receipt = await this.store.create(
           client,
           workspaceId,
@@ -93,6 +147,7 @@ export class ReceiptService implements ReceiptsPort {
           id,
           command,
           storagePath,
+          jobId,
         );
         await this.idempotency.write(
           client,

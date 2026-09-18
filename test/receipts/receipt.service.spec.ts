@@ -14,6 +14,12 @@ import {
   type Transaction,
   type TransactionCreateOutcome,
 } from '../../src/ledger/ledger.port.js';
+import type {
+  JobRecord,
+  JobWriter,
+  JobWriterType,
+} from '../../src/platform/job-writer.port.js';
+import { JOB_WRITER_TYPES } from '../../src/platform/job-writer.port.js';
 import {
   RECEIPT_OUTCOMES,
   RECEIPT_PROCESSING_PREFERENCES,
@@ -98,8 +104,9 @@ class FakeReceiptStore implements ReceiptStore {
     id: string,
     command: ReceiptUploadCommand,
     storagePath: string,
+    jobId?: string,
   ): Promise<Receipt> {
-    this.createCalls.push({ workspaceId, id, command, storagePath });
+    this.createCalls.push({ workspaceId, id, command, storagePath, jobId });
     if (this.createError) throw this.createError;
     return (
       this.createResult ?? {
@@ -269,6 +276,60 @@ class FakeLedgerWriter implements LedgerWriter {
   }
 }
 
+class FakeJobWriter implements JobWriter {
+  public queuedJobs: Array<{
+    workspaceId: string;
+    subject: string;
+    type: JobWriterType;
+    payload: Record<string, unknown> | null;
+  }> = [];
+
+  public async createQueuedJob(
+    _client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    type: JobWriterType,
+    payload?: Record<string, unknown> | null,
+  ): Promise<JobRecord> {
+    this.queuedJobs.push({
+      workspaceId,
+      subject,
+      type,
+      payload: payload ?? null,
+    });
+    return {
+      id: 'jjjjjjjj-kkkk-4000-8000-000000000001',
+      type,
+      status: 'queued',
+      progressPercent: null,
+      resultResourceId: null,
+      error: null,
+      createdAt: '2026-09-17T12:00:00.000Z',
+      startedAt: null,
+      completedAt: null,
+    };
+  }
+
+  public async createTerminalJob(): Promise<Record<string, unknown>> {
+    return {};
+  }
+  public async transitionToProcessing(): Promise<Record<string, unknown>> {
+    return {};
+  }
+  public async completeJob(): Promise<Record<string, unknown>> {
+    return {};
+  }
+  public async failJob(): Promise<Record<string, unknown>> {
+    return {};
+  }
+  public async deadLetter(): Promise<Record<string, unknown>> {
+    return {};
+  }
+  public async findJobById(): Promise<{ readonly status: string } | undefined> {
+    return undefined;
+  }
+}
+
 const WORKSPACE = '11111111-2222-4000-8000-000000000001';
 const SUBJECT = '00000000-0000-0000-0000-000000000001';
 const RECEIPT_ID = 'aaaaaaaa-bbbb-4000-8000-000000000001';
@@ -280,6 +341,7 @@ interface Harness {
   readonly idempotency: FakeIdempotencyStore;
   readonly storage: FakeArtifactStorage;
   readonly ledgerWriter: FakeLedgerWriter;
+  readonly jobWriter: FakeJobWriter;
   readonly service: ReceiptService;
 }
 
@@ -289,13 +351,22 @@ function harness(): Harness {
   const idempotency = new FakeIdempotencyStore();
   const storage = new FakeArtifactStorage();
   const ledgerWriter = new FakeLedgerWriter();
+  const jobWriter = new FakeJobWriter();
   return {
     tx,
     store,
     idempotency,
     storage,
     ledgerWriter,
-    service: new ReceiptService(tx, store, idempotency, storage, ledgerWriter),
+    jobWriter,
+    service: new ReceiptService(
+      tx,
+      store,
+      idempotency,
+      storage,
+      ledgerWriter,
+      jobWriter,
+    ),
   };
 }
 
@@ -470,6 +541,157 @@ describe('ReceiptService.createReceipt', () => {
 
     expect(h.tx.rolledBack).toBe(1);
     expect(h.tx.committed).toBe(0);
+  });
+
+  it('enqueues receipt_ocr job and links jobId when uploading JPEG image with savia preference', async () => {
+    const h = harness();
+    const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+
+    await h.service.createReceipt(
+      SUBJECT,
+      WORKSPACE,
+      upload({
+        fileName: 'receipt.jpg',
+        contentType: 'image/jpeg',
+        bytes: jpegBytes,
+        processingPreference: RECEIPT_PROCESSING_PREFERENCES.SAVIA,
+      }),
+      KEY,
+    );
+
+    expect(h.jobWriter.queuedJobs).toHaveLength(1);
+    expect(h.jobWriter.queuedJobs[0]).toEqual({
+      workspaceId: WORKSPACE,
+      subject: SUBJECT,
+      type: JOB_WRITER_TYPES.RECEIPT_OCR,
+      payload: {
+        receiptId: RECEIPT_ID,
+        storagePath: `workspaces/${WORKSPACE}/receipts/${RECEIPT_ID}/receipt.jpg`,
+      },
+    });
+
+    expect(h.store.createCalls).toHaveLength(1);
+    expect((h.store.createCalls[0] as { jobId?: string }).jobId).toBe(
+      'jjjjjjjj-kkkk-4000-8000-000000000001',
+    );
+  });
+
+  it('enqueues receipt_ocr job and links jobId when uploading PNG image with savia preference', async () => {
+    const h = harness();
+    const pngBytes = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
+
+    await h.service.createReceipt(
+      SUBJECT,
+      WORKSPACE,
+      upload({
+        fileName: 'receipt.png',
+        contentType: 'image/png',
+        bytes: pngBytes,
+        processingPreference: RECEIPT_PROCESSING_PREFERENCES.SAVIA,
+      }),
+      KEY,
+    );
+
+    expect(h.jobWriter.queuedJobs).toHaveLength(1);
+    expect((h.store.createCalls[0] as { jobId?: string }).jobId).toBe(
+      'jjjjjjjj-kkkk-4000-8000-000000000001',
+    );
+  });
+
+  it('enqueues receipt_ocr job and links jobId when uploading WebP image with savia preference', async () => {
+    const h = harness();
+    const webpBytes = Buffer.from([
+      0x52, 0x49, 0x46, 0x46, 0x18, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+    ]);
+
+    await h.service.createReceipt(
+      SUBJECT,
+      WORKSPACE,
+      upload({
+        fileName: 'receipt.webp',
+        contentType: 'image/webp',
+        bytes: webpBytes,
+        processingPreference: RECEIPT_PROCESSING_PREFERENCES.SAVIA,
+      }),
+      KEY,
+    );
+
+    expect(h.jobWriter.queuedJobs).toHaveLength(1);
+    expect((h.store.createCalls[0] as { jobId?: string }).jobId).toBe(
+      'jjjjjjjj-kkkk-4000-8000-000000000001',
+    );
+  });
+
+  it('does not enqueue a job for PDF bytes with savia preference, passing undefined jobId', async () => {
+    const h = harness();
+    const pdfBytes = Buffer.from('%PDF-1.7 mock document');
+
+    await h.service.createReceipt(
+      SUBJECT,
+      WORKSPACE,
+      upload({
+        fileName: 'document.pdf',
+        contentType: 'application/pdf',
+        bytes: pdfBytes,
+        processingPreference: RECEIPT_PROCESSING_PREFERENCES.SAVIA,
+      }),
+      KEY,
+    );
+
+    expect(h.jobWriter.queuedJobs).toHaveLength(0);
+    expect(h.store.createCalls).toHaveLength(1);
+    expect(
+      (h.store.createCalls[0] as { jobId?: string }).jobId,
+    ).toBeUndefined();
+  });
+
+  it('does not enqueue a job for arbitrary text bytes with spoofed image/jpeg MIME', async () => {
+    const h = harness();
+    const textBytes = Buffer.from('Plain text content');
+
+    await h.service.createReceipt(
+      SUBJECT,
+      WORKSPACE,
+      upload({
+        fileName: 'fake.jpg',
+        contentType: 'image/jpeg',
+        bytes: textBytes,
+        processingPreference: RECEIPT_PROCESSING_PREFERENCES.SAVIA,
+      }),
+      KEY,
+    );
+
+    expect(h.jobWriter.queuedJobs).toHaveLength(0);
+    expect(h.store.createCalls).toHaveLength(1);
+    expect(
+      (h.store.createCalls[0] as { jobId?: string }).jobId,
+    ).toBeUndefined();
+  });
+
+  it('does not enqueue a job when preference is device_result', async () => {
+    const h = harness();
+    const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+
+    await h.service.createReceipt(
+      SUBJECT,
+      WORKSPACE,
+      upload({
+        fileName: 'device.jpg',
+        contentType: 'image/jpeg',
+        bytes: jpegBytes,
+        processingPreference: RECEIPT_PROCESSING_PREFERENCES.DEVICE_RESULT,
+        deviceOcrResult: { merchant: { value: 'Store', confidence: 1 } },
+      }),
+      KEY,
+    );
+
+    expect(h.jobWriter.queuedJobs).toHaveLength(0);
+    expect(h.store.createCalls).toHaveLength(1);
+    expect(
+      (h.store.createCalls[0] as { jobId?: string }).jobId,
+    ).toBeUndefined();
   });
 });
 
