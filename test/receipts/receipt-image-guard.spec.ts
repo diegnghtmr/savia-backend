@@ -274,22 +274,28 @@ describe('ReceiptImageGuard', () => {
     });
 
     it('fails if excluded marker DHT 0xC4 is treated as SOF (does not parse as SOF)', () => {
-      // Create a JPEG where the ONLY segment is 0xC4 before SOS
+      const payload = Buffer.alloc(8);
+      payload[2] = 8;
+      payload.writeUInt16BE(600, 3);
+      payload.writeUInt16BE(800, 5);
+      payload[7] = 3;
       const buffer = buildJpegBuffer({
-        precedingSegments: [
-          { marker: 0xc4, payload: Buffer.alloc(8) }, // 0xC4 DHT segment
-        ],
+        precedingSegments: [{ marker: 0xc4, payload }],
         includeSos: true,
       });
-      // Because 0xC4 is excluded and no valid SOF exists before SOS, must throw ReceiptCorruptImageError
       expect(() => validateReceiptImage(buffer)).toThrow(
         ReceiptCorruptImageError,
       );
     });
 
     it('fails if excluded marker JPG 0xC8 is treated as SOF', () => {
+      const payload = Buffer.alloc(8);
+      payload[2] = 8;
+      payload.writeUInt16BE(600, 3);
+      payload.writeUInt16BE(800, 5);
+      payload[7] = 3;
       const buffer = buildJpegBuffer({
-        precedingSegments: [{ marker: 0xc8, payload: Buffer.alloc(8) }],
+        precedingSegments: [{ marker: 0xc8, payload }],
         includeSos: true,
       });
       expect(() => validateReceiptImage(buffer)).toThrow(
@@ -298,8 +304,13 @@ describe('ReceiptImageGuard', () => {
     });
 
     it('fails if excluded marker DAC 0xCC is treated as SOF', () => {
+      const payload = Buffer.alloc(8);
+      payload[2] = 8;
+      payload.writeUInt16BE(600, 3);
+      payload.writeUInt16BE(800, 5);
+      payload[7] = 3;
       const buffer = buildJpegBuffer({
-        precedingSegments: [{ marker: 0xcc, payload: Buffer.alloc(8) }],
+        precedingSegments: [{ marker: 0xcc, payload }],
         includeSos: true,
       });
       expect(() => validateReceiptImage(buffer)).toThrow(
@@ -431,8 +442,9 @@ describe('ReceiptImageGuard', () => {
     it('refuses WebP with truncated chunk with ReceiptCorruptImageError', () => {
       const vp8 = buildVp8Payload(800, 600);
       const valid = buildWebpRiff([{ fourCC: 'VP8 ', payload: vp8 }]);
-      const truncated = valid.subarray(0, valid.length - 5);
-      expect(() => validateReceiptImage(truncated)).toThrow(
+      // Alter chunk length (offset 16) to extend beyond buffer while RIFF size remains consistent
+      valid.writeUInt32LE(1000, 16);
+      expect(() => validateReceiptImage(valid)).toThrow(
         ReceiptCorruptImageError,
       );
     });
