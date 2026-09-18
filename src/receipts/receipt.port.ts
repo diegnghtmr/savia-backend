@@ -86,6 +86,18 @@ export interface ReceiptStore {
     id: string,
     transactionId: string,
   ): Promise<boolean>;
+  findOcrBinding(
+    client: TransactionClient,
+    workspaceId: string,
+    receiptId: string,
+    jobId: string,
+  ): Promise<ReceiptOcrBinding | null>;
+  updateOcrResultCas(
+    client: TransactionClient,
+    workspaceId: string,
+    receiptId: string,
+    fields: ExtractedReceiptFields,
+  ): Promise<boolean>;
 }
 
 export const RECEIPT_OUTCOMES = {

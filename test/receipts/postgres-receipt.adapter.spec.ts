@@ -286,7 +286,7 @@ describe('PostgresReceiptAdapter', () => {
       expect(queryText).toContain('id = $2::uuid');
     });
 
-    it('claim SQL query specifies status in (uploaded, awaiting_review) precondition in WHERE clause', async () => {
+    it('claim SQL query specifies status in (uploaded, awaiting_review, failed) precondition in WHERE clause', async () => {
       let queryText = '';
       const mockClient = {
         query: vi.fn(async (text: string) => {
@@ -298,7 +298,9 @@ describe('PostgresReceiptAdapter', () => {
       const adapter = new PostgresReceiptAdapter();
       await adapter.claim(mockClient, workspaceId, receiptId);
 
-      expect(queryText).toContain("status in ('uploaded', 'awaiting_review')");
+      expect(queryText).toContain(
+        "status in ('uploaded', 'awaiting_review', 'failed')",
+      );
     });
 
     it('claim SQL query specifies transaction_id is null precondition in WHERE clause', async () => {

@@ -153,6 +153,14 @@ class FakeReceiptStore implements ReceiptStore {
     this.confirmCalls.push({ workspaceId, id, transactionId });
     return this.confirmResult;
   }
+
+  public async findOcrBinding(): Promise<null> {
+    return null;
+  }
+
+  public async updateOcrResultCas(): Promise<boolean> {
+    return false;
+  }
 }
 
 class FakeIdempotencyStore implements IdempotencyStore {

@@ -3,7 +3,9 @@ import {
   RECEIPT_PROCESSING_LOCATIONS,
   RECEIPT_PROCESSING_PREFERENCES,
   RECEIPT_STATUSES,
+  type ExtractedReceiptFields,
   type Receipt,
+  type ReceiptOcrBinding,
   type ReceiptStore,
   type ReceiptUploadCommand,
 } from './receipt.port.js';
@@ -91,7 +93,7 @@ export class PostgresReceiptAdapter implements ReceiptStore {
   ): Promise<boolean> {
     const result = await client.query(
       `update public.receipts set updated_at = now()
-         where workspace_id = $1::uuid and id = $2::uuid and status in ('uploaded', 'awaiting_review') and transaction_id is null`,
+         where workspace_id = $1::uuid and id = $2::uuid and status in ('uploaded', 'awaiting_review', 'failed') and transaction_id is null`,
       [workspaceId, id],
     );
     return result.rowCount === 1;
@@ -107,6 +109,69 @@ export class PostgresReceiptAdapter implements ReceiptStore {
       `update public.receipts set status = 'confirmed', transaction_id = $3::uuid, updated_at = now(), version = version + 1
          where workspace_id = $1::uuid and id = $2::uuid`,
       [workspaceId, id, transactionId],
+    );
+    return result.rowCount === 1;
+  }
+
+  public async findOcrBinding(
+    client: TransactionClient,
+    workspaceId: string,
+    receiptId: string,
+    jobId: string,
+  ): Promise<ReceiptOcrBinding | null> {
+    const result = await client.query<{
+      id: string;
+      workspaceId: string;
+      storagePath: string;
+      jobId: string;
+      createdBy: string;
+      status: string;
+      transactionId: string | null;
+    }>(
+      `select r.id::text,
+              r.workspace_id::text as "workspaceId",
+              r.storage_path as "storagePath",
+              r.job_id::text as "jobId",
+              r.created_by::text as "createdBy",
+              r.status,
+              r.transaction_id::text as "transactionId"
+         from public.receipts r
+        where r.workspace_id = $1::uuid
+          and r.id = $2::uuid
+          and r.job_id = $3::uuid`,
+      [workspaceId, receiptId, jobId],
+    );
+    const row = result.rows[0];
+    return row ?? null;
+  }
+
+  public async updateOcrResultCas(
+    client: TransactionClient,
+    workspaceId: string,
+    receiptId: string,
+    fields: ExtractedReceiptFields,
+  ): Promise<boolean> {
+    const result = await client.query(
+      `update public.receipts
+          set status = 'awaiting_review',
+              merchant = $3::jsonb,
+              date = $4::jsonb,
+              currency = $5::jsonb,
+              total = $6::jsonb,
+              updated_at = now(),
+              version = version + 1
+        where workspace_id = $1::uuid
+          and id = $2::uuid
+          and transaction_id is null
+          and status in ('uploaded', 'processing')`,
+      [
+        workspaceId,
+        receiptId,
+        fields.merchant ? JSON.stringify(fields.merchant) : null,
+        fields.date ? JSON.stringify(fields.date) : null,
+        fields.currency ? JSON.stringify(fields.currency) : null,
+        fields.total ? JSON.stringify(fields.total) : null,
+      ],
     );
     return result.rowCount === 1;
   }
