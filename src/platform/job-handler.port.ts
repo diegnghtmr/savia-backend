@@ -46,9 +46,36 @@ export interface BaseJobHandler<P = unknown, C = unknown, R = C> {
   ): Promise<void>;
 }
 
+export const JOB_OCR_BUDGETS = {
+  RECEIPT_OCR: 'receipt_ocr',
+} as const;
+
+export type JobOcrBudget =
+  (typeof JOB_OCR_BUDGETS)[keyof typeof JOB_OCR_BUDGETS];
+
+export interface OcrJobHandler<P = unknown, C = unknown, R = C>
+  extends BaseJobHandler<P, C, R> {
+  readonly ocrBudget: JobOcrBudget;
+  readonly renderBudget?: never;
+  readonly render?: never;
+  download(
+    context: JobExecutionContext<P>,
+    computed: C,
+    timeoutMs: number,
+    signal: AbortSignal,
+  ): Promise<Buffer>;
+  ocr(
+    context: JobExecutionContext<P>,
+    downloaded: Buffer,
+    timeoutMs: number,
+    signal: AbortSignal,
+  ): Promise<R>;
+}
+
 export interface RenderingJobHandler<P = unknown, C = unknown, R = C>
   extends BaseJobHandler<P, C, R> {
   readonly renderBudget: JobRenderBudget;
+  readonly ocrBudget?: never;
   render(
     context: JobExecutionContext<P>,
     computed: C,
@@ -60,8 +87,10 @@ export interface NonRenderingJobHandler<P = unknown, C = unknown, R = C>
   extends BaseJobHandler<P, C, R> {
   readonly renderBudget?: never;
   readonly render?: never;
+  readonly ocrBudget?: never;
 }
 
 export type JobHandler<P = unknown, C = unknown, R = C> =
   | RenderingJobHandler<P, C, R>
-  | NonRenderingJobHandler<P, C, R>;
+  | NonRenderingJobHandler<P, C, R>
+  | OcrJobHandler<P, C, R>;
