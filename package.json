@@ -93,6 +93,7 @@
     "test:integration:approvals": "bash scripts/run-disposable-database-suite.sh test/approvals/approvals.integration-spec.ts",
     "test:integration:notifications": "bash scripts/run-disposable-database-suite.sh test/notifications/notifications.integration-spec.ts",
     "test:integration:receipts": "bash scripts/run-disposable-database-suite.sh test/receipts/receipts.integration-spec.ts",
+    "test:integration:receipt-foundation": "bash scripts/run-disposable-database-suite.sh test/receipts/receipt-foundation.integration-spec.ts",
     "test:integration:mcp-grants": "bash scripts/run-disposable-database-suite.sh test/mcp/mcp-grants.integration-spec.ts",
     "test:integration:ai-credentials": "bash scripts/run-disposable-database-suite.sh test/ai/ai-credentials.integration-spec.ts",
     "test:integration:agent-conversations": "bash scripts/run-disposable-database-suite.sh test/agent/agent-conversations.integration-spec.ts",
