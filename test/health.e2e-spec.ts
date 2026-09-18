@@ -14,6 +14,7 @@ const authEnvironment = {
   JWT_JWKS_URI: 'https://issuer.example.test/jwks',
   JWT_ALGORITHMS: 'RS256',
   SAVIA_CREDENTIAL_KEY: Buffer.alloc(32, 7).toString('base64'),
+  CLI_DEVICE_VERIFICATION_URI: 'https://app.example.test/device',
 };
 const authEnvironmentKeys = Object.keys(authEnvironment);
 let originalEnvironment: Record<string, string | undefined>;
@@ -173,6 +174,7 @@ describe('health endpoint', () => {
       'GET /v1/agent/conversations',
       'POST /v1/agent/conversations',
       'POST /v1/agent/conversations/:conversationId/messages',
+      'POST /v1/cli/device/authorize',
     ]);
 
     await app.close();

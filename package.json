@@ -92,6 +92,7 @@
     "test:integration:ai-credentials": "bash scripts/run-disposable-database-suite.sh test/ai/ai-credentials.integration-spec.ts",
     "test:integration:agent-conversations": "bash scripts/run-disposable-database-suite.sh test/agent/agent-conversations.integration-spec.ts",
     "test:integration:agent-messages": "bash scripts/run-disposable-database-suite.sh test/agent/agent-messages.integration-spec.ts",
+    "test:integration:cli-device": "bash scripts/run-disposable-database-suite.sh test/cli-device/cli-device.integration-spec.ts",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",
     "build": "tsc -p tsconfig.build.json",
