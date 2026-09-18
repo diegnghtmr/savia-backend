@@ -416,6 +416,72 @@ describe('Receipt upload classification and transactional enqueue', () => {
     expect(Number(pgmqRes.rows[0].count)).toBe(0);
   });
 
+  it('enqueues receipt_ocr job from magic bytes alone when content type conflicts (JPEG bytes declared as application/pdf)', async () => {
+    const response = await upload(
+      randomUUID(),
+      { processingPreference: 'savia' },
+      JPEG_BYTES,
+      'receipt.pdf',
+      'application/pdf',
+    );
+    expect(response.statusCode).toBe(202);
+    const body = JSON.parse(response.payload);
+
+    assertClosedReceiptSchema(body);
+    expect(body.status).toBe('uploaded');
+    expect(body.processingLocation).toBe('savia');
+
+    // In DB public.receipts: non-null job_id
+    const receiptRes = await admin.query<{
+      id: string;
+      job_id: string | null;
+      status: string;
+      transaction_id: string | null;
+    }>(
+      `select id::text, job_id::text, status, transaction_id::text from public.receipts where workspace_id = $1 and id = $2`,
+      [workspace, body.id],
+    );
+    expect(receiptRes.rows.length).toBe(1);
+    const receiptRow = receiptRes.rows[0];
+    expect(receiptRow.status).toBe('uploaded');
+    expect(receiptRow.transaction_id).toBeNull();
+    expect(receiptRow.job_id).not.toBeNull();
+
+    const jobId = receiptRow.job_id!;
+
+    // Assert public.jobs row
+    const jobRes = await admin.query<{
+      id: string;
+      workspace_id: string;
+      type: string;
+      status: string;
+      created_by: string;
+    }>(
+      `select id::text, workspace_id::text, type, status, created_by::text from public.jobs where id = $1`,
+      [jobId],
+    );
+    expect(jobRes.rows.length).toBe(1);
+    const jobRow = jobRes.rows[0];
+    expect(jobRow.workspace_id).toBe(workspace);
+    expect(jobRow.type).toBe('receipt_ocr');
+    expect(jobRow.status).toBe('queued');
+    expect(jobRow.created_by).toBe(subject);
+
+    // Assert pgmq message exists in pgmq.q_savia_jobs
+    const pgmqRes = await admin.query<{
+      msg_id: string;
+      message: { job_id: string; workspace_id: string; actor_id: string };
+    }>(
+      `select msg_id::text, message from pgmq.q_savia_jobs where message->>'job_id' = $1`,
+      [jobId],
+    );
+    expect(pgmqRes.rows.length).toBe(1);
+    const pgmqRow = pgmqRes.rows[0];
+    expect(pgmqRow.message.job_id).toBe(jobId);
+    expect(pgmqRow.message.workspace_id).toBe(workspace);
+    expect(pgmqRow.message.actor_id).toBe(subject);
+  });
+
   it('preserves device_result upload: immediately status = awaiting_review and job_id = null (no job enqueued)', async () => {
     const response = await upload(
       randomUUID(),
