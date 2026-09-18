@@ -154,3 +154,25 @@ export interface ReceiptsPort {
 }
 
 export type ReceiptTransactionCreateOutcome = TransactionCreateOutcome;
+
+export interface ReceiptOcrJobPayload {
+  readonly receiptId: string;
+  readonly storagePath: string;
+}
+
+export interface ReceiptOcrBinding {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly storagePath: string;
+  readonly jobId: string;
+  readonly createdBy: string;
+  readonly status: string;
+  readonly transactionId: string | null;
+}
+
+export interface ExtractedReceiptFields {
+  readonly merchant: ReceiptField | null;
+  readonly date: ReceiptField | null;
+  readonly currency: ReceiptField | null;
+  readonly total: ReceiptField | null;
+}
