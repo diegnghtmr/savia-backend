@@ -235,9 +235,23 @@ describe('ReceiptOcrJobHandler', () => {
       expect(storage.download).not.toHaveBeenCalled();
     });
 
-    it('ReceiptInvalidStoragePathError has isDomainError = true (permanent)', () => {
+    it('ReceiptInvalidStoragePathError has isDomainError = true (permanent) and status 422', () => {
       const err = new ReceiptInvalidStoragePathError('test');
       expect(err.isDomainError).toBe(true);
+      expect(err.status).toBe(422);
+    });
+
+    it('returns a confirmed binding immediately without download or OCR', async () => {
+      vi.mocked(store.findOcrBinding).mockResolvedValue(
+        makeBinding({
+          status: 'confirmed',
+          transactionId: 'tx-confirmed',
+        }),
+      );
+      const binding = await handler.compute(makeContext(), fakeClient());
+      expect(binding.transactionId).toBe('tx-confirmed');
+      expect(storage.download).not.toHaveBeenCalled();
+      expect(ocrEngine.recognize).not.toHaveBeenCalled();
     });
   });
 
@@ -252,6 +266,17 @@ describe('ReceiptOcrJobHandler', () => {
         binding.storagePath,
         signal,
       );
+    });
+
+    it('skips storage I/O when the binding is already confirmed', async () => {
+      const result = await handler.download(
+        makeContext(),
+        makeBinding({ status: 'confirmed', transactionId: 'tx-confirmed' }),
+        5000,
+        new AbortController().signal,
+      );
+      expect(result).toEqual(Buffer.alloc(0));
+      expect(storage.download).not.toHaveBeenCalled();
     });
   });
 
@@ -276,6 +301,22 @@ describe('ReceiptOcrJobHandler', () => {
       ).rejects.toBeInstanceOf(ReceiptCorruptImageError);
       expect(ocrEngine.recognize).not.toHaveBeenCalled();
     });
+
+    it('skips recognition when download returned an empty superseded buffer', async () => {
+      const result = await handler.ocr(
+        makeContext(),
+        Buffer.alloc(0),
+        5000,
+        new AbortController().signal,
+      );
+      expect(result).toEqual({
+        merchant: null,
+        date: null,
+        currency: null,
+        total: null,
+      });
+      expect(ocrEngine.recognize).not.toHaveBeenCalled();
+    });
   });
 
   describe('persist (T2 CAS)', () => {
@@ -294,6 +335,7 @@ describe('ReceiptOcrJobHandler', () => {
         client,
         'ws-1',
         'receipt-1',
+        'job-1',
         fields,
       );
     });

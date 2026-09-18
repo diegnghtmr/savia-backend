@@ -149,24 +149,27 @@ export class PostgresReceiptAdapter implements ReceiptStore {
     client: TransactionClient,
     workspaceId: string,
     receiptId: string,
+    jobId: string,
     fields: ExtractedReceiptFields,
   ): Promise<boolean> {
     const result = await client.query(
       `update public.receipts
           set status = 'awaiting_review',
-              merchant = $3::jsonb,
-              date = $4::jsonb,
-              currency = $5::jsonb,
-              total = $6::jsonb,
+              merchant = $4::jsonb,
+              date = $5::jsonb,
+              currency = $6::jsonb,
+              total = $7::jsonb,
               updated_at = now(),
               version = version + 1
         where workspace_id = $1::uuid
           and id = $2::uuid
+          and job_id = $3::uuid
           and transaction_id is null
           and status in ('uploaded', 'processing')`,
       [
         workspaceId,
         receiptId,
+        jobId,
         fields.merchant ? JSON.stringify(fields.merchant) : null,
         fields.date ? JSON.stringify(fields.date) : null,
         fields.currency ? JSON.stringify(fields.currency) : null,
