@@ -105,11 +105,13 @@ describe('ReceiptCasPersist', () => {
       client,
       WS_ID,
       RECEIPT_ID,
+      JOB_ID,
       EXTRACTED_FIELDS,
     );
 
     expect(updated).toBe(true);
     expect(sql).toMatch(/transaction_id is null/i);
+    expect(sql).toMatch(/job_id = \$3::uuid/i);
     expect(sql).toContain("status in ('uploaded', 'processing')");
   });
 
@@ -303,15 +305,17 @@ describe('ReceiptCasPersist', () => {
     recognizeFn.mockClear();
     casFn.mockClear();
     vi.mocked(mockJobWriter.completeJob!).mockClear();
+    vi.mocked(mockQueue.ack).mockClear();
 
-    await runner.processMessage(queueMessage());
+    const redelivered = await runner.processMessage(queueMessage());
 
+    expect(redelivered).toBe(true);
+    expect(mockQueue.ack).toHaveBeenCalledTimes(1);
     expect(computeFn).not.toHaveBeenCalled();
     expect(downloadFn).not.toHaveBeenCalled();
     expect(recognizeFn).not.toHaveBeenCalled();
     expect(casFn).not.toHaveBeenCalled();
     expect(mockJobWriter.completeJob).not.toHaveBeenCalled();
-    expect(mockQueue.ack).toHaveBeenCalled();
   });
 
   it('CAS retry before T2 commits: a failed completeJob rolls back CAS so the next attempt can persist again', async () => {

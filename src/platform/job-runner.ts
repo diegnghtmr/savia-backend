@@ -422,6 +422,8 @@ export class JobRunner
             );
           }
 
+          jobType = row.type;
+          jobPayload = row.payload;
           if (
             ['completed', 'failed', 'cancelled', 'dead_letter'].includes(
               row.status,
@@ -451,8 +453,6 @@ export class JobRunner
             jobId,
             message.readCt,
           );
-          jobType = row.type;
-          jobPayload = row.payload;
         },
         { workspaceId, jobId, phase: 'transition' },
         'transition',
