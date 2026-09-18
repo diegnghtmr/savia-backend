@@ -1124,7 +1124,7 @@ export class JobRunner
         if (cleanupSettled) return;
         state = 'CLEANUP_OVERRUN';
 
-        overrunId = options?.jobId ?? randomUUID();
+        overrunId = randomUUID();
         const permit = options?.getPermit?.();
 
         this.cleanupOverrunRegistry.set(overrunId, {
