@@ -220,6 +220,11 @@ class FakeArtifactStorage implements ArtifactStorage {
     void path;
     return { url: 'https://example.com/signed', expiresAt };
   }
+
+  public async download(path: string): Promise<Buffer> {
+    const found = this.uploadCalls.find((call) => call.path === path);
+    return found ? found.bytes : Buffer.alloc(0);
+  }
 }
 
 class FakeLedgerWriter implements LedgerWriter {

@@ -126,6 +126,52 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
       expiresAt: authoritativeExpiry,
     };
   }
+  public async download(path: string, signal?: AbortSignal): Promise<Buffer> {
+    const c = this.getConfig();
+    let response: Response;
+    try {
+      response = await fetch(
+        `${c.url}/storage/v1/object/authenticated/exports/${path.split('/').map(encodeURIComponent).join('/')}`,
+        {
+          method: 'GET',
+          headers: this.headers(),
+          signal,
+        },
+      );
+    } catch (error) {
+      if (signal?.aborted) {
+        throw error;
+      }
+      throw new ArtifactStorageUnavailableError(
+        'Storage download failed.',
+        error,
+      );
+    }
+    if (!response.ok) {
+      if (response.status >= 500) {
+        throw new ArtifactStorageUnavailableError(
+          `Storage download failed with status ${response.status}.`,
+        );
+      } else {
+        throw new ArtifactStorageClientError(
+          response.status,
+          `Storage download failed with status ${response.status}.`,
+        );
+      }
+    }
+    try {
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    } catch (error) {
+      if (signal?.aborted) {
+        throw error;
+      }
+      throw new ArtifactStorageUnavailableError(
+        'Storage download failed while reading response body.',
+        error,
+      );
+    }
+  }
   public async remove(path: string): Promise<void> {
     const c = this.getConfig();
     let response: Response;

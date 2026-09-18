@@ -96,6 +96,7 @@ function createStorage(): ArtifactStorage & {
       url: `https://storage.example.test/${path}`,
       expiresAt,
     })),
+    download: vi.fn(async () => Buffer.alloc(0)),
     remove: vi.fn(),
   };
 }

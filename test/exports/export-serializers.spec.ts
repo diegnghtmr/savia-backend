@@ -289,6 +289,7 @@ describe('export serializers delivery budget and formatting', () => {
           signCalls++;
           return { url: 'https://storage.test/file', expiresAt: new Date() };
         }),
+        download: vi.fn(async () => Buffer.alloc(0)),
         remove: vi.fn(async () => {}),
       };
       const mockAdapter = {} as unknown as PostgresExportAdapter;
