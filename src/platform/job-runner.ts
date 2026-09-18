@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import {
   type BeforeApplicationShutdown,
@@ -6,15 +7,18 @@ import {
   Logger,
   Optional,
 } from '@nestjs/common';
+import { AsyncSemaphore, type SemaphorePermit } from './async-semaphore.js';
 import {
   DeliveryDeadline,
   DeliveryDeadlineExceededError,
 } from './delivery-deadline.js';
 import {
   JOB_HANDLERS,
+  JOB_OCR_BUDGETS,
   JOB_RENDER_BUDGETS,
   type JobExecutionContext,
   type JobHandler,
+  type OcrJobHandler,
   type RenderingJobHandler,
 } from './job-handler.port.js';
 import {
@@ -115,16 +119,59 @@ function toProblemDetails(
   };
 }
 
+export interface InFlightCleanup {
+  readonly id: string;
+  readonly jobId?: string;
+  readonly workspaceId?: string;
+  readonly stageName: string;
+  readonly startedAt: number;
+  readonly timedOutAt: number;
+  readonly overrunAt: number;
+  readonly promise: Promise<unknown>;
+  readonly permit?: SemaphorePermit;
+}
+
+function isOcrJobHandler(handler: JobHandler): handler is OcrJobHandler {
+  return (
+    'ocrBudget' in handler &&
+    handler.ocrBudget === JOB_OCR_BUDGETS.RECEIPT_OCR &&
+    typeof (handler as unknown as { download?: unknown }).download ===
+      'function' &&
+    typeof (handler as unknown as { ocr?: unknown }).ocr === 'function'
+  );
+}
+
 @Injectable()
-export class JobRunner implements BeforeApplicationShutdown {
+export class JobRunner
+  extends EventEmitter
+  implements BeforeApplicationShutdown
+{
   private readonly logger = new Logger(JobRunner.name);
   private readonly handlerMap = new Map<string, JobHandler>();
   private readonly clock: () => number;
+  private readonly cleanupOverrunRegistry = new Map<string, InFlightCleanup>();
+  public readonly ocrSemaphore: AsyncSemaphore;
 
   private isRunning = false;
   private isStopping = false;
   private pollTimer?: NodeJS.Timeout;
-  private activeJobsCount = 0;
+  private runningJobsCount = 0;
+
+  public get activeJobsCount(): number {
+    return this.runningJobsCount + this.cleanupOverrunRegistry.size;
+  }
+
+  public get cleanupOverrunCount(): number {
+    return this.cleanupOverrunRegistry.size;
+  }
+
+  public get ocrAvailablePermits(): number {
+    return this.ocrSemaphore.availablePermits;
+  }
+
+  public get inFlightCleanupRegistry(): ReadonlyMap<string, InFlightCleanup> {
+    return this.cleanupOverrunRegistry;
+  }
 
   public constructor(
     @Inject(JOB_QUEUE) private readonly queue: JobQueue,
@@ -136,6 +183,8 @@ export class JobRunner implements BeforeApplicationShutdown {
     handlers?: readonly JobHandler[] | JobHandler,
     @Optional() clock?: () => number,
   ) {
+    super();
+    this.ocrSemaphore = new AsyncSemaphore(this.config.ocrConcurrency);
     this.clock = clock ?? (() => performance.now());
     const list =
       handlers == null ? [] : Array.isArray(handlers) ? handlers : [handlers];
@@ -157,6 +206,27 @@ export class JobRunner implements BeforeApplicationShutdown {
         );
       }
     }
+    if (
+      'ocrBudget' in handler &&
+      (handler as unknown as { ocrBudget?: unknown }).ocrBudget !== undefined
+    ) {
+      const ocrBudget = (handler as unknown as { ocrBudget?: unknown })
+        .ocrBudget;
+      if (ocrBudget !== JOB_OCR_BUDGETS.RECEIPT_OCR) {
+        throw new Error(
+          `Refusing registration for OCR handler "${(handler as JobHandler).jobType}": unknown or missing OCR budget "${String(ocrBudget)}"`,
+        );
+      }
+      if (
+        'renderBudget' in handler &&
+        (handler as unknown as { renderBudget?: unknown }).renderBudget !==
+          undefined
+      ) {
+        throw new Error(
+          `Refusing registration for handler "${(handler as JobHandler).jobType}": cannot define both ocrBudget and renderBudget`,
+        );
+      }
+    }
     this.handlerMap.set(handler.jobType, handler);
   }
 
@@ -172,7 +242,7 @@ export class JobRunner implements BeforeApplicationShutdown {
   }
 
   public async runOnce(): Promise<number> {
-    this.activeJobsCount++;
+    this.runningJobsCount++;
     let messages: readonly QueueMessage[];
     let claimedAt: number;
     try {
@@ -190,17 +260,17 @@ export class JobRunner implements BeforeApplicationShutdown {
         return 0;
       }
     } finally {
-      this.activeJobsCount--;
+      this.runningJobsCount--;
     }
 
     const results = await Promise.allSettled(
       messages.map(async (message) => {
-        this.activeJobsCount++;
+        this.runningJobsCount++;
         try {
           const deadline = this.createDeadline(claimedAt);
           return await this.processMessage(message, deadline);
         } finally {
-          this.activeJobsCount--;
+          this.runningJobsCount--;
         }
       }),
     );
@@ -513,10 +583,11 @@ export class JobRunner implements BeforeApplicationShutdown {
 
     let computedResult: unknown;
     try {
+      const computeTimeoutMs = this.config.resolveComputeTimeoutMs(handler);
       computedResult = await this.transaction.runRead(
         actorId,
         async (readClient) => handler.compute(context, readClient),
-        deadline.forWork(this.config.computeTimeoutMs),
+        deadline.forWork(computeTimeoutMs),
       );
       if (handler.render && handler.store) {
         if (deadline.isWorkExhausted()) {
@@ -555,6 +626,40 @@ export class JobRunner implements BeforeApplicationShutdown {
           context,
           rendered,
           storageTimeoutMs,
+        );
+      } else if (isOcrJobHandler(handler)) {
+        if (deadline.isWorkExhausted()) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+        const downloaded = await this.executeBoundedStage(
+          deadline,
+          this.config.storageDownloadTimeoutMs,
+          'download',
+          (signal, timeoutMs) =>
+            handler.download(context, computedResult, timeoutMs, signal),
+          { jobId, workspaceId },
+        );
+
+        if (deadline.isWorkExhausted()) {
+          this.logger.warn(`delivery_deadline_exhausted: job ${jobId}`);
+          return false;
+        }
+
+        let heldPermit: SemaphorePermit | undefined;
+        computedResult = await this.executeBoundedStage(
+          deadline,
+          this.config.ocrTimeoutMs,
+          'ocr',
+          async (signal, timeoutMs) => {
+            heldPermit = await this.ocrSemaphore.acquire(signal);
+            return await handler.ocr(context, downloaded, timeoutMs, signal);
+          },
+          {
+            jobId,
+            workspaceId,
+            getPermit: () => heldPermit,
+          },
         );
       }
     } catch (computeError) {
@@ -904,6 +1009,158 @@ export class JobRunner implements BeforeApplicationShutdown {
 
     // Ack after successful persist + completed commit
     return await this.safeAck(message.msgId, deadline, jobId);
+  }
+
+  public async executeBoundedStage<T>(
+    deadline: DeliveryDeadline,
+    capMs: number,
+    stageName: string,
+    execute: (signal: AbortSignal, timeoutMs: number) => Promise<T>,
+    options?: {
+      jobId?: string;
+      workspaceId?: string;
+      getPermit?: () => SemaphorePermit | undefined;
+    },
+  ): Promise<T> {
+    const timeoutMs = deadline.forWork(capMs);
+    if (timeoutMs < this.config.minOperationMs) {
+      throw new DeliveryDeadlineExceededError(
+        `Deadline remaining for stage "${stageName}" (${timeoutMs}ms) is below minOperationMs (${this.config.minOperationMs}ms).`,
+      );
+    }
+
+    const controller = new AbortController();
+    let state:
+      | 'PENDING'
+      | 'SUCCEEDED'
+      | 'FAILED'
+      | 'TIMED_OUT'
+      | 'CLEANUP_OVERRUN' = 'PENDING';
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    let cleanupTimer: NodeJS.Timeout | undefined;
+
+    let resolveResult!: (value: T) => void;
+    let rejectResult!: (error: unknown) => void;
+
+    const resultPromise = new Promise<T>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+
+    let stagePromise: Promise<T>;
+    try {
+      stagePromise = execute(controller.signal, timeoutMs);
+    } catch (syncError) {
+      stagePromise = Promise.reject(syncError);
+    }
+
+    // Observe stage promise synchronously so late rejection is never unhandled (Property 4)
+    stagePromise.catch(() => undefined);
+
+    stagePromise.then(
+      (value) => {
+        if (state === 'PENDING') {
+          state = 'SUCCEEDED';
+          if (timeoutTimer) {
+            clearTimeout(timeoutTimer);
+            timeoutTimer = undefined;
+          }
+          options?.getPermit?.()?.release();
+          resolveResult(value);
+        }
+      },
+      (adapterError) => {
+        if (state === 'PENDING') {
+          state = 'FAILED';
+          if (timeoutTimer) {
+            clearTimeout(timeoutTimer);
+            timeoutTimer = undefined;
+          }
+          options?.getPermit?.()?.release();
+          rejectResult(adapterError);
+        }
+      },
+    );
+
+    const deadlineError = new DeliveryDeadlineExceededError(
+      `Stage "${stageName}" timed out after ${timeoutMs}ms.`,
+    );
+
+    timeoutTimer = setTimeout(() => {
+      if (state !== 'PENDING') return;
+      state = 'TIMED_OUT';
+
+      // Property 3: Abort exactly once
+      controller.abort(deadlineError);
+
+      let cleanupSettled = false;
+
+      const onCleanupSettled = () => {
+        if (cleanupSettled) return;
+        cleanupSettled = true;
+        if (cleanupTimer) {
+          clearTimeout(cleanupTimer);
+          cleanupTimer = undefined;
+        }
+
+        if (state === 'TIMED_OUT') {
+          // Cleanup settled within bound!
+          options?.getPermit?.()?.release();
+          rejectResult(deadlineError);
+        } else if (state === 'CLEANUP_OVERRUN') {
+          // Settled after overrun bound (eventual deregistration)
+          if (overrunId) {
+            this.cleanupOverrunRegistry.delete(overrunId);
+          }
+          options?.getPermit?.()?.release();
+        }
+      };
+
+      stagePromise.then(onCleanupSettled, onCleanupSettled);
+
+      let overrunId: string | undefined;
+
+      cleanupTimer = setTimeout(() => {
+        if (cleanupSettled) return;
+        state = 'CLEANUP_OVERRUN';
+
+        overrunId = options?.jobId ?? randomUUID();
+        const permit = options?.getPermit?.();
+
+        this.cleanupOverrunRegistry.set(overrunId, {
+          id: overrunId,
+          jobId: options?.jobId,
+          workspaceId: options?.workspaceId,
+          stageName,
+          startedAt: Date.now() - timeoutMs - this.config.stageCleanupTimeoutMs,
+          timedOutAt: Date.now() - this.config.stageCleanupTimeoutMs,
+          overrunAt: Date.now(),
+          promise: stagePromise,
+          permit,
+        });
+
+        this.emit('unhealthy', {
+          type: 'cleanup_overrun',
+          stageName,
+          jobId: options?.jobId,
+          workspaceId: options?.workspaceId,
+          overrunTimeoutMs: this.config.stageCleanupTimeoutMs,
+        });
+
+        this.logger.error(
+          `cleanup_overrun: stage "${stageName}" (job ${options?.jobId ?? 'unknown'}) exceeded stageCleanupTimeoutMs (${this.config.stageCleanupTimeoutMs}ms); registered in in-flight cleanup registry; capacity retained.`,
+        );
+
+        // Do NOT release permit on cleanup overrun!
+        rejectResult(
+          new DeliveryDeadlineExceededError(
+            `Stage "${stageName}" timed out after ${timeoutMs}ms and post-abort cleanup exceeded bound (${this.config.stageCleanupTimeoutMs}ms).`,
+          ),
+        );
+      }, this.config.stageCleanupTimeoutMs);
+    }, timeoutMs);
+
+    return resultPromise;
   }
 
   private resolveRenderTimeoutMs(handler: RenderingJobHandler): number {
