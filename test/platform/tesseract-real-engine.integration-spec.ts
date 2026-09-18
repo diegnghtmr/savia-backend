@@ -1,13 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { SystemTesseractAdapter } from '../../src/platform/system-tesseract.adapter.js';
 import type { OcrCapabilityProbeResult } from '../../src/platform/tesseract-capability-probe.js';
 import {
   assertOcrCapabilityForCi,
   evaluateOcrCapability,
   probeOcrCapabilities,
 } from '../../src/platform/tesseract-capability-probe.js';
+import {
+  runOcrStartupPreflight,
+  SystemTesseractAdapter,
+} from '../../src/platform/system-tesseract.adapter.js';
 
 describe('Real Tesseract Engine Suite', () => {
   const fixturesDir = path.resolve(__dirname, '../../test/fixtures');
@@ -68,6 +71,18 @@ describe('Real Tesseract Engine Suite', () => {
       expect(() =>
         assertOcrCapabilityForCi(simulatedMissing, { CI: 'true' }),
       ).toThrow(/In CI, OCR capabilities must be present/);
+    });
+
+    it('proves real host preflight fails on missing spa (pinned exit-0 + stderr marker with real /usr/bin/tesseract)', async () => {
+      // On this host, spa is missing from /usr/share/tessdata.
+      // Prove that running the real preflight with real /usr/bin/tesseract and /usr/bin/prlimit
+      // encounters tesseract exiting 0 with 'Failed loading language spa' on stderr,
+      // and runOcrStartupPreflight catches it and rejects with OcrPreflightError.
+      if (!probe.availableLanguages.includes('spa')) {
+        await expect(runOcrStartupPreflight()).rejects.toThrow(
+          /required language pack missing \(eng\+spa\)/i,
+        );
+      }
     });
   });
 

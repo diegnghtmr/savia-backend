@@ -122,14 +122,16 @@ describe('runOcrStartupPreflight', () => {
     ).rejects.toThrow(/prlimit binary not found/i);
   });
 
-  it('fails fast when spa language pack is missing from tesseract', async () => {
+  it('fails fast when spa language pack is missing from tesseract (even when process exits 0 and writes TSV header)', async () => {
     fakeSpawner.nextChildHandler = ({ child }) => {
       queueMicrotask(() => {
+        child.stdout.write(VALID_PREFLIGHT_TSV);
+        child.stdout.end();
         child.stderr.write(
-          "Error opening data file /usr/share/tessdata/spa.traineddata\nPlease make sure the TESSDATA_PREFIX environment variable is set to your \"tessdata\" directory.\nFailed loading language 'spa'\nTesseract couldn't load any languages!\nCould not initialize tesseract.\n",
+          'Error opening data file /usr/share/tessdata/spa.traineddata\nPlease make sure the TESSDATA_PREFIX environment variable is set to your "tessdata" directory.\nFailed loading language \'spa\'\n',
         );
         child.stderr.end();
-        child.simulateClose(1, null);
+        child.simulateClose(0, null);
       });
     };
 
@@ -147,6 +149,68 @@ describe('runOcrStartupPreflight', () => {
     expect(caughtError).toBeInstanceOf(OcrPreflightError);
     expect((caughtError as OcrPreflightError).message).toMatch(
       /required language pack missing \(eng\+spa\)/i,
+    );
+  });
+
+  it('enforces stdout stream cap of 10 MiB, terminating process group on overrun', async () => {
+    fakeSpawner.nextChildHandler = ({ child }) => {
+      queueMicrotask(() => {
+        const chunk = Buffer.alloc(10 * 1024 * 1024 + 1, 'a');
+        child.stdout.write(chunk);
+        queueMicrotask(() => {
+          child.simulateClose(null, 'SIGTERM');
+        });
+      });
+    };
+
+    let caughtError: unknown;
+    try {
+      await runOcrStartupPreflight({
+        spawner: fakeSpawner.spawn,
+        processKiller: fakeKiller.kill,
+        platform: 'linux',
+      });
+    } catch (err) {
+      caughtError = err;
+    }
+
+    expect(caughtError).toBeInstanceOf(OcrPreflightError);
+    expect((caughtError as OcrPreflightError).message).toMatch(
+      /stdout stream exceeded cap/i,
+    );
+    expect(fakeKiller.killed).toEqual(
+      expect.arrayContaining([{ pid: -10001, signal: 'SIGTERM' }]),
+    );
+  });
+
+  it('enforces stderr stream cap of 64 KiB, terminating process group on overrun', async () => {
+    fakeSpawner.nextChildHandler = ({ child }) => {
+      queueMicrotask(() => {
+        const chunk = Buffer.alloc(64 * 1024 + 1, 'e');
+        child.stderr.write(chunk);
+        queueMicrotask(() => {
+          child.simulateClose(null, 'SIGTERM');
+        });
+      });
+    };
+
+    let caughtError: unknown;
+    try {
+      await runOcrStartupPreflight({
+        spawner: fakeSpawner.spawn,
+        processKiller: fakeKiller.kill,
+        platform: 'linux',
+      });
+    } catch (err) {
+      caughtError = err;
+    }
+
+    expect(caughtError).toBeInstanceOf(OcrPreflightError);
+    expect((caughtError as OcrPreflightError).message).toMatch(
+      /stderr stream exceeded cap/i,
+    );
+    expect(fakeKiller.killed).toEqual(
+      expect.arrayContaining([{ pid: -10001, signal: 'SIGTERM' }]),
     );
   });
 
