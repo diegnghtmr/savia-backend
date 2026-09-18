@@ -514,8 +514,27 @@ export class SystemTesseractAdapter implements OcrEnginePort {
             return;
           }
 
+          const stderrText = Buffer.concat(stderrChunks).toString('utf-8');
+
+          // Check for missing language packs (eng or spa).
+          // Tesseract exits 0 with TSV header even when a language fails to load,
+          // which would silently degrade recognition to English-only without this check.
+          if (
+            stderrText.includes('spa.traineddata') ||
+            stderrText.includes("Failed loading language 'spa'") ||
+            stderrText.includes('eng.traineddata') ||
+            stderrText.includes("Failed loading language 'eng'") ||
+            stderrText.includes('Could not initialize tesseract')
+          ) {
+            reject(
+              new ReceiptOcrEngineFailedError(
+                `OCR engine failed: required language pack missing (eng+spa). Stderr: ${stderrText.slice(0, 1024)}`,
+              ),
+            );
+            return;
+          }
+
           if (code !== 0) {
-            const stderrText = Buffer.concat(stderrChunks).toString('utf-8');
             // Map all otherwise-unidentifiable nonzero exits (including allocator diagnostics)
             // to generic permanent ReceiptOcrEngineFailedError
             reject(
@@ -632,6 +651,11 @@ export async function runOcrStartupPreflight(
     let settled = false;
     let closed = false;
     let timer: NodeJS.Timeout | undefined;
+    let graceTimer: NodeJS.Timeout | undefined;
+    let terminated = false;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let streamCapError: OcrPreflightError | undefined;
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
 
@@ -640,6 +664,23 @@ export async function runOcrStartupPreflight(
         clearTimeout(timer);
         timer = undefined;
       }
+      if (graceTimer !== undefined) {
+        clearTimeout(graceTimer);
+        graceTimer = undefined;
+      }
+    };
+
+    const terminateChild = (sig: NodeJS.Signals): void => {
+      if (!child.pid || terminated) return;
+      terminated = true;
+      killProcessGroup(child.pid, sig, processKiller);
+
+      // Schedule SIGKILL escalation after grace window
+      graceTimer = setTimeout(() => {
+        if (!closed && child.pid) {
+          killProcessGroup(child.pid, 'SIGKILL', processKiller);
+        }
+      }, OCR_TIMEOUT_DEFAULTS.GRACE_WINDOW_MS);
     };
 
     timer = setTimeout(() => {
@@ -657,12 +698,32 @@ export async function runOcrStartupPreflight(
 
     if (child.stdout) {
       child.stdout.on('data', (chunk: Buffer) => {
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > OCR_STREAM_BOUNDS.MAX_STDOUT_BYTES) {
+          if (!streamCapError) {
+            streamCapError = new OcrPreflightError(
+              `OCR startup preflight failed: stdout stream exceeded cap of ${OCR_STREAM_BOUNDS.MAX_STDOUT_BYTES} bytes (10 MiB).`,
+            );
+            terminateChild('SIGTERM');
+          }
+          return;
+        }
         stdoutChunks.push(chunk);
       });
     }
 
     if (child.stderr) {
       child.stderr.on('data', (chunk: Buffer) => {
+        stderrBytes += chunk.length;
+        if (stderrBytes > OCR_STREAM_BOUNDS.MAX_STDERR_BYTES) {
+          if (!streamCapError) {
+            streamCapError = new OcrPreflightError(
+              `OCR startup preflight failed: stderr stream exceeded cap of ${OCR_STREAM_BOUNDS.MAX_STDERR_BYTES} bytes (64 KiB).`,
+            );
+            terminateChild('SIGTERM');
+          }
+          return;
+        }
         stderrChunks.push(chunk);
       });
     }
@@ -694,6 +755,11 @@ export async function runOcrStartupPreflight(
       settled = true;
       closed = true;
       cleanup();
+
+      if (streamCapError !== undefined) {
+        reject(streamCapError);
+        return;
+      }
 
       const stderrText = Buffer.concat(stderrChunks).toString('utf-8');
 

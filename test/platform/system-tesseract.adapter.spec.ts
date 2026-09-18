@@ -365,6 +365,43 @@ describe('SystemTesseractAdapter', () => {
     });
   });
 
+  it('fails with ReceiptOcrEngineFailedError when child exits 0 but stderr indicates language pack failed to load', async () => {
+    fakeSpawner.nextChildHandler = ({ child }) => {
+      queueMicrotask(() => {
+        child.stdout.write(
+          'level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t10\t10\t50\t20\t95\tTOTAL\n',
+        );
+        child.stdout.end();
+        child.stderr.write(
+          "Error opening data file /usr/share/tessdata/spa.traineddata\nFailed loading language 'spa'\n",
+        );
+        child.stderr.end();
+        child.simulateClose(0, null);
+      });
+    };
+
+    const adapter = new SystemTesseractAdapter({
+      spawner: fakeSpawner.spawn,
+      processKiller: fakeKiller.kill,
+    });
+
+    let error: unknown;
+    try {
+      await adapter.recognize(Buffer.from('image'), { timeoutMs: 5_000 });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(ReceiptOcrEngineFailedError);
+    expect((error as ReceiptOcrEngineFailedError).code).toBe(
+      'ocr_engine_failed',
+    );
+    expect((error as ReceiptOcrEngineFailedError).message).toMatch(
+      /required language pack missing/i,
+    );
+    expect(classifyJobError(error)).toBe('permanent');
+  });
+
   it('rejects memory cap below 256 MiB minimum bound (e.g. 64 MiB)', () => {
     const sixtyFourMib = 64 * 1024 * 1024;
     expect(() => parseOcrMemoryLimitBytes(sixtyFourMib)).toThrow(
