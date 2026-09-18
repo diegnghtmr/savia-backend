@@ -12,6 +12,7 @@ import type {
   TransactionCursor,
   UpdateTransactionCommand,
 } from './ledger.port.js';
+import { IMPORT_COMMIT_BATCH_SIZE } from '../platform/import-batch-policy.js';
 import {
   TransactionCategoryNotFoundError,
   TransactionPayeeNotFoundError,
@@ -55,6 +56,8 @@ export function toIso(value: unknown): string {
 }
 
 export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
+  public static readonly BATCH_SIZE = IMPORT_COMMIT_BATCH_SIZE;
+
   public async createImportedTransactions(
     client: TransactionClient,
     workspaceId: string,
@@ -62,48 +65,56 @@ export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
     commands: readonly ImportedTransactionCommand[],
   ): Promise<void> {
     if (!commands.length) return;
-    const result = await client.query<{
-      id: string;
-      account_id: string;
-      amount_minor: string;
-      currency: string;
-      occurred_at: Date;
-    }>(
-      `insert into public.transactions (workspace_id,account_id,type,status,amount_minor,currency,occurred_at,description,import_job_id,created_by)
-         select * from unnest($1::uuid[],$2::uuid[],$3::text[],$4::text[],$5::bigint[],$6::text[],$7::timestamptz[],$8::text[],$9::uuid[],$10::uuid[])
-         returning id,account_id,amount_minor,currency,occurred_at`,
-      [
-        commands.map(() => workspaceId),
-        commands.map((command) => command.accountId),
-        commands.map(() => 'adjustment'),
-        commands.map(() => 'confirmed'),
-        commands.map((command) => command.amountMinor),
-        commands.map((command) => command.currency),
-        commands.map((command) => command.occurredAt),
-        commands.map((command) => command.description),
-        commands.map((command) => command.importJobId),
-        commands.map(() => subject),
-      ],
-    );
-    await client.query(
-      `insert into public.ledger_postings (workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at)
-       select workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at
-       from unnest($1::uuid[],$2::uuid[],$3::uuid[],$4::text[],$5::bigint[],$6::text[],$7::text[],$8::timestamptz[])
-       as input(workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at)`,
-      [
-        result.rows.flatMap(() => [workspaceId, workspaceId]),
-        result.rows.flatMap((row) => [row.id, row.id]),
-        result.rows.flatMap((row) => [row.account_id, null]),
-        result.rows.flatMap(() => ['account', 'external']),
-        result.rows.flatMap((row) => [
-          row.amount_minor,
-          negateAmountMinor(row.amount_minor),
-        ]),
-        result.rows.flatMap((row) => [row.currency, row.currency]),
-        result.rows.flatMap(() => ['confirmed', 'confirmed']),
-        result.rows.flatMap((row) => [row.occurred_at, row.occurred_at]),
-      ],
-    );
+    const batchSize = PostgresTransactionAdapter.BATCH_SIZE;
+    for (
+      let batchStart = 0;
+      batchStart < commands.length;
+      batchStart += batchSize
+    ) {
+      const batch = commands.slice(batchStart, batchStart + batchSize);
+      const result = await client.query<{
+        id: string;
+        account_id: string;
+        amount_minor: string;
+        currency: string;
+        occurred_at: Date;
+      }>(
+        `insert into public.transactions (workspace_id,account_id,type,status,amount_minor,currency,occurred_at,description,import_job_id,created_by)
+           select * from unnest($1::uuid[],$2::uuid[],$3::text[],$4::text[],$5::bigint[],$6::text[],$7::timestamptz[],$8::text[],$9::uuid[],$10::uuid[])
+           returning id,account_id,amount_minor,currency,occurred_at`,
+        [
+          batch.map(() => workspaceId),
+          batch.map((command) => command.accountId),
+          batch.map(() => 'adjustment'),
+          batch.map(() => 'confirmed'),
+          batch.map((command) => command.amountMinor),
+          batch.map((command) => command.currency),
+          batch.map((command) => command.occurredAt),
+          batch.map((command) => command.description),
+          batch.map((command) => command.importJobId),
+          batch.map(() => subject),
+        ],
+      );
+      await client.query(
+        `insert into public.ledger_postings (workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at)
+         select workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at
+         from unnest($1::uuid[],$2::uuid[],$3::uuid[],$4::text[],$5::bigint[],$6::text[],$7::text[],$8::timestamptz[])
+         as input(workspace_id,transaction_id,account_id,leg_kind,amount_minor,currency,status,occurred_at)`,
+        [
+          result.rows.flatMap(() => [workspaceId, workspaceId]),
+          result.rows.flatMap((row) => [row.id, row.id]),
+          result.rows.flatMap((row) => [row.account_id, null]),
+          result.rows.flatMap(() => ['account', 'external']),
+          result.rows.flatMap((row) => [
+            row.amount_minor,
+            negateAmountMinor(row.amount_minor),
+          ]),
+          result.rows.flatMap((row) => [row.currency, row.currency]),
+          result.rows.flatMap(() => ['confirmed', 'confirmed']),
+          result.rows.flatMap((row) => [row.occurred_at, row.occurred_at]),
+        ],
+      );
+    }
   }
 
   public createImportedTransaction(
