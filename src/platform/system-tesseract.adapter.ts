@@ -109,6 +109,16 @@ export class OcrEngineTimeoutError extends Error {
   }
 }
 
+/**
+ * Error thrown when worker startup preflight fails.
+ */
+export class OcrPreflightError extends Error {
+  public constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'OcrPreflightError';
+  }
+}
+
 export type SubprocessSpawner = (
   command: string,
   args: readonly string[],
@@ -234,6 +244,15 @@ export function groupTokensIntoLinesInternal(
 
   return lines;
 }
+
+/**
+ * Minimal embedded 1x1 PNG image fixture for startup preflight verification.
+ * 68 bytes valid PNG header and chunks (IHDR 1x1, IDAT, IEND).
+ */
+export const EMBEDDED_PREFLIGHT_FIXTURE_PNG = Buffer.from(
+  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082',
+  'hex',
+);
 
 /**
  * Production implementation of OcrEnginePort utilizing the system tesseract binary
@@ -520,4 +539,214 @@ export class SystemTesseractAdapter implements OcrEnginePort {
       );
     });
   }
+}
+
+export interface OcrPreflightOptions {
+  readonly memoryLimitBytes?: number;
+  readonly spawner?: SubprocessSpawner;
+  readonly processKiller?: ProcessKiller;
+  readonly tesseractPath?: string;
+  readonly prlimitPath?: string;
+  readonly platform?: NodeJS.Platform;
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Startup preflight oracle for the OCR engine.
+ * Executes the exact production command path through prlimit with the configured cap,
+ * eng+spa languages, --psm 3, --oem 1, stdin, and TSV on a tiny embedded fixture.
+ *
+ * Fails fast with an actionable OcrPreflightError on:
+ * - Non-Linux OS.
+ * - Missing prlimit binary.
+ * - Missing language packs (eng or spa).
+ * - Unusable memory cap (exit code 127 from dynamic loader).
+ * - Non-zero exit code or malformed/empty TSV output.
+ *
+ * Manual citations:
+ * - prlimit(1): --as=<bytes> -- COMMAND
+ * - tesseract(1): stdin stdout -l eng+spa --psm 3 --oem 1 tsv
+ * - OpenMP: OMP_THREAD_LIMIT=1
+ */
+export async function runOcrStartupPreflight(
+  options?: OcrPreflightOptions,
+): Promise<void> {
+  const platform = options?.platform ?? process.platform;
+  if (platform !== 'linux') {
+    throw new OcrPreflightError(
+      `OCR startup preflight failed: unsupported operating system "${platform}". Linux with prlimit is required.`,
+    );
+  }
+
+  const memoryLimitBytes = parseOcrMemoryLimitBytes(options?.memoryLimitBytes);
+  const spawner = options?.spawner ?? spawn;
+  const tesseractPath = options?.tesseractPath ?? '/usr/bin/tesseract';
+  const prlimitPath = options?.prlimitPath ?? '/usr/bin/prlimit';
+  const timeoutMs =
+    options?.timeoutMs ?? OCR_TIMEOUT_DEFAULTS.PREFLIGHT_TIMEOUT_MS;
+  const processKiller =
+    options?.processKiller ??
+    ((p, s) => {
+      process.kill(p, s);
+    });
+
+  const spawnArgs: readonly string[] = [
+    `--as=${memoryLimitBytes}`,
+    '--',
+    tesseractPath,
+    'stdin',
+    'stdout',
+    '-l',
+    'eng+spa',
+    '--psm',
+    '3',
+    '--oem',
+    '1',
+    'tsv',
+  ];
+
+  const spawnOptions: SpawnOptions = {
+    shell: false,
+    detached: true,
+    env: {
+      ...process.env,
+      OMP_THREAD_LIMIT: '1',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  };
+
+  return await new Promise<void>((resolve, reject) => {
+    let child: ChildProcess;
+    try {
+      child = spawner(prlimitPath, spawnArgs, spawnOptions);
+    } catch (err: unknown) {
+      reject(
+        new OcrPreflightError(
+          `OCR startup preflight failed: failed to spawn prlimit: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        ),
+      );
+      return;
+    }
+
+    let settled = false;
+    let closed = false;
+    let timer: NodeJS.Timeout | undefined;
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+
+    const cleanup = (): void => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    };
+
+    timer = setTimeout(() => {
+      if (!closed && child.pid !== undefined) {
+        killProcessGroup(child.pid, 'SIGKILL', processKiller);
+      }
+    }, timeoutMs);
+
+    if (child.stdin) {
+      child.stdin.on('error', () => {
+        // Swallow EPIPE on early child termination
+      });
+      child.stdin.end(EMBEDDED_PREFLIGHT_FIXTURE_PNG);
+    }
+
+    if (child.stdout) {
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdoutChunks.push(chunk);
+      });
+    }
+
+    if (child.stderr) {
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrChunks.push(chunk);
+      });
+    }
+
+    child.on('error', (err: Error) => {
+      if (settled) return;
+      settled = true;
+      closed = true;
+      cleanup();
+      const errCode = (err as NodeJS.ErrnoException).code;
+      if (errCode === 'ENOENT' || err.message.includes('ENOENT')) {
+        reject(
+          new OcrPreflightError(
+            `OCR startup preflight failed: prlimit binary not found at ${prlimitPath}.`,
+            { cause: err },
+          ),
+        );
+        return;
+      }
+      reject(
+        new OcrPreflightError(`OCR startup preflight failed: ${err.message}`, {
+          cause: err,
+        }),
+      );
+    });
+
+    child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      closed = true;
+      cleanup();
+
+      const stderrText = Buffer.concat(stderrChunks).toString('utf-8');
+
+      // Check for missing languages
+      if (
+        stderrText.includes('spa.traineddata') ||
+        stderrText.includes("Failed loading language 'spa'") ||
+        stderrText.includes('eng.traineddata') ||
+        stderrText.includes("Failed loading language 'eng'") ||
+        stderrText.includes('Could not initialize tesseract')
+      ) {
+        reject(
+          new OcrPreflightError(
+            `OCR startup preflight failed: required language pack missing (eng+spa). Stderr: ${stderrText.trim()}`,
+          ),
+        );
+        return;
+      }
+
+      // Check for dynamic loader / memory cap failure (exit code 127)
+      if (
+        code === 127 ||
+        stderrText.includes('failed to map segment from shared object') ||
+        stderrText.includes('error while loading shared libraries')
+      ) {
+        reject(
+          new OcrPreflightError(
+            `OCR startup preflight failed: unusable memory limit cap (exit code 127). Stderr: ${stderrText.trim()}`,
+          ),
+        );
+        return;
+      }
+
+      if (code !== 0) {
+        reject(
+          new OcrPreflightError(
+            `OCR startup preflight failed with exit code ${code}${signal ? ` (signal: ${signal})` : ''}. Stderr: ${stderrText.trim()}`,
+          ),
+        );
+        return;
+      }
+
+      const stdoutText = Buffer.concat(stdoutChunks).toString('utf-8').trim();
+      if (!stdoutText || !stdoutText.includes('level\t')) {
+        reject(
+          new OcrPreflightError(
+            `OCR startup preflight failed: unexpected empty TSV output.`,
+          ),
+        );
+        return;
+      }
+
+      resolve();
+    });
+  });
 }
