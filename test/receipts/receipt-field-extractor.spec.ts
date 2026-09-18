@@ -66,6 +66,71 @@ describe('ReceiptFieldExtractor', () => {
       expect(fields.total?.value).toBe(45000);
       expect(fields.total?.confidence).toBeGreaterThanOrEqual(0.85);
     });
+
+    it('carries low OCR confidence instead of inflating it with hardcoded floors', () => {
+      const tsv = buildTsv([
+        { text: 'TIENDA DE BARRIO', conf: 20, top: 10 },
+        { text: 'FECHA: 2026-09-15', conf: 20, top: 35 },
+        { text: 'TOTAL: COP 10,50', conf: 20, top: 60 },
+      ]);
+
+      const fields = extractReceiptFields(tsv);
+
+      expect(fields.merchant).not.toBeNull();
+      expect(fields.merchant?.confidence).toBeCloseTo(0.2, 2);
+
+      expect(fields.date).not.toBeNull();
+      expect(fields.date?.confidence).toBeCloseTo(0.2, 2);
+
+      expect(fields.currency).not.toBeNull();
+      expect(fields.currency?.confidence).toBeCloseTo(0.2, 2);
+
+      expect(fields.total).not.toBeNull();
+      expect(fields.total?.confidence).toBeCloseTo(0.2, 2);
+    });
+
+    it('clamps structured OcrEngineResult confidence to [0, 1] range', () => {
+      const structuredResult = {
+        lines: [
+          {
+            pageNum: 1,
+            blockNum: 1,
+            parNum: 1,
+            lineNum: 1,
+            text: 'MERCADO EXPRESS',
+            confidence: 42,
+            tokens: [],
+          },
+          {
+            pageNum: 1,
+            blockNum: 1,
+            parNum: 1,
+            lineNum: 2,
+            text: 'FECHA: 2026-09-15',
+            confidence: 150,
+            tokens: [],
+          },
+          {
+            pageNum: 1,
+            blockNum: 1,
+            parNum: 1,
+            lineNum: 3,
+            text: 'TOTAL: USD 100.00',
+            confidence: -5,
+            tokens: [],
+          },
+        ],
+        tokens: [],
+        rawTsv: '',
+      };
+
+      const fields = extractReceiptFields(structuredResult);
+
+      expect(fields.merchant?.confidence).toBe(1);
+      expect(fields.date?.confidence).toBe(1);
+      expect(fields.currency?.confidence).toBe(0);
+      expect(fields.total?.confidence).toBe(0);
+    });
   });
 
   describe('Merchant extraction', () => {

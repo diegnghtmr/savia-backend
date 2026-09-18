@@ -200,7 +200,7 @@ function extractMerchant(lines: readonly OcrEngineLine[]): ReceiptField | null {
     if (isNoise) continue;
 
     // Found merchant candidate
-    const conf = Math.min(1, Math.max(0.8, line.confidence));
+    const conf = Math.max(0, Math.min(1, line.confidence));
     return {
       value: trimmed,
       confidence: conf,
@@ -236,9 +236,7 @@ function extractDate(
         Number(isoMatch[3]),
       );
       if (canonical) {
-        const conf = hasLabel
-          ? Math.max(0.85, line.confidence)
-          : line.confidence;
+        const conf = Math.max(0, Math.min(1, line.confidence));
         if (hasLabel) {
           return { value: canonical, confidence: conf };
         }
@@ -259,9 +257,7 @@ function extractDate(
         Number(latinMatch[1]),
       );
       if (canonical) {
-        const conf = hasLabel
-          ? Math.max(0.85, line.confidence)
-          : line.confidence;
+        const conf = Math.max(0, Math.min(1, line.confidence));
         if (hasLabel) {
           return { value: canonical, confidence: conf };
         }
@@ -285,9 +281,7 @@ function extractDate(
       if (month) {
         const canonical = formatCanonicalDate(year, month, day);
         if (canonical) {
-          const conf = hasLabel
-            ? Math.max(0.85, line.confidence)
-            : line.confidence;
+          const conf = Math.max(0, Math.min(1, line.confidence));
           if (hasLabel) {
             return { value: canonical, confidence: conf };
           }
@@ -310,9 +304,7 @@ function extractDate(
         Number(twoDigitMatch[1]),
       );
       if (canonical) {
-        const conf = hasLabel
-          ? Math.max(0.85, line.confidence)
-          : line.confidence;
+        const conf = Math.max(0, Math.min(1, line.confidence));
         if (hasLabel) {
           return { value: canonical, confidence: conf };
         }
@@ -338,21 +330,21 @@ function extractCurrency(lines: readonly OcrEngineLine[]): ReceiptField | null {
     if (isoMatch) {
       return {
         value: isoMatch[1]!.toUpperCase(),
-        confidence: Math.max(0.9, line.confidence),
+        confidence: Math.max(0, Math.min(1, line.confidence)),
       };
     }
 
     if (line.text.includes('€')) {
       return {
         value: 'EUR',
-        confidence: Math.max(0.85, line.confidence),
+        confidence: Math.max(0, Math.min(1, line.confidence)),
       };
     }
 
     if (line.text.includes('$')) {
       return {
         value: '$',
-        confidence: Math.max(0.85, line.confidence),
+        confidence: Math.max(0, Math.min(1, line.confidence)),
       };
     }
   }
@@ -363,21 +355,21 @@ function extractCurrency(lines: readonly OcrEngineLine[]): ReceiptField | null {
     if (isoMatch) {
       return {
         value: isoMatch[1]!.toUpperCase(),
-        confidence: Math.max(0.85, line.confidence),
+        confidence: Math.max(0, Math.min(1, line.confidence)),
       };
     }
 
     if (line.text.includes('€')) {
       return {
         value: 'EUR',
-        confidence: Math.max(0.8, line.confidence),
+        confidence: Math.max(0, Math.min(1, line.confidence)),
       };
     }
 
     if (line.text.includes('$')) {
       return {
         value: '$',
-        confidence: Math.max(0.8, line.confidence),
+        confidence: Math.max(0, Math.min(1, line.confidence)),
       };
     }
   }
@@ -458,7 +450,7 @@ function extractTotal(lines: readonly OcrEngineLine[]): ReceiptField | null {
     if (amount !== null) {
       return {
         value: amount,
-        confidence: Math.max(0.85, line.confidence),
+        confidence: Math.max(0, Math.min(1, line.confidence)),
       };
     }
   }
@@ -472,7 +464,7 @@ function extractTotal(lines: readonly OcrEngineLine[]): ReceiptField | null {
       if (amount !== null) {
         return {
           value: amount,
-          confidence: Math.max(0.8, nextLine.confidence),
+          confidence: Math.max(0, Math.min(1, nextLine.confidence)),
         };
       }
     }
@@ -490,49 +482,24 @@ export function extractReceiptFields(
   tsvOrResult: string | OcrEngineResult,
   options?: FieldExtractorOptions,
 ): ExtractedReceiptFields {
-  try {
-    let lines: OcrEngineLine[];
+  let lines: OcrEngineLine[];
 
-    if (typeof tsvOrResult === 'string') {
-      const tokens = parseTsvTokens(tsvOrResult);
-      lines = groupTokensIntoLines(tokens);
-    } else if (
-      tsvOrResult &&
-      typeof tsvOrResult === 'object' &&
-      Array.isArray(tsvOrResult.lines)
-    ) {
-      lines = [...tsvOrResult.lines];
-    } else {
-      return {
-        merchant: null,
-        date: null,
-        currency: null,
-        total: null,
-      };
-    }
-
-    if (lines.length === 0) {
-      return {
-        merchant: null,
-        date: null,
-        currency: null,
-        total: null,
-      };
-    }
-
-    const merchant = extractMerchant(lines);
-    const date = extractDate(lines, options);
-    const currency = extractCurrency(lines);
-    const total = extractTotal(lines);
-
-    return {
-      merchant,
-      date,
-      currency,
-      total,
-    };
-  } catch {
-    // Pure extractor: missing/corrupt fields return null and never throw
+  if (typeof tsvOrResult === 'string') {
+    const tokens = parseTsvTokens(tsvOrResult);
+    lines = groupTokensIntoLines(tokens);
+  } else if (
+    tsvOrResult &&
+    typeof tsvOrResult === 'object' &&
+    Array.isArray(tsvOrResult.lines)
+  ) {
+    lines = tsvOrResult.lines.map((line) => ({
+      ...line,
+      confidence: Math.max(
+        0,
+        Math.min(1, Number.isFinite(line.confidence) ? line.confidence : 0),
+      ),
+    }));
+  } else {
     return {
       merchant: null,
       date: null,
@@ -540,4 +507,25 @@ export function extractReceiptFields(
       total: null,
     };
   }
+
+  if (lines.length === 0) {
+    return {
+      merchant: null,
+      date: null,
+      currency: null,
+      total: null,
+    };
+  }
+
+  const merchant = extractMerchant(lines);
+  const date = extractDate(lines, options);
+  const currency = extractCurrency(lines);
+  const total = extractTotal(lines);
+
+  return {
+    merchant,
+    date,
+    currency,
+    total,
+  };
 }

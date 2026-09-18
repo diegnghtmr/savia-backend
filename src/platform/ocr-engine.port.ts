@@ -18,6 +18,7 @@ export interface OcrEngineToken {
   readonly top: number;
   readonly width: number;
   readonly height: number;
+  /** Normalized confidence score in the range [0, 1]. */
   readonly confidence: number;
   readonly text: string;
 }
@@ -28,6 +29,7 @@ export interface OcrEngineLine {
   readonly parNum: number;
   readonly lineNum: number;
   readonly text: string;
+  /** Normalized confidence score in the range [0, 1]. */
   readonly confidence: number;
   readonly tokens: readonly OcrEngineToken[];
 }
