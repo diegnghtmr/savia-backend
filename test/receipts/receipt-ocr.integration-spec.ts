@@ -550,6 +550,7 @@ describe('Receipt OCR end-to-end against a disposable database', () => {
     const row = await receiptRow(created.id);
     expect(row.status).toBe('failed');
     expect(row.error).not.toBeNull();
+    expect((row.error as { code: string }).code).toBe('receipt_corrupt_image');
     const got = await getReceipt(created.id);
     expect(got.statusCode).toBe(200);
     const body = JSON.parse(got.payload) as Record<string, unknown>;
@@ -565,6 +566,9 @@ describe('Receipt OCR end-to-end against a disposable database', () => {
     const row = await receiptRow(created.id);
     expect(row.status).toBe('failed');
     expect(row.error).not.toBeNull();
+    expect((row.error as { code: string }).code).toBe(
+      'receipt_dimensions_exceeded',
+    );
   });
 
   it('confirming a failed receipt succeeds manually', async () => {
@@ -677,12 +681,18 @@ describe('Receipt OCR end-to-end against a disposable database', () => {
       expect(binding).toBeNull();
 
       const mutated = await tx.run(ownerA, async (client) =>
-        store.updateOcrResultCas(client, workspace, uploadedB.id, {
-          merchant: { value: 'LEAKED', confidence: 1 },
-          date: null,
-          currency: null,
-          total: null,
-        }),
+        store.updateOcrResultCas(
+          client,
+          workspace,
+          uploadedB.id,
+          rowB.job_id!,
+          {
+            merchant: { value: 'LEAKED', confidence: 1 },
+            date: null,
+            currency: null,
+            total: null,
+          },
+        ),
       );
       expect(mutated).toBe(false);
       expect((await receiptRow(uploadedB.id)).merchant).toBeNull();
@@ -691,6 +701,26 @@ describe('Receipt OCR end-to-end against a disposable database', () => {
         workspaceB,
       ]);
     }
+  });
+
+  it('creator RLS: a demoted creator cannot read the OCR binding', async () => {
+    const created = JSON.parse((await upload(SIMPLE_PNG)).payload) as {
+      id: string;
+    };
+    const row = await receiptRow(created.id);
+    expect(row.job_id).not.toBeNull();
+    await admin.query(
+      `update public.workspace_memberships
+          set status = 'suspended'
+        where workspace_id = $1 and profile_id = $2`,
+      [workspace, ownerA],
+    );
+    const store = new PostgresReceiptAdapter();
+    const tx = workerModule.get(PgTransaction);
+    const binding = await tx.runRead(ownerA, async (client) =>
+      store.findOcrBinding(client, workspace, created.id, row.job_id!),
+    );
+    expect(binding).toBeNull();
   });
 
   it('telemetry omits file names, storage paths, OCR text, and financial amounts', async () => {
