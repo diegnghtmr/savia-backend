@@ -10,6 +10,8 @@ import { ReportJobHandler } from './reports/report-job.handler.js';
 import { ReportWorkerModule } from './reports/report-worker.module.js';
 import { ExportJobHandler } from './exports/export-job.handler.js';
 import { ExportWorkerModule } from './exports/export-worker.module.js';
+import { ReceiptOcrJobHandler } from './receipts/receipt-ocr-job.handler.js';
+import { ReceiptWorkerModule } from './receipts/receipt-worker.module.js';
 
 @Module({
   imports: [
@@ -17,6 +19,7 @@ import { ExportWorkerModule } from './exports/export-worker.module.js';
     ForecastWorkerModule,
     ReportWorkerModule,
     ExportWorkerModule,
+    ReceiptWorkerModule,
   ],
   providers: [
     PostgresJobsAdapter,
@@ -26,12 +29,18 @@ import { ExportWorkerModule } from './exports/export-worker.module.js';
     },
     {
       provide: JOB_HANDLERS,
-      inject: [ForecastJobHandler, ReportJobHandler, ExportJobHandler],
+      inject: [
+        ForecastJobHandler,
+        ReportJobHandler,
+        ExportJobHandler,
+        ReceiptOcrJobHandler,
+      ],
       useFactory: (
         forecast: ForecastJobHandler,
         report: ReportJobHandler,
         exportJob: ExportJobHandler,
-      ) => [forecast, report, exportJob],
+        receiptOcr: ReceiptOcrJobHandler,
+      ) => [forecast, report, exportJob, receiptOcr],
     },
     JobRunner,
   ],
