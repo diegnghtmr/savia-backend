@@ -74,6 +74,22 @@ describe('executable OpenAPI authority', () => {
     expect(verify()).toContain('OpenAPI authority verified.');
   });
 
+  it('rejects a declared bare 500 response', () => {
+    const source = readFileSync(contract, 'utf8');
+    const healthStart = source.indexOf('      operationId: getHealth');
+    const health = source.slice(healthStart);
+    writeFileSync(
+      contract,
+      source.slice(0, healthStart) +
+        health.replace(
+          "        '503':\n          $ref: '#/components/responses/ServiceUnavailable'",
+          "        '500':\n          description: Injected bare 500.\n        '503':\n          $ref: '#/components/responses/ServiceUnavailable'",
+        ),
+    );
+
+    expect(verify).toThrow(/bare 500/);
+  });
+
   it('rejects planning provenance constant drift', () => {
     const metadata = JSON.parse(readFileSync(provenance, 'utf8'));
     metadata.planningSource.operationCount = 92;
@@ -152,7 +168,7 @@ describe('executable OpenAPI authority', () => {
       '404',
       '409',
       '422',
-      '500',
+      '503',
     ]);
   });
 

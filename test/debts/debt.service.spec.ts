@@ -19,6 +19,7 @@ describe('DebtService', () => {
   const mockClient = {} as TransactionClient;
   const mockTx: DebtTransactionRunner = {
     run: vi.fn(async (_subject, callback) => callback(mockClient)),
+    runRead: vi.fn(async (_subject, callback) => callback(mockClient)),
   };
 
   const dummyDebt: Debt = {
@@ -147,6 +148,7 @@ describe('DebtService', () => {
         limit: 10,
       });
       expect(result.kind).toBe(DEBT_OUTCOMES.FORBIDDEN);
+      expect(mockTx.runRead).toHaveBeenCalled();
     });
 
     it('returns page of debts for viewer', async () => {
@@ -160,6 +162,7 @@ describe('DebtService', () => {
         limit: 10,
       });
       expect(result.kind).toBe('ok');
+      expect(mockTx.runRead).toHaveBeenCalled();
       if (result.kind === 'ok') {
         expect(result.page.items).toEqual([dummyDebt]);
       }

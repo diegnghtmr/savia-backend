@@ -43,6 +43,10 @@ export interface FundTransactionRunner {
     subject: string,
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T>;
+  runRead<T>(
+    subject: string,
+    callback: (client: TransactionClient) => Promise<T>,
+  ): Promise<T>;
 }
 
 export class FundService implements FundsPort {
@@ -159,7 +163,7 @@ export class FundService implements FundsPort {
     subject: string,
     query: FundListQuery,
   ): Promise<FundListOutcome> {
-    return this.tx.run(subject, async (client) => {
+    return this.tx.runRead(subject, async (client) => {
       const role = await this.store.readActiveRole(client, query.workspaceId);
       if (
         !['owner', 'administrator', 'editor', 'viewer'].includes(role ?? '')

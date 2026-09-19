@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
   ADVANCED_METRIC,
@@ -13,6 +13,7 @@ import {
 } from '../../src/analytics/analytics.port.js';
 import {
   AnalyticsService,
+  type AnalyticsTransactionRunner,
   generateBucketPeriods,
 } from '../../src/analytics/analytics.service.js';
 
@@ -20,15 +21,27 @@ describe('AnalyticsService', () => {
   const workspaceId = '00000000-0000-4000-8000-000000000001';
   const subject = '00000000-0000-4000-8000-000000000099';
 
-  const fakeTx = {
-    run: async <T>(
-      _sub: string,
-      cb: (client: TransactionClient) => Promise<T>,
-    ): Promise<T> => {
-      return cb({
-        query: async () => ({ rows: [], rowCount: 0 }),
-      } as unknown as TransactionClient);
-    },
+  const fakeTx: AnalyticsTransactionRunner = {
+    run: vi.fn<AnalyticsTransactionRunner['run']>(
+      async <T>(
+        _sub: string,
+        cb: (client: TransactionClient) => Promise<T>,
+      ): Promise<T> => {
+        return cb({
+          query: async () => ({ rows: [], rowCount: 0 }),
+        } as unknown as TransactionClient);
+      },
+    ) as unknown as AnalyticsTransactionRunner['run'],
+    runRead: vi.fn<AnalyticsTransactionRunner['runRead']>(
+      async <T>(
+        _sub: string,
+        cb: (client: TransactionClient) => Promise<T>,
+      ): Promise<T> => {
+        return cb({
+          query: async () => ({ rows: [], rowCount: 0 }),
+        } as unknown as TransactionClient);
+      },
+    ) as unknown as AnalyticsTransactionRunner['runRead'],
   };
 
   const createMockStore = (
@@ -60,6 +73,7 @@ describe('AnalyticsService', () => {
         to: '2026-01-31',
       });
       expect(res.kind).toBe(ANALYTICS_OUTCOMES.FORBIDDEN);
+      expect(fakeTx.runRead).toHaveBeenCalled();
     });
 
     it('returns summary with exact computed fields in base currency', async () => {
@@ -199,6 +213,7 @@ describe('AnalyticsService', () => {
         to: '2026-03-31',
         granularity: 'month',
       });
+      expect(fakeTx.runRead).toHaveBeenCalled();
 
       expect(res.kind).toBe(ANALYTICS_OUTCOMES.OK);
       if (res.kind !== ANALYTICS_OUTCOMES.OK) return;
@@ -258,6 +273,7 @@ describe('AnalyticsService', () => {
         to: '2026-01-31',
       });
       expect(res.kind).toBe(ANALYTICS_OUTCOMES.FORBIDDEN);
+      expect(fakeTx.runRead).toHaveBeenCalled();
     });
 
     it('returns MISSING_RATE when exchange rate is missing for conversion', async () => {
