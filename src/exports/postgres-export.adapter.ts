@@ -10,7 +10,22 @@ import type {
   ExportStore,
   CreateExportJobCommand,
 } from './export.port.js';
-export class ExportUnrepresentableError extends Error {}
+import { PROBLEM_TYPES } from '../platform/problem-details.js';
+
+export class ExportUnrepresentableError extends Error {
+  public readonly isDomainError = true;
+  public readonly type = PROBLEM_TYPES.UNPROCESSABLE;
+  public readonly title = 'Export value cannot be represented';
+  public readonly status = 422;
+  public readonly code = 'export-unrepresentable';
+  public readonly detail: string;
+
+  public constructor(message: string) {
+    super(message);
+    this.name = 'ExportUnrepresentableError';
+    this.detail = message;
+  }
+}
 
 interface Row extends Record<string, unknown> {
   id: string;
@@ -215,5 +230,128 @@ export class PostgresExportAdapter implements ExportStore {
     );
     const row = result.rows[0];
     return row ? map(row) : undefined;
+  }
+
+  public async insertQueuedExportJob(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    data: {
+      readonly id: string;
+      readonly format: ExportJob['format'];
+      readonly resource: CreateExportJobCommand['resource'];
+      readonly resourceId: string | null;
+      readonly from: string | null;
+      readonly to: string | null;
+      readonly jobId: string;
+    },
+  ): Promise<ExportJob> {
+    const result = await client.query<Row>(
+      `insert into public.export_jobs (
+        id, workspace_id, format, resource, resource_id, from_date, to_date,
+        status, object_path, download_url, expires_at, error, created_by, completed_at, job_id
+      ) values (
+        $1::uuid, $2::uuid, $3, $4, $5::uuid, $6::date, $7::date,
+        'queued', null, null, null, null, $8::uuid, null, $9::uuid
+      ) returning id::text, status, format, created_at, download_url, expires_at`,
+      [
+        data.id,
+        workspaceId,
+        data.format,
+        data.resource,
+        data.resourceId,
+        data.from,
+        data.to,
+        subject,
+        data.jobId,
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error('Created export job row could not be read.');
+    return map(row);
+  }
+
+  public async readExportJobBinding(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ): Promise<
+    { readonly jobId: string | null; readonly status: string } | undefined
+  > {
+    const result = await client.query<{
+      jobId: string | null;
+      status: string;
+    }>(
+      `select job_id::text as "jobId", status
+         from public.export_jobs
+        where workspace_id = $1::uuid
+          and id = $2::uuid
+        limit 1`,
+      [workspaceId, id],
+    );
+    const row = result.rows[0];
+    return row ? { jobId: row.jobId, status: row.status } : undefined;
+  }
+
+  public async beginProcessingExportJob(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    jobId: string,
+  ): Promise<void> {
+    const result = await client.query<{ id: string }>(
+      `update public.export_jobs
+          set status = 'processing'
+        where workspace_id = $1::uuid
+          and id = $2::uuid
+          and job_id = $3::uuid
+          and status = 'queued'
+       returning id::text`,
+      [workspaceId, id, jobId],
+    );
+    if (result.rows.length === 0) {
+      throw new Error('Export job could not be transitioned to processing.');
+    }
+  }
+
+  public async completeProcessingExportJob(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    jobId: string,
+    completion: {
+      readonly objectPath: string;
+      readonly downloadUrl: string;
+      readonly expiresAt: Date;
+      readonly completedAt: Date;
+    },
+  ): Promise<ExportJob> {
+    const result = await client.query<Row>(
+      `update public.export_jobs
+          set status = 'completed',
+              object_path = $4,
+              download_url = $5,
+              expires_at = $6::timestamptz,
+              completed_at = $7::timestamptz
+        where workspace_id = $1::uuid
+          and id = $2::uuid
+          and job_id = $3::uuid
+          and status = 'processing'
+       returning id::text, status, format, created_at, download_url, expires_at`,
+      [
+        workspaceId,
+        id,
+        jobId,
+        completion.objectPath,
+        completion.downloadUrl,
+        completion.expiresAt.toISOString(),
+        completion.completedAt.toISOString(),
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error('Export job could not be completed.');
+    }
+    return map(row);
   }
 }

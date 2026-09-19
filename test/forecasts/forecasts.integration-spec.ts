@@ -1,6 +1,8 @@
-// Migrations under test: 202609040003_forecasts.sql
+// Migrations under test: 202609040003_forecasts.sql, 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
+import type { INestApplicationContext } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
@@ -11,15 +13,202 @@ import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { FORECAST_METHOD } from '../../src/forecasts/forecast.port.js';
+import { ForecastService } from '../../src/forecasts/forecast.service.js';
+import { PostgresForecastAdapter } from '../../src/forecasts/postgres-forecast.adapter.js';
+import {
+  JOB_HANDLERS,
+  type JobHandler,
+} from '../../src/platform/job-handler.port.js';
+import { JobRunner } from '../../src/platform/job-runner.js';
+import {
+  JOB_WRITER,
+  type JobWriter,
+} from '../../src/platform/job-writer.port.js';
+import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
+import { WorkerModule } from '../../src/worker.module.js';
+
+const FIXED_NOW = new Date('2026-09-04T12:00:00.000Z');
+let forecastClock: () => Date = () => new Date();
 
 const url = process.env.DATABASE_URL;
 if (!url) {
   throw new Error('DATABASE_URL is required for integration tests.');
 }
 
+async function seedRelativeForecastFixture(
+  admin: Pool,
+  input: {
+    readonly now: Date;
+    readonly workspaceId: string;
+    readonly ownerId: string;
+    readonly checkingId: string;
+    readonly savingsId: string;
+    readonly eurId: string;
+  },
+): Promise<void> {
+  const curYear = input.now.getUTCFullYear();
+  const curMonth = input.now.getUTCMonth();
+  const asOfIso = input.now.toISOString();
+
+  await admin.query(
+    `insert into public.workspaces (id, name, kind, base_currency, personal_owner_profile_id, created_by) values
+      ($1, 'Pinned Forecast Workspace', 'shared', 'USD', null, $2)`,
+    [input.workspaceId, input.ownerId],
+  );
+  await admin.query(
+    `insert into public.workspace_memberships (workspace_id, profile_id, role, status) values
+      ($1, $2, 'owner', 'active')`,
+    [input.workspaceId, input.ownerId],
+  );
+  await admin.query(
+    `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by) values
+      ($1, 'EUR', 'USD', 1.080000000000000000, $3::timestamptz, 'test', $2),
+      ($1, 'USD', 'EUR', 0.920000000000000000, $3::timestamptz, 'test', $2)`,
+    [input.workspaceId, input.ownerId, asOfIso],
+  );
+  await admin.query(
+    `insert into public.accounts (id, workspace_id, name, type, currency, status, closed_at, created_by) values
+      ($1, $2, 'Pinned Checking', 'checking', 'USD', 'active', null, $3),
+      ($4, $2, 'Pinned Savings', 'savings', 'USD', 'active', null, $3),
+      ($5, $2, 'Pinned EUR', 'checking', 'EUR', 'active', null, $3)`,
+    [
+      input.checkingId,
+      input.workspaceId,
+      input.ownerId,
+      input.savingsId,
+      input.eurId,
+    ],
+  );
+
+  const seedAccountBalance = async (
+    acctId: string,
+    amountMinor: number,
+    currency: string,
+  ) => {
+    const txnId = randomUUID();
+    const thirteenMonthsAgo = new Date(
+      Date.UTC(curYear, curMonth - 13, 1, 0, 0, 0, 0),
+    ).toISOString();
+    await admin.query(
+      `insert into public.transactions (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
+       values ($1, $2, $3, 'income', 'confirmed', $4, $5, $6::timestamptz, $7)`,
+      [
+        txnId,
+        input.workspaceId,
+        acctId,
+        amountMinor,
+        currency,
+        thirteenMonthsAgo,
+        input.ownerId,
+      ],
+    );
+    await admin.query(
+      `insert into public.ledger_postings (id, workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at) values
+        ($1, $2, $3, $4, 'account', $5, $6, 'confirmed', $7::timestamptz),
+        ($8, $2, $3, null, 'external', $9, $6, 'confirmed', $7::timestamptz)`,
+      [
+        randomUUID(),
+        input.workspaceId,
+        txnId,
+        acctId,
+        amountMinor,
+        currency,
+        thirteenMonthsAgo,
+        randomUUID(),
+        -amountMinor,
+      ],
+    );
+  };
+
+  await seedAccountBalance(input.checkingId, 1000000, 'USD');
+  await seedAccountBalance(input.savingsId, 500000, 'USD');
+  await seedAccountBalance(input.eurId, 100000, 'EUR');
+
+  const monthMinus2 = new Date(
+    Date.UTC(curYear, curMonth - 2, 15, 12, 0, 0, 0),
+  ).toISOString();
+  const monthMinus1 = new Date(
+    Date.UTC(curYear, curMonth - 1, 15, 12, 0, 0, 0),
+  ).toISOString();
+  const month0 = asOfIso;
+  const monthMinus5 = new Date(
+    Date.UTC(curYear, curMonth - 5, 15, 12, 0, 0, 0),
+  ).toISOString();
+
+  const insertFlow = async (
+    type: 'income' | 'expense',
+    amountMinor: number,
+    postingAccountMinor: number,
+    occurredAt: string,
+  ) => {
+    const txnId = randomUUID();
+    await admin.query(
+      `insert into public.transactions (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
+       values ($1, $2, $3, $4, 'confirmed', $5, 'USD', $6::timestamptz, $7)`,
+      [
+        txnId,
+        input.workspaceId,
+        input.checkingId,
+        type,
+        amountMinor,
+        occurredAt,
+        input.ownerId,
+      ],
+    );
+    await admin.query(
+      `insert into public.ledger_postings (id, workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at) values
+        ($1, $2, $3, $4, 'account', $5, 'USD', 'confirmed', $6::timestamptz),
+        ($7, $2, $3, null, 'external', $8, 'USD', 'confirmed', $6::timestamptz)`,
+      [
+        randomUUID(),
+        input.workspaceId,
+        txnId,
+        input.checkingId,
+        postingAccountMinor,
+        occurredAt,
+        randomUUID(),
+        -postingAccountMinor,
+      ],
+    );
+  };
+
+  await insertFlow('income', 300000, 300000, monthMinus2);
+  await insertFlow('expense', 100000, -100000, monthMinus1);
+  await insertFlow('income', 400000, 400000, month0);
+
+  const txnDisallowedId = randomUUID();
+  await admin.query(
+    `insert into public.transactions (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
+     values ($1, $2, $3, 'income', 'confirmed', 50000000, 'USD', $4::timestamptz, $5)`,
+    [
+      txnDisallowedId,
+      input.workspaceId,
+      input.checkingId,
+      monthMinus5,
+      input.ownerId,
+    ],
+  );
+  await admin.query(
+    `insert into public.ledger_postings (id, workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at) values
+      ($1, $2, $3, $4, 'account', 50000000, 'USD', 'confirmed', $5::timestamptz),
+      ($6, $2, $3, null, 'external', -50000000, 'USD', 'pending', $5::timestamptz)`,
+    [
+      randomUUID(),
+      input.workspaceId,
+      txnDisallowedId,
+      input.checkingId,
+      monthMinus5,
+      randomUUID(),
+    ],
+  );
+}
+
 describe('Forecasts integration suite against disposable PostgreSQL', () => {
   let admin: Pool;
   let application: NestFastifyApplication;
+  let workerApp: INestApplicationContext;
+  let runner: JobRunner;
 
   const ownerId = '11111111-0000-4000-8000-000000000001';
   const editorId = '22222222-0000-4000-8000-000000000001';
@@ -30,12 +219,16 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
 
   const workspace1Id = 'aaaaaaaa-0000-4000-8000-000000000001';
   const workspace2Id = 'bbbbbbbb-0000-4000-8000-000000000001';
+  const workspacePinnedId = 'aaaaaaaa-0000-4000-8000-000000000003';
 
   const acctCheckingId = 'cccccccc-0000-4000-8000-000000000001';
   const acctSavingsId = 'cccccccc-0000-4000-8000-000000000002';
   const acctEurId = 'cccccccc-0000-4000-8000-000000000003';
   const acctClosedId = 'cccccccc-0000-4000-8000-000000000004';
   const acctWs2Id = 'cccccccc-0000-4000-8000-000000000005';
+  const pinnedCheckingId = 'dddddddd-0000-4000-8000-000000000001';
+  const pinnedSavingsId = 'dddddddd-0000-4000-8000-000000000002';
+  const pinnedEurId = 'dddddddd-0000-4000-8000-000000000003';
 
   beforeAll(async () => {
     Object.assign(process.env, {
@@ -291,6 +484,15 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       ],
     );
 
+    await seedRelativeForecastFixture(admin, {
+      now: FIXED_NOW,
+      workspaceId: workspacePinnedId,
+      ownerId,
+      checkingId: pinnedCheckingId,
+      savingsId: pinnedSavingsId,
+      eurId: pinnedEurId,
+    });
+
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -306,6 +508,24 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
           throw new Error('token rejected');
         },
       })
+      .overrideProvider(ForecastService)
+      .useFactory({
+        factory: (
+          tx: PgTransaction,
+          store: PostgresForecastAdapter,
+          idempotency: PostgresIdempotencyAdapter,
+          jobs: JobWriter,
+        ) =>
+          new ForecastService(tx, store, idempotency, jobs, () =>
+            forecastClock(),
+          ),
+        inject: [
+          PgTransaction,
+          PostgresForecastAdapter,
+          PostgresIdempotencyAdapter,
+          JOB_WRITER,
+        ],
+      })
       .compile();
 
     application = moduleRef.createNestApplication<NestFastifyApplication>(
@@ -314,9 +534,17 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
     registerProblemFilter(application);
     await application.init();
     await application.getHttpAdapter().getInstance().ready();
+
+    workerApp = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    runner = workerApp.get(JobRunner);
   });
 
   afterAll(async () => {
+    if (workerApp) {
+      await workerApp.close();
+    }
     if (application) {
       await application.close();
     }
@@ -324,6 +552,36 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       await admin.end();
     }
   });
+
+  async function drainUntilTerminal(jobId: string): Promise<{
+    status: string;
+    result_resource_id: string | null;
+    error: Record<string, unknown> | null;
+  }> {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const row = await admin.query<{
+        status: string;
+        result_resource_id: string | null;
+        error: Record<string, unknown> | null;
+      }>(
+        `select status,
+                result_resource_id::text as result_resource_id,
+                error
+           from public.jobs
+          where id = $1::uuid`,
+        [jobId],
+      );
+      const job = row.rows[0];
+      if (
+        job &&
+        ['completed', 'failed', 'dead_letter', 'cancelled'].includes(job.status)
+      ) {
+        return job;
+      }
+      await runner.drainOnce();
+    }
+    throw new Error(`Job ${jobId} did not reach a terminal status`);
+  }
 
   describe('Database schema, RLS, and constraints (202609040003_forecasts.sql)', () => {
     it('verifies forecasts table has forced RLS and named constraints', async () => {
@@ -439,59 +697,201 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
   });
 
   describe('POST /v1/forecasts/balance operation', () => {
-    it('creates balance forecast with 202 status code and valid resultResourceId job wiring', async () => {
-      const key = randomUUID();
-      const res = await application.inject({
-        method: 'POST',
-        url: '/v1/forecasts/balance',
-        headers: {
-          authorization: 'Bearer owner-token',
-          'x-workspace-id': workspace1Id,
-          'idempotency-key': key,
-        },
-        payload: {
-          horizonDays: 90,
-        },
-      });
+    it('returns 202 queued with no forecast row, then drainOnce completes the pinned forecast', async () => {
+      const previousClock = forecastClock;
+      forecastClock = () => new Date(FIXED_NOW.toISOString());
+      try {
+        const key = randomUUID();
+        const res = await application.inject({
+          method: 'POST',
+          url: '/v1/forecasts/balance',
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspacePinnedId,
+            'idempotency-key': key,
+          },
+          payload: {
+            horizonDays: 90,
+          },
+        });
 
-      expect(res.statusCode).toBe(202);
-      const job = JSON.parse(res.payload);
-      expect(job.type).toBe('balance_forecast');
-      expect(job.status).toBe('completed');
-      expect(job.resultResourceId).toBeDefined();
+        expect(res.statusCode).toBe(202);
+        const job = JSON.parse(res.payload);
+        expect(job.type).toBe('balance_forecast');
+        expect(job.status).toBe('queued');
+        expect(job.resultResourceId).toBeNull();
+        expect(job.id).toEqual(expect.any(String));
+        expect(job.createdAt).toEqual(expect.any(String));
 
-      const forecastId = job.resultResourceId;
+        const before = await admin.query<{ count: string }>(
+          `select count(*)::text as count from public.forecasts where job_id = $1::uuid`,
+          [job.id],
+        );
+        expect(before.rows[0]?.count).toBe('0');
 
-      // Verify row in database
-      const dbRes = await admin.query<{
-        id: string;
-        job_id: string;
-        status: string;
-        horizon_days: number;
-      }>(
-        `select id, job_id, status, horizon_days from public.forecasts where id = $1::uuid`,
-        [forecastId],
+        const completed = await drainUntilTerminal(job.id);
+        expect(completed.status).toBe('completed');
+        expect(completed.result_resource_id).toEqual(expect.any(String));
+
+        const forecastId = completed.result_resource_id as string;
+        const dbRes = await admin.query<{
+          id: string;
+          job_id: string;
+          status: string;
+          horizon_days: number;
+        }>(
+          `select id, job_id, status, horizon_days from public.forecasts where id = $1::uuid`,
+          [forecastId],
+        );
+        expect(dbRes.rows[0]?.id).toBe(forecastId);
+        expect(dbRes.rows[0]?.job_id).toBe(job.id);
+        expect(dbRes.rows[0]?.status).toBe('completed');
+        expect(dbRes.rows[0]?.horizon_days).toBe(90);
+
+        const getRes = await application.inject({
+          method: 'GET',
+          url: `/v1/forecasts/${forecastId}`,
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspacePinnedId,
+          },
+        });
+        expect(getRes.statusCode).toBe(200);
+        const forecast = JSON.parse(getRes.payload);
+        expect(forecast.id).toBe(forecastId);
+        expect(forecast.status).toBe('completed');
+        expect(forecast.series).toHaveLength(90);
+        expect(forecast.method).toBe(FORECAST_METHOD);
+        expect(forecast.confidence).toBe('medium');
+        expect(forecast.assumptions).toContain('3 month(s) of history used.');
+        expect(forecast.series[0].expected.currency).toBe('USD');
+        expect(forecast.series[0]).toEqual({
+          date: '2026-09-05',
+          expected: { amountMinor: '52214667', currency: 'USD' },
+          lowerBound: { amountMinor: '52207466', currency: 'USD' },
+          upperBound: { amountMinor: '52221868', currency: 'USD' },
+        });
+        expect(forecast.series[44]).toEqual({
+          date: '2026-10-19',
+          expected: { amountMinor: '52508015', currency: 'USD' },
+          lowerBound: { amountMinor: '52183977', currency: 'USD' },
+          upperBound: { amountMinor: '52832053', currency: 'USD' },
+        });
+        expect(forecast.series[89]).toEqual({
+          date: '2026-12-03',
+          expected: { amountMinor: '52808030', currency: 'USD' },
+          lowerBound: { amountMinor: '52159955', currency: 'USD' },
+          upperBound: { amountMinor: '53456105', currency: 'USD' },
+        });
+
+        const transitions = await admin.query<{
+          from_status: string | null;
+          to_status: string;
+          attempt: number;
+        }>(
+          `select from_status, to_status, attempt
+           from public.job_transitions
+          where job_id = $1::uuid
+          order by occurred_at asc, id asc`,
+          [job.id],
+        );
+        expect(
+          transitions.rows.map((row) => [
+            row.from_status,
+            row.to_status,
+            Number(row.attempt),
+          ]),
+        ).toEqual([
+          [null, 'queued', 0],
+          ['queued', 'processing', 1],
+          ['processing', 'completed', 1],
+        ]);
+      } finally {
+        forecastClock = previousClock;
+      }
+    });
+
+    it('rolls back the forecast when another delivery completes the job before persist', async () => {
+      const handlers = workerApp.get<readonly JobHandler[]>(JOB_HANDLERS);
+      const original = handlers.find(
+        (handler) => handler.jobType === 'balance_forecast',
       );
-      expect(dbRes.rows[0]?.id).toBe(forecastId);
-      expect(dbRes.rows[0]?.job_id).toBe(job.id);
-      expect(dbRes.rows[0]?.status).toBe('completed');
-      expect(dbRes.rows[0]?.horizon_days).toBe(90);
+      if (!original) {
+        throw new Error('Expected a registered balance_forecast handler');
+      }
+      const jobWriter = workerApp.get<JobWriter>(JOB_WRITER);
+      const transaction = workerApp.get(PgTransaction);
 
-      // Verify readable via GET /v1/forecasts/:forecastId
-      const getRes = await application.inject({
-        method: 'GET',
-        url: `/v1/forecasts/${forecastId}`,
-        headers: {
-          authorization: 'Bearer owner-token',
-          'x-workspace-id': workspace1Id,
+      const racingHandler: JobHandler = {
+        jobType: original.jobType,
+        parsePayload: (raw, execution) => original.parsePayload(raw, execution),
+        compute: async (context, client) => {
+          const computed = await original.compute(context, client);
+          await transaction.run(context.actorId, async (writeClient) => {
+            await jobWriter.completeJob(
+              writeClient,
+              context.workspaceId,
+              context.jobId,
+              null,
+            );
+          });
+          return computed;
         },
-      });
-      expect(getRes.statusCode).toBe(200);
-      const forecast = JSON.parse(getRes.payload);
-      expect(forecast.id).toBe(forecastId);
-      expect(forecast.status).toBe('completed');
-      expect(forecast.series).toHaveLength(90);
-      expect(forecast.method).toBe(FORECAST_METHOD);
+        persist: (context, computed, client) =>
+          original.persist(context, computed, client),
+      };
+      runner.registerHandler(racingHandler);
+
+      try {
+        const res = await application.inject({
+          method: 'POST',
+          url: '/v1/forecasts/balance',
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': randomUUID(),
+          },
+          payload: {
+            horizonDays: 90,
+          },
+        });
+        expect(res.statusCode).toBe(202);
+        const job = JSON.parse(res.payload) as { id: string; status: string };
+        expect(job.status).toBe('queued');
+
+        const processed = await runner.drainOnce();
+        expect(processed).toBe(1);
+
+        const jobRow = await admin.query<{
+          status: string;
+          result_resource_id: string | null;
+        }>(
+          `select status, result_resource_id::text as result_resource_id
+             from public.jobs
+            where id = $1::uuid`,
+          [job.id],
+        );
+        expect(jobRow.rows[0]?.status).toBe('completed');
+        expect(jobRow.rows[0]?.result_resource_id).toBeNull();
+
+        const forecasts = await admin.query<{ count: string }>(
+          `select count(*)::text as count
+             from public.forecasts
+            where job_id = $1::uuid`,
+          [job.id],
+        );
+        expect(forecasts.rows[0]?.count).toBe('0');
+
+        const queueRemaining = await admin.query(
+          `select msg_id
+             from pgmq.q_savia_jobs
+            where (message->>'job_id')::uuid = $1::uuid`,
+          [job.id],
+        );
+        expect(queueRemaining.rows).toHaveLength(0);
+      } finally {
+        runner.registerHandler(original);
+      }
     });
 
     it('returns 422 when accountIds contains an unknown id', async () => {
@@ -576,9 +976,11 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
 
       expect(res.statusCode).toBe(202);
       const job = JSON.parse(res.payload);
+      expect(job.status).toBe('queued');
+      const completed = await drainUntilTerminal(job.id);
       const getRes = await application.inject({
         method: 'GET',
-        url: `/v1/forecasts/${job.resultResourceId}`,
+        url: `/v1/forecasts/${completed.result_resource_id}`,
         headers: {
           authorization: 'Bearer owner-token',
           'x-workspace-id': workspace1Id,
@@ -613,9 +1015,10 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
 
       expect(res.statusCode).toBe(202);
       const job = JSON.parse(res.payload);
+      const completed = await drainUntilTerminal(job.id);
       const getRes = await application.inject({
         method: 'GET',
-        url: `/v1/forecasts/${job.resultResourceId}`,
+        url: `/v1/forecasts/${completed.result_resource_id}`,
         headers: {
           authorization: 'Bearer owner-token',
           'x-workspace-id': workspace1Id,
@@ -626,7 +1029,7 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       expect(forecast.series[0].expected.amountMinor).toBe('500000');
     });
 
-    it('returns 422 MISSING_RATE when transaction flow row has a currency without an exchange rate', async () => {
+    it('fails the queued job when transaction flow row has a currency without an exchange rate', async () => {
       // Seed a transaction in workspace 1 with GBP currency (no GBP/USD rate exists)
       const gbpTxnId = randomUUID();
       const curYear = new Date().getUTCFullYear();
@@ -668,11 +1071,17 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
           },
         });
 
-        expect(res.statusCode).toBe(422);
-        const problem = JSON.parse(res.payload);
-        expect(problem.status).toBe(422);
-        expect(problem.title).toMatch(/exchange rate/i);
-        expect(problem.detail).toMatch(/GBP/i);
+        expect(res.statusCode).toBe(202);
+        const job = JSON.parse(res.payload);
+        const completed = await drainUntilTerminal(job.id);
+        expect(completed.status).toBe('failed');
+        expect(completed.result_resource_id).toBeNull();
+        expect(JSON.stringify(completed.error)).toMatch(/GBP/i);
+        const forecasts = await admin.query<{ count: string }>(
+          `select count(*)::text as count from public.forecasts where job_id = $1::uuid`,
+          [job.id],
+        );
+        expect(forecasts.rows[0]?.count).toBe('0');
       } finally {
         // Clean up GBP postings and transaction so remaining tests stay clean
         await admin.query(
@@ -705,9 +1114,10 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
 
       expect(res.statusCode).toBe(202);
       const job = JSON.parse(res.payload);
+      const completed = await drainUntilTerminal(job.id);
       const getRes = await application.inject({
         method: 'GET',
-        url: `/v1/forecasts/${job.resultResourceId}`,
+        url: `/v1/forecasts/${completed.result_resource_id}`,
         headers: {
           authorization: 'Bearer owner-token',
           'x-workspace-id': workspace1Id,
@@ -754,9 +1164,10 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
 
         expect(res.statusCode).toBe(202);
         const job = JSON.parse(res.payload);
+        const completed = await drainUntilTerminal(job.id);
         const getRes = await application.inject({
           method: 'GET',
-          url: `/v1/forecasts/${job.resultResourceId}`,
+          url: `/v1/forecasts/${completed.result_resource_id}`,
           headers: {
             authorization: 'Bearer owner-token',
             'x-workspace-id': workspace1Id,
@@ -788,9 +1199,10 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
 
       expect(res.statusCode).toBe(202);
       const job = JSON.parse(res.payload);
+      const completed = await drainUntilTerminal(job.id);
       const getRes = await application.inject({
         method: 'GET',
-        url: `/v1/forecasts/${job.resultResourceId}`,
+        url: `/v1/forecasts/${completed.result_resource_id}`,
         headers: {
           authorization: 'Bearer owner-token',
           'x-workspace-id': workspace1Id,
@@ -846,9 +1258,10 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
 
         expect(res.statusCode).toBe(202);
         const job = JSON.parse(res.payload);
+        const completed = await drainUntilTerminal(job.id);
         const getRes = await application.inject({
           method: 'GET',
-          url: `/v1/forecasts/${job.resultResourceId}`,
+          url: `/v1/forecasts/${completed.result_resource_id}`,
           headers: {
             authorization: 'Bearer owner-token',
             'x-workspace-id': workspace1Id,
@@ -913,9 +1326,10 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
 
         expect(res.statusCode).toBe(202);
         const job = JSON.parse(res.payload);
+        const completed = await drainUntilTerminal(job.id);
         const getRes = await application.inject({
           method: 'GET',
-          url: `/v1/forecasts/${job.resultResourceId}`,
+          url: `/v1/forecasts/${completed.result_resource_id}`,
           headers: {
             authorization: 'Bearer owner-token',
             'x-workspace-id': workspace1Id,
@@ -971,14 +1385,70 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       const job2 = JSON.parse(res2.payload);
 
       expect(job2.id).toBe(job1.id);
-      expect(job2.resultResourceId).toBe(job1.resultResourceId);
+      expect(job2.status).toBe('queued');
+      expect(job2.resultResourceId).toBeNull();
 
-      // Verify no duplicate forecast row
+      const queuedCount = await admin.query<{ count: string }>(
+        `select count(*)::text as count from public.jobs where id = $1::uuid`,
+        [job1.id],
+      );
+      expect(queuedCount.rows[0]?.count).toBe('1');
+
+      const completed = await drainUntilTerminal(job1.id);
+      expect(completed.status).toBe('completed');
       const countRes = await admin.query<{ count: string }>(
-        `select count(*)::text as count from public.forecasts where id = $1::uuid`,
-        [job1.resultResourceId],
+        `select count(*)::text as count from public.forecasts where job_id = $1::uuid`,
+        [job1.id],
       );
       expect(countRes.rows[0]?.count).toBe('1');
+    });
+
+    it('fails with the 403 Problem and no forecast row when the creator is demoted before drain', async () => {
+      const res = await application.inject({
+        method: 'POST',
+        url: '/v1/forecasts/balance',
+        headers: {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: { horizonDays: 30 },
+      });
+      expect(res.statusCode).toBe(202);
+      const job = JSON.parse(res.payload);
+      expect(job.status).toBe('queued');
+
+      await admin.query(
+        `update public.workspace_memberships
+            set role = 'viewer'
+          where workspace_id = $1::uuid
+            and profile_id = $2::uuid`,
+        [workspace1Id, editorId],
+      );
+
+      try {
+        const completed = await drainUntilTerminal(job.id);
+        expect(completed.status).toBe('failed');
+        expect(completed.error).toEqual(
+          expect.objectContaining({
+            status: 403,
+            code: 'forbidden',
+          }),
+        );
+        const forecasts = await admin.query<{ count: string }>(
+          `select count(*)::text as count from public.forecasts where job_id = $1::uuid`,
+          [job.id],
+        );
+        expect(forecasts.rows[0]?.count).toBe('0');
+      } finally {
+        await admin.query(
+          `update public.workspace_memberships
+              set role = 'editor'
+            where workspace_id = $1::uuid
+              and profile_id = $2::uuid`,
+          [workspace1Id, editorId],
+        );
+      }
     });
 
     it('rejects missing or invalid Idempotency-Key with 400', async () => {
@@ -1068,7 +1538,8 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
         payload: { horizonDays: 60 },
       });
       const job = JSON.parse(res.payload);
-      testForecastId = job.resultResourceId;
+      const completed = await drainUntilTerminal(job.id);
+      testForecastId = completed.result_resource_id as string;
     });
 
     it('dual-workspace member accessing forecast of another workspace receives 404 via workspace predicate', async () => {
@@ -1085,7 +1556,8 @@ describe('Forecasts integration suite against disposable PostgreSQL', () => {
       });
       expect(resWs2.statusCode).toBe(202);
       const ws2Job = JSON.parse(resWs2.payload);
-      const ws2ForecastId = ws2Job.resultResourceId;
+      const ws2Completed = await drainUntilTerminal(ws2Job.id);
+      const ws2ForecastId = ws2Completed.result_resource_id as string;
 
       // Attempt to read workspace 2 forecast from workspace 1 with a dual-workspace member.
       // Because dualMember is an active member of both workspaces, RLS permits reading either,

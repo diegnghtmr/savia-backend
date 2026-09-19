@@ -21,6 +21,7 @@ const workspace = '22222222-2222-4222-8222-222222222222';
 const metadata: CredentialMetadata = {
   id: '33333333-3333-4333-8333-333333333333',
   ownerType: 'user',
+  ownerSubjectId: subject,
   providerId: 'openai',
   credentialType: 'api_key',
   maskedIdentifier: '••••1234',

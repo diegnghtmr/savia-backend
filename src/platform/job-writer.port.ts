@@ -1,13 +1,23 @@
 import type { TransactionClient } from './pg-transaction.js';
+
 export const JOB_WRITER = Symbol('JobWriter');
+
+export const JOB_WRITER_TYPES = {
+  IMPORT_COMMIT: 'import_commit',
+  IMPORT_ROLLBACK: 'import_rollback',
+  BALANCE_FORECAST: 'balance_forecast',
+  REPORT_RUN: 'report_run',
+  EXPORT_JOB: 'export_job',
+  RECEIPT_OCR: 'receipt_ocr',
+} as const;
+
 export type JobWriterType =
-  | 'import_commit'
-  | 'import_rollback'
-  | 'balance_forecast';
-export interface TerminalJob {
+  (typeof JOB_WRITER_TYPES)[keyof typeof JOB_WRITER_TYPES];
+
+export interface JobRecord {
   readonly id: string;
   readonly type: string;
-  readonly status: 'completed' | 'failed';
+  readonly status: string;
   readonly progressPercent: number | null;
   readonly resultResourceId: string | null;
   readonly error: Record<string, unknown> | null;
@@ -15,6 +25,11 @@ export interface TerminalJob {
   readonly startedAt: string | null;
   readonly completedAt: string | null;
 }
+
+export interface TerminalJob extends JobRecord {
+  readonly status: 'completed' | 'failed';
+}
+
 export interface JobWriter {
   createTerminalJob(
     client: TransactionClient,
@@ -25,4 +40,46 @@ export interface JobWriter {
     resultResourceId: string | null,
     error: Record<string, unknown> | null,
   ): Promise<Record<string, unknown>>;
+
+  createQueuedJob(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    type: JobWriterType,
+    payload?: Record<string, unknown> | null,
+  ): Promise<JobRecord>;
+
+  transitionToProcessing(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    attemptCount?: number,
+  ): Promise<Record<string, unknown>>;
+
+  completeJob(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    resultResourceId?: string | null,
+  ): Promise<Record<string, unknown>>;
+
+  failJob(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
+
+  deadLetter(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
+
+  findJobById(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+  ): Promise<{ readonly status: string } | undefined>;
 }

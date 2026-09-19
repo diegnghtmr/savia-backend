@@ -106,7 +106,10 @@ describe('identity HTTP boundary', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.payload)).toEqual({ subject: 'subject-123' });
+    expect(JSON.parse(response.payload)).toEqual({
+      subject: 'subject-123',
+      authMethod: 'session',
+    });
     await app.close();
   });
 

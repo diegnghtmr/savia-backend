@@ -8,6 +8,7 @@ import {
   ARTIFACT_STORAGE,
   type ArtifactStorage,
 } from '../platform/artifact-storage.port.js';
+import { JOB_WRITER, type JobWriter } from '../platform/job-writer.port.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PlatformModule } from '../platform/platform.module.js';
 import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
@@ -29,6 +30,7 @@ import { ReceiptsController } from './receipts.controller.js';
         PostgresIdempotencyAdapter,
         ARTIFACT_STORAGE,
         LEDGER_WRITER,
+        JOB_WRITER,
       ],
       useFactory: (
         tx: PgTransaction,
@@ -36,7 +38,16 @@ import { ReceiptsController } from './receipts.controller.js';
         idempotency: PostgresIdempotencyAdapter,
         storage: ArtifactStorage,
         ledgerWriter: LedgerWriter,
-      ) => new ReceiptService(tx, store, idempotency, storage, ledgerWriter),
+        jobWriter: JobWriter,
+      ) =>
+        new ReceiptService(
+          tx,
+          store,
+          idempotency,
+          storage,
+          ledgerWriter,
+          jobWriter,
+        ),
     },
     { provide: RECEIPTS_PORT, useExisting: ReceiptService },
   ],

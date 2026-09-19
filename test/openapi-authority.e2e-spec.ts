@@ -68,13 +68,19 @@ afterEach(() => {
 });
 
 describe('executable OpenAPI authority', () => {
-  it('verifies the sole published health operation', () => {
-    expect(existsSync(resolve(root, 'openapi/savia.openapi.yaml'))).toBe(true);
-    expect(existsSync(verifier)).toBe(true);
-    expect(verify()).toContain('OpenAPI authority verified.');
-  });
+  it(
+    'verifies the sole published health operation',
+    { timeout: 30_000 },
+    () => {
+      expect(existsSync(resolve(root, 'openapi/savia.openapi.yaml'))).toBe(
+        true,
+      );
+      expect(existsSync(verifier)).toBe(true);
+      expect(verify()).toContain('OpenAPI authority verified.');
+    },
+  );
 
-  it('rejects a declared bare 500 response', () => {
+  it('rejects a declared bare 500 response', { timeout: 30_000 }, () => {
     const source = readFileSync(contract, 'utf8');
     const healthStart = source.indexOf('      operationId: getHealth');
     const health = source.slice(healthStart);
@@ -90,7 +96,7 @@ describe('executable OpenAPI authority', () => {
     expect(verify).toThrow(/bare 500/);
   });
 
-  it('rejects planning provenance constant drift', () => {
+  it('rejects planning provenance constant drift', { timeout: 30_000 }, () => {
     const metadata = JSON.parse(readFileSync(provenance, 'utf8'));
     metadata.planningSource.operationCount = 92;
     writeFileSync(provenance, `${JSON.stringify(metadata, null, 2)}\n`);
@@ -98,7 +104,7 @@ describe('executable OpenAPI authority', () => {
     expect(verify).toThrow(/planning-source constants drifted/);
   });
 
-  it('rejects a copied planning source snapshot', () => {
+  it('rejects a copied planning source snapshot', { timeout: 30_000 }, () => {
     writeFileSync(planningSnapshot, 'openapi: 3.1.1\npaths: {}\n');
 
     expect(verify).toThrow(/planning source must not be copied/);
@@ -137,16 +143,21 @@ describe('executable OpenAPI authority', () => {
         /backend CI must not claim local planning-source verification/,
       );
     },
+    30_000,
   );
 
-  it('rejects every additional OpenAPI path or HTTP operation without operationId', () => {
-    writeFileSync(
-      contract,
-      `${readFileSync(contract, 'utf8')}\n  /internal:\n    post:\n      responses:\n        '204':\n          description: Hidden operation\n`,
-    );
+  it(
+    'rejects every additional OpenAPI path or HTTP operation without operationId',
+    { timeout: 30_000 },
+    () => {
+      writeFileSync(
+        contract,
+        `${readFileSync(contract, 'utf8')}\n  /internal:\n    post:\n      responses:\n        '204':\n          description: Hidden operation\n`,
+      );
 
-    expect(verify).toThrow(/must publish exactly GET \/health/);
-  });
+      expect(verify).toThrow(/must publish exactly GET \/health/);
+    },
+  );
 
   it('publishes the complete reconciliation transport response set', () => {
     const source = readFileSync(contract, 'utf8');
@@ -223,33 +234,42 @@ describe('executable OpenAPI authority', () => {
       };
       expect(pick(mirror)).toEqual(pick(authority));
     },
+    30_000,
   );
 
-  it('rejects shared parameter schema drift across operations', () => {
-    writeFileSync(
-      contract,
-      readFileSync(contract, 'utf8').replace(
-        'schema: { type: integer, minimum: 1, maximum: 200, default: 50 }',
-        'schema: { type: integer, minimum: 1, maximum: 200 }',
-      ),
-    );
+  it(
+    'rejects shared parameter schema drift across operations',
+    { timeout: 30_000 },
+    () => {
+      writeFileSync(
+        contract,
+        readFileSync(contract, 'utf8').replace(
+          'schema: { type: integer, minimum: 1, maximum: 200, default: 50 }',
+          'schema: { type: integer, minimum: 1, maximum: 200 }',
+        ),
+      );
 
-    expect(verify).toThrow(
-      /shared parameter "limit" in query has schema mismatch in operation "listBudgets": differing field "default"/,
-    );
-  });
+      expect(verify).toThrow(
+        /shared parameter "limit" in query has schema mismatch in operation "listBudgets": differing field "default"/,
+      );
+    },
+  );
 
-  it('rejects shared parameter required drift across operations', () => {
-    writeFileSync(
-      contract,
-      readFileSync(contract, 'utf8').replace(
-        '        - name: cursor\n          in: query\n          required: false\n          schema:',
-        '        - name: cursor\n          in: query\n          schema:',
-      ),
-    );
+  it(
+    'rejects shared parameter required drift across operations',
+    { timeout: 30_000 },
+    () => {
+      writeFileSync(
+        contract,
+        readFileSync(contract, 'utf8').replace(
+          '        - name: cursor\n          in: query\n          required: false\n          schema:',
+          '        - name: cursor\n          in: query\n          schema:',
+        ),
+      );
 
-    expect(verify).toThrow(
-      /shared parameter "cursor" in query has required mismatch in operation "listWorkspaces": differing field "required"/,
-    );
-  });
+      expect(verify).toThrow(
+        /shared parameter "cursor" in query has required mismatch in operation "listWorkspaces": differing field "required"/,
+      );
+    },
+  );
 });

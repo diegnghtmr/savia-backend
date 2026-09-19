@@ -7,6 +7,7 @@ import type {
   ParsedImportRow,
 } from './import.port.js';
 import { normalizeImportDescription } from './import-parsers.js';
+import { IMPORT_COMMIT_BATCH_SIZE } from '../platform/import-batch-policy.js';
 function iso(value: Date | string): string {
   return value instanceof Date
     ? value.toISOString()
@@ -41,6 +42,8 @@ function map(row: JobRow): ImportJob {
   };
 }
 export class PostgresImportAdapter implements ImportStore {
+  public static readonly BATCH_SIZE = IMPORT_COMMIT_BATCH_SIZE;
+
   public readActiveRole(
     client: TransactionClient,
     workspaceId: string,
@@ -214,22 +217,39 @@ export class PostgresImportAdapter implements ImportStore {
     rows: readonly { date: string; amountMinor: string; description: string }[],
   ): Promise<ReadonlySet<number>> {
     if (!rows.length) return new Set();
-    const values: unknown[] = [];
-    const tuples = rows
-      .map((row, index) => {
-        const base = index * 4;
-        values.push(index, row.date, row.amountMinor, row.description);
-        return `($${base + 1}::integer,$${base + 2}::date,$${base + 3},$${base + 4})`;
-      })
-      .join(',');
-    const workspaceParam = values.length + 1;
-    const accountParam = values.length + 2;
-    const result = await client.query<{ row_index: number }>(
-      `select input.row_index from (values ${tuples}) input(row_index,occurred_at,amount_minor,description)
-       where exists (select 1 from public.transactions t where t.workspace_id=$${workspaceParam}::uuid and t.account_id=$${accountParam}::uuid and t.occurred_at::date=input.occurred_at and t.amount_minor=input.amount_minor::bigint and lower(regexp_replace(trim(t.description), '\\s+', ' ', 'g'))=lower(regexp_replace(trim(input.description), '\\s+', ' ', 'g')))`,
-      [...values, workspaceId, accountId],
-    );
-    return new Set(result.rows.map((row) => row.row_index));
+    const batchSize = PostgresImportAdapter.BATCH_SIZE;
+    const existingIndexes = new Set<number>();
+    for (
+      let batchStart = 0;
+      batchStart < rows.length;
+      batchStart += batchSize
+    ) {
+      const batch = rows.slice(batchStart, batchStart + batchSize);
+      const values: unknown[] = [];
+      const tuples = batch
+        .map((row, index) => {
+          const base = index * 4;
+          values.push(
+            batchStart + index,
+            row.date,
+            row.amountMinor,
+            row.description,
+          );
+          return `($${base + 1}::integer,$${base + 2}::date,$${base + 3},$${base + 4})`;
+        })
+        .join(',');
+      const workspaceParam = values.length + 1;
+      const accountParam = values.length + 2;
+      const result = await client.query<{ row_index: number }>(
+        `select input.row_index from (values ${tuples}) input(row_index,occurred_at,amount_minor,description)
+         where exists (select 1 from public.transactions t where t.workspace_id=$${workspaceParam}::uuid and t.account_id=$${accountParam}::uuid and t.occurred_at::date=input.occurred_at and t.amount_minor=input.amount_minor::bigint and lower(regexp_replace(trim(t.description), '\\s+', ' ', 'g'))=lower(regexp_replace(trim(input.description), '\\s+', ' ', 'g')))`,
+        [...values, workspaceId, accountId],
+      );
+      for (const row of result.rows) {
+        existingIndexes.add(row.row_index);
+      }
+    }
+    return existingIndexes;
   }
   public async findImportedTransactions(
     client: TransactionClient,

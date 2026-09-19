@@ -1,4 +1,5 @@
 import {
+  ArtifactStorageClientError,
   ArtifactStorageUnavailableError,
   type ArtifactStorage,
 } from './artifact-storage.port.js';
@@ -33,6 +34,7 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
     path: string,
     content: Buffer,
     contentType: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const c = this.getConfig();
     let response: Response;
@@ -44,9 +46,10 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
           headers: {
             ...this.headers(),
             'content-type': contentType,
-            'x-upsert': 'false',
+            'x-upsert': 'true',
           },
           body: new Uint8Array(content),
+          signal,
         },
       );
     } catch (error) {
@@ -61,13 +64,15 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
           `Storage upload failed with status ${response.status}.`,
         );
       else
-        throw new Error(
+        throw new ArtifactStorageClientError(
+          response.status,
           `Storage upload failed with status ${response.status}.`,
         );
   }
   public async sign(
     path: string,
     expiresAt: Date,
+    signal?: AbortSignal,
   ): Promise<{ url: string; expiresAt: Date }> {
     const c = this.getConfig();
     const seconds = Math.max(
@@ -82,6 +87,7 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
           method: 'POST',
           headers: { ...this.headers(), 'content-type': 'application/json' },
           body: JSON.stringify({ expiresIn: seconds }),
+          signal,
         },
       );
     } catch (error) {
@@ -96,7 +102,8 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
           `Storage signing failed with status ${response.status}.`,
         );
       else
-        throw new Error(
+        throw new ArtifactStorageClientError(
+          response.status,
           `Storage signing failed with status ${response.status}.`,
         );
     const body = (await response.json()) as {
@@ -119,6 +126,52 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
       expiresAt: authoritativeExpiry,
     };
   }
+  public async download(path: string, signal?: AbortSignal): Promise<Buffer> {
+    const c = this.getConfig();
+    let response: Response;
+    try {
+      response = await fetch(
+        `${c.url}/storage/v1/object/authenticated/exports/${path.split('/').map(encodeURIComponent).join('/')}`,
+        {
+          method: 'GET',
+          headers: this.headers(),
+          signal,
+        },
+      );
+    } catch (error) {
+      if (signal?.aborted) {
+        throw error;
+      }
+      throw new ArtifactStorageUnavailableError(
+        'Storage download failed.',
+        error,
+      );
+    }
+    if (!response.ok) {
+      if (response.status >= 500) {
+        throw new ArtifactStorageUnavailableError(
+          `Storage download failed with status ${response.status}.`,
+        );
+      } else {
+        throw new ArtifactStorageClientError(
+          response.status,
+          `Storage download failed with status ${response.status}.`,
+        );
+      }
+    }
+    try {
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    } catch (error) {
+      if (signal?.aborted) {
+        throw error;
+      }
+      throw new ArtifactStorageUnavailableError(
+        'Storage download failed while reading response body.',
+        error,
+      );
+    }
+  }
   public async remove(path: string): Promise<void> {
     const c = this.getConfig();
     let response: Response;
@@ -139,7 +192,8 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
           `Storage removal failed with status ${response.status}.`,
         );
       else
-        throw new Error(
+        throw new ArtifactStorageClientError(
+          response.status,
           `Storage removal failed with status ${response.status}.`,
         );
   }

@@ -47,6 +47,11 @@ class MemoryStorage implements ArtifactStorage {
   ): Promise<{ url: string; expiresAt: Date }> {
     return { url: path, expiresAt };
   }
+  public async download(path: string): Promise<Buffer> {
+    if (this.unavailable)
+      throw new ArtifactStorageUnavailableError('Storage download failed.');
+    return Buffer.from(path);
+  }
   public async remove(path: string): Promise<void> {
     this.paths.splice(this.paths.indexOf(path), 1);
   }

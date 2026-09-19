@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { CliDeviceConfig } from './cli-device.config.js';
 import type {
   CliDeviceAuthorization,
+  CliDeviceApprovalCommand,
   CliDeviceAuthorizationCommand,
   CliDeviceTokenCommand,
   CliDeviceTokenResponse,
@@ -11,6 +12,7 @@ import type {
 } from './cli-device.port.js';
 
 const EXPIRES_IN = 600;
+const TOKEN_EXPIRES_IN = 2_592_000;
 const INTERVAL = 5;
 const USER_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const USER_CODE_LENGTH = 8;
@@ -77,6 +79,25 @@ export class CliDeviceService implements CliDevicePort {
       };
     });
   }
+  public async approve(
+    subject: string,
+    command: CliDeviceApprovalCommand,
+  ): Promise<
+    | { readonly kind: 'approved' }
+    | { readonly kind: 'invalid' }
+    | { readonly kind: 'rate_limited'; readonly retryAfter: number }
+  > {
+    const now = this.clock();
+    return this.tx.run(subject, async (client) => {
+      if (!(await this.store.consumeApprovalRateLimit(client, now)))
+        return {
+          kind: 'rate_limited' as const,
+          retryAfter: 60 - now.getUTCSeconds(),
+        };
+      const approved = await this.store.approve(client, command.userCode);
+      return { kind: approved ? ('approved' as const) : ('invalid' as const) };
+    });
+  }
   public async poll(
     command: CliDeviceTokenCommand,
     ip: string,
@@ -106,18 +127,13 @@ export class CliDeviceService implements CliDevicePort {
         tokenHash: createHash('sha256').update(accessToken).digest('hex'),
         subjectId: authorization.subjectId,
         scopes: authorization.scopes,
-        expiresAt: authorization.expiresAt,
+        expiresAt: new Date(now.getTime() + TOKEN_EXPIRES_IN * 1000),
         deviceCodeHash,
       });
       return {
         accessToken,
         tokenType: 'Bearer' as const,
-        expiresIn: Math.max(
-          0,
-          Math.floor(
-            (authorization.expiresAt.getTime() - now.getTime()) / 1000,
-          ),
-        ),
+        expiresIn: TOKEN_EXPIRES_IN,
         scope: authorization.scopes.join(' '),
       };
     });

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -347,5 +348,31 @@ describe('disposable suite allow-list guard (disposable-suite-allowlist-gate)', 
 
     expect(analysis.violations).toEqual([]);
     expect(analysis.invoked.length).toBeGreaterThan(0);
+  });
+});
+
+describe('disposable database diagnostics', () => {
+  it('retains the migration failure after more than 40 progress lines', () => {
+    const input = [
+      ...Array.from(
+        { length: 59 },
+        (_, index) =>
+          `Applying migration ${String(index + 1).padStart(12, '0')}.sql...`,
+      ),
+      'ERROR: permission denied to create function in schema public',
+    ].join('\n');
+    const output = execFileSync(
+      'bash',
+      [
+        '-c',
+        `source "${resolve(root, 'scripts/retain-disposable-database-errors.sh')}"; retain_errors`,
+      ],
+      { input, encoding: 'utf8' },
+    );
+    const lines = output.trimEnd().split('\n');
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('000000000059.sql');
+    expect(lines[1]).toContain('permission denied to create function');
   });
 });
