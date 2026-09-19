@@ -337,6 +337,9 @@ jobs:
       - name: receipt enqueue integration
         shell: bash
         run: pnpm test:integration:receipt-enqueue
+      - name: receipt OCR integration
+        shell: bash
+        run: pnpm test:integration:receipt-ocr
       - name: receipt OCR engine proof integration
         shell: bash
         run: pnpm test:integration:receipt-ocr-engine

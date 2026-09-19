@@ -96,6 +96,7 @@ export interface ReceiptStore {
     client: TransactionClient,
     workspaceId: string,
     receiptId: string,
+    jobId: string,
     fields: ExtractedReceiptFields,
   ): Promise<boolean>;
 }

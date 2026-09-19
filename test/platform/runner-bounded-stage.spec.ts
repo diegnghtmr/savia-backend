@@ -461,6 +461,59 @@ describe('JobRunner executeBoundedStage (S7 unit spec)', () => {
       await stopPromise;
       expect(stopFinished).toBe(true);
     });
+
+    it('keeps two same-jobId overruns both visible to activeJobsCount and stop()', async () => {
+      const { runner, config } = createTestHarness();
+      const jobId = '00000000-0000-0000-0000-000000000099';
+      const workspaceId = '00000000-0000-0000-0000-000000000001';
+
+      const stageA = runner
+        .executeBoundedStage(
+          runner.createDeadline(),
+          3_000,
+          'overrun-a',
+          async () => new Promise<string>(() => undefined),
+          { jobId, workspaceId },
+        )
+        .catch((error: unknown) => error);
+      const stageB = runner
+        .executeBoundedStage(
+          runner.createDeadline(),
+          3_000,
+          'overrun-b',
+          async () => new Promise<string>(() => undefined),
+          { jobId, workspaceId },
+        )
+        .catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.advanceTimersByTimeAsync(config.stageCleanupTimeoutMs);
+
+      const [errA, errB] = await Promise.all([stageA, stageB]);
+      expect(errA).toBeInstanceOf(DeliveryDeadlineExceededError);
+      expect(errB).toBeInstanceOf(DeliveryDeadlineExceededError);
+
+      expect(runner.cleanupOverrunCount).toBe(2);
+      expect(runner.activeJobsCount).toBe(2);
+      expect(runner.inFlightCleanupRegistry.size).toBe(2);
+
+      const entries = [...runner.inFlightCleanupRegistry.values()];
+      expect(new Set(entries.map((entry) => entry.id)).size).toBe(2);
+      expect(entries.every((entry) => entry.jobId === jobId)).toBe(true);
+
+      let stopFinished = false;
+      const stopPromise = runner.stop().then(() => {
+        stopFinished = true;
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(stopFinished).toBe(false);
+      expect(runner.activeJobsCount).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(config.drainTimeoutSeconds * 1_000);
+      await stopPromise;
+      expect(stopFinished).toBe(true);
+      expect(runner.activeJobsCount).toBe(2);
+    });
   });
 
   describe('OCR sequential caps and DeliveryDeadline walk (S6 review binding item)', () => {

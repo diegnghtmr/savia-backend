@@ -95,6 +95,7 @@
     "test:integration:receipts": "bash scripts/run-disposable-database-suite.sh test/receipts/receipts.integration-spec.ts",
     "test:integration:receipt-foundation": "bash scripts/run-disposable-database-suite.sh test/receipts/receipt-foundation.integration-spec.ts",
     "test:integration:receipt-enqueue": "bash scripts/run-disposable-database-suite.sh test/receipts/receipt-enqueue.integration-spec.ts",
+    "test:integration:receipt-ocr": "bash scripts/run-disposable-database-suite.sh test/receipts/receipt-ocr.integration-spec.ts",
     "test:integration:receipt-ocr-engine": "vitest run test/platform/tesseract-real-engine.integration-spec.ts test/fixtures/fixtures-integrity.spec.ts",
     "test:integration:mcp-grants": "bash scripts/run-disposable-database-suite.sh test/mcp/mcp-grants.integration-spec.ts",
     "test:integration:ai-credentials": "bash scripts/run-disposable-database-suite.sh test/ai/ai-credentials.integration-spec.ts",

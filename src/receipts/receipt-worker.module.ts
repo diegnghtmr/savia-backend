@@ -9,6 +9,7 @@ import {
   SystemTesseractAdapter,
   runOcrStartupPreflight,
 } from '../platform/system-tesseract.adapter.js';
+import { WorkerConfig } from '../platform/worker-config.js';
 import { WorkerPlatformModule } from '../platform/worker-platform.module.js';
 import { PostgresReceiptAdapter } from './postgres-receipt.adapter.js';
 import { ReceiptOcrJobHandler } from './receipt-ocr-job.handler.js';
@@ -22,7 +23,14 @@ import { ReceiptOcrJobHandler } from './receipt-ocr-job.handler.js';
       provide: ARTIFACT_STORAGE,
       useExisting: SupabaseStorageAdapter,
     },
-    SystemTesseractAdapter,
+    {
+      provide: SystemTesseractAdapter,
+      inject: [WorkerConfig],
+      useFactory: (config: WorkerConfig): SystemTesseractAdapter =>
+        new SystemTesseractAdapter({
+          memoryLimitBytes: config.ocrMemoryLimitBytes,
+        }),
+    },
     {
       provide: OCR_ENGINE,
       useExisting: SystemTesseractAdapter,
@@ -41,7 +49,11 @@ import { ReceiptOcrJobHandler } from './receipt-ocr-job.handler.js';
   exports: [ReceiptOcrJobHandler],
 })
 export class ReceiptWorkerModule implements OnModuleInit {
+  public constructor(private readonly workerConfig: WorkerConfig) {}
+
   public async onModuleInit(): Promise<void> {
-    await runOcrStartupPreflight();
+    await runOcrStartupPreflight({
+      memoryLimitBytes: this.workerConfig.ocrMemoryLimitBytes,
+    });
   }
 }
