@@ -110,6 +110,40 @@ describe('transaction activation resilience', () => {
     expect(pool.calls).toEqual(['BEGIN']);
     expect(pool.releases).toEqual([failure]);
   });
+  it('destroys a client without a stray ROLLBACK when BEGIN fails under a lifetime timeout', async () => {
+    const failure = new Error('begin failed under lifetime timeout');
+    const calls: string[] = [];
+    const releases: (Error | undefined)[] = [];
+    const client: PgClient = {
+      query: async (text: string) => {
+        calls.push(text);
+        if (text === 'BEGIN') throw failure;
+        // Real PostgreSQL does not error on a ROLLBACK issued without an
+        // open transaction; it simply no-ops. If the code ever believes a
+        // transaction began when it did not, this stray ROLLBACK would
+        // "succeed" and the client would be released as healthy instead of
+        // destroyed, silently returning a suspect connection to the pool.
+        return { rows: [] } as never;
+      },
+      release: (error) => releases.push(error),
+    };
+    const pool: PgPool = {
+      connect: async () => client,
+      end: async () => undefined,
+    };
+    const transaction = new PgTransaction(pool);
+    await expect(
+      transaction.run(
+        subject,
+        async () => undefined,
+        undefined,
+        undefined,
+        5_000,
+      ),
+    ).rejects.toBe(failure);
+    expect(calls).toEqual(['BEGIN']);
+    expect(releases).toEqual([failure]);
+  });
   it('redacts every required outer error message while retaining typed causes', async () => {
     const secret = 'postgresql://user:secret@host/savia?subject=hidden';
     const timeout = Object.assign(new Error(secret), { code: '57014' });
