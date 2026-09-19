@@ -65,7 +65,7 @@ class RecordingTransaction implements McpGrantTransaction {
   }
 }
 class FakeStore implements McpGrantStore {
-  public hasMembership = true;
+  public canMintResult = true;
   public accountsValid = true;
   public revokeResult = true;
   public findResult: McpGrant | undefined = grant;
@@ -75,8 +75,8 @@ class FakeStore implements McpGrantStore {
   createId() {
     return grant.id;
   }
-  async hasActiveMemberships() {
-    return this.hasMembership;
+  async canMint() {
+    return this.canMintResult;
   }
   async accountsBelongToWorkspaces() {
     return this.accountsValid;
@@ -160,13 +160,13 @@ describe('McpGrantService', () => {
     expect(h.tx.returned).toBe(1);
   });
   it.each([
-    ['membership', false, true, MCP_GRANT_OUTCOMES.FORBIDDEN],
+    ['minting policy', false, true, MCP_GRANT_OUTCOMES.FORBIDDEN],
     ['accounts', true, false, MCP_GRANT_OUTCOMES.INVALID],
   ])(
     'maps %s failure and returns from transaction',
     async (_name, membership, accounts, outcome) => {
       const h = harness();
-      h.store.hasMembership = membership;
+      h.store.canMintResult = membership;
       h.store.accountsValid = accounts;
       await expect(
         h.service.createMcpGrant(

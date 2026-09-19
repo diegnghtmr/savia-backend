@@ -48,32 +48,28 @@ export class PostgresMcpGrantAdapter implements McpGrantStore {
   public createId(): string {
     return crypto.randomUUID();
   }
-  public async hasActiveMemberships(
+  public async canMint(
     client: TransactionClient,
     _subject: string,
+    scopes: readonly string[],
     workspaceIds: readonly string[],
   ): Promise<boolean> {
-    const roles = await Promise.all(
-      workspaceIds.map(async (workspaceId) => {
-        const result = await client.query<{ role: string | null }>(
-          'select public.workspace_actor_active_role($1::uuid) as role',
-          [workspaceId],
-        );
-        return result.rows[0]?.role;
-      }),
+    const result = await client.query<{ allowed: boolean }>(
+      'select public.mcp_grant_within_minter_role($1::text[], $2::uuid[]) as allowed',
+      [scopes, workspaceIds],
     );
-    return roles.every((role) => role !== null && role !== undefined);
+    return result.rows[0]?.allowed === true;
   }
   public async accountsBelongToWorkspaces(
     client: TransactionClient,
     accountIds: readonly string[],
     workspaceIds: readonly string[],
   ): Promise<boolean> {
-    const result = await client.query<{ count: string }>(
-      'select count(*)::text as count from public.accounts where id = any($1::uuid[]) and workspace_id = any($2::uuid[])',
+    const result = await client.query<{ allowed: boolean }>(
+      'select public.mcp_grant_accounts_within_workspaces($1::uuid[], $2::uuid[]) as allowed',
       [accountIds, workspaceIds],
     );
-    return Number(result.rows[0]?.count ?? 0) === accountIds.length;
+    return result.rows[0]?.allowed === true;
   }
   public async create(
     client: TransactionClient,

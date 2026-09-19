@@ -1,4 +1,4 @@
-// Migration under test: 202609060006_mcp_grants.sql
+// Migrations under test: 202609060006_mcp_grants.sql, 202609060014_mcp_grant_minting_policy.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -123,7 +123,7 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
       [workspace, foreignWorkspace],
     );
     await admin.query(
-      `insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$3,'owner','active'),($2,$4,'owner','active')`,
+      `insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$3,'owner','active'),($1,$4,'owner','active'),($2,$4,'owner','active')`,
       [workspace, foreignWorkspace, owner, other],
     );
     await admin.query(
@@ -173,6 +173,204 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
   it('checks every requested workspace and returns 403 when one lacks active membership', async () => {
     const response = await create(body([workspace, foreignWorkspace]));
     expect(response.statusCode).toBe(403);
+  });
+  it('refuses a viewer minting a data-write scope', async () => {
+    await admin.query(
+      `update public.workspace_memberships set role = 'viewer' where workspace_id = $1 and profile_id = $2`,
+      [workspace, owner],
+    );
+
+    const response = await create(
+      body([workspace], { scopes: ['accounts:write'] }),
+    );
+
+    expect(response.statusCode).toBe(403);
+  });
+  it('refuses an editor minting workspace administration', async () => {
+    await admin.query(
+      `update public.workspace_memberships set role = 'editor' where workspace_id = $1 and profile_id = $2`,
+      [workspace, owner],
+    );
+
+    const response = await create(
+      body([workspace], { scopes: ['workspace:admin'] }),
+    );
+
+    expect(response.statusCode).toBe(403);
+  });
+  it('judges a multi-workspace grant by the lower role', async () => {
+    await admin.query(
+      `insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$2,'viewer','active')`,
+      [foreignWorkspace, owner],
+    );
+
+    const response = await create(
+      body([workspace, foreignWorkspace], { scopes: ['accounts:write'] }),
+    );
+
+    expect(response.statusCode).toBe(403);
+  });
+  it('rejects a direct RLS insert that bypasses the service check', async () => {
+    await admin.query(
+      `update public.workspace_memberships set role = 'viewer' where workspace_id = $1 and profile_id = $2`,
+      [workspace, owner],
+    );
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query('select set_config($1, $2, true)', [
+        'app.subject_id',
+        owner,
+      ]);
+      await expect(
+        client.query(
+          `insert into public.mcp_grants (subject_id,client_name,scopes,workspace_ids) values ($1,'direct',array['accounts:write'],array[$2::uuid])`,
+          [owner, workspace],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+  it('hides a foreign account from a direct application predicate call', async () => {
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query('select set_config($1, $2, true)', [
+        'app.subject_id',
+        owner,
+      ]);
+      const result = await client.query<{ allowed: boolean }>(
+        'select public.mcp_grant_accounts_within_workspaces($1::uuid[], $2::uuid[]) as allowed',
+        [[outsideAccount], [foreignWorkspace]],
+      );
+      expect(result.rows[0]?.allowed).toBe(false);
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
+  });
+  it.each([
+    ['an account from a workspace outside the grant', 'outside'],
+    ['an account that does not exist', 'unknown'],
+  ])('rejects a direct RLS insert naming %s', async (_description, kind) => {
+    const accountId = kind === 'outside' ? outsideAccount : randomUUID();
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query('select set_config($1, $2, true)', [
+        'app.subject_id',
+        owner,
+      ]);
+      await expect(
+        client.query(
+          `insert into public.mcp_grants (subject_id,client_name,scopes,workspace_ids,account_ids) values ($1,'direct-account',array['accounts:read'],array[$2::uuid],array[$3::uuid])`,
+          [owner, workspace, accountId],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+  it('allows direct RLS inserts with null or empty account restrictions', async () => {
+    const client = await admin.connect();
+    try {
+      for (const accountIds of ['null', 'array[]::uuid[]']) {
+        await client.query('begin');
+        await client.query('set local role savia_application');
+        await client.query('select set_config($1, $2, true)', [
+          'app.subject_id',
+          owner,
+        ]);
+        await expect(
+          client.query(
+            `insert into public.mcp_grants (subject_id,client_name,scopes,workspace_ids,account_ids) values ($1,'direct-no-account',array['accounts:read'],array[$2::uuid],${accountIds})`,
+            [owner, workspace],
+          ),
+        ).resolves.toMatchObject({ rowCount: 1 });
+        await client.query('rollback');
+      }
+    } finally {
+      client.release();
+    }
+  });
+  it('reproduces the migration dirty-data refusal when the harness cannot seed before migrations', async () => {
+    await admin.query(
+      `update public.workspace_memberships set role = 'viewer' where workspace_id = $1 and profile_id = $2`,
+      [workspace, owner],
+    );
+    await admin.query(
+      `insert into public.mcp_grants (subject_id,client_name,scopes,workspace_ids) values ($1,'dirty',array['accounts:write'],array[$2::uuid])`,
+      [owner, workspace],
+    );
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query('select set_config($1, $2, true)', [
+        'app.subject_id',
+        owner,
+      ]);
+      await expect(
+        client.query(`
+          do $$
+          declare violating_count bigint;
+          begin
+            select count(*) into violating_count
+              from public.mcp_grants grant_row
+             where grant_row.subject_id = nullif(current_setting('app.subject_id', true), '')::uuid
+               and grant_row.status = 'active'
+               and (grant_row.expires_at is null or grant_row.expires_at > now())
+               and not public.mcp_grant_within_minter_role(grant_row.scopes, grant_row.workspace_ids);
+            if violating_count > 0 then
+              raise exception 'mcp grant minting policy refused to install: % active unexpired grant(s); revoke offending grants before retrying', violating_count;
+            end if;
+          end $$;
+        `),
+      ).rejects.toThrow(/refused to install: 1 active unexpired grant/);
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+  it('counts an active grant with an outside account in the migration dirty-data refusal', async () => {
+    await admin.query(
+      `insert into public.mcp_grants (subject_id,client_name,scopes,workspace_ids,account_ids) values ($1,'dirty-account',array['accounts:read'],array[$2::uuid],array[$3::uuid])`,
+      [owner, workspace, outsideAccount],
+    );
+    const client = await admin.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query('select set_config($1, $2, true)', [
+        'app.subject_id',
+        owner,
+      ]);
+      await expect(
+        client.query(`
+          do $$
+          declare violating_count bigint;
+          begin
+            select count(*) into violating_count
+              from public.mcp_grants grant_row
+             where grant_row.status = 'active'
+               and (grant_row.expires_at is null or grant_row.expires_at > now())
+               and not public.mcp_grant_accounts_within_workspaces(grant_row.account_ids, grant_row.workspace_ids);
+            if violating_count > 0 then
+              raise exception 'mcp grant minting policy refused to install: % active unexpired grant(s); revoke offending grants before retrying', violating_count;
+            end if;
+          end $$;
+        `),
+      ).rejects.toThrow(/refused to install: 1 active unexpired grant/);
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
   });
   it('rejects an account outside the named workspaces with 422', async () => {
     expect(

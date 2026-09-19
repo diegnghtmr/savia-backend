@@ -45,9 +45,10 @@ export class McpGrantService implements McpGrantPort {
     try {
       return await this.tx.run(subject, async (client) => {
         if (
-          !(await this.store.hasActiveMemberships(
+          !(await this.store.canMint(
             client,
             subject,
+            command.scopes,
             command.workspaceIds,
           ))
         )
