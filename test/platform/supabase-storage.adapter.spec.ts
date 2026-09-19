@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ArtifactStorageUnavailableError } from '../../src/platform/artifact-storage.port.js';
 import { SupabaseStorageAdapter } from '../../src/platform/supabase-storage.adapter.js';
 
 const token = (exp: number) =>
@@ -33,5 +34,34 @@ describe('SupabaseStorageAdapter', () => {
         SUPABASE_SERVICE_ROLE_KEY: 'secret',
       }).remove('workspace/job.csv'),
     ).rejects.toThrow('500');
+  });
+
+  it('classifies upload transport and 5xx failures as unavailable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'));
+    await expect(
+      new SupabaseStorageAdapter({
+        SUPABASE_URL: 'https://storage.test',
+        SUPABASE_SERVICE_ROLE_KEY: 'secret',
+      }).upload(
+        'workspace/receipt.pdf',
+        Buffer.from('receipt'),
+        'application/pdf',
+      ),
+    ).rejects.toBeInstanceOf(ArtifactStorageUnavailableError);
+
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('', { status: 503 }),
+    );
+    await expect(
+      new SupabaseStorageAdapter({
+        SUPABASE_URL: 'https://storage.test',
+        SUPABASE_SERVICE_ROLE_KEY: 'secret',
+      }).upload(
+        'workspace/receipt.pdf',
+        Buffer.from('receipt'),
+        'application/pdf',
+      ),
+    ).rejects.toBeInstanceOf(ArtifactStorageUnavailableError);
   });
 });

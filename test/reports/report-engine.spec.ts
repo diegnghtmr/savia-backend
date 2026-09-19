@@ -27,8 +27,6 @@ function createRow(overrides: Partial<ReportSourceRow> = {}): ReportSourceRow {
     tags: overrides.tags ?? ['general'],
     payee: 'payee' in overrides ? (overrides.payee ?? null) : 'Merchant A',
     memberId: overrides.memberId ?? 'mem-001',
-    variability:
-      'variability' in overrides ? (overrides.variability ?? null) : 'fixed',
   };
 }
 
@@ -260,28 +258,6 @@ describe('Report Engine (pure)', () => {
       expect(grid.rows[0].key).toEqual(['unknown']);
       expect(grid.rows[0].cells).toEqual([
         { measure: REPORT_MEASURE.CONVERTED_VALUE, value: '600' },
-      ]);
-    });
-
-    it('variability dimension retains null variability rows into unspecified bucket instead of dropping them', () => {
-      const row = createRow({
-        variability: null,
-        convertedMinor: 700n,
-      });
-      const input: ReportEngineInput = {
-        rows: [row],
-        dimensions: [REPORT_DIMENSION.VARIABILITY],
-        measures: [REPORT_MEASURE.CONVERTED_VALUE],
-        baseCurrency: 'USD',
-        budgetedMinorByBucket: new Map(),
-      };
-
-      const grid = buildReportGrid(input);
-
-      expect(grid.rows).toHaveLength(1);
-      expect(grid.rows[0].key).toEqual(['unspecified']);
-      expect(grid.rows[0].cells).toEqual([
-        { measure: REPORT_MEASURE.CONVERTED_VALUE, value: '700' },
       ]);
     });
 

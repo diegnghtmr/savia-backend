@@ -180,7 +180,7 @@ select t.id::text as "transactionId", t.occurred_at as "occurredAt", t.type,
        rates.rate,
        t.account_id::text as "accountId", coalesce(a.type, '') as "accountType",
        t.category_id::text as "categoryId", coalesce(tags.names, '{}') as tags,
-       p.name as payee, t.created_by::text as "memberId", null::text as variability,
+       p.name as payee, t.created_by::text as "memberId",
        w.base_currency as "baseCurrency"
 from public.transactions t
 join public.workspaces w on w.id = t.workspace_id
@@ -250,7 +250,6 @@ limit $5`;
       tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
       payee: row.payee === null ? null : String(row.payee),
       memberId: String(row.memberId),
-      variability: null,
     }));
   }
 

@@ -1,5 +1,7 @@
-// Migrations under test: 202609050001_report_definitions.sql
+// Migrations under test: 202609050001_report_definitions.sql, 202609060013_report_definitions_dimensions.sql
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Pool } from 'pg';
 import {
   FastifyAdapter,
@@ -10,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
+import { REPORT_DIMENSIONS } from '../../src/reports/report.port.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -171,6 +174,7 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
           'report_definitions_visualization_check',
           'report_definitions_version_check',
           'report_definitions_dimensions_is_array_check',
+          'report_definitions_dimensions_allowed_check',
           'report_definitions_measures_is_array_check',
           'report_definitions_measures_non_empty_check',
           'report_definitions_filters_is_object_check',
@@ -184,6 +188,53 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
       const indexNames = indexRes.rows.map((r) => r.indexname);
       expect(indexNames).toContain(
         'report_definitions_workspace_created_at_id_idx',
+      );
+    });
+
+    it('keeps the database dimension allow-list synchronized with the report contract', () => {
+      const migration = readFileSync(
+        resolve(
+          process.cwd(),
+          'supabase/migrations/202609060013_report_definitions_dimensions.sql',
+        ),
+        'utf8',
+      );
+      const match = migration.match(/dimensions\s+<@\s+'(\[[^']*\])'::jsonb/);
+      expect(match?.[1]).toBeDefined();
+      expect(JSON.parse(match?.[1] ?? '')).toEqual([...REPORT_DIMENSIONS]);
+    });
+
+    it('database CHECK constraint rejects unsupported dimensions on direct insert', async () => {
+      await expect(
+        admin.query(
+          `insert into public.report_definitions (
+            workspace_id, name, dimensions, measures, visualization, created_by
+          ) values ($1, 'Unsupported dimension', '["variability"]'::jsonb, '["sum"]'::jsonb, 'table', $2)`,
+          [workspace1Id, ownerId],
+        ),
+      ).rejects.toThrow(/report_definitions_dimensions_allowed_check/);
+    });
+
+    it('migration refuses dirty report definitions with count and remediation', async () => {
+      const migrationSql = readFileSync(
+        resolve(
+          process.cwd(),
+          'supabase/migrations/202609060013_report_definitions_dimensions.sql',
+        ),
+        'utf8',
+      );
+      await admin.query(
+        'alter table public.report_definitions drop constraint report_definitions_dimensions_allowed_check',
+      );
+      await admin.query(
+        `insert into public.report_definitions (
+          workspace_id, name, dimensions, measures, visualization, created_by
+        ) values ($1, 'Dirty legacy dimension', '["variability"]'::jsonb, '["sum"]'::jsonb, 'table', $2)`,
+        [workspace1Id, ownerId],
+      );
+
+      await expect(admin.query(migrationSql)).rejects.toThrow(
+        /1 report definition.*remove unsupported dimensions.*retry/i,
       );
     });
 
@@ -507,9 +558,8 @@ describe('Report definitions integration suite against disposable PostgreSQL', (
       expect(body.errors).toContainEqual(
         expect.objectContaining({
           field: 'dimensions.0',
-          code: 'unsupported',
-          message:
-            "variability dimension is not supported by this deployment's data model",
+          code: 'invalid',
+          message: 'must be a supported report dimension',
         }),
       );
     });

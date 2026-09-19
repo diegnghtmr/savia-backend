@@ -12,6 +12,7 @@ import {
 } from '../../src/receipts/receipt.port.js';
 import { ReceiptsController } from '../../src/receipts/receipts.controller.js';
 import type { CreateTransactionCommand } from '../../src/platform/ledger-writer.port.js';
+import { ArtifactStorageUnavailableError } from '../../src/platform/artifact-storage.port.js';
 
 class FakeReply {
   public statusCode = 200;
@@ -192,6 +193,28 @@ describe('ReceiptsController', () => {
   }
 
   describe('create', () => {
+    it('returns 503 with Retry-After when artifact storage is unavailable', async () => {
+      const port = new FakeReceiptsPort();
+      port.createError = new ArtifactStorageUnavailableError(
+        'Storage upload failed with status 503.',
+      );
+      const controller = new ReceiptsController(port);
+      const reply = new FakeReply();
+
+      await controller.create(
+        createCreateRequest([createValidFilePart()]),
+        reply as unknown as FastifyReply,
+      );
+
+      expect(reply.statusCode).toBe(503);
+      expect(reply.headers['retry-after']).toBe('5');
+      expect(reply.sentBody).toMatchObject({
+        type: 'https://savia.app/problems/dependency-unavailable',
+        title: 'Artifact storage is temporarily unavailable',
+        status: 503,
+      });
+    });
+
     it('returns 400 when x-workspace-id header is missing or invalid', async () => {
       const port = new FakeReceiptsPort();
       const controller = new ReceiptsController(port);

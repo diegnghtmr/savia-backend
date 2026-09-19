@@ -100,8 +100,6 @@ function getDimensionValues(
       return [row.categoryId ?? 'uncategorized'];
     case REPORT_DIMENSION.PAYEE:
       return [row.payee ?? 'unknown'];
-    case REPORT_DIMENSION.VARIABILITY:
-      return [row.variability ?? 'unspecified'];
     case REPORT_DIMENSION.TAG:
       return row.tags.length > 0 ? row.tags : ['untagged'];
   }
