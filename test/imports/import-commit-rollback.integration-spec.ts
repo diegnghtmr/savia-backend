@@ -821,6 +821,51 @@ describe('import commit and rollback against real PostgreSQL', () => {
     blocker.release();
     expect((await pending).kind).toBe('ok');
   });
+
+  it('commits only rows with valid classification and ignores duplicate or error rows', async () => {
+    const importId = id(5693);
+    await admin.query(
+      'insert into public.import_jobs (id,workspace_id,file_name,status,source_columns,created_by) values ($1,$2,$3,$4,$5,$6)',
+      [
+        importId,
+        workspace,
+        'classification.csv',
+        'awaiting_mapping',
+        ['date', 'amount', 'description'],
+        subject,
+      ],
+    );
+    await admin.query(
+      "insert into public.import_job_rows (workspace_id,import_job_id,row_number,raw_values,parsed_date,parsed_amount_minor,parsed_description,classification,error) values ($1,$2,2,$3,'2026-01-01',100,'Valid item','valid',null), ($1,$2,3,$4,'2026-01-01',200,'Invalid item','error','{\"message\":\"Invalid date\"}'::jsonb), ($1,$2,4,$5,'2026-01-01',300,'Duplicate item','duplicate',null)",
+      [
+        workspace,
+        importId,
+        JSON.stringify(['2026-01-01', 100, 'Valid item']),
+        JSON.stringify(['2026-01-01', 200, 'Invalid item']),
+        JSON.stringify(['2026-01-01', 300, 'Duplicate item']),
+      ],
+    );
+    const result = await service.commitImport(
+      subject,
+      workspace,
+      importId,
+      {
+        accountId: account,
+        columnMapping: mapping,
+        skipDuplicateCandidates: false,
+      },
+      key(5693),
+    );
+    expect(result.kind).toBe('ok');
+    expect(
+      (
+        await admin.query(
+          'select count(*)::int as count from public.transactions where import_job_id=$1',
+          [importId],
+        )
+      ).rows[0].count,
+    ).toBe(1);
+  });
 });
 
 async function waitForAdvisoryWait(pool: Pool): Promise<void> {

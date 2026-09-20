@@ -1,18 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { ExportService } from '../../src/exports/export.service.js';
-import { CommitOutcomeUnknownError } from '../../src/platform/pg-transaction.js';
 import {
   type ExportJob,
   type ExportStore,
 } from '../../src/exports/export.port.js';
-import type { ArtifactStorage } from '../../src/platform/artifact-storage.port.js';
-import type {
-  IdempotencyRecord,
-  IdempotencyStore,
+import {
+  type IdempotencyRecord,
+  type IdempotencyStore,
 } from '../../src/platform/idempotency.port.js';
+import { computeRequestFingerprint } from '../../src/platform/idempotency.service.js';
+import type { JobWriter } from '../../src/platform/job-writer.port.js';
 
 const subject = '00000000-0000-0000-0000-000000000001';
 const workspace = '00000000-0000-0000-0000-000000000002';
+const fixedDate = new Date('2026-09-16T12:00:00.000Z');
 const command = {
   format: 'csv' as const,
   resource: 'all' as const,
@@ -22,67 +23,36 @@ const command = {
 };
 const job = (
   id: string,
-  status: ExportJob['status'] = 'completed',
+  status: ExportJob['status'] = 'queued',
 ): ExportJob => ({
   id,
   status,
   format: 'csv',
-  downloadUrl: status === 'completed' ? 'https://signed.test/file' : null,
-  expiresAt: status === 'completed' ? '2026-09-07T00:00:00.000Z' : null,
-  createdAt: '2026-08-31T00:00:00.000Z',
+  downloadUrl: null,
+  expiresAt: null,
+  createdAt: '2026-09-16T12:00:00.000Z',
 });
 
-function harness(
-  sign: ArtifactStorage['sign'] = async (_path, expiry) => ({
-    url: 'https://signed.test/file',
-    expiresAt: expiry,
-  }),
-  unknownCommit = false,
-) {
+function harness(options?: { failIdempotencyWrite?: boolean }) {
   const records = new Map<string, IdempotencyRecord>();
-  let jobs = 0;
-  let uploads = 0;
-  let removals = 0;
-  let transactionRuns = 0;
+  let exportJobsCreated = 0;
+  let queuedJobsCreated = 0;
   const store: ExportStore = {
     readActiveRole: async () => 'owner',
-    createId: () => `00000000-0000-0000-0000-00000000000${jobs + 3}`,
-    reserve: async (_client, _ws, _subject, id, _command, _path) => {
-      void _client;
-      void _ws;
-      void _subject;
-      void _command;
-      void _path;
-      jobs += 1;
+    createId: () =>
+      `00000000-0000-0000-0000-00000000000${exportJobsCreated + 3}`,
+    reserve: async (_client, _ws, _subject, id) => {
+      exportJobsCreated += 1;
       return job(id, 'queued');
     },
-    complete: async (_client, _ws, id, _url, _expiry) => {
-      void _client;
-      void _ws;
-      void _url;
-      void _expiry;
-      return job(id);
+    insertQueuedExportJob: async (_client, _ws, _subject, data) => {
+      exportJobsCreated += 1;
+      return job(data.id, 'queued');
     },
-    fail: async (_client, _ws, id, _error) => {
-      void _client;
-      void _ws;
-      void _error;
-      return job(id, 'failed');
-    },
-    readRows: async () => ({ accounts: [{ id: 'a' }], transactions: [] }),
-    insert: async (
-      _client,
-      _ws,
-      _subject,
-      id,
-      _command,
-      _path,
-      url,
-      expiry,
-      error,
-    ) => {
-      return job(id, error ? 'failed' : 'completed');
-    },
+    complete: async () => job('1', 'completed'),
+    fail: async () => job('1', 'failed'),
+    readRows: async () => ({ accounts: [], transactions: [] }),
+    insert: async () => job('1'),
     find: async () => undefined,
   };
   const idempotency: IdempotencyStore = {
@@ -97,6 +67,7 @@ function harness(
       etag,
       body,
     ) => {
+      if (options?.failIdempotencyWrite) return false;
       if (records.has(key)) return false;
       records.set(key, {
         requestFingerprint: fingerprint,
@@ -107,33 +78,45 @@ function harness(
       return true;
     },
   };
-  const storage: ArtifactStorage = {
-    upload: async () => {
-      uploads += 1;
+  const mockJobRecord = {
+    id: 'job-1',
+    type: 'export_job',
+    status: 'queued',
+    progressPercent: null,
+    resultResourceId: null,
+    error: null,
+    createdAt: '2026-09-16T12:00:00.000Z',
+    startedAt: null,
+    completedAt: null,
+  };
+  const jobs: JobWriter = {
+    createTerminalJob: async () => ({ ...mockJobRecord, status: 'completed' }),
+    createQueuedJob: async (_client, _ws, _subj, _type, payload) => {
+      queuedJobsCreated += 1;
+      return {
+        ...mockJobRecord,
+        payload,
+      };
     },
-    sign,
-    remove: async () => {
-      removals += 1;
-    },
+    transitionToProcessing: async () => ({
+      ...mockJobRecord,
+      status: 'processing',
+    }),
+    completeJob: async () => ({ ...mockJobRecord, status: 'completed' }),
+    failJob: async () => ({ ...mockJobRecord, status: 'failed' }),
+    deadLetter: async () => ({ ...mockJobRecord, status: 'dead_letter' }),
+    findJobById: async () => undefined,
   };
   const transaction = {
     run: async <T>(
       _subject: string,
       callback: (client: { query: () => Promise<never> }) => Promise<T>,
-    ) => {
-      transactionRuns += 1;
-      return callback({
+    ) =>
+      callback({
         query: async () => {
           throw new Error('not used');
         },
-      }).then((result) => {
-        if (unknownCommit && transactionRuns === 2)
-          throw new CommitOutcomeUnknownError(
-            new Error('lost commit acknowledgement'),
-          );
-        return result;
-      });
-    },
+      }),
     runRead: async <T>(
       _subject: string,
       callback: (client: { query: () => Promise<never> }) => Promise<T>,
@@ -145,53 +128,590 @@ function harness(
       }),
   };
   return {
-    service: new ExportService(transaction, store, idempotency, storage),
-    counts: () => ({ jobs, uploads, removals }),
+    service: new ExportService(
+      transaction,
+      store,
+      idempotency,
+      jobs,
+      () => fixedDate,
+    ),
+    counts: () => ({ exportJobsCreated, queuedJobsCreated }),
   };
 }
 
 describe('ExportService', () => {
-  it('replays idempotent requests without a second job or object', async () => {
+  it('enqueues an export job without in-request upload and replays idempotent requests', async () => {
     const h = harness();
     const first = await h.service.createExportJob(
       subject,
       workspace,
       command,
-      'key',
+      'key-1',
     );
     const second = await h.service.createExportJob(
       subject,
       workspace,
       command,
-      'key',
+      'key-1',
     );
     expect(first.kind).toBe('created');
+    if (first.kind === 'created') {
+      expect(first.job.status).toBe('queued');
+      expect(first.job.downloadUrl).toBeNull();
+    }
     expect(second.kind).toBe('replayed');
-    expect(h.counts()).toMatchObject({ jobs: 1, uploads: 1 });
+    expect(h.counts()).toMatchObject({
+      exportJobsCreated: 1,
+      queuedJobsCreated: 1,
+    });
   });
-  it('recovers a committed result after an unknown commit without deleting the object', async () => {
-    const h = harness(undefined, true);
+
+  it('rejects unsupported resources synchronously without creating a job', async () => {
+    const h = harness();
+    const outcome = await h.service.createExportJob(
+      subject,
+      workspace,
+      { ...command, resource: 'budgets' },
+      'key-unsupported',
+    );
+    expect(outcome.kind).toBe('unsupported-resource');
+    expect(h.counts()).toMatchObject({
+      exportJobsCreated: 0,
+      queuedJobsCreated: 0,
+    });
+  });
+
+  it('returns forbidden when caller does not have an active write role', async () => {
+    const h = harness();
+    h.service = new ExportService(
+      {
+        run: async (_s, cb) =>
+          cb({
+            query: async () => {
+              throw new Error('not used');
+            },
+          }),
+        runRead: async (_s, cb) =>
+          cb({
+            query: async () => {
+              throw new Error('not used');
+            },
+          }),
+      },
+      {
+        readActiveRole: async () => 'viewer',
+        createId: () => 'id-1',
+        reserve: async () => job('1'),
+        complete: async () => job('1'),
+        fail: async () => job('1'),
+        readRows: async () => ({ accounts: [], transactions: [] }),
+        insert: async () => job('1'),
+        find: async () => undefined,
+      },
+      {
+        read: async () => undefined,
+        write: async () => true,
+      },
+      {
+        createTerminalJob: async () => ({
+          id: 'job-1',
+          type: 'export_job',
+          status: 'completed',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        createQueuedJob: async () => ({
+          id: 'job-1',
+          type: 'export_job',
+          status: 'queued',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        transitionToProcessing: async () => ({
+          id: 'job-1',
+          type: 'export_job',
+          status: 'processing',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        completeJob: async () => ({
+          id: 'job-1',
+          type: 'export_job',
+          status: 'completed',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        failJob: async () => ({
+          id: 'job-1',
+          type: 'export_job',
+          status: 'failed',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        deadLetter: async () => ({
+          id: 'job-1',
+          type: 'export_job',
+          status: 'dead_letter',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        findJobById: async () => undefined,
+      },
+      () => fixedDate,
+    );
+
     const outcome = await h.service.createExportJob(
       subject,
       workspace,
       command,
-      'unknown-commit-key',
+      'viewer-key',
+    );
+    expect(outcome.kind).toBe('forbidden');
+  });
+
+  it('handles concurrent collision replay when idempotency write races and succeeds in winning transaction', async () => {
+    const existingJob = job('id-winner', 'queued');
+    let reads = 0;
+    const idempotencyStore: IdempotencyStore = {
+      read: async () => {
+        reads++;
+        return reads === 1
+          ? undefined
+          : {
+              requestFingerprint: computeRequestFingerprint(command),
+              responseStatus: 202,
+              responseEtag: null,
+              responseBody: existingJob,
+            };
+      },
+      write: async () => false,
+    };
+
+    let rolledBack = false;
+    const tx = {
+      run: async <T>(
+        _s: string,
+        cb: (client: { query: () => Promise<never> }) => Promise<T>,
+      ) => {
+        try {
+          return await cb({
+            query: async () => {
+              throw new Error('not used');
+            },
+          });
+        } catch (e) {
+          rolledBack = true;
+          throw e;
+        }
+      },
+      runRead: async <T>(
+        _s: string,
+        cb: (client: { query: () => Promise<never> }) => Promise<T>,
+      ) =>
+        cb({
+          query: async () => {
+            throw new Error('not used');
+          },
+        }),
+    };
+
+    const store: ExportStore = {
+      readActiveRole: async () => 'owner',
+      createId: () => 'id-racer',
+      reserve: async () => job('id-racer'),
+      complete: async () => job('1'),
+      fail: async () => job('1'),
+      readRows: async () => ({ accounts: [], transactions: [] }),
+      insert: async () => job('1'),
+      find: async () => undefined,
+    };
+
+    const jobWriter: JobWriter = {
+      createTerminalJob: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'completed',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      createQueuedJob: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'queued',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      transitionToProcessing: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'processing',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      completeJob: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'completed',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      failJob: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'failed',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      deadLetter: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'dead_letter',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      findJobById: async () => undefined,
+    };
+
+    const service = new ExportService(
+      tx,
+      store,
+      idempotencyStore,
+      jobWriter,
+      () => fixedDate,
+    );
+
+    const outcome = await service.createExportJob(
+      subject,
+      workspace,
+      command,
+      'collision-key',
     );
     expect(outcome.kind).toBe('replayed');
-    expect(h.counts()).toMatchObject({ jobs: 1, uploads: 1, removals: 0 });
+    if (outcome.kind === 'replayed') {
+      expect(outcome.status).toBe(202);
+      expect(outcome.body).toEqual(existingJob);
+    }
+    expect(rolledBack).toBe(true);
   });
-  it('persists a terminal failed job outside the failed generation transaction', async () => {
-    const h = harness(async () => {
-      throw new Error('serializer signing failed');
-    });
-    const outcome = await h.service.createExportJob(
+
+  it('handles concurrent collision conflict when idempotency write races with a different payload', async () => {
+    let reads = 0;
+    const idempotencyStore: IdempotencyStore = {
+      read: async () => {
+        reads++;
+        return reads === 1
+          ? undefined
+          : {
+              requestFingerprint: 'different-fingerprint-mismatch',
+              responseStatus: 202,
+              responseEtag: null,
+              responseBody: job('id-other'),
+            };
+      },
+      write: async () => false,
+    };
+
+    let rolledBack = false;
+    const tx = {
+      run: async <T>(
+        _s: string,
+        cb: (client: { query: () => Promise<never> }) => Promise<T>,
+      ) => {
+        try {
+          return await cb({
+            query: async () => {
+              throw new Error('not used');
+            },
+          });
+        } catch (e) {
+          rolledBack = true;
+          throw e;
+        }
+      },
+      runRead: async <T>(
+        _s: string,
+        cb: (client: { query: () => Promise<never> }) => Promise<T>,
+      ) =>
+        cb({
+          query: async () => {
+            throw new Error('not used');
+          },
+        }),
+    };
+
+    const store: ExportStore = {
+      readActiveRole: async () => 'owner',
+      createId: () => 'id-racer',
+      reserve: async () => job('id-racer'),
+      complete: async () => job('1'),
+      fail: async () => job('1'),
+      readRows: async () => ({ accounts: [], transactions: [] }),
+      insert: async () => job('1'),
+      find: async () => undefined,
+    };
+
+    const jobWriter: JobWriter = {
+      createTerminalJob: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'completed',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      createQueuedJob: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'queued',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      transitionToProcessing: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'processing',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      completeJob: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'completed',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      failJob: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'failed',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      deadLetter: async () => ({
+        id: 'job-1',
+        type: 'export_job',
+        status: 'dead_letter',
+        progressPercent: null,
+        resultResourceId: null,
+        error: null,
+        createdAt: fixedDate.toISOString(),
+        startedAt: null,
+        completedAt: null,
+      }),
+      findJobById: async () => undefined,
+    };
+
+    const service = new ExportService(
+      tx,
+      store,
+      idempotencyStore,
+      jobWriter,
+      () => fixedDate,
+    );
+
+    const outcome = await service.createExportJob(
       subject,
       workspace,
       command,
-      'failure-key',
+      'conflict-key',
     );
-    expect(outcome.kind).toBe('failed');
-    expect(h.counts().jobs).toBe(1);
-    expect(h.counts().uploads).toBe(1);
+    expect(outcome.kind).toBe('idempotency-conflict');
+    expect(rolledBack).toBe(true);
+  });
+
+  it('supports getExportJob for read roles, forbidden for unassigned roles, and not-found for missing jobs', async () => {
+    const existing = job('found-id', 'completed');
+    const store: ExportStore = {
+      readActiveRole: async (_c, ws) =>
+        ws === 'forbidden-ws' ? undefined : 'viewer',
+      createId: () => '1',
+      reserve: async () => job('1'),
+      complete: async () => job('1'),
+      fail: async () => job('1'),
+      readRows: async () => ({ accounts: [], transactions: [] }),
+      insert: async () => job('1'),
+      find: async (_c, _ws, id) => (id === 'found-id' ? existing : undefined),
+    };
+
+    const tx = {
+      run: async <T>(
+        _s: string,
+        cb: (client: { query: () => Promise<never> }) => Promise<T>,
+      ) =>
+        cb({
+          query: async () => {
+            throw new Error('not used');
+          },
+        }),
+      runRead: async <T>(
+        _s: string,
+        cb: (client: { query: () => Promise<never> }) => Promise<T>,
+      ) =>
+        cb({
+          query: async () => {
+            throw new Error('not used');
+          },
+        }),
+    };
+
+    const service = new ExportService(
+      tx,
+      store,
+      { read: async () => undefined, write: async () => true },
+      {
+        createTerminalJob: async () => ({
+          id: '1',
+          type: 'export_job',
+          status: 'completed',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        createQueuedJob: async () => ({
+          id: '1',
+          type: 'export_job',
+          status: 'queued',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        transitionToProcessing: async () => ({
+          id: '1',
+          type: 'export_job',
+          status: 'processing',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        completeJob: async () => ({
+          id: '1',
+          type: 'export_job',
+          status: 'completed',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        failJob: async () => ({
+          id: '1',
+          type: 'export_job',
+          status: 'failed',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        deadLetter: async () => ({
+          id: '1',
+          type: 'export_job',
+          status: 'dead_letter',
+          progressPercent: null,
+          resultResourceId: null,
+          error: null,
+          createdAt: fixedDate.toISOString(),
+          startedAt: null,
+          completedAt: null,
+        }),
+        findJobById: async () => undefined,
+      },
+      () => fixedDate,
+    );
+
+    const forbidden = await service.getExportJob(
+      subject,
+      'forbidden-ws',
+      'found-id',
+    );
+    expect(forbidden).toEqual({ kind: 'forbidden' });
+
+    const found = await service.getExportJob(subject, workspace, 'found-id');
+    expect(found).toEqual({ kind: 'found', job: existing });
+
+    const notFound = await service.getExportJob(
+      subject,
+      workspace,
+      'missing-id',
+    );
+    expect(notFound).toEqual({ kind: 'not-found' });
   });
 });

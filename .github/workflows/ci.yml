@@ -28,6 +28,11 @@ jobs:
           node-version: 24.18.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: install Tesseract OCR and languages
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa util-linux
+          dpkg-query -W tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa util-linux
       - run: pnpm check
       - name: database RLS contract
         shell: bash
@@ -233,6 +238,15 @@ jobs:
       - name: jobs read integration
         shell: bash
         run: pnpm test:integration:jobs-read
+      - name: job queue integration
+        shell: bash
+        run: pnpm test:integration:job-queue
+      - name: job worker integration
+        shell: bash
+        run: pnpm test:integration:job-worker
+      - name: job transitions integration
+        shell: bash
+        run: pnpm test:integration:job-transitions
       - name: reconciliations schema integration
         shell: bash
         run: pnpm test:integration:reconciliations-schema
@@ -251,6 +265,9 @@ jobs:
       - name: exports completion integration
         shell: bash
         run: pnpm test:integration:exports-completion
+      - name: export jobs integration
+        shell: bash
+        run: pnpm test:integration:export-jobs
       - name: imports integration
         shell: bash
         run: pnpm test:integration:imports
@@ -296,6 +313,12 @@ jobs:
       - name: report runs integration
         shell: bash
         run: pnpm test:integration:report-runs
+      - name: install Playwright Chromium for PDF renderer
+        shell: bash
+        run: pnpm exec playwright-core install --with-deps chromium
+      - name: PDF renderer integration
+        shell: bash
+        run: pnpm test:integration:pdf-renderer
       - name: report runs schema integration
         shell: bash
         run: pnpm test:integration:report-runs-schema
@@ -308,6 +331,15 @@ jobs:
       - name: receipts integration
         shell: bash
         run: pnpm test:integration:receipts
+      - name: receipt foundation integration
+        shell: bash
+        run: pnpm test:integration:receipt-foundation
+      - name: receipt enqueue integration
+        shell: bash
+        run: pnpm test:integration:receipt-enqueue
+      - name: receipt OCR engine proof integration
+        shell: bash
+        run: pnpm test:integration:receipt-ocr-engine
       - name: MCP grants integration
         shell: bash
         run: pnpm test:integration:mcp-grants
@@ -326,6 +358,9 @@ jobs:
       - name: CLI device token integration
         shell: bash
         run: pnpm test:integration:cli-token
+      - name: CLI scope integration
+        shell: bash
+        run: pnpm test:integration:cli-scope
       - name: transaction mutation
         shell: bash
         run: pnpm test:mutation:transaction

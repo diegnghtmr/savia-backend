@@ -13,6 +13,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Supabase Auth session JWT.
+    cliTokenAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: svt_opaque
+      description: Savia-issued opaque CLI access token, prefixed svt_, scoped, revocable, expiring and stored as a SHA-256 hash.
     mcpOAuth:
       type: oauth2
       description: OAuth 2.1 authorization used by remote MCP clients. The MCP transport itself is not described by this OpenAPI document.
@@ -2170,11 +2175,23 @@ components:
           credentialType,
           maskedIdentifier,
           status,
+          ownerSubjectId,
           createdAt,
         ]
       properties:
         id: { $ref: '#/components/schemas/Uuid' }
         ownerType: { type: string, enum: [user, workspace] }
+        ownerSubjectId:
+          type: [string, 'null']
+          format: uuid
+          readOnly: true
+          description: >-
+            Creator subject ID for ownerType user, or null for ownerType
+            workspace. A user-owned credential is visible and manageable only
+            by its creator; other subjects receive 404. Only workspace-owned
+            credentials can become the workspace default model;
+            setDefaultAIModel answers 409 when an ineligible credential is
+            supplied, matching the backend validation path.
         providerId: { type: string }
         credentialType:
           {
@@ -2499,6 +2516,17 @@ components:
         clientId: { type: string }
         scopes: { type: array, items: { type: string }, uniqueItems: true }
       additionalProperties: false
+    CliDeviceApprovalRequest:
+      type: object
+      required: [userCode]
+      properties:
+        userCode:
+          {
+            type: string,
+            maxLength: 16,
+            description: 'Device user code. Case, hyphens and whitespace are ignored; it normalizes to 8 characters from ABCDEFGHJKLMNPQRSTUVWXYZ23456789.',
+          }
+      additionalProperties: false
     CliDeviceAuthorization:
       type: object
       required: [deviceCode, userCode, verificationUri, expiresIn, interval]
@@ -2523,9 +2551,13 @@ components:
       properties:
         accessToken: { type: string }
         tokenType: { type: string, const: Bearer }
-        expiresIn: { type: integer, minimum: 1 }
+        expiresIn:
+          {
+            type: integer,
+            minimum: 1,
+            description: '30 days (2592000 seconds) from issuance, independent of the 10-minute device-code lifetime; no refresh token is issued.',
+          }
         scope: { type: string }
-        refreshToken: { type: string }
       additionalProperties: false
     AgentMessageRequest:
       type: object
@@ -2662,6 +2694,9 @@ paths:
   /v1/me:
     get:
       operationId: getCurrentUser
+      security:
+        - bearerAuth: []
+        - cliTokenAuth: []
       tags:
         - Profile
       summary: Read the authenticated user profile
@@ -2743,6 +2778,9 @@ paths:
   /v1/workspaces/{workspaceId}:
     get:
       operationId: getWorkspace
+      security:
+        - bearerAuth: []
+        - cliTokenAuth: []
       tags:
         - Workspaces
       summary: Read workspace by identifier
@@ -2792,6 +2830,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     patch:
       operationId: updateWorkspace
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - workspace:admin
       tags:
         - Workspaces
       summary: Update workspace
@@ -2984,6 +3026,9 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
     get:
       operationId: listWorkspaces
+      security:
+        - bearerAuth: []
+        - cliTokenAuth: []
       tags:
         - Workspaces
       summary: List workspaces for the authenticated user
@@ -3034,6 +3079,10 @@ paths:
   /v1/workspaces/{workspaceId}/members:
     get:
       operationId: listWorkspaceMembers
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - workspace:admin
       tags:
         - Members
       summary: List workspace members
@@ -3102,6 +3151,10 @@ paths:
   /v1/workspaces/{workspaceId}/members/{memberId}:
     patch:
       operationId: updateWorkspaceMember
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - workspace:admin
       tags:
         - Members
       summary: Change workspace member role
@@ -3188,6 +3241,10 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
     delete:
       operationId: removeWorkspaceMember
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - workspace:admin
       tags:
         - Members
       summary: Remove workspace member
@@ -3249,6 +3306,10 @@ paths:
   /v1/workspaces/{workspaceId}/invitations:
     get:
       operationId: listWorkspaceInvitations
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - workspace:admin
       tags:
         - Members
       summary: List workspace invitations
@@ -3316,6 +3377,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createWorkspaceInvitation
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - workspace:admin
       tags:
         - Members
       summary: Invite a workspace member
@@ -3387,6 +3452,10 @@ paths:
   /v1/workspaces/{workspaceId}/invitations/{invitationId}/revoke:
     post:
       operationId: revokeWorkspaceInvitation
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - workspace:admin
       tags:
         - Members
       summary: Revoke workspace invitation
@@ -3454,6 +3523,10 @@ paths:
   /v1/accounts:
     get:
       operationId: listAccounts
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - accounts:read
       tags:
         - Accounts
       summary: List accounts
@@ -3528,6 +3601,10 @@ paths:
           - accounts:read
     post:
       operationId: createAccount
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - accounts:write
       tags:
         - Accounts
       summary: Create account
@@ -3607,6 +3684,10 @@ paths:
   /v1/accounts/{accountId}:
     get:
       operationId: getAccount
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - accounts:read
       tags:
         - Accounts
       summary: Get account
@@ -3663,6 +3744,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     patch:
       operationId: updateAccount
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - accounts:write
       tags:
         - Accounts
       summary: Update account metadata
@@ -3745,6 +3830,10 @@ paths:
   /v1/accounts/{accountId}/balance:
     get:
       operationId: getAccountBalance
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - accounts:read
       tags:
         - Accounts
       summary: Get account balance
@@ -3810,6 +3899,10 @@ paths:
   /v1/accounts/{accountId}/close:
     post:
       operationId: closeAccount
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - accounts:write
       tags:
         - Accounts
       summary: Close account
@@ -3894,6 +3987,10 @@ paths:
   /v1/transactions:
     get:
       operationId: listTransactions
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       tags:
         - Transactions
       summary: Search transactions
@@ -3995,6 +4092,10 @@ paths:
           - transactions:read
     post:
       operationId: createTransaction
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Transactions
       summary: Create income, expense or adjustment
@@ -4075,6 +4176,10 @@ paths:
   /v1/transactions/{transactionId}:
     get:
       operationId: getTransaction
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       tags:
         - Transactions
       summary: Get transaction
@@ -4131,6 +4236,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     patch:
       operationId: updateTransaction
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Transactions
       summary: Update transaction
@@ -4234,6 +4343,10 @@ paths:
   /v1/transactions/{transactionId}/void:
     post:
       operationId: voidTransaction
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Transactions
       summary: Void transaction with a compensating operation
@@ -4331,6 +4444,10 @@ paths:
   /v1/transfers:
     post:
       operationId: createTransfer
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Transfers
       summary: Create same-currency transfer
@@ -4405,6 +4522,10 @@ paths:
   /v1/currency-exchanges:
     post:
       operationId: createCurrencyExchange
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Transfers
       summary: Create cross-currency transfer
@@ -4479,6 +4600,10 @@ paths:
   /v1/exchange-rates:
     get:
       operationId: listExchangeRates
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       tags:
         - Currencies
       summary: List exchange rates
@@ -4539,6 +4664,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createManualExchangeRate
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Currencies
       summary: Create manual exchange rate
@@ -4607,6 +4736,10 @@ paths:
   /v1/categories:
     get:
       operationId: listCategorys
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       tags:
         - Catalogs
       summary: List categories
@@ -4669,6 +4802,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createCategory
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Catalogs
       summary: Create category
@@ -4736,6 +4873,10 @@ paths:
   /v1/tags:
     get:
       operationId: listTags
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       tags:
         - Catalogs
       summary: List tags
@@ -4798,6 +4939,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createTag
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Catalogs
       summary: Create tag
@@ -4865,6 +5010,10 @@ paths:
   /v1/payees:
     get:
       operationId: listPayees
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       tags:
         - Catalogs
       summary: List payees
@@ -4927,6 +5076,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createPayee
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Catalogs
       summary: Create payee
@@ -4994,6 +5147,10 @@ paths:
   /v1/recurring-rules:
     get:
       operationId: listRecurringRules
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       tags:
         - Recurring
       summary: List recurring rules
@@ -5056,6 +5213,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createRecurringRule
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Recurring
       summary: Create recurring rule
@@ -5123,6 +5284,10 @@ paths:
   /v1/subscriptions:
     get:
       operationId: listSubscriptions
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       tags:
         - Recurring
       summary: List detected and confirmed subscriptions
@@ -5191,6 +5356,10 @@ paths:
   /v1/export-jobs:
     post:
       operationId: createExportJob
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:write
       tags: [Exports]
       summary: Create export job
       parameters:
@@ -5268,6 +5437,10 @@ paths:
   /v1/export-jobs/{exportJobId}:
     get:
       operationId: getExportJob
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       tags: [Exports]
       summary: Get export job
       parameters:
@@ -5328,6 +5501,10 @@ paths:
   /v1/import-jobs:
     post:
       operationId: createImportJob
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags: [Imports]
       summary: Analyze an imported statement
       parameters:
@@ -5419,6 +5596,10 @@ paths:
   /v1/import-jobs/{importJobId}:
     get:
       operationId: getImportJob
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       tags: [Imports]
       summary: Get an import analysis
       parameters:
@@ -5483,6 +5664,10 @@ paths:
   /v1/import-jobs/{importJobId}/commit:
     post:
       operationId: commitImportJob
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags: [Imports]
       summary: Commit an analyzed import
       parameters:
@@ -5542,6 +5727,10 @@ paths:
   /v1/import-jobs/{importJobId}/rollback:
     post:
       operationId: rollbackImportJob
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags: [Imports]
       summary: Roll back a committed import
       parameters:
@@ -5585,6 +5774,10 @@ paths:
   /v1/budgets:
     get:
       operationId: listBudgets
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - budgets:read
       summary: List budgets
       tags: [Budgets]
       parameters:
@@ -5625,6 +5818,10 @@ paths:
         '403': { description: Forbidden. }
     post:
       operationId: createBudget
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - budgets:write
       summary: Create budget
       tags: [Budgets]
       parameters:
@@ -5687,6 +5884,10 @@ paths:
         }
     get:
       operationId: getBudget
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - budgets:read
       summary: Get budget
       tags: [Budgets]
       responses:
@@ -5716,6 +5917,10 @@ paths:
         }
     patch:
       operationId: updateBudget
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - budgets:write
       summary: Update budget metadata
       tags: [Budgets]
       parameters:
@@ -5784,6 +5989,10 @@ paths:
         }
     put:
       operationId: upsertBudgetAllocations
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - budgets:write
       summary: Replace budget allocations
       tags: [Budgets]
       parameters:
@@ -5830,6 +6039,10 @@ paths:
   /v1/funds:
     get:
       operationId: listFunds
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - budgets:read
       summary: List sinking funds
       tags: [Funds]
       parameters:
@@ -5873,6 +6086,10 @@ paths:
               schema: { $ref: '#/components/schemas/ProblemDetails' }
     post:
       operationId: createFund
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - budgets:write
       summary: Create sinking fund
       tags: [Funds]
       parameters:
@@ -5951,6 +6168,11 @@ paths:
         }
     post:
       operationId: contributeToFund
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+            - budgets:write
       summary: Contribute to sinking fund
       tags: [Funds]
       parameters:
@@ -6020,6 +6242,10 @@ paths:
   /v1/debts:
     get:
       operationId: listDebts
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - budgets:read
       summary: List debts
       tags: [Debts]
       parameters:
@@ -6063,6 +6289,10 @@ paths:
               schema: { $ref: '#/components/schemas/ProblemDetails' }
     post:
       operationId: createDebt
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - budgets:write
       summary: Create debt
       tags: [Debts]
       parameters:
@@ -6134,6 +6364,11 @@ paths:
         }
     post:
       operationId: createDebtPayment
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+            - budgets:write
       summary: Record debt payment
       tags: [Debts]
       parameters:
@@ -6194,6 +6429,9 @@ paths:
   /v1/jobs/{jobId}:
     get:
       operationId: getJob
+      security:
+        - bearerAuth: []
+        - cliTokenAuth: []
       tags:
         - Jobs
       summary: Get asynchronous job
@@ -6245,6 +6483,10 @@ paths:
   /v1/reconciliations:
     post:
       operationId: createReconciliation
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Reconciliations
       summary: Create reconciliation
@@ -6312,6 +6554,10 @@ paths:
   /v1/reconciliations/{reconciliationId}/complete:
     post:
       operationId: completeReconciliation
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       tags:
         - Reconciliations
       summary: Complete reconciliation
@@ -6390,6 +6636,10 @@ paths:
   /v1/reconciliations/{reconciliationId}:
     get:
       operationId: getReconciliation
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       tags:
         - Reconciliations
       summary: Get reconciliation
@@ -6441,6 +6691,10 @@ paths:
   /v1/analytics/summary:
     get:
       operationId: getAnalyticsSummary
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       summary: Get financial summary
       tags:
         - Analytics
@@ -6496,6 +6750,10 @@ paths:
   /v1/analytics/cash-flow:
     get:
       operationId: getCashFlowAnalytics
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       summary: Get cash flow analytics
       tags:
         - Analytics
@@ -6550,6 +6808,10 @@ paths:
   /v1/analytics/advanced:
     get:
       operationId: getAdvancedAnalytics
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       summary: Get an advanced analytic view
       tags:
         - Analytics
@@ -6614,6 +6876,10 @@ paths:
   /v1/scenarios:
     get:
       operationId: listScenarios
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       summary: List scenarios
       tags:
         - Scenarios
@@ -6671,6 +6937,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createScenario
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:write
       summary: Create scenario
       tags:
         - Scenarios
@@ -6745,6 +7015,10 @@ paths:
           format: uuid
     post:
       operationId: runScenario
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       summary: Run scenario
       tags:
         - Scenarios
@@ -6806,6 +7080,10 @@ paths:
   /v1/forecasts/balance:
     post:
       operationId: createBalanceForecast
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       summary: Create balance forecast
       tags:
         - Forecasts
@@ -6887,6 +7165,10 @@ paths:
           format: uuid
     get:
       operationId: getForecast
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       summary: Get completed or in-progress forecast
       tags:
         - Forecasts
@@ -6926,6 +7208,10 @@ paths:
   /v1/receipts:
     post:
       operationId: createReceipt
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       summary: Upload receipt or invoice
       tags: [Receipts]
       responses:
@@ -6974,6 +7260,10 @@ paths:
       - $ref: '#/components/parameters/WorkspaceIdHeader'
     get:
       operationId: getReceipt
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
       summary: Get receipt and OCR result
       tags: [Receipts]
       responses:
@@ -6996,6 +7286,10 @@ paths:
       - $ref: '#/components/parameters/WorkspaceIdHeader'
     post:
       operationId: confirmReceipt
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
       summary: Confirm OCR and create transaction
       tags: [Receipts]
       responses:
@@ -7023,6 +7317,10 @@ paths:
   /v1/report-definitions:
     get:
       operationId: listReportDefinitions
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       summary: List saved report definitions
       tags:
         - Reports
@@ -7080,6 +7378,10 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
     post:
       operationId: createReportDefinition
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:write
       summary: Create report definition
       tags:
         - Reports
@@ -7148,6 +7450,10 @@ paths:
   /v1/report-runs:
     post:
       operationId: createReportRun
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       summary: Run preset or custom report
       tags: [Reports]
       responses:
@@ -7227,6 +7533,10 @@ paths:
           format: uuid
     get:
       operationId: getReportRun
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - reports:read
       summary: Get report run
       tags: [Reports]
       responses:
@@ -7259,6 +7569,10 @@ paths:
   /v1/ai/providers:
     get:
       operationId: listAIProviders
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - workspace:admin
       summary: List supported AI providers
       tags: [AI Providers]
       responses:
@@ -7646,6 +7960,9 @@ paths:
   /v1/notifications:
     get:
       operationId: listNotifications
+      security:
+        - bearerAuth: []
+        - cliTokenAuth: []
       summary: List notifications
       tags:
         - Notifications
@@ -7702,6 +8019,9 @@ paths:
           $ref: '#/components/schemas/Uuid'
     post:
       operationId: markNotificationRead
+      security:
+        - bearerAuth: []
+        - cliTokenAuth: []
       summary: Mark notification as read
       tags:
         - Notifications
@@ -7877,6 +8197,32 @@ paths:
         '400': { description: 'Authorization is pending, denied or expired.' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
       security: []
+  /v1/cli/device/approve:
+    post:
+      operationId: approveCliDeviceAuthorization
+      summary: Approve CLI device authorization
+      description: Approve a pending CLI device authorization using the authenticated session subject. Re-approval by the same subject also succeeds with 204. This endpoint is limited to 10 attempts per minute per subject.
+      tags: [CLI Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CliDeviceApprovalRequest' }
+      responses:
+        '204':
+          description: Device authorization approved, including re-approval by the same subject.
+        '400':
+          description: One fixed, indistinguishable outcome for an unknown, expired, already-approved-by-another or redeemed code, or for invalid request-body shape.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: A CLI token can never approve a device authorization.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /v1/mcp/grants:
     get:
       operationId: listMcpGrants
@@ -7937,7 +8283,11 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/McpGrant' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403':
+          description: The requested grant scopes exceed the minter's role in at least one named workspace. Owners and administrators may grant all nine scopes; editors may grant all except workspace:admin; viewers may grant only *:read scopes.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '503':

@@ -1,7 +1,8 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { multiplyMinorByRate } from '../platform/currency-conversion.js';
 import type {
-  CreateReportRunRecord,
+  CompleteProcessingReportRunRecord,
+  CreateQueuedReportRunRecord,
   CreateReportDefinitionRequest,
   ReportDefinition,
   ReportDimension,
@@ -14,6 +15,8 @@ import type {
   ReportRunFormat,
   ReportRunStatus,
 } from './report.port.js';
+import { ReportJobPayloadError } from './report-job-payload.js';
+import { reportArtifactObjectKey } from './report-run-snapshot.js';
 import type { ReportSourceRow } from './report.port.js';
 import {
   getReportSourceRowCap,
@@ -167,6 +170,7 @@ limit $4`;
     workspaceId: string,
     from: string,
     to: string,
+    asOf: Date,
     typeFilter?: string,
     callerTypeFilter?: string,
   ): Promise<readonly ReportSourceRow[]> {
@@ -193,7 +197,7 @@ left join lateral (
 left join lateral (
   select rate::text as rate from public.exchange_rates
    where workspace_id = t.workspace_id and base_currency = t.currency and quote_currency = w.base_currency
-   order by (effective_at <= now()) desc, case when effective_at <= now() then effective_at end desc, effective_at asc, id desc
+   order by (effective_at <= $5::timestamptz) desc, case when effective_at <= $5::timestamptz then effective_at end desc, effective_at asc, id desc
    limit 1
 ) rates on t.currency <> w.base_currency
 where t.workspace_id = $1::uuid
@@ -211,7 +215,7 @@ where t.workspace_id = $1::uuid
   and (t.occurred_at at time zone 'utc')::date between $2::date and $3::date
   and ($4::text is null or t.type = $4::text)
 order by t.occurred_at asc, t.id asc
-limit $5`;
+limit $6`;
     const cap = getReportSourceRowCap();
     const limitValue = Number.isFinite(cap) ? cap + 1 : null;
     const result = await client.query<Record<string, unknown>>(sql, [
@@ -219,6 +223,7 @@ limit $5`;
       from,
       to,
       types || null,
+      asOf.toISOString(),
       limitValue,
     ]);
     if (Number.isFinite(cap) && result.rows.length > cap) {
@@ -281,15 +286,33 @@ limit $5`;
     );
   }
 
-  public async insertReportRun(
+  public async readReportRunBinding(
+    client: TransactionClient,
+    workspaceId: string,
+    reportRunId: string,
+  ): Promise<{ jobId: string | null; status: string } | undefined> {
+    const result = await client.query<{
+      jobId: string | null;
+      status: string;
+    }>(
+      `select job_id::text as "jobId", status
+         from public.report_runs
+        where workspace_id = $1::uuid
+          and id = $2::uuid`,
+      [workspaceId, reportRunId],
+    );
+    return result.rows[0];
+  }
+
+  public async insertQueuedReportRun(
     client: TransactionClient,
     workspaceId: string,
     subject: string,
-    data: CreateReportRunRecord,
+    data: CreateQueuedReportRunRecord,
   ): Promise<ReportRun> {
     const result = await client.query<ReportRunRow>(
-      `insert into public.report_runs (id, workspace_id, definition_id, preset, status, format, snapshot_id, object_path, download_url, expires_at, filters, created_by, completed_at)
-       values ($1::uuid, $2::uuid, $3::uuid, $4, 'completed', $5, $6::uuid, $7, $8, $9::timestamptz, $10::jsonb, $11::uuid, $12::timestamptz)
+      `insert into public.report_runs (id, workspace_id, definition_id, preset, status, format, snapshot_id, object_path, download_url, expires_at, filters, created_by, completed_at, job_id)
+       values ($1::uuid, $2::uuid, $3::uuid, $4, 'queued', $5, $6::uuid, $7, null, null, $8::jsonb, $9::uuid, null, $10::uuid)
        returning id::text, definition_id::text as "definitionId", preset, status, format, snapshot_id::text as "snapshotId", download_url as "downloadUrl",
                  to_char(expires_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "expiresAt",
                  to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt"`,
@@ -300,16 +323,91 @@ limit $5`;
         data.preset,
         data.format,
         data.snapshotId,
-        `${workspaceId}/${data.id}.${data.format}`,
-        data.downloadUrl,
-        data.expiresAt.toISOString(),
+        reportArtifactObjectKey(workspaceId, data.id, data.format),
         JSON.stringify(data.filters),
         subject,
-        data.completedAt.toISOString(),
+        data.jobId,
       ],
     );
     const row = result.rows[0];
     if (!row) throw new Error('Created report run could not be read.');
+    return mapReportRun(row);
+  }
+
+  public async beginProcessingReportRun(
+    client: TransactionClient,
+    workspaceId: string,
+    reportRunId: string,
+    jobId: string,
+  ): Promise<void> {
+    const result = await client.query<{ id: string }>(
+      `update public.report_runs
+          set status = 'processing'
+        where workspace_id = $1::uuid
+          and id = $2::uuid
+          and job_id = $3::uuid
+          and status = 'queued'
+       returning id::text`,
+      [workspaceId, reportRunId, jobId],
+    );
+    if (!result.rows[0]) {
+      const existing = await client.query<{
+        jobId: string | null;
+        status: string;
+      }>(
+        `select job_id::text as "jobId", status
+           from public.report_runs
+          where workspace_id = $1::uuid
+            and id = $2::uuid`,
+        [workspaceId, reportRunId],
+      );
+      const row = existing.rows[0];
+      if (row && row.jobId !== jobId) {
+        throw new ReportJobPayloadError(
+          'Report job payload reportRunId is not bound to this job.',
+        );
+      }
+      throw new Error(
+        'Report run could not be marked processing because it was not queued.',
+      );
+    }
+  }
+
+  public async completeProcessingReportRun(
+    client: TransactionClient,
+    workspaceId: string,
+    reportRunId: string,
+    jobId: string,
+    data: CompleteProcessingReportRunRecord,
+  ): Promise<ReportRun> {
+    const result = await client.query<ReportRunRow>(
+      `update public.report_runs
+          set status = 'completed',
+              download_url = $3,
+              expires_at = $4::timestamptz,
+              completed_at = $5::timestamptz
+        where workspace_id = $1::uuid
+          and id = $2::uuid
+          and job_id = $6::uuid
+          and status = 'processing'
+       returning id::text, definition_id::text as "definitionId", preset, status, format, snapshot_id::text as "snapshotId", download_url as "downloadUrl",
+                 to_char(expires_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "expiresAt",
+                 to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt"`,
+      [
+        workspaceId,
+        reportRunId,
+        data.downloadUrl,
+        data.expiresAt.toISOString(),
+        data.completedAt.toISOString(),
+        jobId,
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(
+        'Report run artifact was not rewritten because it was not processing.',
+      );
+    }
     return mapReportRun(row);
   }
 

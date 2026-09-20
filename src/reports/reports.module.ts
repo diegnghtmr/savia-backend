@@ -6,10 +6,7 @@ import { PostgresReportAdapter } from './postgres-report.adapter.js';
 import { PlatformModule } from '../platform/platform.module.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
-import {
-  ARTIFACT_STORAGE,
-  type ArtifactStorage,
-} from '../platform/artifact-storage.port.js';
+import { JOB_WRITER, type JobWriter } from '../platform/job-writer.port.js';
 
 @Module({
   imports: [PlatformModule],
@@ -22,14 +19,14 @@ import {
         PgTransaction,
         PostgresReportAdapter,
         PostgresIdempotencyAdapter,
-        ARTIFACT_STORAGE,
+        JOB_WRITER,
       ],
       useFactory: (
         tx: PgTransaction,
         store: PostgresReportAdapter,
         idempotency: PostgresIdempotencyAdapter,
-        storage: ArtifactStorage,
-      ) => new ReportService(tx, store, idempotency, storage),
+        jobs: JobWriter,
+      ) => new ReportService(tx, store, idempotency, jobs),
     },
     { provide: REPORTS_PORT, useExisting: ReportService },
   ],

@@ -1,4 +1,4 @@
-// Migrations under test: 202609050002_report_runs.sql
+// Migrations under test: 202609050002_report_runs.sql, 202609150001_report_runs_async.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -327,6 +327,50 @@ describe('Report runs schema, named constraints, and RLS (202609050002_report_ru
       expect(err.constraint).toBe('report_runs_completed_at_terminal_check');
     });
 
+    it('enforces report_runs_job_workspace_fkey: a job of another workspace is refused', async () => {
+      const foreignJobId = '00000000-0000-4000-8000-000000008271';
+      await admin.query(
+        `insert into public.jobs (id, workspace_id, type, status, started_at, completed_at, created_by)
+         values ($1, $2, 'balance_forecast', 'completed', now(), now(), $3)`,
+        [foreignJobId, ws2Id, ownerB],
+      );
+      const err = await capturePgError(() =>
+        asSubject(ownerA, async (client) => {
+          await client.query(
+            `insert into public.report_runs (
+               workspace_id, preset, status, format, created_by, job_id
+             ) values (
+               $1, 'monthly_summary', 'queued', 'json', $2, $3
+             )`,
+            [ws1Id, ownerA, foreignJobId],
+          );
+        }),
+      );
+      expect(err.code).toBe('23503');
+      expect(err.constraint).toBe('report_runs_job_workspace_fkey');
+    });
+
+    it('accepts a same-workspace job_id on report_runs', async () => {
+      const jobId = '00000000-0000-4000-8000-000000008272';
+      await admin.query(
+        `insert into public.jobs (id, workspace_id, type, status, created_by)
+         values ($1, $2, 'balance_forecast', 'queued', $3)`,
+        [jobId, ws1Id, ownerA],
+      );
+      const id = await asSubject(ownerA, async (client) => {
+        const res = await client.query<{ id: string }>(
+          `insert into public.report_runs (
+             workspace_id, preset, status, format, created_by, job_id
+           ) values (
+             $1, 'monthly_summary', 'queued', 'json', $2, $3
+           ) returning id`,
+          [ws1Id, ownerA, jobId],
+        );
+        return res.rows[0]!.id;
+      });
+      expect(id).toBeDefined();
+    });
+
     it('enforces report_runs_completed_at_terminal_check: processing rejects completed_at', async () => {
       const err = await capturePgError(() =>
         asSubject(ownerA, async (client) => {
@@ -429,6 +473,46 @@ describe('Report runs schema, named constraints, and RLS (202609050002_report_ru
         return res.rows;
       });
       expect(crossWorkspaceRuns).toHaveLength(0);
+    });
+
+    it('allows a processing report run to complete and refuses rewriting a completed artifact', async () => {
+      const processingId = await asSubject(ownerA, async (client) => {
+        const res = await client.query<{ id: string }>(
+          `insert into public.report_runs (
+             workspace_id, preset, status, format, created_by
+           ) values (
+             $1, 'monthly_summary', 'processing', 'json', $2
+           ) returning id`,
+          [ws1Id, ownerA],
+        );
+        return res.rows[0]!.id;
+      });
+
+      const completed = await asSubject(ownerA, async (client) => {
+        const res = await client.query<{ status: string }>(
+          `update public.report_runs
+              set status = 'completed',
+                  completed_at = now(),
+                  download_url = 'https://storage.example.test/report.json'
+            where id = $1
+            returning status`,
+          [processingId],
+        );
+        return res.rows[0]?.status;
+      });
+      expect(completed).toBe('completed');
+
+      const rewritten = await asSubject(ownerA, async (client) => {
+        const res = await client.query<{ id: string }>(
+          `update public.report_runs
+              set download_url = 'https://storage.example.test/rewritten.json'
+            where id = $1
+            returning id`,
+          [processingId],
+        );
+        return res.rowCount;
+      });
+      expect(rewritten).toBe(0);
     });
   });
 });

@@ -3,6 +3,7 @@ import {
   BadRequestException,
   Catch,
   type ExceptionFilter,
+  ForbiddenException,
   HttpException,
   Logger,
   UnauthorizedException,
@@ -35,6 +36,12 @@ export class OnboardingProblemFilter implements ExceptionFilter {
         type: PROBLEM_TYPES.UNAUTHORIZED,
         title: 'Authentication is required',
         status: 401,
+      });
+    if (exception instanceof ForbiddenException)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Forbidden',
+        status: 403,
       });
     if (exception instanceof CommitOutcomeUnknownError) {
       // The write may or may not have landed. Retrying is safe only for

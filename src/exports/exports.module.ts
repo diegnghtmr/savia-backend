@@ -3,10 +3,7 @@ import { ExportsController } from './exports.controller.js';
 import { EXPORTS_PORT } from './export.port.js';
 import { ExportService } from './export.service.js';
 import { PostgresExportAdapter } from './postgres-export.adapter.js';
-import {
-  ARTIFACT_STORAGE,
-  type ArtifactStorage,
-} from '../platform/artifact-storage.port.js';
+import { JOB_WRITER, type JobWriter } from '../platform/job-writer.port.js';
 import { PlatformModule } from '../platform/platform.module.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
@@ -21,14 +18,14 @@ import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.ada
         PgTransaction,
         PostgresExportAdapter,
         PostgresIdempotencyAdapter,
-        ARTIFACT_STORAGE,
+        JOB_WRITER,
       ],
       useFactory: (
         tx: PgTransaction,
         store: PostgresExportAdapter,
         idem: PostgresIdempotencyAdapter,
-        storage: ArtifactStorage,
-      ) => new ExportService(tx, store, idem, storage),
+        jobs: JobWriter,
+      ) => new ExportService(tx, store, idem, jobs),
     },
     { provide: EXPORTS_PORT, useExisting: ExportService },
   ],

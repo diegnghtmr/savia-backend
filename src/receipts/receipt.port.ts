@@ -68,6 +68,7 @@ export interface ReceiptStore {
     id: string,
     command: ReceiptUploadCommand,
     storagePath: string,
+    jobId?: string,
   ): Promise<Receipt>;
   find(
     client: TransactionClient,
@@ -84,6 +85,18 @@ export interface ReceiptStore {
     workspaceId: string,
     id: string,
     transactionId: string,
+  ): Promise<boolean>;
+  findOcrBinding(
+    client: TransactionClient,
+    workspaceId: string,
+    receiptId: string,
+    jobId: string,
+  ): Promise<ReceiptOcrBinding | null>;
+  updateOcrResultCas(
+    client: TransactionClient,
+    workspaceId: string,
+    receiptId: string,
+    fields: ExtractedReceiptFields,
   ): Promise<boolean>;
 }
 
@@ -153,3 +166,25 @@ export interface ReceiptsPort {
 }
 
 export type ReceiptTransactionCreateOutcome = TransactionCreateOutcome;
+
+export interface ReceiptOcrJobPayload {
+  readonly receiptId: string;
+  readonly storagePath: string;
+}
+
+export interface ReceiptOcrBinding {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly storagePath: string;
+  readonly jobId: string;
+  readonly createdBy: string;
+  readonly status: string;
+  readonly transactionId: string | null;
+}
+
+export interface ExtractedReceiptFields {
+  readonly merchant: ReceiptField | null;
+  readonly date: ReceiptField | null;
+  readonly currency: ReceiptField | null;
+  readonly total: ReceiptField | null;
+}

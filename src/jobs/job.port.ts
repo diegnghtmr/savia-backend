@@ -18,6 +18,9 @@ export const JOB_TYPES = [
   'import_commit',
   'import_rollback',
   'balance_forecast',
+  'report_run',
+  'export_job',
+  'receipt_ocr',
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];
 
@@ -31,6 +34,7 @@ export interface Job {
   readonly createdAt: string;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+  readonly [key: string]: unknown;
 }
 
 export const JOB_READ_OUTCOMES = {
@@ -80,6 +84,42 @@ export interface JobWriter {
     status: Extract<JobStatus, 'completed' | 'failed'>,
     resultResourceId: string | null,
     error: Record<string, unknown> | null,
+  ): Promise<Job>;
+
+  createQueuedJob(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    type: JobType,
+    payload?: Record<string, unknown> | null,
+  ): Promise<Job>;
+
+  transitionToProcessing(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    attemptCount?: number,
+  ): Promise<Job>;
+
+  completeJob(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    resultResourceId?: string | null,
+  ): Promise<Job>;
+
+  failJob(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
+  ): Promise<Job>;
+
+  deadLetter(
+    client: TransactionClient,
+    workspaceId: string,
+    jobId: string,
+    error: Record<string, unknown>,
   ): Promise<Job>;
 }
 

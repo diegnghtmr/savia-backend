@@ -1,0 +1,1 @@
+export const IMPORT_COMMIT_BATCH_SIZE = 2_500;

@@ -4,6 +4,7 @@ import { ImportsController } from './imports.controller.js';
 import { IMPORTS_PORT } from './import.port.js';
 import {
   IMPORT_COMMIT_CALLBACK_TIMEOUT_MS,
+  IMPORT_COMMIT_STATEMENT_TIMEOUT_MS,
   ImportService,
 } from './import.service.js';
 import { PostgresImportAdapter } from './postgres-import.adapter.js';
@@ -27,6 +28,7 @@ import type { LedgerWriter } from '../platform/ledger-writer.port.js';
           // bounded set-based statements; keep their deliberate synchronous
           // budget local to the import commit path.
           callbackTimeoutMs: IMPORT_COMMIT_CALLBACK_TIMEOUT_MS,
+          statementTimeoutMs: IMPORT_COMMIT_STATEMENT_TIMEOUT_MS,
         }),
     },
     {

@@ -47,7 +47,7 @@ export class JoseJwtVerifier {
       if (typeof payload.sub !== 'string' || payload.sub.trim() === '') {
         throw new IdentityVerificationError();
       }
-      return { subject: payload.sub };
+      return { subject: payload.sub, authMethod: 'session' };
     } catch (error) {
       if (error instanceof IdentityVerificationError) throw error;
       throw new IdentityVerificationError();

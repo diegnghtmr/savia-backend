@@ -34,6 +34,29 @@ export interface ImportTransaction {
     callback: (client: TransactionClient) => Promise<T>,
   ): Promise<T>;
 }
+export { IMPORT_COMMIT_BATCH_SIZE } from '../platform/import-batch-policy.js';
+/**
+ * Maximum single SQL statement latency for a 2,500-row batch insert was measured
+ * at ~140 ms (5,000 ledger_postings unnest rows). A tight 2,000 ms per-statement
+ * cap provides a >14x safety margin against CI runner disk stalls without leaving
+ * the database unguarded against runaway queries.
+ */
+export const IMPORT_COMMIT_STATEMENT_TIMEOUT_MS = 2_000;
+
+/**
+ * Callback budget derivation for maximum 10,000-row import:
+ * - 10,000 rows chunked at IMPORT_COMMIT_BATCH_SIZE (2,500 rows) = 4 batches.
+ * - Measured per-batch SQL execution: ~110 ms (transactions) + ~140 ms (postings)
+ *   + ~15 ms (findExistingBatch) = ~265 ms.
+ * - In-memory parsing and row mapping: ~15 ms per batch.
+ * - Under heavy CI runner load with shared disk I/O, we budget 1,000 ms per batch.
+ * - Fixed overhead (advisory locks, job status transitions, terminal idempotency): 1,000 ms.
+ *
+ * Arithmetic:
+ *   4 batches * 1,000 ms/batch + 1,000 ms overhead = 5,000 ms.
+ *
+ * This provides >4.4x safety headroom above the measured 1,120 ms callback duration.
+ */
 export const IMPORT_COMMIT_CALLBACK_TIMEOUT_MS = 5_000;
 class ImportValidationError extends Error {}
 

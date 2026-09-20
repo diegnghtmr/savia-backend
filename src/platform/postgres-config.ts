@@ -16,6 +16,17 @@ export class PostgresConfig {
     return PostgresConfig.fromUrl(environment.DATABASE_URL, environment);
   }
 
+  public static poolMaxFromEnvironment(
+    environment: NodeJS.ProcessEnv = {},
+  ): number {
+    return readPositiveInteger(
+      environment.DATABASE_POOL_MAX,
+      4,
+      'DATABASE_POOL_MAX',
+      32,
+    );
+  }
+
   public static fromUrl(
     connectionString: string | undefined,
     environment: NodeJS.ProcessEnv = {},
@@ -25,12 +36,7 @@ export class PostgresConfig {
     const url = parsePostgresUrl(connectionString);
     return new PostgresConfig(
       url.toString(),
-      readPositiveInteger(
-        environment.DATABASE_POOL_MAX,
-        4,
-        'DATABASE_POOL_MAX',
-        32,
-      ),
+      PostgresConfig.poolMaxFromEnvironment(environment),
       readPositiveInteger(
         environment.DATABASE_CHECKOUT_TIMEOUT_MS,
         1_000,
