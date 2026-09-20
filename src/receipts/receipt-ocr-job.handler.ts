@@ -13,12 +13,14 @@ import type {
 } from '../platform/ocr-engine.port.js';
 import type { ArtifactStorage } from '../platform/artifact-storage.port.js';
 import {
+  RECEIPT_STATUSES,
   type ExtractedReceiptFields,
   type ReceiptOcrBinding,
   type ReceiptOcrJobPayload,
   type ReceiptStore,
 } from './receipt.port.js';
 import { extractReceiptFields } from './receipt-field-extractor.js';
+import { validateReceiptImage } from './receipt-image-guard.js';
 import { ReceiptInvalidStoragePathError } from './receipt-invalid-storage-path.error.js';
 
 export class ReceiptOcrPayloadError extends Error {
@@ -32,6 +34,13 @@ export class ReceiptOcrPayloadError extends Error {
     super(detail);
     this.name = 'ReceiptOcrPayloadError';
   }
+}
+
+function isAlreadyConfirmed(binding: ReceiptOcrBinding): boolean {
+  return (
+    binding.transactionId !== null ||
+    binding.status === RECEIPT_STATUSES.CONFIRMED
+  );
 }
 
 function validateStoragePath(
@@ -117,6 +126,12 @@ export class ReceiptOcrJobHandler
         'Receipt OCR binding not found (orphaned job).',
       );
     }
+    if (isAlreadyConfirmed(binding)) {
+      this.logger.log(
+        `receipt_ocr_superseded: job ${context.jobId} workspace ${context.workspaceId}`,
+      );
+      return binding;
+    }
     validateStoragePath(
       binding.storagePath,
       context.workspaceId,
@@ -135,6 +150,12 @@ export class ReceiptOcrJobHandler
     signal: AbortSignal,
   ): Promise<Buffer> {
     void timeoutMs;
+    if (isAlreadyConfirmed(computed)) {
+      this.logger.log(
+        `receipt_ocr_superseded: job ${context.jobId} workspace ${context.workspaceId}`,
+      );
+      return Buffer.alloc(0);
+    }
     this.logger.log(
       `receipt_ocr_download: job ${context.jobId} workspace ${context.workspaceId}`,
     );
@@ -147,9 +168,21 @@ export class ReceiptOcrJobHandler
     timeoutMs: number,
     signal: AbortSignal,
   ): Promise<ExtractedReceiptFields> {
+    if (downloaded.length === 0) {
+      this.logger.log(
+        `receipt_ocr_superseded: job ${context.jobId} workspace ${context.workspaceId}`,
+      );
+      return {
+        merchant: null,
+        date: null,
+        currency: null,
+        total: null,
+      };
+    }
     this.logger.log(
       `receipt_ocr_recognize: job ${context.jobId} workspace ${context.workspaceId}`,
     );
+    validateReceiptImage(downloaded);
     const result: OcrEngineResult = await this.ocrEngine.recognize(downloaded, {
       timeoutMs,
       signal,
@@ -166,6 +199,7 @@ export class ReceiptOcrJobHandler
       client,
       context.workspaceId,
       context.payload.receiptId,
+      context.jobId,
       computed,
     );
     if (!updated) {

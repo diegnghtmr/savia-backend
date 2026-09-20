@@ -1,6 +1,15 @@
 // Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { NestFactory } from '@nestjs/core';
 
 import { WorkerModule } from '../../src/worker.module.js';
@@ -17,6 +26,7 @@ import {
 import { PgmqJobQueueAdapter } from '../../src/platform/pgmq-job-queue.adapter.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
+import * as tesseractAdapter from '../../src/platform/system-tesseract.adapter.js';
 import { WorkerConfig } from '../../src/platform/worker-config.js';
 import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 
@@ -362,6 +372,23 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
   });
 
   describe('Worker lifecycle and shutdown drain', () => {
+    beforeEach(() => {
+      // This suite exercises the worker runtime's claim/RLS/shutdown-drain
+      // behavior through a real WorkerModule application context, which
+      // imports ReceiptWorkerModule and therefore runs the real OCR startup
+      // preflight on init. Stub it here so this suite does not depend on the
+      // host having the tesseract "spa" language pack installed (CI installs
+      // it; local dev machines may not) — OCR language pack coverage belongs
+      // to the OCR-specific test suites, not this one.
+      vi.spyOn(tesseractAdapter, 'runOcrStartupPreflight').mockResolvedValue(
+        undefined,
+      );
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     it('drains in-flight job during application shutdown before closing the pool, completing the job and acking its message', async () => {
       let releaseCompute: () => void = () => {};
       const computeBlocked = new Promise<void>((resolve) => {

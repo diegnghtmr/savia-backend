@@ -23,6 +23,22 @@ const ACTOR_ID = '00000000-0000-0000-0000-000000000003';
 const RECEIPT_ID = '00000000-0000-0000-0000-000000000004';
 const STORAGE_PATH = `workspaces/${WS_ID}/receipts/${RECEIPT_ID}/photo.jpg`;
 
+function validPng(width = 80, height = 60): Buffer {
+  const buf = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buf, 0);
+  buf.writeUInt32BE(13, 8);
+  buf.write('IHDR', 12, 'ascii');
+  buf.writeUInt32BE(width, 16);
+  buf.writeUInt32BE(height, 20);
+  buf[24] = 8;
+  buf[25] = 2;
+  buf[26] = 0;
+  buf[27] = 0;
+  buf[28] = 0;
+  buf.writeUInt32BE(0x12345678, 29);
+  return buf;
+}
+
 const EXTRACTED_FIELDS: ExtractedReceiptFields = {
   merchant: { value: 'Store', confidence: 0.95 },
   date: { value: '2026-09-15', confidence: 0.9 },
@@ -89,11 +105,13 @@ describe('ReceiptCasPersist', () => {
       client,
       WS_ID,
       RECEIPT_ID,
+      JOB_ID,
       EXTRACTED_FIELDS,
     );
 
     expect(updated).toBe(true);
     expect(sql).toMatch(/transaction_id is null/i);
+    expect(sql).toMatch(/job_id = \$3::uuid/i);
     expect(sql).toContain("status in ('uploaded', 'processing')");
   });
 
@@ -172,7 +190,7 @@ describe('ReceiptCasPersist', () => {
       status: 'uploaded',
       transactionId: null,
     });
-    const downloadFn = vi.fn().mockResolvedValue(Buffer.from('image-bytes'));
+    const downloadFn = vi.fn().mockResolvedValue(validPng());
     const recognizeFn = vi.fn().mockResolvedValue({
       lines: [],
       tokens: [],
@@ -287,15 +305,17 @@ describe('ReceiptCasPersist', () => {
     recognizeFn.mockClear();
     casFn.mockClear();
     vi.mocked(mockJobWriter.completeJob!).mockClear();
+    vi.mocked(mockQueue.ack).mockClear();
 
-    await runner.processMessage(queueMessage());
+    const redelivered = await runner.processMessage(queueMessage());
 
+    expect(redelivered).toBe(true);
+    expect(mockQueue.ack).toHaveBeenCalledTimes(1);
     expect(computeFn).not.toHaveBeenCalled();
     expect(downloadFn).not.toHaveBeenCalled();
     expect(recognizeFn).not.toHaveBeenCalled();
     expect(casFn).not.toHaveBeenCalled();
     expect(mockJobWriter.completeJob).not.toHaveBeenCalled();
-    expect(mockQueue.ack).toHaveBeenCalled();
   });
 
   it('CAS retry before T2 commits: a failed completeJob rolls back CAS so the next attempt can persist again', async () => {
@@ -368,7 +388,7 @@ describe('ReceiptCasPersist', () => {
     const handler = new ReceiptOcrJobHandler(
       adapter,
       {
-        download: vi.fn().mockResolvedValue(Buffer.from('image-bytes')),
+        download: vi.fn().mockResolvedValue(validPng()),
       } as unknown as ArtifactStorage,
       {
         recognize: vi.fn().mockResolvedValue({
