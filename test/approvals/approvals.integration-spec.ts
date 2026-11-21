@@ -1,4 +1,4 @@
-// Migrations under test: 202609060001_approvals.sql, 202609170004_approval_execution.sql
+// Migrations under test: 202609060001_approvals.sql, 202609170004_approval_execution.sql, 202609170010_agent_approval_creator.sql
 import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import {
@@ -15,6 +15,7 @@ import {
 } from '../../src/approvals/approval.port.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { createTransactionCommand } from '../../src/ledger/transaction-command.js';
+import { createTransferCommand } from '../../src/ledger/transfer-command.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 
@@ -200,6 +201,8 @@ describe('Approvals integration contract and endpoint suite', () => {
 
     it.each([
       { mode: 'valid', currency: 'USD', status: 200 },
+      { mode: 'transfer', currency: 'USD', status: 200 },
+      { mode: 'other admin', currency: 'USD', status: 403 },
       { mode: 'expired', currency: 'USD', status: 409 },
       { mode: 'currency mismatch', currency: 'EUR', status: 422 },
       { mode: 'creator lost write access', currency: 'USD', status: 403 },
@@ -211,22 +214,35 @@ describe('Approvals integration contract and endpoint suite', () => {
           'x-workspace-id': workspace1Id,
           'idempotency-key': randomUUID(),
         };
-        const account = await application.inject({
-          method: 'POST',
-          url: '/v1/accounts',
-          headers,
-          payload: { name: 'Confirmation test', type: 'cash', currency: 'USD' },
-        });
-        expect(account.statusCode).toBe(201);
-        const accountId = (JSON.parse(account.payload) as { id: string }).id;
-        const args = createTransactionCommand({
-          type: 'expense',
-          accountId,
-          amount: { amountMinor: '25', currency },
-          occurredAt: '2026-01-02T00:00:00Z',
-        });
+        const account = async (name: string) => {
+          const response = await application.inject({
+            method: 'POST',
+            url: '/v1/accounts',
+            headers: { ...headers, 'idempotency-key': randomUUID() },
+            payload: { name, type: 'cash', currency: 'USD' },
+          });
+          expect(response.statusCode).toBe(201);
+          return (JSON.parse(response.payload) as { id: string }).id;
+        };
+        const accountId = await account('Confirmation test');
+        const transfer = mode === 'transfer';
+        const amount = { amountMinor: '25', currency };
+        const occurredAt = '2026-01-02T00:00:00Z';
+        const args = transfer
+          ? createTransferCommand({
+              sourceAccountId: accountId,
+              destinationAccountId: await account('Destination'),
+              amount,
+              occurredAt,
+            })
+          : createTransactionCommand({
+              type: 'expense',
+              accountId,
+              amount,
+              occurredAt,
+            });
         const created = await port().createApproval(editorId, workspace1Id, {
-          toolName: 'create_transaction',
+          toolName: transfer ? 'create_transfer' : 'create_transaction',
           arguments: { ...args },
           preview: { arguments: args },
           channel: 'agent',
@@ -250,7 +266,13 @@ describe('Approvals integration contract and endpoint suite', () => {
           application.inject({
             method: 'POST',
             url: `/v1/approvals/${id}/confirm`,
-            headers,
+            headers: {
+              ...headers,
+              authorization:
+                mode === 'other admin'
+                  ? 'Bearer admin-token'
+                  : 'Bearer editor-token',
+            },
             payload: { argumentsHash },
           });
         try {
@@ -269,7 +291,9 @@ describe('Approvals integration contract and endpoint suite', () => {
             expect(JSON.parse(result.payload)).toMatchObject({ status });
           }
           const transactions = await admin.query(
-            'select created_by from public.transactions where account_id = $1',
+            transfer
+              ? 'select created_by from public.transfers where source_account_id = $1'
+              : 'select created_by from public.transactions where account_id = $1',
             [accountId],
           );
           expect(transactions.rows).toEqual(
@@ -287,6 +311,33 @@ describe('Approvals integration contract and endpoint suite', () => {
                     : 'pending',
             },
           });
+          if (mode === 'other admin') {
+            expect(stored).toEqual({ kind: 'ok', approval: created.approval });
+            const session = await admin.connect();
+            try {
+              await beginClaim(session, adminId);
+              await expect(
+                session.query(
+                  "update public.approvals set status = 'approved', decided_by = $2, decided_at = now() where id = $1",
+                  [id, adminId],
+                ),
+              ).rejects.toMatchObject({ code: '42501' });
+            } finally {
+              await session.query('rollback');
+              session.release();
+            }
+            const reject = await application.inject({
+              method: 'POST',
+              url: `/v1/approvals/${id}/reject`,
+              headers: { ...headers, authorization: 'Bearer admin-token' },
+              payload: { argumentsHash },
+            });
+            expect(reject.statusCode).toBe(200);
+            expect(JSON.parse(reject.payload)).toEqual({
+              ...created.approval,
+              status: 'rejected',
+            });
+          }
         } finally {
           if (mode === 'creator lost write access') await changeRole('editor');
         }

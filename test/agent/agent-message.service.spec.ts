@@ -110,7 +110,14 @@ describe('tool rounds', () => {
     const events: Array<{ type: string; data: Record<string, unknown> }> = [];
     const listAccounts = vi.fn(async () => result);
     const validateTransaction = vi.fn(() => null);
-    const createApproval = vi.fn();
+    const validateTransfer = vi.fn(() => ({
+      sourceAccountId: workspace,
+      destinationAccountId: conversation,
+      amount: { amountMinor: '25', currency: 'USD' },
+      occurredAt: '2026-01-02T00:00:00.000Z',
+    }));
+    const canUseAccount = vi.fn(async () => true);
+    const createApproval = vi.fn(async () => 'approval');
     let turns = 0;
     const stream = vi.fn<AgentProviderPort['stream']>(async function* () {
       if (turns++ === 0 || repeat) {
@@ -130,7 +137,8 @@ describe('tool rounds', () => {
         listAccounts,
         listRecentTransactions: vi.fn(),
         validateTransaction,
-        canUseAccount: vi.fn(),
+        validateTransfer,
+        canUseAccount,
         createApproval,
       },
     ).execute(
@@ -147,6 +155,8 @@ describe('tool rounds', () => {
       stream,
       listAccounts,
       validateTransaction,
+      validateTransfer,
+      canUseAccount,
       createApproval,
       events,
     };
@@ -162,6 +172,7 @@ describe('tool rounds', () => {
       'list_accounts',
       'list_recent_transactions',
       'create_transaction',
+      'create_transfer',
     ]);
     expect(stream.mock.calls[1]?.[3]?.history?.at(-1)).toEqual({
       role: 'tool',
@@ -189,7 +200,15 @@ describe('tool rounds', () => {
 
   it.each([
     ['list_accounts', { workspaceId: conversation, subject: conversation }],
-    ['create_transaction', { amount: 'invalid' }],
+    [
+      'create_transaction',
+      {
+        type: 'expense',
+        accountId: workspace,
+        amount: { amountMinor: 'invalid', currency: 'USD' },
+        occurredAt: '2026-01-02T00:00:00Z',
+      },
+    ],
   ] as const)(
     'returns a tool error for invalid %s arguments without side effects',
     async (name, args) => {
@@ -220,6 +239,67 @@ describe('tool rounds', () => {
         toolName: name,
         callId: 'call_1',
         ok: false,
+      });
+    },
+  );
+
+  it.each(['valid', 'wrong type', 'missing field', 'extra field'] as const)(
+    'handles a %s transfer proposal',
+    async (mode) => {
+      const input = {
+        sourceAccountId: workspace,
+        ...(mode !== 'missing field' && { destinationAccountId: conversation }),
+        amount: {
+          amountMinor: mode === 'wrong type' ? 25 : '25',
+          currency: 'USD',
+        },
+        occurredAt: '2026-01-02T00:00:00Z',
+        ...(mode === 'extra field' && { workspaceId: conversation }),
+      };
+      const {
+        stream,
+        validateTransfer,
+        canUseAccount,
+        createApproval,
+        events,
+      } = await run('create_transfer', input);
+      if (mode !== 'valid') {
+        expect(stream.mock.calls[1]?.[3]?.history?.at(-1)).toMatchObject({
+          role: 'tool',
+          content: '{"error":"Invalid tool arguments"}',
+        });
+        expect(validateTransfer).not.toHaveBeenCalled();
+        expect(canUseAccount).not.toHaveBeenCalled();
+        expect(createApproval).not.toHaveBeenCalled();
+        return;
+      }
+      expect(validateTransfer).toHaveBeenCalledExactlyOnceWith(input);
+      expect(canUseAccount.mock.calls).toEqual([
+        [{ subject, workspaceId: workspace }, workspace],
+        [{ subject, workspaceId: workspace }, conversation],
+      ]);
+      expect(createApproval).toHaveBeenCalledExactlyOnceWith(
+        { subject, workspaceId: workspace },
+        expect.objectContaining({
+          toolName: 'create_transfer',
+          channel: 'agent',
+          riskClass: 'financial_write',
+          preview: expect.objectContaining({
+            sourceAccountId: workspace,
+            destinationAccountId: conversation,
+            amount: '25',
+            currency: 'USD',
+          }),
+        }),
+      );
+      expect(stream).toHaveBeenCalledOnce();
+      expect(events.at(-2)).toEqual({
+        type: 'approval_required',
+        data: {
+          toolName: 'create_transfer',
+          callId: 'call_1',
+          approvalId: 'approval',
+        },
       });
     },
   );

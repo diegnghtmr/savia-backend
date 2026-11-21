@@ -19,6 +19,11 @@ import {
 } from './ledger/transaction-command.js';
 import { TransactionSplitsUnsupportedError } from './ledger/splits-guard.js';
 import {
+  createTransferCommand,
+  TransferCommandValidationError,
+} from './ledger/transfer-command.js';
+import { TransferService } from './ledger/transfer.service.js';
+import {
   LEDGER_WRITER,
   type LedgerWriter,
 } from './platform/ledger-writer.port.js';
@@ -49,6 +54,7 @@ import { AgentConversationsModule } from './agent/agent-conversations.module.js'
 import {
   AGENT_TOOL_PAGE_LIMIT,
   CREATE_TRANSACTION_TOOL,
+  CREATE_TRANSFER_TOOL,
 } from './agent/agent-tools.js';
 import { CliDeviceModule } from './cli-device/cli-device.module.js';
 
@@ -65,9 +71,37 @@ function validateAgentTransaction(input: unknown) {
   }
 }
 
+function validateAgentTransfer(input: unknown) {
+  try {
+    return createTransferCommand(input);
+  } catch (error) {
+    if (error instanceof TransferCommandValidationError) return null;
+    throw error;
+  }
+}
+
+function approvalOutcome(
+  result: unknown,
+): Awaited<ReturnType<ApprovalExecutor>> {
+  if (!result || typeof result !== 'object' || !('kind' in result))
+    throw new Error('Invalid ledger outcome');
+  switch (result.kind) {
+    case TRANSACTION_CREATE_OUTCOMES.CREATED:
+      return 'ok';
+    case TRANSACTION_CREATE_OUTCOMES.FORBIDDEN:
+      return 'forbidden';
+    case TRANSACTION_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT:
+    case TRANSACTION_CREATE_OUTCOMES.RECEIPT_ALREADY_LINKED:
+    case TRANSACTION_CREATE_OUTCOMES.REPLAYED:
+      return 'conflict';
+    default:
+      return 'invalid_action';
+  }
+}
+
 const approvals = ApprovalsModule.withExecutors([LedgerModule], {
-  inject: [LEDGER_WRITER],
-  useFactory: (writer: LedgerWriter) => {
+  inject: [LEDGER_WRITER, TransferService],
+  useFactory: (writer: LedgerWriter, transfers: TransferService) => {
     const create: ApprovalExecutor = async (
       client,
       subject,
@@ -85,22 +119,31 @@ const approvals = ApprovalsModule.withExecutors([LedgerModule], {
         command,
         `agent:${approvalId}`,
       );
-      if (!result || typeof result !== 'object' || !('kind' in result))
-        throw new Error('Invalid ledger outcome');
-      switch (result.kind) {
-        case TRANSACTION_CREATE_OUTCOMES.CREATED:
-          return 'ok';
-        case TRANSACTION_CREATE_OUTCOMES.FORBIDDEN:
-          return 'forbidden';
-        case TRANSACTION_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT:
-        case TRANSACTION_CREATE_OUTCOMES.RECEIPT_ALREADY_LINKED:
-        case TRANSACTION_CREATE_OUTCOMES.REPLAYED:
-          return 'conflict';
-        default:
-          return 'invalid_action';
-      }
+      return approvalOutcome(result);
     };
-    return new Map([[CREATE_TRANSACTION_TOOL, create]]);
+    const transfer: ApprovalExecutor = async (
+      client,
+      subject,
+      workspaceId,
+      approvalId,
+      args,
+    ) => {
+      const command = validateAgentTransfer(args);
+      if (!command) return 'invalid_action';
+      return approvalOutcome(
+        await transfers.createWithin(
+          client,
+          subject,
+          workspaceId,
+          command,
+          `agent:${approvalId}`,
+        ),
+      );
+    };
+    return new Map<string, ApprovalExecutor>([
+      [CREATE_TRANSACTION_TOOL, create],
+      [CREATE_TRANSFER_TOOL, transfer],
+    ]);
   },
 });
 
@@ -159,6 +202,7 @@ const approvals = ApprovalsModule.withExecutors([LedgerModule], {
             return result.kind === 'ok' ? result.page : undefined;
           },
           validateTransaction: validateAgentTransaction,
+          validateTransfer: validateAgentTransfer,
           canUseAccount: async ({ subject, workspaceId }, accountId) =>
             (await accounts.read(subject, workspaceId, accountId)).kind ===
             'ok',

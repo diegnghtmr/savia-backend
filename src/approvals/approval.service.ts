@@ -237,15 +237,8 @@ export class ApprovalService implements ApprovalsPort {
     if (!execute || !args || typeof args !== 'object' || Array.isArray(args))
       throw new ApprovalDecisionRollbackError('conflict');
     const canonical = canonicalArguments(args as ApprovalAction['arguments']);
-    // Deciding is authorized as the approver; claiming and executing are
-    // authorized as the original creator, on the same transaction/client.
-    const creator = approval.createdBy;
-    const switchSubject = async (subject: string) => {
-      await client.query("select set_config('app.subject_id', $1, true)", [
-        subject.toLowerCase(),
-      ]);
-    };
-    if (creator !== approver) await switchSubject(creator);
+    // The transaction already runs as the confirming creator. The claim
+    // rechecks and locks their current workspace membership before writing.
     const result = await this.executeApprovedActionWithin(
       client,
       approval.workspaceId,
@@ -255,7 +248,7 @@ export class ApprovalService implements ApprovalsPort {
       (transaction, snapshot) =>
         execute(
           transaction,
-          creator,
+          approver,
           approval.workspaceId,
           approval.id,
           snapshot,
@@ -265,7 +258,6 @@ export class ApprovalService implements ApprovalsPort {
       throw new ApprovalDecisionRollbackError(result.kind);
     if (result.result !== 'ok')
       throw new ApprovalDecisionRollbackError(result.result);
-    if (creator !== approver) await switchSubject(approver);
   }
 
   public async getApproval(
@@ -359,10 +351,25 @@ export class ApprovalService implements ApprovalsPort {
     try {
       return await this.tx.run(subject, async (client) => {
         const role = await this.store.readActiveRole(client, workspaceId);
-        if (!['owner', 'administrator'].includes(role ?? '')) {
+        const administrator = role === 'owner' || role === 'administrator';
+        const confirming = targetStatus === 'approved';
+        if (!administrator && !(confirming && role === 'editor')) {
           return { kind: APPROVAL_OUTCOMES.FORBIDDEN };
         }
 
+        const approval = await this.store.findApprovalById(
+          client,
+          workspaceId,
+          approvalId,
+        );
+        const agentConfirmation = confirming && approval?.channel === 'agent';
+        if (
+          agentConfirmation
+            ? approval.createdBy !== subject.toLowerCase()
+            : !administrator
+        ) {
+          return { kind: APPROVAL_OUTCOMES.FORBIDDEN };
+        }
         const existing = await this.idempotency.read(
           client,
           subject,
@@ -378,11 +385,6 @@ export class ApprovalService implements ApprovalsPort {
           };
         }
 
-        const approval = await this.store.findApprovalById(
-          client,
-          workspaceId,
-          approvalId,
-        );
         if (!approval) {
           return { kind: APPROVAL_OUTCOMES.NOT_FOUND };
         }

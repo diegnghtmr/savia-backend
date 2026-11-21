@@ -34,6 +34,15 @@ export interface Money {
   readonly currency: string;
 }
 
+export interface CreateTransferCommand {
+  readonly sourceAccountId: string;
+  readonly destinationAccountId: string;
+  readonly amount: Money;
+  readonly occurredAt: string;
+  readonly fee?: Money;
+  readonly description?: string | null;
+}
+
 export interface CreateTransactionCommand {
   readonly type: TransactionType;
   readonly accountId: string;
