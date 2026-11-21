@@ -3,6 +3,40 @@ import { JOB_TYPES } from '../../src/jobs/job.port.js';
 import { JobRunner } from '../../src/platform/job-runner.js';
 import { WorkerConfig } from '../../src/platform/worker-config.js';
 
+it('runs each scheduled sweep on its own timer without overlapping or rearming on stop', async () => {
+  vi.useFakeTimers();
+  const slow = Promise.withResolvers<number>();
+  const recurring = vi.fn().mockReturnValue(slow.promise);
+  const budgets = vi.fn().mockResolvedValue(0);
+  const runner = Reflect.construct(JobRunner, [
+    { claim: vi.fn().mockResolvedValue([]) },
+    {},
+    {},
+    new WorkerConfig(1, 300, 1000, 1),
+    undefined,
+    undefined,
+    [{ sweep: recurring }, { sweep: budgets, intervalMs: 2000 }],
+  ]) as JobRunner;
+  try {
+    await runner.start();
+    await vi.advanceTimersByTimeAsync(3999);
+    expect(recurring).toHaveBeenCalledTimes(1);
+    expect(budgets).toHaveBeenCalledTimes(2);
+    expect(runner.activeJobsCount).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(budgets).toHaveBeenCalledTimes(3);
+  } finally {
+    const stopped = runner.stop();
+    slow.resolve(0);
+    await vi.advanceTimersByTimeAsync(3050);
+    await stopped;
+    vi.useRealTimers();
+  }
+  expect(recurring).toHaveBeenCalledTimes(1);
+  expect(budgets).toHaveBeenCalledTimes(3);
+  expect(runner.activeJobsCount).toBe(0);
+});
+
 it('S5 retains the six existing job types', () => {
   expect(
     JOB_TYPES.filter((t) => String(t) !== 'recurring_materialization'),

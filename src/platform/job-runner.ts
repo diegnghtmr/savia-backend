@@ -40,7 +40,14 @@ import { WorkerConfig } from './worker-config.js';
 export const JOB_SWEEP = Symbol('JobSweep');
 
 export interface JobSweep {
+  readonly intervalMs?: number;
   sweep(): Promise<number>;
+}
+
+interface SweepState {
+  readonly sweep: JobSweep;
+  timer?: NodeJS.Timeout;
+  inFlight: boolean;
 }
 
 const TERMINAL_JOB_STATUSES = {
@@ -161,8 +168,7 @@ export class JobRunner
   private isRunning = false;
   private isStopping = false;
   private pollTimer?: NodeJS.Timeout;
-  private sweepTimer?: NodeJS.Timeout;
-  private sweepInFlight = false;
+  private readonly sweeps: readonly SweepState[];
   private runningJobsCount = 0;
 
   public get activeJobsCount(): number {
@@ -190,9 +196,15 @@ export class JobRunner
     @Optional()
     handlers?: readonly JobHandler[] | JobHandler,
     @Optional() clock?: () => number,
-    @Optional() @Inject(JOB_SWEEP) private readonly jobSweep?: JobSweep,
+    @Optional() @Inject(JOB_SWEEP) sweeps?: JobSweep | readonly JobSweep[],
   ) {
     super();
+    const scheduled =
+      sweeps == null ? [] : Array.isArray(sweeps) ? sweeps : [sweeps];
+    this.sweeps = scheduled.map((sweep: JobSweep) => ({
+      sweep,
+      inFlight: false,
+    }));
     this.ocrSemaphore = new AsyncSemaphore(this.config.ocrConcurrency);
     this.clock = clock ?? (() => performance.now());
     const list =
@@ -314,26 +326,26 @@ export class JobRunner
     };
 
     void poll();
-    if (this.jobSweep) void this.pollSweep(this.jobSweep);
+    for (const state of this.sweeps) void this.pollSweep(state);
   }
 
-  private async pollSweep(sweep: JobSweep): Promise<void> {
-    if (!this.isRunning || this.sweepInFlight) return;
-    this.sweepInFlight = true;
+  private async pollSweep(state: SweepState): Promise<void> {
+    if (!this.isRunning || state.inFlight) return;
+    state.inFlight = true;
     this.runningJobsCount++;
     try {
-      await sweep.sweep();
+      await state.sweep.sweep();
     } catch {
       this.logger.warn(
         'Scheduled job sweep failed; it will retry on the next sweep.',
       );
     } finally {
-      this.sweepInFlight = false;
+      state.inFlight = false;
       this.runningJobsCount--;
       if (this.isRunning) {
-        this.sweepTimer = setTimeout(
-          () => void this.pollSweep(sweep),
-          this.config.pollIntervalMs,
+        state.timer = setTimeout(
+          () => void this.pollSweep(state),
+          state.sweep.intervalMs ?? this.config.pollIntervalMs,
         );
       }
     }
@@ -346,9 +358,9 @@ export class JobRunner
       clearTimeout(this.pollTimer);
       this.pollTimer = undefined;
     }
-    if (this.sweepTimer) {
-      clearTimeout(this.sweepTimer);
-      this.sweepTimer = undefined;
+    for (const state of this.sweeps) {
+      clearTimeout(state.timer);
+      state.timer = undefined;
     }
 
     const drainDeadline = Date.now() + this.config.drainTimeoutSeconds * 1_000;

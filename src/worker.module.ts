@@ -1,10 +1,16 @@
 import { Module } from '@nestjs/common';
+import { BudgetAlertSweep } from './budgets/budget-alert-sweep.js';
+import { PostgresBudgetAdapter } from './budgets/postgres-budget.adapter.js';
 import { ForecastJobHandler } from './forecasts/forecast-job.handler.js';
 import { ForecastWorkerModule } from './forecasts/forecast-worker.module.js';
 import { PostgresJobsAdapter } from './jobs/postgres-jobs.adapter.js';
 import { NotificationWriterModule } from './notifications/notification-writer.module.js';
 import { JOB_HANDLERS } from './platform/job-handler.port.js';
 import { JOB_SWEEP, JobRunner } from './platform/job-runner.js';
+import {
+  NOTIFICATION_WRITER,
+  type NotificationWriter,
+} from './platform/notification-writer.port.js';
 import { JOB_WRITER, type JobWriter } from './platform/job-writer.port.js';
 import { PgTransaction } from './platform/pg-transaction.js';
 import { PostgresIdempotencyAdapter } from './platform/postgres-idempotency.adapter.js';
@@ -51,7 +57,29 @@ import { PostgresOccurrenceAdapter } from './recurring/postgres-occurrence.adapt
       ) =>
         new RecurringJobSweep(transaction, store, jobs, config.queueTimeoutMs),
     },
-    { provide: JOB_SWEEP, useExisting: RecurringJobSweep },
+    {
+      provide: BudgetAlertSweep,
+      inject: [PgTransaction, NOTIFICATION_WRITER, WorkerConfig],
+      useFactory: (
+        transaction: PgTransaction,
+        notifications: NotificationWriter,
+        config: WorkerConfig,
+      ) =>
+        new BudgetAlertSweep(
+          transaction,
+          new PostgresBudgetAdapter(),
+          notifications,
+          config.queueTimeoutMs,
+        ),
+    },
+    {
+      provide: JOB_SWEEP,
+      inject: [RecurringJobSweep, BudgetAlertSweep],
+      useFactory: (
+        recurring: RecurringJobSweep,
+        budgetAlerts: BudgetAlertSweep,
+      ) => [recurring, budgetAlerts],
+    },
     {
       provide: RecurringJobHandler,
       inject: [PgTransaction, PostgresOccurrenceAdapter],

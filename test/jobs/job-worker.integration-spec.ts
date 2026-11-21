@@ -1,4 +1,5 @@
-// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql, 202609170008_recurring_job_type.sql, 202609170011_recurring_creator_lock.sql
+// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql, 202609170008_recurring_job_type.sql, 202609170011_recurring_creator_lock.sql, 202609170013_budget_alert_discovery.sql
+import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
   afterAll,
@@ -32,6 +33,11 @@ import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadl
 import { RecurringJobSweep } from '../../src/recurring/recurring-job-sweep.js';
 import { PostgresOccurrenceAdapter } from '../../src/recurring/postgres-occurrence.adapter.js';
 import { PostgresWorkspaceMemberAdapter } from '../../src/identity/postgres-workspace-member.adapter.js';
+import { PostgresTransactionAdapter } from '../../src/ledger/postgres-transaction.adapter.js';
+import { TransactionService } from '../../src/ledger/transaction.service.js';
+import { NotificationService } from '../../src/notifications/notification.service.js';
+import { PostgresNotificationAdapter } from '../../src/notifications/postgres-notification.adapter.js';
+import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -205,6 +211,167 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       await checkTableCannotBeRead('accounts');
       await checkTableCannotBeRead('workspaces');
     });
+  });
+
+  it('sends each reached budget threshold once, only to the active creator in the current period', async () => {
+    const day = (offset: number) =>
+      new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+    const category = id(8161);
+    const now = new Date().toISOString();
+    const budgets = [
+      [id(8171), 'Groceries', ownerA, day(-1), day(1), 1000],
+      [id(8172), 'Expired', ownerA, day(-5), day(-4), 1],
+      [id(8173), 'Viewer', viewerA, day(-1), day(1), 1],
+      [id(8174), 'No plan', ownerA, day(-1), day(1), 0],
+    ] as const;
+    const idempotency = new PostgresIdempotencyAdapter();
+    const ledger = new TransactionService(
+      transaction,
+      new PostgresTransactionAdapter(),
+      idempotency,
+    );
+    const notifications = new NotificationService(
+      transaction,
+      new PostgresNotificationAdapter(),
+      idempotency,
+    );
+    const list = async (subject: string) =>
+      (
+        await notifications.listNotifications(subject, {
+          subject,
+          limit: 50,
+          unreadOnly: false,
+        })
+      ).page.items;
+    const spend = async (
+      amountMinor: string,
+      status: 'draft' | 'confirmed' = 'confirmed',
+      occurredAt = now,
+    ) => {
+      const result = await ledger.create(
+        ownerA,
+        ws1Id,
+        {
+          type: 'expense',
+          accountId: id(8201),
+          amount: { currency: 'USD', amountMinor },
+          occurredAt,
+          categoryId: category,
+          status,
+        },
+        randomUUID(),
+      );
+      expect(result.kind).toBe('created');
+    };
+    await admin.query(
+      `insert into public.categories (id, workspace_id, name, kind, created_by)
+      values ($1,$2,'Budget alert test','expense',$3)`,
+      [category, ws1Id, ownerA],
+    );
+    for (const [budget, name, actor, start, end, planned] of budgets) {
+      await admin.query(
+        `insert into public.budgets (id, workspace_id, name, method, period_start, period_end, currency, created_by)
+        values ($1,$2,$3,'envelope',$4,$5,'USD',$6)`,
+        [budget, ws1Id, name, start, end, actor],
+      );
+      await admin.query(
+        `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor)
+        values ($1,$2,$3,$4)`,
+        [ws1Id, budget, category, planned],
+      );
+    }
+    await spend('1000', 'draft');
+    await spend('1000', 'confirmed', `${day(-4)}T00:00:00Z`);
+    await spend('799');
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    try {
+      const appRunner = app.get(JobRunner);
+      const sweep = async () => {
+        await appRunner.start();
+        await vi.waitFor(() => expect(appRunner.activeJobsCount).toBe(0));
+        await appRunner.stop();
+      };
+      await sweep();
+      expect(await list(ownerA)).toEqual([]);
+      await spend('1');
+      await sweep();
+      const warning = await list(ownerA);
+      expect(warning).toEqual([
+        expect.objectContaining({
+          type: 'budget_threshold_80',
+          title: 'Budget “Groceries” reached 80%',
+          read: false,
+          body: null,
+          actionUrl: null,
+        }),
+      ]);
+      await spend('200');
+      await sweep();
+      const reached = await list(ownerA);
+      expect(reached).toEqual([
+        warning[0],
+        expect.objectContaining({
+          type: 'budget_threshold_100',
+          title: 'Budget “Groceries” reached 100%',
+          read: false,
+          body: null,
+          actionUrl: null,
+        }),
+      ]);
+      await sweep();
+      expect(await list(ownerA)).toEqual(reached);
+      expect(await list(viewerA)).toEqual([]);
+      expect(await list(ownerB)).toEqual([]);
+    } finally {
+      await app.close();
+      preflight.mockRestore();
+    }
+  }, 10_000);
+
+  it('confines budget discovery to the worker function, with no worker table access', async () => {
+    const { rows } = await admin.query(`
+      select r as role, has_function_privilege(r, f.oid, 'EXECUTE') as execute,
+             has_any_column_privilege(r, 'public.budgets', 'SELECT') as read_budget,
+             f.proconfig as config
+      from pg_proc f cross join unnest(array['anon','authenticated','savia_application','savia_worker','service_role']) r
+      where f.oid = to_regprocedure('public.find_budget_alert_targets(date,uuid)') order by role`);
+    expect(rows).toEqual([
+      {
+        role: 'anon',
+        execute: false,
+        read_budget: false,
+        config: ['search_path=pg_catalog, public'],
+      },
+      {
+        role: 'authenticated',
+        execute: false,
+        read_budget: false,
+        config: ['search_path=pg_catalog, public'],
+      },
+      {
+        role: 'savia_application',
+        execute: false,
+        read_budget: true,
+        config: ['search_path=pg_catalog, public'],
+      },
+      {
+        role: 'savia_worker',
+        execute: true,
+        read_budget: false,
+        config: ['search_path=pg_catalog, public'],
+      },
+      {
+        role: 'service_role',
+        execute: false,
+        read_budget: false,
+        config: ['search_path=pg_catalog, public'],
+      },
+    ]);
   });
 
   describe('Probe job execution and creator RLS scoping', () => {
