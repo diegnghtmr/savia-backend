@@ -1,6 +1,6 @@
-// Migrations under test: 202609060006_mcp_grants.sql, 202609060014_mcp_grant_minting_policy.sql
+// Migrations under test: 202609060006_mcp_grants.sql, 202609060014_mcp_grant_minting_policy.sql, 202609170015_mcp_grant_enforcement.sql
 import { randomUUID } from 'node:crypto';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
@@ -18,6 +18,9 @@ import {
 import { AppModule } from '../../src/app.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { PostgresMcpGrantAdapter } from '../../src/mcp/postgres-mcp-grant.adapter.js';
+import type { McpGrant, McpGrantCall } from '../../src/mcp/mcp-grant.port.js';
+import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -148,6 +151,246 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
       other,
     ]);
     await admin?.end();
+  });
+
+  const fullWeek = Array.from({ length: 7 }, (_, day) => ({
+    dayOfWeek: day + 1,
+    startTime: '00:00',
+    endTime: '24:00',
+  }));
+  async function beginActor(client: PoolClient, subject = owner) {
+    await client.query('begin');
+    await client.query('set local role savia_application');
+    await client.query('select set_config($1, $2, true)', [
+      'app.subject_id',
+      subject,
+    ]);
+  }
+  const adapter = new PostgresMcpGrantAdapter();
+  const transferCall = (
+    grantId: string,
+    accountIds: readonly string[],
+  ): McpGrantCall => ({
+    grantId,
+    subject: owner,
+    workspaceId: workspace,
+    toolName: 'create_transfer',
+    accountIds,
+    amounts: [{ amountMinor: '9007199254740993', currency: 'USD' }],
+  });
+  const authorize = (client: PoolClient, call: McpGrantCall) =>
+    adapter.authorizeMcpGrant(client as unknown as TransactionClient, call);
+
+  it('round-trips grant fields on create, replay and list; omitted restrictions are empty', async () => {
+    const defaultGrant = await create();
+    expect(defaultGrant.statusCode).toBe(201);
+    expect(defaultGrant.json()).toMatchObject({
+      toolAllowlist: [],
+      schedule: [],
+    });
+    const key = randomUUID();
+    const restrictions = {
+      toolAllowlist: ['create_transfer'],
+      schedule: fullWeek,
+    };
+    const payload = body([workspace], restrictions);
+    const response = await create(payload, key);
+    expect(response.statusCode).toBe(201);
+    const grant = response.json<McpGrant>();
+    expect(grant).toMatchObject(restrictions);
+    expect((await create(payload, key)).json()).toEqual(grant);
+    const list = await request('GET', '/v1/mcp/grants');
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toEqual({
+      items: [defaultGrant.json(), grant],
+      pageInfo: { hasNextPage: false, nextCursor: null },
+    });
+  });
+
+  it('returns validation problems without inserting a grant or reserving the idempotency key', async () => {
+    const key = randomUUID();
+    const invalid = await create(
+      body([workspace], {
+        toolAllowlist: ['not_a_tool'],
+        schedule: [{ dayOfWeek: 1, startTime: '17:00', endTime: '09:00' }],
+      }),
+      key,
+    );
+    expect(invalid.statusCode).toBe(422);
+    expect(invalid.json()).toMatchObject({
+      title: 'MCP grant validation failed',
+      status: 422,
+      errors: [
+        { field: 'schedule', code: 'invalid-value' },
+        { field: 'toolAllowlist', code: 'unsupported' },
+      ],
+    });
+    expect((await request('GET', '/v1/mcp/grants')).json()).toEqual({
+      items: [],
+      pageInfo: { hasNextPage: false, nextCursor: null },
+    });
+    expect((await create(body([workspace]), key)).statusCode).toBe(201);
+  });
+
+  it('enforces subject, current role and membership, grant workspace, every account, and grant lifetime', async () => {
+    const destination = randomUUID();
+    await admin.query(
+      `insert into public.accounts
+      (id,workspace_id,name,type,currency,status,created_by)
+      values ($1,$2,'MCP destination','checking','USD','active',$3)`,
+      [destination, workspace, owner],
+    );
+    const restrictions = {
+      toolAllowlist: ['create_transfer', 'contribute_to_fund'],
+      schedule: fullWeek,
+      scopes: ['transactions:write'],
+      maxWriteAmount: { amountMinor: '9007199254740993', currency: 'USD' },
+    };
+    const granted = await created(
+      body([workspace], {
+        ...restrictions,
+        accountIds: [account, destination],
+      }),
+    );
+    const scoped = await created(
+      body([workspace], { ...restrictions, accountIds: [account] }),
+    );
+    const expired = await created(
+      body([workspace], {
+        ...restrictions,
+        expiresAt: '2000-01-01T00:00:00.000Z',
+      }),
+    );
+    const call = transferCall(granted.id, [account, destination]);
+    const client = await admin.connect();
+    const evaluate = async (override: Partial<typeof call>, actor = owner) => {
+      await beginActor(client, actor);
+      try {
+        return await authorize(client, { ...call, ...override });
+      } finally {
+        await client.query('rollback');
+      }
+    };
+    try {
+      expect(await evaluate({})).toBe(true);
+      expect(await evaluate({}, other)).toBe(false);
+      expect(await evaluate({ subject: other }, other)).toBe(false);
+      expect(await evaluate({ grantId: randomUUID() })).toBe(false);
+      expect(await evaluate({ grantId: scoped.id })).toBe(false);
+      expect(await evaluate({ grantId: expired.id })).toBe(false);
+      expect(await evaluate({ toolName: 'contribute_to_fund' })).toBe(false);
+      await admin.query(
+        `insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$2,'owner','active')`,
+        [foreignWorkspace, owner],
+      );
+      expect(await evaluate({ workspaceId: foreignWorkspace })).toBe(false);
+      expect(await evaluate({ accountIds: [account, outsideAccount] })).toBe(
+        false,
+      );
+      expect(await evaluate({ accountIds: [account, randomUUID()] })).toBe(
+        false,
+      );
+      await admin.query(
+        `update public.workspace_memberships set role = 'viewer' where workspace_id = $1 and profile_id = $2`,
+        [workspace, owner],
+      );
+      expect(await evaluate({})).toBe(false);
+      await admin.query(
+        `update public.workspace_memberships set status = 'suspended' where workspace_id = $1 and profile_id = $2`,
+        [workspace, owner],
+      );
+      expect(await evaluate({})).toBe(false);
+    } finally {
+      client.release();
+    }
+  });
+
+  it('uses the configured workspace timezone, denies invalid zones, and permits legacy read-only windows', async () => {
+    const {
+      rows: [zone],
+    } = await admin.query<{ name: string; day: number }>(`
+      select name, extract(isodow from timezone(name, now()))::integer as day
+        from unnest(array['Pacific/Kiritimati', 'Pacific/Honolulu']) as zones(name)
+       where extract(isodow from timezone(name, now())) <> extract(isodow from timezone('UTC', now()))
+       limit 1`);
+    expect(zone).toBeDefined();
+    const legacyShape = await created(
+      body([workspace], { schedule: fullWeek }),
+    );
+    const emptySchedule = await created();
+    const scheduled = await created(
+      body([workspace], {
+        schedule: [
+          { dayOfWeek: zone.day, startTime: '00:00', endTime: '24:00' },
+        ],
+      }),
+    );
+    const client = await admin.connect();
+    const canRead = async (id: string) => {
+      await beginActor(client);
+      try {
+        return await authorize(client, {
+          ...transferCall(id, [account]),
+          toolName: 'get_account_balance',
+          amounts: [],
+        });
+      } finally {
+        await client.query('rollback');
+      }
+    };
+    try {
+      expect(await canRead(legacyShape.id)).toBe(true);
+      expect(await canRead(emptySchedule.id)).toBe(false);
+      expect(await canRead(scheduled.id)).toBe(false);
+      await admin.query(
+        'update public.workspaces set timezone = $2 where id = $1',
+        [workspace, zone.name],
+      );
+      expect(await canRead(scheduled.id)).toBe(true);
+      await admin.query(
+        'update public.workspaces set timezone = $2 where id = $1',
+        [workspace, 'Not/A_Zone'],
+      );
+      expect(await canRead(legacyShape.id)).toBe(false);
+    } finally {
+      client.release();
+    }
+  });
+
+  it('serializes authorization with revocation and denies after revocation commits', async () => {
+    const grant = await created(body([workspace], { schedule: fullWeek }));
+    const client = await admin.connect();
+    const revoker = await admin.connect();
+    const call = {
+      ...transferCall(grant.id, [account]),
+      toolName: 'get_account_balance',
+      amounts: [],
+    };
+    try {
+      await beginActor(client);
+      expect(await authorize(client, call)).toBe(true);
+      await beginActor(revoker);
+      await revoker.query("set local lock_timeout = '100ms'");
+      await expect(
+        adapter.revoke(
+          revoker as unknown as TransactionClient,
+          owner,
+          grant.id,
+          new Date(),
+        ),
+      ).rejects.toMatchObject({ code: '55P03' });
+      await revoker.query('rollback');
+      await client.query('commit');
+      const revoked = await request('DELETE', `/v1/mcp/grants/${grant.id}`);
+      expect(revoked.statusCode).toBe(204);
+      await beginActor(client);
+      expect(await authorize(client, call)).toBe(false);
+    } finally {
+      await revoker.query('rollback');
+      await client.query('rollback');
+      revoker.release();
+      client.release();
+    }
   });
 
   it.each(scopes)('accepts valid scope %s', async (scope) => {

@@ -22,7 +22,18 @@ export interface Money {
   readonly amountMinor: string;
   readonly currency: string;
 }
-export interface CreateMcpGrantCommand {
+export interface McpWeeklyWindow {
+  readonly dayOfWeek: number;
+  readonly startTime: string;
+  readonly endTime: string;
+}
+
+export interface McpGrantRestrictions {
+  readonly toolAllowlist: readonly string[];
+  readonly schedule: readonly McpWeeklyWindow[];
+}
+
+export interface CreateMcpGrantCommand extends McpGrantRestrictions {
   readonly clientName: string;
   readonly scopes: readonly string[];
   readonly workspaceIds: readonly string[];
@@ -30,7 +41,7 @@ export interface CreateMcpGrantCommand {
   readonly maxWriteAmount: Money | null;
   readonly expiresAt: string | null;
 }
-export interface McpGrant {
+export interface McpGrant extends McpGrantRestrictions {
   readonly id: string;
   readonly clientName: string;
   readonly scopes: readonly string[];
@@ -59,6 +70,29 @@ export type McpGrantOutcome =
   | { readonly kind: typeof MCP_GRANT_OUTCOMES.FORBIDDEN }
   | { readonly kind: typeof MCP_GRANT_OUTCOMES.CONFLICT }
   | { readonly kind: typeof MCP_GRANT_OUTCOMES.INVALID };
+export interface McpGrantCall {
+  readonly subject: string;
+  readonly grantId: string;
+  readonly workspaceId: string;
+  readonly toolName: string;
+  // Resolve the complete footprint on the server, including accounts read by a
+  // tool and both sides of transfers. Never fill these from caller metadata.
+  readonly accountIds: readonly string[];
+  // Supply each distinct monetary effect once (a same-currency transfer is one
+  // amount). Use [] only for a tool with no resolved monetary effects.
+  readonly amounts: readonly Money[];
+}
+
+export interface McpGrantAuthorizer {
+  // Call using the subject's writable transaction before proposing, and again
+  // before executing in the transaction that will also consume the approval.
+  // Keep all protected work on that transaction until commit/rollback.
+  authorizeMcpGrant(
+    client: TransactionClient,
+    call: McpGrantCall,
+  ): Promise<boolean>;
+}
+
 export interface McpGrantStore {
   createId(): string;
   canMint(

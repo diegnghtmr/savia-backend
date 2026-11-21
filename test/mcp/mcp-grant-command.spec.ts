@@ -31,6 +31,55 @@ function violationCodes(input: unknown, field: string): string[] {
 }
 
 describe('MCP grant command', () => {
+  it('defaults to a read-only allowlist and no schedule', () => {
+    expect(createMcpGrantCommand(base())).toMatchObject({
+      toolAllowlist: [],
+      schedule: [],
+    });
+  });
+  it('accepts exact annotated names and same-day ISO weekday windows', () => {
+    const toolAllowlist = [
+      'list_workspaces',
+      'scan_receipt',
+      'create_transfer',
+    ];
+    const schedule = [
+      { dayOfWeek: 1, startTime: '00:00', endTime: '01:00' },
+      { dayOfWeek: 7, startTime: '23:59', endTime: '24:00' },
+    ];
+    const command = createMcpGrantCommand({
+      ...base(),
+      toolAllowlist,
+      schedule,
+    });
+    expect(command).toMatchObject({ toolAllowlist, schedule });
+  });
+  it.each([
+    [null, 'invalid-type'],
+    [['Create_Transaction'], 'unsupported'],
+    [['get_debt_projection'], 'unsupported'],
+    [['create_transaction', 'create_transaction'], 'unique-items'],
+  ])('rejects invalid allowlist %j with %s', (toolAllowlist, code) => {
+    const codes = violationCodes({ ...base(), toolAllowlist }, 'toolAllowlist');
+    expect(codes).toEqual([code]);
+  });
+  const window = { dayOfWeek: 1, startTime: '09:00', endTime: '17:00' };
+  it.each([
+    [null, 'invalid-type'],
+    [[window, { ...window }], 'unique-items'],
+    [[{ ...window, dayOfWeek: 0 }], 'invalid-value'],
+    [[{ ...window, dayOfWeek: 8 }], 'invalid-value'],
+    [[{ ...window, dayOfWeek: 1.5 }], 'invalid-value'],
+    [[{ ...window, startTime: '9:00' }], 'invalid-value'],
+    [[{ ...window, startTime: '24:00' }], 'invalid-value'],
+    [[{ ...window, endTime: '17:60' }], 'invalid-value'],
+    [[{ ...window, endTime: '08:00' }], 'invalid-value'],
+    [[{ ...window, endTime: '09:00' }], 'invalid-value'],
+    [[{ ...window, timezone: 'UTC' }], 'invalid-value'],
+  ])('rejects invalid schedule %j', (schedule, code) => {
+    const codes = violationCodes({ ...base(), schedule }, 'schedule');
+    expect(codes).toEqual([code]);
+  });
   it.each(MCP_GRANT_SCOPES)('accepts scope %s', (scope) => {
     expect(
       createMcpGrantCommand({ ...base(), scopes: [scope] }).scopes,

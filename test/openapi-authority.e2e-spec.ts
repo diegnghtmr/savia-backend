@@ -9,7 +9,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { MCP_TOOL_ANNOTATIONS } from '../src/mcp/mcp-tools.js';
 
 const root = process.cwd();
 const verifier = resolve(root, 'scripts/verify-openapi.mjs');
@@ -66,6 +67,7 @@ afterEach(() => {
   for (const [path, content] of originals) writeFileSync(path, content);
   rmSync(planningSnapshot, { force: true });
 });
+afterAll(() => rmSync(testRoot, { recursive: true, force: true }));
 
 describe('executable OpenAPI authority', () => {
   it(
@@ -184,7 +186,7 @@ describe('executable OpenAPI authority', () => {
   });
 
   it.skipIf(!authorityAvailable)(
-    'mirrors budget response schemas and MCP OAuth scopes semantically',
+    'mirrors implemented budget and MCP grant schemas and pins MCP annotations to the authority',
     () => {
       const bundle = (path: string) => {
         const directory = mkdtempSync(
@@ -228,11 +230,42 @@ describe('executable OpenAPI authority', () => {
           list: responseContent(paths['/v1/budgets']?.get?.responses),
           create: responseContent(paths['/v1/budgets']?.post?.responses),
           get: responseContent(paths['/v1/budgets/{budgetId}']?.get?.responses),
-          oauth: (schemas.securitySchemes?.mcpOAuth as Record<string, unknown>)
-            ?.flows,
+          // OAuth transport and proposals are not implemented here. Compare
+          // the supported scope vocabulary, not the future transport URLs.
+          oauthScopes: (
+            schemas.securitySchemes?.mcpOAuth as {
+              flows: { authorizationCode: { scopes: unknown } };
+            }
+          ).flows.authorizationCode.scopes,
+          grantSchemas: Object.fromEntries(
+            [
+              'CreateMcpGrantRequest',
+              'McpGrant',
+              'McpGrantSchedule',
+              'McpToolAllowlist',
+              'McpToolName',
+              'McpWeeklyWindow',
+              'SaviaScope',
+            ].map((name) => [name, schemas.schemas?.[name]]),
+          ),
         };
       };
       expect(pick(mirror)).toEqual(pick(authority));
+      const paths = authority.paths as Record<
+        string,
+        Record<string, { 'x-savia-mcp-tool'?: { name: string } }>
+      >;
+      const annotations = Object.values(paths)
+        .flatMap((item) => Object.values(item))
+        .flatMap((operation) => {
+          if (!operation?.['x-savia-mcp-tool']) return [];
+          const { name, ...annotation } = operation['x-savia-mcp-tool'];
+          return [[name, annotation] as const];
+        });
+      expect(annotations).toHaveLength(MCP_TOOL_ANNOTATIONS.size);
+      expect(Object.fromEntries(MCP_TOOL_ANNOTATIONS)).toEqual(
+        Object.fromEntries(annotations),
+      );
     },
     30_000,
   );
