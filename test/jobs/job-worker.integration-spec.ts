@@ -1,4 +1,4 @@
-// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql, 202609170008_recurring_job_type.sql
+// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql, 202609170008_recurring_job_type.sql, 202609170011_recurring_creator_lock.sql
 import { Pool } from 'pg';
 import {
   afterAll,
@@ -30,6 +30,8 @@ import * as tesseractAdapter from '../../src/platform/system-tesseract.adapter.j
 import { WorkerConfig } from '../../src/platform/worker-config.js';
 import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import { RecurringJobSweep } from '../../src/recurring/recurring-job-sweep.js';
+import { PostgresOccurrenceAdapter } from '../../src/recurring/postgres-occurrence.adapter.js';
+import { PostgresWorkspaceMemberAdapter } from '../../src/identity/postgres-workspace-member.adapter.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -1241,4 +1243,234 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       vi.unstubAllEnvs();
     }
   }, 10_000);
+
+  it('S5 discovery has no effective execute privilege for API roles', async () => {
+    const result = await admin.query(`
+      select role, has_function_privilege(role, f.oid, 'EXECUTE') as allowed
+      from pg_proc f cross join unnest(array['anon','authenticated','service_role',
+        'savia_application','savia_worker']) as role
+      where f.oid = 'public.find_due_recurring_occurrences(timestamptz)'::regprocedure
+      order by role`);
+    console.log('S5 effective discovery ACL', JSON.stringify(result.rows));
+    expect(result.rows).toEqual([
+      { role: 'anon', allowed: false },
+      { role: 'authenticated', allowed: false },
+      { role: 'savia_application', allowed: false },
+      { role: 'savia_worker', allowed: true },
+      { role: 'service_role', allowed: false },
+    ]);
+  });
+
+  it('S5 worker sees minimal discovery metadata and has no effective table grants', async () => {
+    const { rows } = await admin.query(`
+      select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname in ('public', 'pgmq') and c.relkind in ('r', 'p', 'v', 'm', 'f')
+        and (has_table_privilege('savia_worker', c.oid, 'TRUNCATE,TRIGGER')
+          or has_table_privilege('savia_worker', c.oid, 'DELETE')
+          or has_any_column_privilege('savia_worker', c.oid, 'SELECT,INSERT,UPDATE,REFERENCES'))`);
+    expect(rows).toEqual([]);
+    const discovery = await transaction.runAsQueueConsumer((client) =>
+      client.query(`
+      select * from public.find_due_recurring_occurrences('2024-01-01Z')`),
+    );
+    expect(discovery.rows).toEqual([]);
+  });
+
+  it('S5 does not publish after discovery or book after queueing if the creator loses write access', async () => {
+    const creator = viewerA;
+    const ruleId = id(8399);
+    const starts = '2024-03-08T06:30:00.000Z';
+    const scheduledAt = '2024-03-10T06:30:00.000Z';
+    const sixDigit = scheduledAt.replace('.000Z', '.000000Z');
+    const setRole = (role: string) =>
+      admin.query(
+        `update public.workspace_memberships
+      set role = $1 where workspace_id = $2 and profile_id = $3`,
+        [role, ws1Id, creator],
+      );
+    await setRole('editor');
+    await admin.query(
+      `insert into public.recurring_rules
+      (id, workspace_id, name, frequency, behavior, account_id, template, active,
+       created_by, starts_at, ends_at, next_occurrence_at, anchor_day_of_month)
+      values ($1,$2,'Revocation probe','daily','confirm_automatically',$3,$4,true,$5,$6,$7,$7,8)`,
+      [
+        ruleId,
+        ws1Id,
+        id(8201),
+        JSON.stringify({
+          type: 'expense',
+          accountId: id(8201),
+          amount: { currency: 'USD', amountMinor: '100' },
+          status: 'draft',
+          occurredAt: starts,
+          description: 'S5 revocation probe',
+        }),
+        creator,
+        starts,
+        scheduledAt,
+      ],
+    );
+    const bootstrap = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    try {
+      const sweep = app.get(RecurringJobSweep);
+      expect(await sweep.sweep(new Date('2024-03-10T06:29:59.999Z'))).toBe(0);
+      const found = await transaction.runAsQueueConsumer((client) =>
+        client.query(
+          `
+        select * from public.find_due_recurring_occurrences($1)`,
+          [scheduledAt],
+        ),
+      );
+      expect(found.rows).toEqual([
+        { workspaceId: ws1Id, subject: creator, ruleId, scheduledAt: sixDigit },
+      ]);
+      const revokeAfterDiscovery = new RecurringJobSweep(
+        {
+          run: transaction.run.bind(transaction),
+          runAsQueueConsumer: async (callback, timeout) => {
+            const rows = await transaction.runAsQueueConsumer(
+              callback,
+              timeout,
+            );
+            await setRole('viewer');
+            return rows;
+          },
+        },
+        new PostgresOccurrenceAdapter(),
+        adapter,
+        5000,
+      );
+      expect(await revokeAfterDiscovery.sweep(new Date(scheduledAt))).toBe(0);
+      await setRole('editor');
+      expect(await sweep.sweep(new Date(scheduledAt))).toBe(1);
+      const [message] = await queueAdapter.claim(300, 50);
+      expect(message.message.actor_id).toBe(creator);
+      await admin.query(
+        'delete from public.workspace_memberships where workspace_id=$1 and profile_id=$2',
+        [ws1Id, creator],
+      );
+      expect(await app.get(JobRunner).processMessage(message)).toBe(false);
+      const { rows } = await admin.query(
+        `select j.status, j.error->>'code' as reason,
+        (select count(*)::int from public.recurring_occurrences where rule_id=$1) as occurrences,
+        (select count(*)::int from public.transactions where description='S5 revocation probe') as transactions
+        from public.jobs j where j.payload->>'ruleId'=$1::text`,
+        [ruleId],
+      );
+      console.log('S5 revoked execution', JSON.stringify(rows));
+      expect(rows).toMatchObject([
+        { status: 'failed', occurrences: 0, transactions: 0 },
+      ]);
+    } finally {
+      await app.close();
+      bootstrap.mockRestore();
+    }
+  }, 10000);
+  it('S5 does not book after an in-flight creator removal commits', async () => {
+    const ruleId = id(8400);
+    const creator = ownerB;
+    const membership = await admin.query(
+      `insert into public.workspace_memberships
+      (workspace_id,profile_id,role,status) values ($1,$2,'editor','active') returning id`,
+      [ws1Id, creator],
+    );
+    const scheduled = '2024-02-29T23:30:00.000Z';
+    await admin.query(
+      `insert into public.recurring_rules
+      (id,workspace_id,name,frequency,behavior,account_id,template,active,created_by,
+        starts_at,ends_at,next_occurrence_at,anchor_day_of_month)
+      values ($1,$2,'Commit race','monthly','confirm_automatically',$3,$4,true,$5,
+        '2024-01-31T23:30:00Z',$6,$6,31)`,
+      [
+        ruleId,
+        ws1Id,
+        id(8201),
+        JSON.stringify({
+          type: 'expense',
+          accountId: id(8201),
+          amount: { currency: 'USD', amountMinor: '100' },
+          status: 'draft',
+          occurredAt: '2024-01-31T23:30:00Z',
+          description: 'S5 commit race',
+        }),
+        creator,
+        scheduled,
+      ],
+    );
+    const bootstrap = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    const memberStore = new PostgresWorkspaceMemberAdapter();
+    try {
+      expect(await app.get(RecurringJobSweep).sweep(new Date(scheduled))).toBe(
+        1,
+      );
+      const [message] = await queueAdapter.claim(300, 50);
+      const writer = app.get(PostgresJobsAdapter);
+      const original = writer.completeJob.bind(writer);
+      let removalCommittedBeforeBooking = false;
+      vi.spyOn(writer, 'completeJob').mockImplementationOnce(
+        async (...args) => {
+          const result = await original(...args);
+          const removal = await transaction
+            .run(ownerA, async (client) => {
+              await client.query(
+                "select set_config('lock_timeout', '100ms', true)",
+              );
+              const count = await memberStore.deleteMember(
+                client,
+                ws1Id,
+                membership.rows[0].id,
+              );
+              await memberStore.enforceDeferredConstraints(client);
+              return count;
+            })
+            .catch((e: unknown) => {
+              if ((e as { cause?: { code?: string } }).cause?.code === '55P03')
+                return 0;
+              throw e;
+            });
+          removalCommittedBeforeBooking = removal === 1;
+          expect(
+            (
+              await admin.query(
+                `select 1 from public.transactions where description='S5 commit race'`,
+              )
+            ).rowCount,
+          ).toBe(0);
+          return result;
+        },
+      );
+      const processed = await app.get(JobRunner).processMessage(message);
+      const { rows } = await admin.query(
+        `select
+        (select count(*)::int from public.recurring_occurrences where rule_id=$1) as occurrences,
+        (select count(*)::int from public.transactions where description='S5 commit race') as bookings`,
+        [ruleId],
+      );
+      console.log(
+        'S5 commit race',
+        JSON.stringify({
+          removalCommittedBeforeBooking,
+          processed,
+          ...rows[0],
+        }),
+      );
+      if (removalCommittedBeforeBooking)
+        expect(rows).toEqual([{ occurrences: 0, bookings: 0 }]);
+      else expect(rows).toEqual([{ occurrences: 1, bookings: 1 }]);
+    } finally {
+      await app.close();
+      bootstrap.mockRestore();
+    }
+  }, 10000);
 });

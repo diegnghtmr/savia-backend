@@ -58,7 +58,15 @@ export class PostgresOccurrenceAdapter implements OccurrenceStore {
         for update`,
       [workspaceId, ruleId, subject, scheduledAt, asOf],
     );
-    return result.rows[0];
+    const rule = result.rows[0];
+    if (!rule) return undefined;
+
+    // Recheck after locking the rule and hold the creator's write access through COMMIT.
+    const membership = await client.query<{ allowed: boolean }>(
+      'select public.lock_recurring_creator_membership($1::uuid) as allowed',
+      [workspaceId],
+    );
+    return membership.rows[0]?.allowed ? rule : undefined;
   }
 
   public async record(

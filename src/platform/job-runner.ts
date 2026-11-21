@@ -161,6 +161,8 @@ export class JobRunner
   private isRunning = false;
   private isStopping = false;
   private pollTimer?: NodeJS.Timeout;
+  private sweepTimer?: NodeJS.Timeout;
+  private sweepInFlight = false;
   private runningJobsCount = 0;
 
   public get activeJobsCount(): number {
@@ -297,14 +299,7 @@ export class JobRunner
     const poll = async () => {
       if (!this.isRunning) return;
       try {
-        if (this.jobSweep) {
-          await Promise.allSettled([
-            this.runOnce(),
-            this.sweepOnce(this.jobSweep),
-          ]);
-        } else {
-          await this.runOnce();
-        }
+        await this.runOnce();
       } catch (error) {
         // Runner loop must not crash on transient unexpected errors
         void error;
@@ -319,18 +314,28 @@ export class JobRunner
     };
 
     void poll();
+    if (this.jobSweep) void this.pollSweep(this.jobSweep);
   }
 
-  private async sweepOnce(sweep: JobSweep): Promise<void> {
+  private async pollSweep(sweep: JobSweep): Promise<void> {
+    if (!this.isRunning || this.sweepInFlight) return;
+    this.sweepInFlight = true;
     this.runningJobsCount++;
     try {
       await sweep.sweep();
     } catch {
       this.logger.warn(
-        'Scheduled job sweep failed; it will retry on the next poll.',
+        'Scheduled job sweep failed; it will retry on the next sweep.',
       );
     } finally {
+      this.sweepInFlight = false;
       this.runningJobsCount--;
+      if (this.isRunning) {
+        this.sweepTimer = setTimeout(
+          () => void this.pollSweep(sweep),
+          this.config.pollIntervalMs,
+        );
+      }
     }
   }
 
@@ -340,6 +345,10 @@ export class JobRunner
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = undefined;
+    }
+    if (this.sweepTimer) {
+      clearTimeout(this.sweepTimer);
+      this.sweepTimer = undefined;
     }
 
     const drainDeadline = Date.now() + this.config.drainTimeoutSeconds * 1_000;
