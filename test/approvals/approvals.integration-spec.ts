@@ -7,6 +7,12 @@ import {
 } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  AGENT_TOOL_PORTS,
+  agentToolDefinitions,
+  agentToolRegistry,
+  type AgentToolPorts,
+} from '../../src/agent/agent-tools.js';
 import { AppModule } from '../../src/app.module.js';
 import {
   APPROVALS_PORT,
@@ -343,6 +349,191 @@ describe('Approvals integration contract and endpoint suite', () => {
         }
       },
     );
+
+    async function reviewAccounts() {
+      async function create(name: string) {
+        const response = await application.inject({
+          method: 'POST',
+          url: '/v1/accounts',
+          headers: {
+            authorization: 'Bearer owner-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': randomUUID(),
+          },
+          payload: { name, type: 'cash', currency: 'USD' },
+        });
+        expect(response.statusCode).toBe(201);
+        return response.json<{ id: string }>().id;
+      }
+      return {
+        source: await create('B3 probe source'),
+        destination: await create('B3 probe destination'),
+      };
+    }
+
+    function reviewPropose(
+      ports: AgentToolPorts,
+      source: string,
+      destination: string,
+      extra: Record<string, unknown> = {},
+    ) {
+      return agentToolRegistry.get('create_transfer')!.execute(
+        ports,
+        { subject: editorId, workspaceId: workspace1Id },
+        {
+          sourceAccountId: source,
+          destinationAccountId: destination,
+          amount: { amountMinor: '2000', currency: 'USD' },
+          occurredAt: '2026-04-22T00:00:00Z',
+          ...extra,
+        },
+        new AbortController().signal,
+      );
+    }
+
+    function reviewConfirm(
+      id: string,
+      argumentsHash: string,
+      token = 'editor-token',
+    ) {
+      return application.inject({
+        method: 'POST',
+        url: `/v1/approvals/${id}/confirm`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        },
+        payload: { argumentsHash },
+      });
+    }
+
+    async function reviewPostings(source: string, destination: string) {
+      return (
+        await admin.query<{ amount: string; account: string }>(
+          `
+        select amount_minor::text as amount, account_id::text as account
+        from public.ledger_postings where account_id in ($1, $2) order by amount_minor
+      `,
+          [source, destination],
+        )
+      ).rows;
+    }
+
+    it.each([
+      { fee: { amountMinor: '125', currency: 'USD' } },
+      { description: 'Rent reimbursement from April' },
+      { fee: null },
+      { description: null },
+    ])(
+      'B3 probe: refuses unsupported transfer arguments %j before parsing or persisting',
+      async (extra) => {
+        const { source, destination } = await reviewAccounts();
+        const ports = application.get<AgentToolPorts>(AGENT_TOOL_PORTS);
+        const parser = vi.spyOn(ports, 'validateTransfer');
+        const snapshot = async () =>
+          (
+            await admin.query<{ snapshot: string }>(
+              `
+        select coalesce(jsonb_agg(to_jsonb(a) order by id), '[]')::text as snapshot
+        from public.approvals a where workspace_id = $1
+      `,
+              [workspace1Id],
+            )
+          ).rows[0]?.snapshot;
+        try {
+          const before = await snapshot();
+          expect(
+            await reviewPropose(ports, source, destination, extra),
+          ).toStrictEqual({
+            kind: 'error',
+            value: { error: 'Invalid tool arguments' },
+          });
+          expect(parser).not.toHaveBeenCalled();
+          expect(await snapshot()).toBe(before);
+          expect(await reviewPostings(source, destination)).toEqual([]);
+        } finally {
+          parser.mockRestore();
+        }
+      },
+    );
+
+    it('B3 probe: advertises a plain transfer and posts it only once under concurrent confirms', async () => {
+      const definition = agentToolDefinitions.find(
+        ({ name }) => name === 'create_transfer',
+      );
+      expect(definition?.parameters).toMatchObject({
+        type: 'object',
+        additionalProperties: false,
+      });
+      expect(
+        Object.keys(
+          (definition!.parameters as { properties: object }).properties,
+        ).sort(),
+      ).toEqual([
+        'amount',
+        'destinationAccountId',
+        'occurredAt',
+        'sourceAccountId',
+      ]);
+      const { source, destination } = await reviewAccounts();
+      const ports = application.get<AgentToolPorts>(AGENT_TOOL_PORTS);
+      const result = await reviewPropose(ports, source, destination);
+      if (result.kind !== 'approval') throw new Error(JSON.stringify(result));
+      const id = result.approvalId;
+      const fetched = await port().getApproval(editorId, workspace1Id, id);
+      if (fetched.kind !== 'ok') throw new Error('Missing approval');
+      const { argumentsHash, preview } = fetched.approval;
+      expect(preview).toMatchObject({
+        sourceAccountId: source,
+        destinationAccountId: destination,
+        amount: '2000',
+        currency: 'USD',
+        fee: null,
+        consequences:
+          'Moves the amount from the source to the destination after confirmation.',
+      });
+      expect(await reviewPostings(source, destination)).toEqual([]);
+      const snapshot = async () =>
+        (
+          await admin.query<{ saved: string }>(
+            'select row_to_json(a)::text as saved from public.approvals a where id = $1',
+            [id],
+          )
+        ).rows[0]?.saved;
+      const pending = await snapshot();
+      const wrong = await reviewConfirm(id, '0'.repeat(64));
+      expect(wrong.statusCode).toBe(409);
+      expect(wrong.json()).toMatchObject({ detail: 'Arguments hash mismatch' });
+      expect(await snapshot()).toBe(pending);
+      expect(
+        (await reviewConfirm(id, argumentsHash, 'admin-token')).statusCode,
+      ).toBe(403);
+      expect(await snapshot()).toBe(pending);
+      expect(await reviewPostings(source, destination)).toEqual([]);
+      const responses = await Promise.all([
+        reviewConfirm(id, argumentsHash),
+        reviewConfirm(id, argumentsHash),
+      ]);
+      expect(responses.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+      expect(responses.find((r) => r.statusCode === 200)?.json()).toMatchObject(
+        { status: 'consumed' },
+      );
+      expect(await reviewPostings(source, destination)).toEqual([
+        { amount: '-2000', account: source },
+        { amount: '2000', account: destination },
+      ]);
+      expect(
+        (
+          await admin.query(
+            'select status, created_by, decided_by from public.approvals where id = $1 and used_at is not null',
+            [id],
+          )
+        ).rows,
+      ).toEqual([
+        { status: 'consumed', created_by: editorId, decided_by: editorId },
+      ]);
+    });
 
     async function beginClaim(client: PoolClient, actor = editorId) {
       await client.query('begin');

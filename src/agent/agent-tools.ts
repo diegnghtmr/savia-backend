@@ -269,7 +269,7 @@ const tools: readonly Tool[] = [
     (command) => ({
       sourceAccountId: command.sourceAccountId,
       destinationAccountId: command.destinationAccountId,
-      // The ledger records neither a transfer fee nor a description, so the tool accepts neither.
+      // Transfers post no fee debit and store no description, so the tool accepts neither.
       consequences:
         'Moves the amount from the source to the destination after confirmation.',
     }),
