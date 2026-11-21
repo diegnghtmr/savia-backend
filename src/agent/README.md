@@ -14,4 +14,7 @@ destinations are never allowed. Redirects are not followed. Streams are limited 
 
 Only `NODE_ENV=test` or `NODE_ENV=development` enables echo when no default
 credential is configured. An unusable configured credential fails rather than
-falling back. Tool calling and per-message overrides are not enabled here.
+falling back. The adapter accepts optional function schemas and tool-result
+history. It delivers a batch of at most eight calls only after `[DONE]`, with
+validated JSON object arguments limited to 16 KiB per call. The message service
+does not yet register or dispatch tools. Per-message overrides remain disabled.

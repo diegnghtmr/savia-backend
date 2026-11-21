@@ -36,10 +36,40 @@ export interface AgentEvent {
   readonly timestamp: string;
   readonly data: Record<string, unknown>;
 }
-export interface AgentProviderChunk {
-  readonly type: 'text_delta' | 'tool_proposed' | 'tool_completed';
-  readonly data: Record<string, unknown>;
+export interface AgentToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
 }
+export interface AgentToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+}
+type AgentToolHistoryMessage =
+  | {
+      readonly role: 'assistant';
+      readonly content: string | null;
+      readonly calls: readonly AgentToolCall[];
+    }
+  | {
+      readonly role: 'tool';
+      readonly callId: string;
+      readonly content: string;
+    };
+export interface AgentProviderTurn {
+  readonly tools: readonly AgentToolDefinition[];
+  readonly history?: readonly AgentToolHistoryMessage[];
+}
+export type AgentProviderChunk =
+  | {
+      readonly type: 'text_delta' | 'tool_proposed' | 'tool_completed';
+      readonly data: Record<string, unknown>;
+    }
+  | {
+      readonly type: 'tool_calls';
+      readonly data: { readonly calls: readonly AgentToolCall[] };
+    };
 interface AgentProviderContext {
   readonly subject: string;
   readonly workspaceId: string;
@@ -58,6 +88,7 @@ export interface AgentProviderPort {
     command: AgentMessageCommand,
     signal: AbortSignal,
     context: AgentProviderContext,
+    turn?: AgentProviderTurn,
   ): AsyncIterable<AgentProviderChunk>;
 }
 export interface AgentMessageStore {

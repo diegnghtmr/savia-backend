@@ -54,11 +54,14 @@ const stream = (
     context,
   );
 
-async function collect(resolve: AgentCredentialResolver) {
-  const events = [];
-  for await (const event of stream(resolve)) events.push(event);
-  return events;
+async function collectStream<T>(source: AsyncIterable<T>): Promise<T[]> {
+  const items: T[] = [];
+  for await (const item of source) items.push(item);
+  return items;
 }
+
+const collect = (resolve: AgentCredentialResolver) =>
+  collectStream(stream(resolve));
 
 it.each(['local_endpoint'] as const)(
   'sends the workspace model and streams fragmented SSE for %s',
@@ -119,6 +122,167 @@ it.each(['local_endpoint'] as const)(
     ]);
   },
 );
+
+const listAccounts = {
+  name: 'list_accounts',
+  description: 'List accounts',
+  parameters: { type: 'object', additionalProperties: false },
+};
+const searchTransactions = { ...listAccounts, name: 'search_transactions' };
+const toolFrame = (tool_calls: readonly unknown[], finish_reason?: string) =>
+  `data: ${JSON.stringify({ choices: [{ delta: { tool_calls }, finish_reason }] })}\n\n`;
+const firstCall = (name: string, args: string, index = 0) => ({
+  index,
+  id: `call_${index}`,
+  type: 'function',
+  function: { name, arguments: args },
+});
+
+async function readBody(req: AsyncIterable<Buffer>): Promise<unknown> {
+  return JSON.parse(Buffer.concat(await collectStream(req)).toString());
+}
+
+function streamTools(baseUrl: string) {
+  const adapter = new OpenAICompatibleAgentProviderAdapter(resolveAt(baseUrl));
+  return adapter.stream(command, new AbortController().signal, context, {
+    tools: [listAccounts, searchTransactions],
+  });
+}
+
+it('advertises schemas and yields complete tool calls in index order only after [DONE]', async () => {
+  const request = Promise.withResolvers<unknown>();
+  const baseUrl = await listen(async (req, res) => {
+    request.resolve(await readBody(req));
+    res.writeHead(200, headers);
+    res.write(
+      toolFrame([
+        firstCall('search_transactions', '{"limit":', 1),
+        firstCall('list_accounts', '{}'),
+      ]),
+    );
+    setImmediate(() =>
+      res.end(
+        toolFrame([{ index: 1, function: { arguments: '2}' } }], 'tool_calls') +
+          done,
+      ),
+    );
+  });
+  expect(await collectStream(streamTools(baseUrl))).toEqual([
+    {
+      type: 'tool_calls',
+      data: {
+        calls: [
+          { id: 'call_0', name: 'list_accounts', arguments: {} },
+          {
+            id: 'call_1',
+            name: 'search_transactions',
+            arguments: { limit: 2 },
+          },
+        ],
+      },
+    },
+  ]);
+  expect(await request.promise).toEqual({
+    model: 'demo',
+    stream: true,
+    messages: [{ role: 'user', content: command.message }],
+    tools: [listAccounts, searchTransactions].map((fn) => ({
+      type: 'function',
+      function: fn,
+    })),
+  });
+});
+
+it('sends completed calls and tool results as transcript messages', async () => {
+  const request = Promise.withResolvers<unknown>();
+  const baseUrl = await listen(async (req, res) => {
+    request.resolve(await readBody(req));
+    res.writeHead(200, headers).end(frame('Your accounts') + done);
+  });
+  const adapter = new OpenAICompatibleAgentProviderAdapter(resolveAt(baseUrl));
+  expect(
+    await collectStream(
+      adapter.stream(command, new AbortController().signal, context, {
+        tools: [listAccounts],
+        history: [
+          {
+            role: 'assistant',
+            content: null,
+            calls: [{ id: 'call_0', name: 'list_accounts', arguments: {} }],
+          },
+          { role: 'tool', callId: 'call_0', content: '[]' },
+        ],
+      }),
+    ),
+  ).toEqual([{ type: 'text_delta', data: { text: 'Your accounts' } }]);
+  expect(await request.promise).toMatchObject({
+    messages: [
+      { role: 'user', content: 'hola' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'call_0',
+            type: 'function',
+            function: { name: 'list_accounts', arguments: '{}' },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_0', content: '[]' },
+    ],
+  });
+});
+
+it.each([
+  [
+    'invalid JSON',
+    toolFrame([firstCall('list_accounts', '{"limit":2,}')], 'tool_calls') +
+      done,
+  ],
+  [
+    'non-object arguments',
+    toolFrame([firstCall('list_accounts', '[]')], 'tool_calls') + done,
+  ],
+  [
+    'unadvertised tool',
+    toolFrame([firstCall('execute_unregistered', '{}')], 'tool_calls') + done,
+  ],
+  [
+    'oversized arguments',
+    toolFrame(
+      [firstCall('list_accounts', `{"text":"${'é'.repeat(8192)}"}`)],
+      'tool_calls',
+    ) + done,
+  ],
+  [
+    'too many calls',
+    toolFrame(
+      Array.from({ length: 9 }, (_, i) => firstCall('list_accounts', '{}', i)),
+      'tool_calls',
+    ) + done,
+  ],
+  [
+    'truncated call',
+    toolFrame([firstCall('list_accounts', '{}')], 'length') + done,
+  ],
+])('rejects %s without yielding any calls', async (_case, body) => {
+  const baseUrl = await listen((_req, res) =>
+    res.writeHead(200, headers).end(body),
+  );
+  const first = streamTools(baseUrl)[Symbol.asyncIterator]().next();
+  await expect(first).rejects.toThrow(new Error('Invalid provider stream'));
+});
+
+it('does not yield a completed call from an incomplete stream', async () => {
+  const baseUrl = await listen((_req, res) =>
+    res
+      .writeHead(200, headers)
+      .end(toolFrame([firstCall('list_accounts', '{}')], 'tool_calls')),
+  );
+  const first = streamTools(baseUrl)[Symbol.asyncIterator]().next();
+  await expect(first).rejects.toThrow(new Error('Incomplete provider stream'));
+});
 
 it.each([
   [401, secret, 'Provider HTTP 401'],

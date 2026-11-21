@@ -118,6 +118,9 @@ export class AgentMessageService implements AgentMessagePort {
         workspaceId,
       })) {
         if (signal.aborted) break;
+        // Tool-call batches are internal provider data, never SSE events.
+        if (chunk.type === 'tool_calls')
+          throw new AgentProviderFailure('Unexpected provider tool call');
         push(chunk.type, chunk.data);
         if (terminal) break;
         if (

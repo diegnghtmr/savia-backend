@@ -310,6 +310,28 @@ describe('Approvals integration contract and endpoint suite', () => {
       });
     });
 
+    it('binds every elevated approvals policy to the actor and current workspace', async () => {
+      const { rows } = await admin.query<{
+        cmd: string;
+        qual: string | null;
+        with_check: string | null;
+      }>(`select cmd, qual, with_check from pg_policies
+          where schemaname = 'public' and tablename = 'approvals'
+            and 'savia_elevated' = any(roles)
+          order by cmd`);
+      expect(rows.map(({ cmd }) => cmd)).toEqual(['SELECT', 'UPDATE']);
+      for (const row of rows) {
+        const predicates =
+          row.cmd === 'UPDATE' ? [row.qual, row.with_check] : [row.qual];
+        for (const predicate of predicates) {
+          expect(predicate).toMatch(/\bworkspace_id\b/);
+          expect(predicate).toContain("'app.approval_workspace_id'");
+          expect(predicate).toMatch(/\bcreated_by\b/);
+          expect(predicate).toContain("'app.subject_id'");
+        }
+      }
+    });
+
     it('restricts elevated consumption to the actor and current workspace', async () => {
       const other = await approved(workspace2Id, otherOwnerId);
       const session = await admin.connect();
