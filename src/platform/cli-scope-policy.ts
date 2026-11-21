@@ -3,6 +3,10 @@ import { SAVIA_SCOPES, type SaviaScope } from './savia-scopes.js';
 export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
   new Map([
     [
+      routeKey('DELETE', '/v1/mcp/grants/:grantId'),
+      [SAVIA_SCOPES.WORKSPACE_ADMIN],
+    ],
+    [
       routeKey('DELETE', '/v1/workspaces/:workspaceId/members/:memberId'),
       [SAVIA_SCOPES.WORKSPACE_ADMIN],
     ],
@@ -12,6 +16,7 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
       routeKey('GET', '/v1/accounts/:accountId/balance'),
       [SAVIA_SCOPES.ACCOUNTS_READ],
     ],
+    [routeKey('GET', '/v1/agent/conversations'), [SAVIA_SCOPES.REPORTS_READ]],
     [routeKey('GET', '/v1/ai/providers'), [SAVIA_SCOPES.WORKSPACE_ADMIN]],
     [routeKey('GET', '/v1/analytics/advanced'), [SAVIA_SCOPES.REPORTS_READ]],
     [routeKey('GET', '/v1/analytics/cash-flow'), [SAVIA_SCOPES.REPORTS_READ]],
@@ -32,6 +37,7 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
       [SAVIA_SCOPES.TRANSACTIONS_READ],
     ],
     [routeKey('GET', '/v1/jobs/:jobId'), []],
+    [routeKey('GET', '/v1/mcp/grants'), [SAVIA_SCOPES.WORKSPACE_ADMIN]],
     [routeKey('GET', '/v1/me'), []],
     [routeKey('GET', '/v1/notifications'), []],
     [routeKey('GET', '/v1/payees'), [SAVIA_SCOPES.TRANSACTIONS_READ]],
@@ -88,6 +94,11 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     [
       routeKey('POST', '/v1/accounts/:accountId/close'),
       [SAVIA_SCOPES.ACCOUNTS_WRITE],
+    ],
+    [routeKey('POST', '/v1/agent/conversations'), [SAVIA_SCOPES.REPORTS_READ]],
+    [
+      routeKey('POST', '/v1/agent/conversations/:conversationId/messages'),
+      [SAVIA_SCOPES.REPORTS_READ],
     ],
     [routeKey('POST', '/v1/budgets'), [SAVIA_SCOPES.BUDGETS_WRITE]],
     [routeKey('POST', '/v1/categories'), [SAVIA_SCOPES.TRANSACTIONS_WRITE]],
