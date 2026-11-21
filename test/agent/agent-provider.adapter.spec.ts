@@ -32,14 +32,17 @@ async function listen(listener: RequestListener) {
   return `http://127.0.0.1:${address.port}/v1/`;
 }
 
-const resolveAt =
-  (baseUrl: string): AgentCredentialResolver =>
-  async () => ({
+function resolveAt(
+  baseUrl: string,
+  credentialType: 'local_endpoint' | 'gateway_token' = 'local_endpoint',
+): AgentCredentialResolver {
+  return async () => ({
     baseUrl,
     model: 'demo',
-    credentialType: 'gateway_token',
-    secret,
+    credentialType,
+    secret: credentialType === 'local_endpoint' ? null : secret,
   });
+}
 const stream = (
   resolve: AgentCredentialResolver,
   timeout = 2_000,
@@ -57,7 +60,7 @@ async function collect(resolve: AgentCredentialResolver) {
   return events;
 }
 
-it.each(['api_key', 'gateway_token', 'local_endpoint'] as const)(
+it.each(['local_endpoint'] as const)(
   'sends the workspace model and streams fragmented SSE for %s',
   async (credentialType) => {
     let sendRest!: () => void;
@@ -85,12 +88,11 @@ it.each(['api_key', 'gateway_token', 'local_endpoint'] as const)(
         sendRest = () => res.end(rest);
       });
     });
-    const bearer = credentialType === 'local_endpoint' ? null : secret;
     const resolve = vi.fn<AgentCredentialResolver>(async () => ({
       baseUrl,
       model: 'model:variant',
       credentialType,
-      secret: bearer,
+      secret: null,
     }));
     const events = [];
     for await (const event of stream(resolve)) {
@@ -108,7 +110,7 @@ it.each(['api_key', 'gateway_token', 'local_endpoint'] as const)(
     expect(await request.promise).toEqual([
       'POST',
       '/v1/chat/completions',
-      bearer ? `Bearer ${bearer}` : undefined,
+      undefined,
       {
         model: 'model:variant',
         stream: true,
@@ -126,11 +128,6 @@ it.each([
   [
     200,
     `data: {"error":{"message":"${secret}"}}\n\n`,
-    'Invalid provider stream',
-  ],
-  [
-    200,
-    frame(secret.slice(0, 6)) + frame(secret.slice(6)) + done,
     'Invalid provider stream',
   ],
   [200, 'data: {"choices":[]}\n\n', 'Incomplete provider stream'],
@@ -152,8 +149,10 @@ it('rejects remote cleartext and does not follow redirects', async () => {
     .spyOn(globalThis, 'fetch')
     .mockRejectedValue(new Error('Unexpected fetch'));
   try {
-    const result = collect(resolveAt('http://127.example.test/v1'));
-    await expect(result).rejects.toThrow('Invalid provider URL');
+    for (const base of ['http://127.example.test/v1', 'http://127.0.0.1/v1']) {
+      const result = collect(resolveAt(base, 'gateway_token'));
+      await expect(result).rejects.toThrow('Invalid provider URL');
+    }
     expect(fetch).not.toHaveBeenCalled();
   } finally {
     fetch.mockRestore();

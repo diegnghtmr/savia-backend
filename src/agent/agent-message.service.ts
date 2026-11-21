@@ -112,6 +112,7 @@ export class AgentMessageService implements AgentMessagePort {
     };
     push(AGENT_EVENT_TYPES.RUN_STARTED, {});
     try {
+      signal.throwIfAborted();
       for await (const chunk of this.provider.stream(command, signal, {
         subject,
         workspaceId,

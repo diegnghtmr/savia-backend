@@ -101,8 +101,9 @@ class FakeStore implements Store {
   public async revoke() {
     return this.revokeResult;
   }
+  public defaultRow: Awaited<ReturnType<Store['readDefault']>>;
   public async readDefault() {
-    return undefined;
+    return this.defaultRow;
   }
   public async setDefault() {
     return this.setDefaultResult;
@@ -148,6 +149,30 @@ function harness() {
     ),
   };
 }
+
+it.each([' sk-legacy', 'sk-legacy ', 'sk-\u007flegacy'])(
+  'rejects unusable stored tokens before resolving an endpoint',
+  async (secret) => {
+    const crypto = new CredentialCrypto(Buffer.alloc(32, 1).toString('base64'));
+    const store = new FakeStore();
+    store.defaultRow = {
+      modelRef: 'openai-compatible:demo',
+      credentialType: 'gateway_token',
+      encryptedSecret: crypto.encrypt(secret),
+      baseUrl: 'https://provider.example.test/v1',
+    };
+    const service = new AICredentialService(
+      new RecordingTransaction() as never,
+      store,
+      crypto,
+      new FakeIdempotency(),
+    );
+    const resolution = service.resolveAgentCredential(subject, workspace);
+    await expect(resolution).rejects.toThrow(
+      new Error('Workspace AI credential unavailable'),
+    );
+  },
+);
 
 describe('AICredentialService transaction semantics', () => {
   it('throws after a write when idempotency recording loses its race', async () => {

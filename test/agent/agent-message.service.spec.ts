@@ -1,4 +1,6 @@
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
+import { AgentMessagesController } from '../../src/agent/agent-messages.controller.js';
 import { AgentMessageService } from '../../src/agent/agent-message.service.js';
 import type {
   AgentMessageStore,
@@ -99,6 +101,54 @@ it('does not emit after a provider terminal event', async () => {
 });
 
 describe('in-flight idempotency', () => {
+  it('does not start the provider or write SSE when the client closes during prepare', async () => {
+    const reserved = Promise.withResolvers<void>();
+    const finishPrepare = Promise.withResolvers<boolean>();
+    const repository = store({
+      reserveIdempotency: vi.fn(() => {
+        reserved.resolve();
+        return finishPrepare.promise;
+      }),
+    });
+    const stream = vi.fn(async function* () {});
+    const service = new AgentMessageService(new Tx(), repository, { stream });
+    const controller = new AgentMessagesController(service);
+    const raw = Object.assign(new EventEmitter(), {
+      writableEnded: false,
+      writeHead: vi.fn(),
+      write: vi.fn(),
+      end: vi.fn(),
+    });
+    const hijack = vi.fn();
+    const key = '99999999-9999-4999-8999-999999999999';
+    const request = controller.send(
+      {
+        headers: { 'x-workspace-id': workspace, 'idempotency-key': key },
+        identity: { subject },
+      } as never,
+      conversation,
+      { message: 'synthetic prompt' },
+      { hijack, raw } as never,
+    );
+    await reserved.promise;
+    raw.emit('close');
+    finishPrepare.resolve(true);
+    await request;
+    expect(stream).not.toHaveBeenCalled();
+    expect(hijack).not.toHaveBeenCalled();
+    expect(raw.writeHead).not.toHaveBeenCalled();
+    expect(raw.write).not.toHaveBeenCalled();
+    expect(raw.end).not.toHaveBeenCalled();
+    expect(repository.saveRun).not.toHaveBeenCalled();
+    expect(repository.finalizeIdempotency).not.toHaveBeenCalled();
+    expect(repository.releaseIdempotency).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      subject,
+      workspace,
+      conversation,
+      key,
+    );
+  });
   it('allows only one overlapping request for the same key', async () => {
     let releaseProvider!: () => void;
     const providerStarted = new Promise<void>((resolve) => {

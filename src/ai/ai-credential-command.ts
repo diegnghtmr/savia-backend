@@ -4,10 +4,11 @@ import {
   sortViolations,
   type FieldViolation,
 } from '../platform/field-validation.js';
-import type {
-  CreateCredentialCommand,
-  SetDefaultModelCommand,
-  UpdateCredentialCommand,
+import {
+  isUsableBearerToken,
+  type CreateCredentialCommand,
+  type SetDefaultModelCommand,
+  type UpdateCredentialCommand,
 } from './ai-credential.port.js';
 import { PROVIDERS as PROVIDER_CATALOGUE } from './ai-credential.service.js';
 const UUID =
@@ -96,6 +97,19 @@ export function createCredentialCommand(
     typeof b.secret === 'string' && b.secret.length > 0
       ? b.secret
       : (add(v, 'secret', 'invalid-value', 'must be a non-empty string'), '');
+  if (
+    secret &&
+    (credentialType === 'api_key' ||
+      credentialType === 'gateway_token' ||
+      credentialType === 'access_token') &&
+    !isUsableBearerToken(secret)
+  )
+    add(
+      v,
+      'secret',
+      'invalid-value',
+      'must not contain surrounding whitespace or control characters',
+    );
   let alias: string | null = null;
   if (b.alias !== undefined && b.alias !== null)
     alias = nameValue(b.alias, 'alias', v, 120);

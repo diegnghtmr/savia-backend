@@ -47,6 +47,11 @@ export class AgentMessagesController {
           title: 'Workspace access forbidden',
           status: 403,
         });
+      if (reply.raw.destroyed) return;
+      const controller = new AbortController();
+      reply.raw.once('close', () => {
+        if (!reply.raw.writableEnded) controller.abort();
+      });
       const outcome = await this.port.prepare(
         req.identity.subject,
         workspace.workspaceId,
@@ -54,6 +59,11 @@ export class AgentMessagesController {
         key.key,
         command,
       );
+      if (
+        controller.signal.aborted &&
+        outcome.kind !== AGENT_MESSAGE_OUTCOMES.READY
+      )
+        return;
       if (outcome.kind === AGENT_MESSAGE_OUTCOMES.NOT_FOUND)
         return sendProblem(reply, {
           type: PROBLEM_TYPES.NOT_FOUND,
@@ -82,16 +92,16 @@ export class AgentMessagesController {
           title: 'Workspace access forbidden',
           status: 403,
         });
-      reply.hijack();
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-      });
-      const controller = new AbortController();
-      reply.raw.once('close', () => {
-        if (!reply.raw.writableEnded) controller.abort();
-      });
+      if (!controller.signal.aborted) {
+        reply.hijack();
+        reply.raw.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+        });
+      }
+      // A ready outcome may own a reservation even if the response is gone.
+      // Execute receives the aborted signal so it can release it without streaming.
       const write = (event: {
         type: string;
         runId: string;

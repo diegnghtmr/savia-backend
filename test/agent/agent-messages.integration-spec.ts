@@ -1,5 +1,8 @@
 // Migration under test: 202609060009_agent_messages.sql
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import https from 'node:https';
+import { Readable } from 'node:stream';
 import { Pool } from 'pg';
 import {
   FastifyAdapter,
@@ -214,9 +217,21 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
       payload: { modelRef: 'openai-compatible:demo', credentialId },
     });
     expect(configured.statusCode).toBe(204);
-    const unauthorized = new Response(secret, { status: 401 });
-    const upstream = vi.fn<typeof fetch>().mockResolvedValue(unauthorized);
-    vi.stubGlobal('fetch', upstream);
+    const unauthorized = Object.assign(Readable.from([Buffer.from(secret)]), {
+      statusCode: 401,
+      headers: {},
+    });
+    const respond = (
+      _url: URL,
+      _options: https.RequestOptions,
+      callback: (response: unknown) => void,
+    ) => {
+      const request = new EventEmitter();
+      return Object.assign(request, { end: () => callback(unauthorized) });
+    };
+    const upstream = vi
+      .spyOn(https, 'request')
+      .mockImplementation(respond as unknown as typeof https.request);
     try {
       const conversation = await createConversation();
       const id = key();
@@ -235,9 +250,10 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
       expect(upstream).toHaveBeenCalledExactlyOnceWith(
         new URL('https://gateway.example/v1/chat/completions'),
         expect.objectContaining({ headers: expect.objectContaining(auth) }),
+        expect.any(Function),
       );
     } finally {
-      vi.unstubAllGlobals();
+      upstream.mockRestore();
     }
   });
 

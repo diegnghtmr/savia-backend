@@ -6,8 +6,11 @@ workspace-owned credential. For `api_key` or `gateway_token`, set credential
 `openai` defaults to `https://api.openai.com/v1`. For `local_endpoint`, set
 `secret` to the API base (for example `http://127.0.0.1:11434/v1`); no bearer
 header is sent. The adapter appends `/chat/completions` and expects SSE terminated
-with `[DONE]`. URLs must use HTTPS except for loopback and explicit local
-endpoints. Redirects are not followed. Streams are limited to 30 seconds and 1 MiB.
+with `[DONE]`. `api_key` and `gateway_token` require a public HTTPS destination;
+DNS results are checked at connection time. Bearer tokens cannot have surrounding
+whitespace or control characters. Only `local_endpoint` can use HTTP or connect
+to loopback or private networks; link-local and metadata destinations are never
+allowed. Redirects are not followed. Streams are limited to 30 seconds and 1 MiB.
 
 Only `NODE_ENV=test` or `NODE_ENV=development` enables echo when no default
 credential is configured. An unusable configured credential fails rather than

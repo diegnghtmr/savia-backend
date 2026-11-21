@@ -140,6 +140,32 @@ describe('AI credential command validation', () => {
     );
   });
 
+  it.each([
+    ` ${secret}`,
+    `${secret}\u00a0`,
+    `${secret}\r\n`,
+    `before\u0000${secret}`,
+    `before\u0085${secret}`,
+  ])(
+    'rejects unsafe API keys and gateway tokens without exposing input',
+    (unsafe) => {
+      for (const [providerId, credentialType] of [
+        ['openai', 'api_key'],
+        ['openai-compatible', 'gateway_token'],
+      ])
+        assertViolation(
+          () =>
+            createCredentialCommand({
+              ...base(),
+              providerId,
+              credentialType,
+              secret: unsafe,
+            }),
+          'secret',
+        );
+    },
+  );
+
   it('enforces alias length and accepts null', () => {
     expect(
       createCredentialCommand({ ...base(), alias: 'a'.repeat(120) }).alias,

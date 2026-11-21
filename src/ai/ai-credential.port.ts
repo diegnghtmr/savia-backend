@@ -11,6 +11,9 @@ export const AI_OUTCOMES = {
   INVALID: 'invalid',
   PRECONDITION: 'precondition',
 } as const;
+export function isUsableBearerToken(value: string): boolean {
+  return value.length > 0 && value.trim() === value && !/\p{Cc}/u.test(value);
+}
 export type OwnerType = 'user' | 'workspace';
 export type CredentialType =
   | 'api_key'

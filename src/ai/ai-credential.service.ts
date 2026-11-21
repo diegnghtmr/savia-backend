@@ -3,6 +3,7 @@ import type { CredentialCrypto } from '../platform/credential-crypto.js';
 import type { PgTransaction } from '../platform/pg-transaction.js';
 import {
   AI_OUTCOMES,
+  isUsableBearerToken,
   type AIServicePort,
   type CreateCredentialCommand,
   type Outcome,
@@ -292,6 +293,8 @@ export class AICredentialService implements AIServicePort {
       throw new Error('Workspace AI credential unavailable');
     const secret = this.crypto.decrypt(encryptedSecret);
     const local = credentialType === 'local_endpoint';
+    if (!local && !isUsableBearerToken(secret))
+      throw new Error('Workspace AI credential unavailable');
     const configured = providerId === 'openai' ? OPENAI_BASE_URL : '';
     return {
       model,
