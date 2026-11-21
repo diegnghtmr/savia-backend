@@ -41,6 +41,8 @@ describe('ApprovalsController', () => {
 
   function createMockPort(): ApprovalsPort {
     return {
+      createApproval: vi.fn(),
+      executeApprovedAction: vi.fn(),
       getApproval: vi.fn().mockResolvedValue({
         kind: APPROVAL_OUTCOMES.OK,
         approval: sampleApprovalPayload,
