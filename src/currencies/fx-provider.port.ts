@@ -11,6 +11,7 @@ export interface FxProvider {
   latest(
     baseCurrency: string,
     quoteCurrencies: readonly string[],
+    signal?: AbortSignal,
   ): Promise<FxSnapshot | undefined>;
 }
 

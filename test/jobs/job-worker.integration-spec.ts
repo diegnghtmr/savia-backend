@@ -1,4 +1,6 @@
-// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql
+// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql, 202609170009_frankfurter_pairs.sql
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { Pool } from 'pg';
 import {
   afterAll,
@@ -13,6 +15,7 @@ import {
 import { NestFactory } from '@nestjs/core';
 
 import { WorkerModule } from '../../src/worker.module.js';
+import { FrankfurterRateJob } from '../../src/currencies/frankfurter-rate-job.js';
 import { PostgresJobsAdapter } from '../../src/jobs/postgres-jobs.adapter.js';
 import type {
   JobExecutionContext,
@@ -1035,6 +1038,159 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       expect(observedTimeout).toMatch(/^[1-9]\d*ms$/);
       expect(Number.parseInt(observedTimeout, 10)).toBeGreaterThan(0);
       expect(Number.parseInt(observedTimeout, 10)).toBeLessThanOrEqual(5000);
+    });
+  });
+
+  describe('Daily system FX job', () => {
+    beforeAll(async () => {
+      await admin.query(
+        `
+        insert into public.exchange_rates
+          (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+        values ($1, 'EUR', 'USD', 1.1000, '2026-11-19', 'manual', $3),
+               ($1, 'COP', 'USD', 0.00024, '2026-11-19', 'manual', $3),
+               ($1, 'JPY', 'USD', 0.007, '2026-11-19', 'manual', $3),
+               ($1, 'CHF', 'USD', 1.2, '2026-11-19', 'manual', $3),
+               ($2, 'EUR', 'USD', 1.1000, '2026-11-19', 'manual', $4),
+               ($2, 'GBP', 'USD', 1.25, '2026-11-19', 'manual', $4)`,
+        [ws1Id, ws2Id, ownerA, ownerB],
+      );
+      await admin.query(
+        `
+        insert into public.accounts
+          (workspace_id, name, type, currency, status, closed_at, created_by)
+        values ($1, 'Euro 1', 'checking', 'EUR', 'active', null, $3),
+               ($1, 'Euro 2', 'checking', 'EUR', 'active', null, $3),
+               ($1, 'Peso', 'checking', 'COP', 'active', null, $3),
+               ($1, 'Yen', 'checking', 'JPY', 'archived', null, $3),
+               ($1, 'Franc', 'checking', 'CHF', 'closed', now(), $3),
+               ($2, 'Euro', 'checking', 'EUR', 'active', null, $4),
+               ($2, 'Pound', 'checking', 'GBP', 'active', null, $4)`,
+        [ws1Id, ws2Id, ownerA, ownerB],
+      );
+    });
+
+    it('only exposes distinct active account-to-workspace pairs to the worker', async () => {
+      const sql = 'select * from public.list_frankfurter_pairs()';
+      const pairs = await transaction.runAsQueueConsumer((client) =>
+        client.query(sql),
+      );
+      expect(pairs.rows).toEqual([
+        { workspace_id: ws1Id, base_currency: 'COP', quote_currency: 'USD' },
+        { workspace_id: ws1Id, base_currency: 'EUR', quote_currency: 'USD' },
+        { workspace_id: ws2Id, base_currency: 'EUR', quote_currency: 'USD' },
+        { workspace_id: ws2Id, base_currency: 'GBP', quote_currency: 'USD' },
+      ]);
+      await expect(
+        transaction.runRead(ownerA, (client) => client.query(sql)),
+      ).rejects.toMatchObject({ code: '42501' });
+      const exposed = await admin.query(`
+        select rolname from pg_roles where rolname in ('anon', 'authenticated', 'service_role')
+          and has_function_privilege(rolname, 'public.list_frankfurter_pairs()', 'execute')`);
+      expect(exposed.rows).toEqual([]);
+    });
+
+    it('starts with the real worker, publishes a dated batch once, and writes nothing on partial provider outage', async () => {
+      const requests: string[] = [];
+      let date = '2026-11-20';
+      let eur = '1.10000000000000008900';
+      let unavailable = false;
+      const server = createServer((req, res) => {
+        if (req.url === '/currencies') {
+          res.end(
+            '{"EUR":"Euro","GBP":"Pound","USD":"Dollar","JPY":"Yen","CHF":"Franc"}',
+          );
+          return;
+        }
+        requests.push(req.url ?? '');
+        const base = req.url === '/latest?from=EUR&to=USD' ? 'EUR' : 'GBP';
+        if (unavailable && base === 'GBP') res.writeHead(503).end();
+        else
+          res.end(
+            `{"amount":1,"base":"${base}","date":"${date}","rates":{"USD":${base === 'EUR' ? eur : '1.2500'}}}`,
+          );
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (address === null || typeof address === 'string')
+        throw new Error('Expected loopback TCP.');
+      const origin = `http://127.0.0.1:${address.port}`;
+      vi.stubEnv('SAVIA_FRANKFURTER_BASE_URL', origin);
+      vi.spyOn(tesseractAdapter, 'runOcrStartupPreflight').mockResolvedValue(
+        undefined,
+      );
+      const localFetch = globalThis.fetch;
+      vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+        if (!String(input).startsWith(`${origin}/`))
+          throw new Error('Only loopback FX requests are permitted.');
+        return localFetch(input, init);
+      });
+      const run = async () => {
+        const app = await NestFactory.createApplicationContext(WorkerModule, {
+          logger: false,
+        });
+        try {
+          const runOnce = vi.spyOn(app.get(FrankfurterRateJob), 'runOnce');
+          await app.get(JobRunner).start();
+          expect(runOnce).toHaveBeenCalledOnce();
+          await runOnce.mock.results[0].value;
+        } finally {
+          await app.close();
+        }
+      };
+      const readRates = async () =>
+        (
+          await admin.query(`
+        select id, workspace_id, base_currency, quote_currency, rate::text,
+               effective_at as day, source, manual
+          from public.exchange_rates order by id`)
+        ).rows;
+      try {
+        const initial = await readRates();
+        await run();
+        const recorded = await readRates();
+        expect(recorded.filter((row) => row.source === 'manual')).toEqual(
+          initial,
+        );
+        expect(
+          recorded
+            .filter((row) => row.source === 'frankfurter')
+            .map((r) => [
+              r.workspace_id,
+              r.base_currency,
+              r.quote_currency,
+              r.rate,
+              r.day.toISOString(),
+              r.manual,
+            ])
+            .sort(),
+        ).toEqual([
+          [ws1Id, 'EUR', 'USD', eur, '2026-11-20T00:00:00.000Z', false],
+          [ws2Id, 'EUR', 'USD', eur, '2026-11-20T00:00:00.000Z', false],
+          [ws2Id, 'GBP', 'USD', '1.2500', '2026-11-20T00:00:00.000Z', false],
+        ]);
+        eur = '9.99';
+        await run();
+        expect(await readRates()).toEqual(recorded);
+        date = '2026-11-23';
+        unavailable = true;
+        await expect(run()).rejects.toThrow('Frankfurter returned HTTP 503.');
+        expect(await readRates()).toEqual(recorded);
+        expect(requests).toEqual(
+          Array.from({ length: 3 }, () => [
+            '/latest?from=EUR&to=USD',
+            '/latest?from=GBP&to=USD',
+          ]).flat(),
+        );
+      } finally {
+        vi.unstubAllEnvs();
+        vi.restoreAllMocks();
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+          server.closeAllConnections();
+        });
+      }
     });
   });
 });

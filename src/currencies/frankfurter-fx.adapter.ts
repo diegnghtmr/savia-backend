@@ -80,8 +80,12 @@ export class FrankfurterFxAdapter implements FxProvider {
   public async latest(
     baseCurrency: string,
     quoteCurrencies: readonly string[],
+    cancellation?: AbortSignal,
   ): Promise<FxSnapshot | undefined> {
-    const signal = AbortSignal.timeout(this.timeoutMs);
+    const timeout = AbortSignal.timeout(this.timeoutMs);
+    const signal = cancellation
+      ? AbortSignal.any([timeout, cancellation])
+      : timeout;
     const currencies = await this.readJson(
       new URL('/currencies', this.baseUrl),
       signal,
