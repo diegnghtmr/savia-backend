@@ -11,6 +11,8 @@ import {
 } from '../../src/currencies/exchange-rate.port.js';
 import { PROBLEM_TYPES } from '../../src/platform/problem-details.js';
 
+const clock = () => new Date('2026-09-01T00:30:00.000Z');
+
 describe('ExchangeRateController.createManualExchangeRate', () => {
   const workspaceId = '00000000-0000-0000-0000-000000000951';
   const subject = '00000000-0000-0000-0000-000000000901';
@@ -46,7 +48,7 @@ describe('ExchangeRateController.createManualExchangeRate', () => {
       ...exchangeRatePortOverrides,
     };
 
-    const controller = new ExchangeRateController(fakeExchangeRatePort);
+    const controller = new ExchangeRateController(fakeExchangeRatePort, clock);
 
     const reply = {
       status: vi.fn().mockReturnThis(),
@@ -147,7 +149,11 @@ describe('ExchangeRateController.createManualExchangeRate', () => {
     );
     expect(reply.header).not.toHaveBeenCalledWith('etag', expect.anything());
     expect(reply.status).toHaveBeenCalledWith(201);
-    expect(reply.send).toHaveBeenCalledWith(mockExchangeRate);
+    expect(reply.send).toHaveBeenCalledWith({
+      ...mockExchangeRate,
+      isStale: false,
+      ageHours: 84.5,
+    });
   });
 
   it('answers 403 when port reports forbidden', async () => {
@@ -263,7 +269,7 @@ describe('ExchangeRateController.listExchangeRates', () => {
       ...exchangeRatePortOverrides,
     };
 
-    const controller = new ExchangeRateController(fakeExchangeRatePort);
+    const controller = new ExchangeRateController(fakeExchangeRatePort, clock);
 
     const reply = {
       status: vi.fn().mockReturnThis(),
@@ -382,7 +388,10 @@ describe('ExchangeRateController.listExchangeRates', () => {
     });
     expect(reply.header).not.toHaveBeenCalledWith('etag', expect.anything());
     expect(reply.status).toHaveBeenCalledWith(200);
-    expect(reply.send).toHaveBeenCalledWith(mockExchangeRates);
+    expect(reply.send).toHaveBeenCalledWith([
+      { ...mockExchangeRates[0], isStale: false, ageHours: 84.5 },
+      { ...mockExchangeRates[1], isStale: false, ageHours: 110.5 },
+    ]);
   });
 
   it('answers 200 with empty array when no rates match (not an error)', async () => {

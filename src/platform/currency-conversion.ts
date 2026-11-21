@@ -1,3 +1,5 @@
+export const FRANKFURTER_RATE_MAX_AGE_HOURS = 72;
+
 export const CURRENCY_RATE_SELECTION_SQL = `
 select rate::text as rate,
        to_char(effective_at at time zone 'utc', 'YYYY-MM-DD') as "rateDate",
@@ -8,7 +10,7 @@ select rate::text as rate,
    and quote_currency = $3
    -- FR-FX-007/008: provider rates expire after 72 hours; manual rates never do.
    and not (source = 'frankfurter'
-            and effective_at <= coalesce($4::timestamptz, now()) - interval '72 hours')
+            and effective_at <= coalesce($4::timestamptz, now()) - interval '${FRANKFURTER_RATE_MAX_AGE_HOURS} hours')
  order by (effective_at <= coalesce($4::timestamptz, now())) desc,
           case
             when effective_at <= coalesce($4::timestamptz, now()) then effective_at

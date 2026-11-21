@@ -1059,6 +1059,17 @@ components:
           type: string
         manual:
           type: boolean
+        isStale:
+          type: boolean
+          description: >-
+            Whether the rate is stale at response time. A rate with source `frankfurter`
+            is stale when at least 72 hours have elapsed since `effectiveAt`.
+            Manual rates are never stale.
+        ageHours:
+          type: number
+          description: >-
+            Time from `effectiveAt` to response time, in hours (may be fractional).
+            Applies to both provider and manual rates.
     CreateManualExchangeRateRequest:
       type: object
       additionalProperties: false
