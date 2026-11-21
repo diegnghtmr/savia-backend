@@ -8,6 +8,10 @@ import {
   type PdfRenderer,
 } from '../platform/pdf-renderer.port.js';
 import { PlaywrightPdfRenderer } from '../platform/playwright-pdf-renderer.js';
+import {
+  NOTIFICATION_WRITER,
+  type NotificationWriter,
+} from '../platform/notification-writer.port.js';
 import { SupabaseStorageAdapter } from '../platform/supabase-storage.adapter.js';
 import { ReportJobHandler } from './report-job.handler.js';
 import { PostgresReportAdapter } from './postgres-report.adapter.js';
@@ -43,12 +47,14 @@ import { WorkerPlatformModule } from '../platform/worker-platform.module.js';
         ARTIFACT_STORAGE,
         PDF_RENDERER,
         WorkerConfig,
+        NOTIFICATION_WRITER,
       ],
       useFactory: (
         store: PostgresReportAdapter,
         storage: ArtifactStorage,
         pdfRenderer: PdfRenderer,
         config: WorkerConfig,
+        notifications: NotificationWriter,
       ): ReportJobHandler =>
         new ReportJobHandler(
           store,
@@ -56,6 +62,7 @@ import { WorkerPlatformModule } from '../platform/worker-platform.module.js';
           pdfRenderer,
           undefined,
           config.renderSettleTimeoutMs,
+          notifications,
         ),
     },
   ],

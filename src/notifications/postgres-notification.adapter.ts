@@ -1,4 +1,9 @@
+import { Logger } from '@nestjs/common';
 import type { Cursor } from '../platform/cursor.js';
+import type {
+  NotificationEvent,
+  NotificationWriter,
+} from '../platform/notification-writer.port.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   NotificationRow,
@@ -16,7 +21,37 @@ interface NotificationSqlRow extends Record<string, unknown> {
   readonly cursorAt: string;
 }
 
-export class PostgresNotificationAdapter implements NotificationStore {
+export class PostgresNotificationAdapter
+  implements NotificationStore, NotificationWriter
+{
+  private readonly logger = new Logger(PostgresNotificationAdapter.name);
+
+  public async publish(
+    client: TransactionClient,
+    event: NotificationEvent,
+  ): Promise<void> {
+    await client.query('savepoint notification_publish');
+    try {
+      await client.query(
+        `insert into public.notifications (workspace_id, subject_id, type, resource_id, title)
+         values ($1::uuid, $2::uuid, $3, $4::uuid, $5)
+         on conflict (workspace_id, subject_id, type, resource_id) do nothing`,
+        [
+          event.workspaceId,
+          event.recipientId,
+          event.type,
+          event.resourceId,
+          event.title,
+        ],
+      );
+    } catch {
+      // A statement rejection must not leave the caller's transaction aborted.
+      await client.query('rollback to savepoint notification_publish');
+      this.logger.warn('In-app notification insert failed.');
+    }
+    await client.query('release savepoint notification_publish');
+  }
+
   public async listNotifications(
     client: TransactionClient,
     subject: string,

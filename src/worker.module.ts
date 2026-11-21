@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ForecastJobHandler } from './forecasts/forecast-job.handler.js';
 import { ForecastWorkerModule } from './forecasts/forecast-worker.module.js';
 import { PostgresJobsAdapter } from './jobs/postgres-jobs.adapter.js';
+import { NotificationWriterModule } from './notifications/notification-writer.module.js';
 import { JOB_HANDLERS } from './platform/job-handler.port.js';
 import { JobRunner } from './platform/job-runner.js';
 import { JOB_WRITER } from './platform/job-writer.port.js';
@@ -16,6 +17,7 @@ import { ReceiptWorkerModule } from './receipts/receipt-worker.module.js';
 @Module({
   imports: [
     WorkerPlatformModule,
+    NotificationWriterModule,
     ForecastWorkerModule,
     ReportWorkerModule,
     ExportWorkerModule,

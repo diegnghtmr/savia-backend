@@ -2,16 +2,16 @@ import { Module } from '@nestjs/common';
 import { NotificationsController } from './notifications.controller.js';
 import { NOTIFICATION_PORT } from './notification.port.js';
 import { NotificationService } from './notification.service.js';
+import { NotificationWriterModule } from './notification-writer.module.js';
 import { PostgresNotificationAdapter } from './postgres-notification.adapter.js';
 import { PlatformModule } from '../platform/platform.module.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
 
 @Module({
-  imports: [PlatformModule],
+  imports: [PlatformModule, NotificationWriterModule],
   controllers: [NotificationsController],
   providers: [
-    PostgresNotificationAdapter,
     {
       provide: NotificationService,
       inject: [

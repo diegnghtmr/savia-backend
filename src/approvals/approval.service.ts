@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
+import type { NotificationWriter } from '../platform/notification-writer.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
@@ -133,6 +134,7 @@ export class ApprovalService implements ApprovalsPort {
     @Inject(APPROVAL_STORE) private readonly store: ApprovalStore,
     private readonly idempotency: IdempotencyStore,
     private readonly clock: () => Date = () => new Date(),
+    private readonly notifications?: NotificationWriter,
   ) {}
 
   public async createApproval(
@@ -159,9 +161,17 @@ export class ApprovalService implements ApprovalsPort {
         { ...command, expiresAt },
         hash,
       );
-      return approval
-        ? { kind: APPROVAL_OUTCOMES.OK, approval: toPayload(approval) }
-        : { kind: APPROVAL_OUTCOMES.CONFLICT };
+      if (!approval) return { kind: APPROVAL_OUTCOMES.CONFLICT };
+      if (command.channel === 'agent') {
+        await this.notifications?.publish(client, {
+          workspaceId,
+          recipientId: subject,
+          resourceId: approval.id,
+          type: 'approval_requested',
+          title: 'Agent action pending approval',
+        });
+      }
+      return { kind: APPROVAL_OUTCOMES.OK, approval: toPayload(approval) };
     });
   }
 

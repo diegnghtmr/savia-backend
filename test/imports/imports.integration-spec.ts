@@ -429,6 +429,14 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       payload: command,
     });
     expect(committed.statusCode).toBe(202);
+    const replay = await app.inject({
+      method: 'POST',
+      url: `/v1/import-jobs/${id}/commit`,
+      headers,
+      payload: command,
+    });
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json()).toEqual(committed.json());
     const conflict = await app.inject({
       method: 'POST',
       url: `/v1/import-jobs/${id}/commit`,
@@ -470,6 +478,19 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       payload: command,
     });
     expect(missing.statusCode).toBe(404);
+    const notifications = await app.inject({
+      method: 'GET',
+      url: '/v1/notifications',
+      headers: { authorization: headers.authorization },
+    });
+    expect(notifications.statusCode).toBe(200);
+    expect(notifications.json().items).toEqual([
+      expect.objectContaining({
+        type: 'import_completed',
+        title: 'Import completed',
+        read: false,
+      }),
+    ]);
   });
   it('replays idempotently with exactly one job and one row set', async () => {
     const key = '00000000-0000-4000-8000-000000005517';

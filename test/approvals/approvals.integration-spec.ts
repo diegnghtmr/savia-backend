@@ -236,6 +236,30 @@ describe('Approvals integration contract and endpoint suite', () => {
         .toBe(true);
     }
 
+    it('notifies only the agent approval requester when a pending approval is created', async () => {
+      await createPending('agent');
+      await createPending('mcp');
+      for (const token of ['editor-token', 'owner-token']) {
+        const response = await application.inject({
+          method: 'GET',
+          url: '/v1/notifications',
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().items).toEqual(
+          token === 'editor-token'
+            ? [
+                expect.objectContaining({
+                  type: 'approval_requested',
+                  title: 'Agent action pending approval',
+                  read: false,
+                }),
+              ]
+            : [],
+        );
+      }
+    });
+
     it('does not consume an approval that expires while the claim waits', async () => {
       const { id, argumentsHash } = await approved();
       const locker = await admin.connect();

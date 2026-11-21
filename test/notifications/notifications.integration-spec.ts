@@ -1,4 +1,4 @@
-// Migration under test: 202609060003_notifications.sql
+// Migrations under test: 202609060003_notifications.sql, 202609170006_notification_production.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -10,6 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
+import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import { PostgresNotificationAdapter } from '../../src/notifications/postgres-notification.adapter.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -88,6 +90,122 @@ describe('Notifications integration contract and endpoint suite', () => {
     if (admin) {
       await admin.end();
     }
+  });
+
+  it('deduplicates produced events and hides them after workspace access is lost', async () => {
+    const workspaceId = randomUUID();
+    const otherWorkspaceId = randomUUID();
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency) values
+       ($1, 'Notifications A', 'shared', 'USD'), ($2, 'Notifications B', 'shared', 'USD')`,
+      [workspaceId, otherWorkspaceId],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status) values
+       ($1, $3, 'editor', 'active'), ($1, $4, 'owner', 'active'), ($2, $3, 'owner', 'active')`,
+      [workspaceId, otherWorkspaceId, user1Id, user2Id],
+    );
+    const tx = application.get(PgTransaction);
+    const writer = application.get(PostgresNotificationAdapter);
+    const event = {
+      workspaceId,
+      recipientId: user1Id,
+      resourceId: randomUUID(),
+      type: 'report_completed',
+      title: 'Report available',
+    };
+    const list = async (token: string) => {
+      const response = await application.inject({
+        method: 'GET',
+        url: '/v1/notifications',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json<{
+        items: { id: string; title: string; read: boolean }[];
+      }>().items;
+    };
+    const markRead = (id: string) =>
+      application.inject({
+        method: 'POST',
+        url: `/v1/notifications/${id}/read`,
+        headers: {
+          authorization: `Bearer ${user1Token}`,
+          'idempotency-key': randomUUID(),
+        },
+      });
+
+    await tx.run(user1Id, async (client) => {
+      await writer.publish(client, { ...event, title: '' }); // Constraint failure must not abort this transaction.
+      await writer.publish(client, {
+        ...event,
+        recipientId: user2Id,
+        title: 'Forged recipient',
+      });
+      await writer.publish(client, event);
+      await writer.publish(client, {
+        ...event,
+        workspaceId: otherWorkspaceId,
+        title: 'Other workspace',
+      });
+      await writer.publish(client, {
+        ...event,
+        type: 'import_completed',
+        title: 'Other event',
+      });
+      await writer.publish(client, {
+        ...event,
+        resourceId: randomUUID(),
+        title: 'Other resource',
+      });
+    });
+    const items = await list(user1Token);
+    expect(items.map(({ title }) => title).sort()).toEqual([
+      'Other event',
+      'Other resource',
+      'Other workspace',
+      'Report available',
+    ]);
+    expect(await list(user2Token)).toEqual([]);
+    const report = items.find(({ title }) => title === event.title)!;
+    expect(report.read).toBe(false);
+    const marked = await markRead(report.id);
+    expect(marked.statusCode).toBe(204);
+    expect(marked.body).toBe('');
+
+    await tx.run(user1Id, (client) =>
+      writer.publish(client, { ...event, title: 'Duplicate' }),
+    );
+    await tx.run(user2Id, (client) =>
+      writer.publish(client, { ...event, recipientId: user2Id }),
+    );
+    expect(await list(user1Token)).toEqual(
+      items.map((item) =>
+        item.id === report.id ? { ...item, read: true } : item,
+      ),
+    );
+    expect(await list(user2Token)).toEqual([
+      expect.objectContaining({ title: event.title, read: false }),
+    ]);
+
+    await admin.query(
+      'delete from public.workspace_memberships where workspace_id = $1 and profile_id = $2',
+      [workspaceId, user1Id],
+    );
+    await tx.run(user1Id, (client) =>
+      writer.publish(client, { ...event, resourceId: randomUUID() }),
+    );
+    expect((await list(user1Token)).map(({ title }) => title)).toEqual([
+      'Other workspace',
+    ]);
+    const hidden = await markRead(report.id);
+    expect(hidden.statusCode).toBe(404);
+    expect(hidden.json()).toMatchObject({ title: 'Notification not found' });
+    const count = await admin.query(
+      'select count(*)::int as count from public.notifications where subject_id = $1',
+      [user1Id],
+    );
+    expect(count.rows[0].count).toBe(4);
   });
 
   describe('Database schema, RLS, and constraints', () => {

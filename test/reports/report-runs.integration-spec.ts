@@ -6,7 +6,15 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
@@ -23,6 +31,7 @@ import {
   type ArtifactStorage,
 } from '../../src/platform/artifact-storage.port.js';
 import { WorkerModule } from '../../src/worker.module.js';
+import { ReceiptWorkerModule } from '../../src/receipts/receipt-worker.module.js';
 import {
   createReportRunCommand,
   ReportRunCommandValidationError,
@@ -436,7 +445,15 @@ describe('Report runs integration contract and endpoint suite', () => {
       .overrideProvider(ARTIFACT_STORAGE)
       .useValue(inMemoryStorage)
       .compile();
-    await workerModule.init();
+    // This suite runs the real report worker, not the unrelated receipt OCR preflight.
+    const ocrPreflight = vi
+      .spyOn(ReceiptWorkerModule.prototype, 'onModuleInit')
+      .mockResolvedValue(undefined);
+    try {
+      await workerModule.init();
+    } finally {
+      ocrPreflight.mockRestore();
+    }
     runner = workerModule.get(JobRunner);
   });
 
@@ -1374,6 +1391,16 @@ describe('Report runs integration contract and endpoint suite', () => {
     });
 
     it('retries a storage 5xx by overwriting the same object key', async () => {
+      const listNotifications = async () => {
+        const response = await application.inject({
+          method: 'GET',
+          url: '/v1/notifications?limit=100',
+          headers: { authorization: 'Bearer editor-token' },
+        });
+        expect(response.statusCode).toBe(200);
+        return response.json<{ items: { type: string }[] }>().items;
+      };
+      const before = await listNotifications();
       inMemoryStorage.failNext = ['unavailable'];
       const uploadsBefore = inMemoryStorage.uploadCallCount;
       const response = await application.inject({
@@ -1392,8 +1419,17 @@ describe('Report runs integration contract and endpoint suite', () => {
       });
       expect(response.statusCode).toBe(202);
       const body = JSON.parse(response.body) as { id: string };
+      expect(await listNotifications()).toEqual(before);
       const finished = await drainUntilRunTerminal(body.id);
       expect(finished.runStatus).toBe('completed');
+      expect(await listNotifications()).toEqual([
+        ...before,
+        expect.objectContaining({
+          type: 'report_completed',
+          title: 'Report available',
+          read: false,
+        }),
+      ]);
       expect(inMemoryStorage.uploadCallCount).toBe(uploadsBefore + 2);
       expect(
         inMemoryStorage.uploaded.has(`${workspace1Id}/${body.id}.json`),

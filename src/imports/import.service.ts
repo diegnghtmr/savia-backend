@@ -17,6 +17,7 @@ import {
   normalizeImportDescription,
 } from './import-parsers.js';
 import type { JobWriter } from '../platform/job-writer.port.js';
+import type { NotificationWriter } from '../platform/notification-writer.port.js';
 import type { LedgerWriter } from '../platform/ledger-writer.port.js';
 import {
   DEBIT_SIGNS,
@@ -112,6 +113,7 @@ export class ImportService implements ImportsPort {
     private readonly jobs: JobWriter,
     private readonly ledger: LedgerWriter,
     private readonly commitTx: ImportTransaction = tx,
+    private readonly notifications?: NotificationWriter,
   ) {}
   public async createImportJob(
     subject: string,
@@ -409,6 +411,13 @@ export class ImportService implements ImportsPort {
           ))
         )
           throw new Error('Import idempotency record was lost.');
+        await this.notifications?.publish(client, {
+          workspaceId,
+          recipientId: subject,
+          resourceId: id,
+          type: 'import_completed',
+          title: 'Import completed',
+        });
         return { kind: IMPORT_MUTATION_OUTCOMES.OK, job };
       })
       .catch((error: unknown) => {
