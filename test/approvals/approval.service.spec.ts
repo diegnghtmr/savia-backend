@@ -25,6 +25,7 @@ describe('ApprovalService', () => {
     id: approvalId,
     workspaceId,
     toolName: 'execute_sql',
+    channel: null,
     riskClass: 'destructive',
     argumentsHash: 'hash-abc-123',
     preview: { query: 'DROP TABLE test' },

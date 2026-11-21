@@ -211,6 +211,14 @@ export class ApprovalsController {
       });
     }
 
+    if (o.kind === 'invalid_action') {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Approved tool action could not be applied',
+        status: 422,
+      });
+    }
+
     if (o.kind === APPROVAL_OUTCOMES.REPLAYED) {
       return reply.code(o.status).type('application/json').send(o.body);
     }

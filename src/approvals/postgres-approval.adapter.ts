@@ -12,6 +12,7 @@ interface ApprovalRow extends Record<string, unknown> {
   readonly id: string;
   readonly workspaceId: string;
   readonly toolName: string;
+  readonly channel: ApprovalRecord['channel'];
   readonly riskClass: string;
   readonly argumentsHash: string;
   readonly preview: Record<string, unknown> | string;
@@ -29,6 +30,7 @@ function mapApproval(row: ApprovalRow): ApprovalRecord {
     id: row.id,
     workspaceId: row.workspaceId,
     toolName: row.toolName,
+    channel: row.channel ?? null,
     riskClass: row.riskClass as RiskClass,
     argumentsHash: row.argumentsHash,
     preview:
@@ -52,7 +54,7 @@ function mapApproval(row: ApprovalRow): ApprovalRecord {
 }
 
 const approvalColumns = `id,
-  workspace_id as "workspaceId", tool_name as "toolName",
+  workspace_id as "workspaceId", tool_name as "toolName", channel,
   risk_class as "riskClass", arguments_hash as "argumentsHash", preview, status,
   expires_at as "expiresAt", decided_by as "decidedBy", decided_at as "decidedAt",
   decision_reason as "decisionReason", created_by as "createdBy", created_at as "createdAt"`;

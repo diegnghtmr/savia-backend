@@ -35,6 +35,7 @@ export interface ApprovalRecord {
   readonly id: string;
   readonly workspaceId: string;
   readonly toolName: string;
+  readonly channel: 'agent' | 'mcp' | null;
   readonly riskClass: RiskClass;
   readonly argumentsHash: string;
   readonly preview: Record<string, unknown>;
@@ -56,6 +57,15 @@ export interface ApprovalAction {
   readonly toolName: string;
   readonly arguments: Readonly<Record<string, unknown>>;
 }
+
+export type ApprovalExecutor = (
+  client: TransactionClient,
+  subject: string,
+  workspaceId: string,
+  approvalId: string,
+  args: ApprovalAction['arguments'],
+) => Promise<'ok' | 'forbidden' | 'conflict' | 'invalid_action'>;
+export type ApprovalExecutors = ReadonlyMap<string, ApprovalExecutor>;
 
 export interface CreateApprovalCommand extends ApprovalAction {
   readonly channel: 'agent' | 'mcp';
@@ -96,7 +106,8 @@ export type ApprovalDecisionOutcome =
       readonly reason?: string;
     }
   | { readonly kind: typeof APPROVAL_OUTCOMES.FORBIDDEN }
-  | { readonly kind: typeof APPROVAL_OUTCOMES.NOT_FOUND };
+  | { readonly kind: typeof APPROVAL_OUTCOMES.NOT_FOUND }
+  | { readonly kind: 'invalid_action' };
 
 export type ApprovalExecutionOutcome<T> =
   | { readonly kind: typeof APPROVAL_OUTCOMES.OK; readonly result: T }

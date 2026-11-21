@@ -100,6 +100,160 @@ it('does not emit after a provider terminal event', async () => {
   ]);
 });
 
+describe('tool rounds', () => {
+  async function run(
+    name: string,
+    args: Record<string, unknown>,
+    repeat = false,
+    result: unknown = ['account'],
+  ) {
+    const events: Array<{ type: string; data: Record<string, unknown> }> = [];
+    const listAccounts = vi.fn(async () => result);
+    const validateTransaction = vi.fn(() => null);
+    const createApproval = vi.fn();
+    let turns = 0;
+    const stream = vi.fn<AgentProviderPort['stream']>(async function* () {
+      if (turns++ === 0 || repeat) {
+        yield {
+          type: 'tool_calls',
+          data: { calls: [{ id: 'call_1', name, arguments: args }] },
+        };
+      } else {
+        yield { type: 'text_delta', data: { text: 'Done' } };
+      }
+    });
+    await new AgentMessageService(
+      new Tx(),
+      store(),
+      { stream },
+      {
+        listAccounts,
+        listRecentTransactions: vi.fn(),
+        validateTransaction,
+        canUseAccount: vi.fn(),
+        createApproval,
+      },
+    ).execute(
+      subject,
+      workspace,
+      conversation,
+      'key',
+      conversation,
+      { message: 'x', modelRef: null, credentialId: null },
+      new AbortController().signal,
+      ({ type, data }) => events.push({ type, data }),
+    );
+    return {
+      stream,
+      listAccounts,
+      validateTransaction,
+      createApproval,
+      events,
+    };
+  }
+
+  it('uses the run context and sends the read result as a tool message', async () => {
+    const { stream, listAccounts, events } = await run('list_accounts', {});
+    expect(listAccounts).toHaveBeenCalledExactlyOnceWith({
+      subject,
+      workspaceId: workspace,
+    });
+    expect(stream.mock.calls[0]?.[3]?.tools.map(({ name }) => name)).toEqual([
+      'list_accounts',
+      'list_recent_transactions',
+      'create_transaction',
+    ]);
+    expect(stream.mock.calls[1]?.[3]?.history?.at(-1)).toEqual({
+      role: 'tool',
+      callId: 'call_1',
+      content: '["account"]',
+    });
+    expect(events).toEqual([
+      { type: 'run_started', data: {} },
+      {
+        type: 'tool_proposed',
+        data: {
+          toolName: 'list_accounts',
+          callId: 'call_1',
+          requiresApproval: false,
+        },
+      },
+      {
+        type: 'tool_completed',
+        data: { toolName: 'list_accounts', callId: 'call_1', ok: true },
+      },
+      { type: 'text_delta', data: { text: 'Done' } },
+      { type: 'run_completed', data: {} },
+    ]);
+  });
+
+  it.each([
+    ['list_accounts', { workspaceId: conversation, subject: conversation }],
+    ['create_transaction', { amount: 'invalid' }],
+  ] as const)(
+    'returns a tool error for invalid %s arguments without side effects',
+    async (name, args) => {
+      const {
+        stream,
+        listAccounts,
+        validateTransaction,
+        createApproval,
+        events,
+      } = await run(name, args);
+      expect(stream.mock.calls[1]?.[3]?.history?.at(-1)).toEqual({
+        role: 'tool',
+        callId: 'call_1',
+        content: '{"error":"Invalid tool arguments"}',
+      });
+      if (name === 'create_transaction')
+        expect(validateTransaction).toHaveBeenCalledExactlyOnceWith(args);
+      expect(listAccounts).not.toHaveBeenCalled();
+      expect(createApproval).not.toHaveBeenCalled();
+      expect(events.map(({ type }) => type)).toEqual([
+        'run_started',
+        'tool_proposed',
+        'tool_completed',
+        'text_delta',
+        'run_completed',
+      ]);
+      expect(events[2]?.data).toEqual({
+        toolName: name,
+        callId: 'call_1',
+        ok: false,
+      });
+    },
+  );
+
+  it('refuses to dispatch a fifth round', async () => {
+    const { stream, listAccounts, events } = await run(
+      'list_accounts',
+      {},
+      true,
+    );
+    expect(stream).toHaveBeenCalledTimes(5);
+    expect(listAccounts).toHaveBeenCalledTimes(4);
+    expect(events.at(-1)).toEqual({
+      type: 'run_failed',
+      data: { message: 'Tool round limit reached' },
+    });
+  });
+
+  it('does not send an over-budget result back to the provider', async () => {
+    const { stream, listAccounts, events } = await run(
+      'list_accounts',
+      {},
+      false,
+      'é'.repeat(32768),
+    );
+    expect(stream).toHaveBeenCalledOnce();
+    expect(listAccounts).toHaveBeenCalledOnce();
+    expect(events.at(-1)).toEqual({
+      type: 'run_failed',
+      data: { message: 'Tool result size limit reached' },
+    });
+  });
+});
+
 describe('in-flight idempotency', () => {
   it('does not start the provider or write SSE when the client closes during prepare', async () => {
     const reserved = Promise.withResolvers<void>();

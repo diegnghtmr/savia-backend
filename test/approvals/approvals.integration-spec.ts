@@ -14,6 +14,7 @@ import {
   type ApprovalsPort,
 } from '../../src/approvals/approval.port.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { createTransactionCommand } from '../../src/ledger/transaction-command.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 
@@ -162,7 +163,7 @@ describe('Approvals integration contract and endpoint suite', () => {
     const port = () => application.get<ApprovalsPort>(APPROVALS_PORT);
     const conflict = { kind: 'conflict' };
     async function createPending(
-      channel: 'agent' | 'mcp' = 'agent',
+      channel: 'agent' | 'mcp' = 'mcp',
       workspace = workspace1Id,
     ) {
       const expiresAt = new Date(Date.now() + 60_000);
@@ -185,7 +186,7 @@ describe('Approvals integration contract and endpoint suite', () => {
     }
 
     async function approved(workspace = workspace1Id, approver = ownerId) {
-      const approval = await createPending('agent', workspace);
+      const approval = await createPending('mcp', workspace);
       const result = await port().confirmApproval(
         approver,
         workspace,
@@ -196,6 +197,101 @@ describe('Approvals integration contract and endpoint suite', () => {
       if (result.kind !== 'ok') throw new Error('Expected confirmed approval');
       return result.approval;
     }
+
+    it.each([
+      { mode: 'valid', currency: 'USD', status: 200 },
+      { mode: 'expired', currency: 'USD', status: 409 },
+      { mode: 'currency mismatch', currency: 'EUR', status: 422 },
+      { mode: 'creator lost write access', currency: 'USD', status: 403 },
+    ])(
+      'handles $mode agent confirmation atomically',
+      async ({ mode, currency, status }) => {
+        const headers = {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': workspace1Id,
+          'idempotency-key': randomUUID(),
+        };
+        const account = await application.inject({
+          method: 'POST',
+          url: '/v1/accounts',
+          headers,
+          payload: { name: 'Confirmation test', type: 'cash', currency: 'USD' },
+        });
+        expect(account.statusCode).toBe(201);
+        const accountId = (JSON.parse(account.payload) as { id: string }).id;
+        const args = createTransactionCommand({
+          type: 'expense',
+          accountId,
+          amount: { amountMinor: '25', currency },
+          occurredAt: '2026-01-02T00:00:00Z',
+        });
+        const created = await port().createApproval(editorId, workspace1Id, {
+          toolName: 'create_transaction',
+          arguments: { ...args },
+          preview: { arguments: args },
+          channel: 'agent',
+          riskClass: 'financial_write',
+          expiresAt: new Date(Date.now() + 60_000),
+        });
+        if (created.kind !== 'ok') throw new Error('Expected agent approval');
+        const { id, argumentsHash } = created.approval;
+        if (mode === 'expired')
+          await admin.query(
+            "update public.approvals set expires_at = now() - interval '1 second' where id = $1",
+            [id],
+          );
+        const changeRole = (role: string) =>
+          admin.query(
+            'update public.workspace_memberships set role = $1 where workspace_id = $2 and profile_id = $3',
+            [role, workspace1Id, editorId],
+          );
+        if (mode === 'creator lost write access') await changeRole('viewer');
+        const confirm = () =>
+          application.inject({
+            method: 'POST',
+            url: `/v1/approvals/${id}/confirm`,
+            headers,
+            payload: { argumentsHash },
+          });
+        try {
+          const result = await confirm();
+          expect(result.statusCode).toBe(status);
+          if (status === 200) {
+            expect(JSON.parse(result.payload)).toEqual({
+              ...created.approval,
+              status: 'consumed',
+            });
+            expect((await confirm()).statusCode).toBe(409);
+          } else {
+            expect(result.headers['content-type']).toContain(
+              'application/problem+json',
+            );
+            expect(JSON.parse(result.payload)).toMatchObject({ status });
+          }
+          const transactions = await admin.query(
+            'select created_by from public.transactions where account_id = $1',
+            [accountId],
+          );
+          expect(transactions.rows).toEqual(
+            status === 200 ? [{ created_by: editorId }] : [],
+          );
+          const stored = await port().getApproval(ownerId, workspace1Id, id);
+          expect(stored).toMatchObject({
+            kind: 'ok',
+            approval: {
+              status:
+                status === 200
+                  ? 'consumed'
+                  : mode === 'expired'
+                    ? 'expired'
+                    : 'pending',
+            },
+          });
+        } finally {
+          if (mode === 'creator lost write access') await changeRole('editor');
+        }
+      },
+    );
 
     async function beginClaim(client: PoolClient, actor = editorId) {
       await client.query('begin');

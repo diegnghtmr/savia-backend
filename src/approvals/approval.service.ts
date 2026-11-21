@@ -10,6 +10,7 @@ import {
   type ApprovalDecisionCommand,
   type ApprovalDecisionOutcome,
   type ApprovalExecutionOutcome,
+  type ApprovalExecutors,
   type ApprovalGetOutcome,
   type ApprovalRecord,
   type ApprovalRequestPayload,
@@ -106,7 +107,11 @@ function toPayload(
 
 export class ApprovalDecisionRollbackError extends Error {
   public constructor(
-    public readonly outcome: 'replayed' | 'conflict',
+    public readonly outcome:
+      | 'replayed'
+      | 'conflict'
+      | 'forbidden'
+      | 'invalid_action',
     public readonly status?: number,
     public readonly etag?: string | null,
     public readonly body?: unknown,
@@ -133,6 +138,7 @@ export class ApprovalService implements ApprovalsPort {
     @Inject(APPROVAL_STORE) private readonly store: ApprovalStore,
     private readonly idempotency: IdempotencyStore,
     private readonly clock: () => Date = () => new Date(),
+    private readonly executors: ApprovalExecutors = new Map(),
   ) {}
 
   public async createApproval(
@@ -140,7 +146,17 @@ export class ApprovalService implements ApprovalsPort {
     workspaceId: string,
     { arguments: args, ...command }: CreateApprovalCommand,
   ): Promise<ApprovalCreationOutcome> {
-    const hash = hashArguments(canonicalArguments(args));
+    const canonical = canonicalArguments(args);
+    const hash = hashArguments(canonical);
+    // Agent confirmation needs the server-validated arguments. The preview is
+    // immutable to the application role once inserted and the hash binds it.
+    const preview =
+      command.channel === 'agent'
+        ? {
+            ...command.preview,
+            arguments: JSON.parse(canonical) as ApprovalAction['arguments'],
+          }
+        : command.preview;
     const expiresAt = new Date(command.expiresAt.getTime());
     return this.tx.run(subject, async (client) => {
       const role = await this.store.readActiveRole(client, workspaceId);
@@ -156,7 +172,7 @@ export class ApprovalService implements ApprovalsPort {
       const approval = await this.store.insertApproval(
         client,
         workspaceId,
-        { ...command, expiresAt },
+        { ...command, preview, expiresAt },
         hash,
       );
       return approval
@@ -176,19 +192,80 @@ export class ApprovalService implements ApprovalsPort {
     ) => Promise<T>,
   ): Promise<ApprovalExecutionOutcome<T>> {
     const canonical = canonicalArguments(args);
-    const hash = hashArguments(canonical);
-    const snapshot = JSON.parse(canonical) as ApprovalAction['arguments'];
-    return this.tx.run(subject, async (client) => {
-      const kind = await this.store.claimApproval(
+    return this.tx.run(subject, (client) =>
+      this.executeApprovedActionWithin(
         client,
         workspaceId,
         approvalId,
         toolName,
-        hash,
-      );
-      if (kind !== APPROVAL_OUTCOMES.OK) return { kind };
-      return { kind, result: await execute(client, snapshot) };
-    });
+        canonical,
+        execute,
+      ),
+    );
+  }
+
+  private async executeApprovedActionWithin<T>(
+    client: TransactionClient,
+    workspaceId: string,
+    approvalId: string,
+    toolName: string,
+    canonical: string,
+    execute: (
+      client: TransactionClient,
+      args: ApprovalAction['arguments'],
+    ) => Promise<T>,
+  ): Promise<ApprovalExecutionOutcome<T>> {
+    const kind = await this.store.claimApproval(
+      client,
+      workspaceId,
+      approvalId,
+      toolName,
+      hashArguments(canonical),
+    );
+    if (kind !== APPROVAL_OUTCOMES.OK) return { kind };
+    const snapshot = JSON.parse(canonical) as ApprovalAction['arguments'];
+    return { kind, result: await execute(client, snapshot) };
+  }
+
+  private async executeAgentDecision(
+    client: TransactionClient,
+    approver: string,
+    approval: ApprovalRecord,
+  ): Promise<void> {
+    const execute = this.executors.get(approval.toolName);
+    const args = approval.preview.arguments;
+    if (!execute || !args || typeof args !== 'object' || Array.isArray(args))
+      throw new ApprovalDecisionRollbackError('conflict');
+    const canonical = canonicalArguments(args as ApprovalAction['arguments']);
+    // Deciding is authorized as the approver; claiming and executing are
+    // authorized as the original creator, on the same transaction/client.
+    const creator = approval.createdBy;
+    const switchSubject = async (subject: string) => {
+      await client.query("select set_config('app.subject_id', $1, true)", [
+        subject.toLowerCase(),
+      ]);
+    };
+    if (creator !== approver) await switchSubject(creator);
+    const result = await this.executeApprovedActionWithin(
+      client,
+      approval.workspaceId,
+      approval.id,
+      approval.toolName,
+      canonical,
+      (transaction, snapshot) =>
+        execute(
+          transaction,
+          creator,
+          approval.workspaceId,
+          approval.id,
+          snapshot,
+        ),
+    );
+    if (result.kind !== 'ok')
+      throw new ApprovalDecisionRollbackError(result.kind);
+    if (result.result !== 'ok')
+      throw new ApprovalDecisionRollbackError(result.result);
+    if (creator !== approver) await switchSubject(approver);
   }
 
   public async getApproval(
@@ -385,7 +462,14 @@ export class ApprovalService implements ApprovalsPort {
           return { kind: APPROVAL_OUTCOMES.CONFLICT };
         }
 
-        const responsePayload = toPayload(updated);
+        const executeAgent =
+          targetStatus === 'approved' && updated.channel === 'agent';
+        if (executeAgent)
+          await this.executeAgentDecision(client, subject, updated);
+        const responsePayload = toPayload(
+          updated,
+          executeAgent ? 'consumed' : updated.status,
+        );
 
         const written = await this.idempotency.write(
           client,
@@ -438,7 +522,7 @@ export class ApprovalService implements ApprovalsPort {
             body: error.body,
           };
         }
-        return { kind: APPROVAL_OUTCOMES.CONFLICT };
+        return { kind: error.outcome };
       }
       throw error;
     }

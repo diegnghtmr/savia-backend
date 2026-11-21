@@ -19,6 +19,7 @@ import {
   type AgentProviderPort,
 } from './agent-message.port.js';
 import { AgentMessageService } from './agent-message.service.js';
+import { AGENT_TOOL_PORTS, type AgentToolPorts } from './agent-tools.js';
 import { OpenAICompatibleAgentProviderAdapter } from './agent-provider.adapter.js';
 import { PostgresAgentMessageAdapter } from './postgres-agent-message.adapter.js';
 
@@ -55,12 +56,18 @@ const RESOLVE_AGENT_CREDENTIAL = Symbol('ResolveAgentCredential');
     },
     {
       provide: AgentMessageService,
-      inject: [PgTransaction, PostgresAgentMessageAdapter, AGENT_PROVIDER_PORT],
+      inject: [
+        PgTransaction,
+        PostgresAgentMessageAdapter,
+        AGENT_PROVIDER_PORT,
+        AGENT_TOOL_PORTS,
+      ],
       useFactory: (
         tx: PgTransaction,
         store: PostgresAgentMessageAdapter,
         provider: AgentProviderPort,
-      ) => new AgentMessageService(tx, store, provider),
+        tools: AgentToolPorts,
+      ) => new AgentMessageService(tx, store, provider, tools),
     },
     { provide: AGENT_MESSAGE_PORT, useExisting: AgentMessageService },
   ],
@@ -69,11 +76,15 @@ export class AgentConversationsModule {
   public static withCredentialResolver(
     imports: ModuleMetadata['imports'],
     factory: Omit<FactoryProvider<AgentCredentialResolver>, 'provide'>,
+    tools: Omit<FactoryProvider<AgentToolPorts>, 'provide'>,
   ): DynamicModule {
     return {
       module: AgentConversationsModule,
       imports,
-      providers: [{ ...factory, provide: RESOLVE_AGENT_CREDENTIAL }],
+      providers: [
+        { ...factory, provide: RESOLVE_AGENT_CREDENTIAL },
+        { ...tools, provide: AGENT_TOOL_PORTS },
+      ],
     };
   }
 }

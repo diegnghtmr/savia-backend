@@ -46,7 +46,7 @@ export interface AgentToolCall {
   readonly name: string;
   readonly arguments: Record<string, unknown>;
 }
-type AgentToolHistoryMessage =
+export type AgentToolHistoryMessage =
   | {
       readonly role: 'assistant';
       readonly content: string | null;
@@ -70,7 +70,7 @@ export type AgentProviderChunk =
       readonly type: 'tool_calls';
       readonly data: { readonly calls: readonly AgentToolCall[] };
     };
-interface AgentProviderContext {
+export interface AgentProviderContext {
   readonly subject: string;
   readonly workspaceId: string;
 }
