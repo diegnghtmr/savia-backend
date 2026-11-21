@@ -6,6 +6,8 @@ import type {
   AdjustmentTransactionCommand,
   ImportedTransactionCommand,
   LedgerWriter,
+  OccurrenceBooking,
+  OccurrenceLedgerWriter,
 } from '../platform/ledger-writer.port.js';
 import {
   TRANSACTION_CREATE_OUTCOMES,
@@ -114,7 +116,13 @@ export interface LedgerStore {
     accountId: string,
     postingStatus: string,
     expectedVersions?: number | readonly number[],
+    expectedOccurrenceState?: OccurrenceBooking['status'],
   ): Promise<Transaction | undefined>;
+  confirmOccurrencePostings?(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+  ): Promise<void>;
   createAdjustmentTransaction?(
     client: TransactionClient,
     workspaceId: string,
@@ -135,7 +143,9 @@ export interface LedgerStore {
   ): Promise<void>;
 }
 
-export class TransactionService implements LedgerPort, LedgerWriter {
+export class TransactionService
+  implements LedgerPort, LedgerWriter, OccurrenceLedgerWriter
+{
   public constructor(
     private readonly transaction: LedgerTransaction,
     private readonly store: LedgerStore,
@@ -363,6 +373,48 @@ export class TransactionService implements LedgerPort, LedgerWriter {
       postingStatus,
       expectedVersions,
     );
+  }
+
+  public async confirmOccurrenceBooking(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+  ): Promise<'confirmed' | 'conflict' | 'invalid'> {
+    const account = await this.store.lockAndReadAccount(
+      client,
+      workspaceId,
+      booking.accountId,
+    );
+    if (!account || account.status === 'closed') return 'invalid';
+    const updated = await this.store.updateTransaction(
+      client,
+      workspaceId,
+      booking.id,
+      { status: 'confirmed' },
+      booking.version,
+    );
+    if (!updated) return 'conflict';
+    if (!this.store.confirmOccurrencePostings)
+      throw new Error('Store cannot confirm occurrence postings.');
+    await this.store.confirmOccurrencePostings(client, workspaceId, booking);
+    return 'confirmed';
+  }
+
+  public async voidOccurrenceBooking(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+  ): Promise<boolean> {
+    const voided = await this.store.voidTransaction(
+      client,
+      workspaceId,
+      booking.id,
+      booking.accountId,
+      booking.status,
+      booking.version,
+      booking.status,
+    );
+    return voided !== undefined;
   }
 
   public read(

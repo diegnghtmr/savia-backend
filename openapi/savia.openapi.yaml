@@ -56,13 +56,37 @@ components:
       in: header
       required: false
       schema: { type: string, examples: ['"7"'] }
+    RecurringRuleId:
+      name: ruleId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    RecurringOccurrenceId:
+      name: occurrenceId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
   headers:
+    ETag:
+      description: Current resource version.
+      schema: { type: string, examples: ['"7"'] }
     RetryAfter:
       description: Seconds before the client should retry.
       schema:
         type: integer
         minimum: 0
   responses:
+    RecurringOccurrenceResult:
+      description: Updated recurring occurrence.
+      headers:
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RecurringOccurrence'
     BadRequest:
       description: Bad request.
       content:
@@ -1255,6 +1279,68 @@ components:
             - string
             - 'null'
           format: date-time
+    RecurringOccurrenceStatus:
+      type: string
+      description: >-
+        Scheduled occurrences are not yet materialized. Reminders are materialized without a booking.
+        A skipped occurrence remains skipped even when it is linked to a voided transaction.
+      enum:
+        - scheduled
+        - reminder
+        - draft
+        - pending
+        - confirmed
+        - reconciled
+        - voided
+        - skipped
+    RecurringOccurrence:
+      type: object
+      required:
+        - id
+        - ruleId
+        - originalScheduledAt
+        - scheduledAt
+        - status
+        - transactionId
+        - amount
+        - description
+        - categoryId
+        - etag
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+          description: Stable occurrence identifier, retained when the occurrence is materialized or rescheduled.
+        ruleId:
+          $ref: '#/components/schemas/Uuid'
+        originalScheduledAt:
+          $ref: '#/components/schemas/DateTime'
+          description: Original slot on the recurring rule's schedule.
+        scheduledAt:
+          $ref: '#/components/schemas/DateTime'
+          description: Effective occurrence time, including any reschedule.
+        status:
+          $ref: '#/components/schemas/RecurringOccurrenceStatus'
+        transactionId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        amount:
+          $ref: '#/components/schemas/Money'
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+        categoryId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        etag:
+          type: string
+          description: Current occurrence version, usable as If-Match on occurrence commands.
+      additionalProperties: false
     Subscription:
       type: object
       additionalProperties: false
@@ -5278,6 +5364,152 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/recurring-rules/{ruleId}/occurrences:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    get:
+      operationId: listRecurringOccurrences
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
+      summary: List recurring rule occurrences
+      description: Lists recorded occurrences and the next unmaterialized occurrence of an active rule, in original schedule order.
+      tags:
+        - Recurring
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor returned by a previous page.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RecurringOccurrenceStatus'
+      responses:
+        '200':
+          description: Recurring occurrence page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - items
+                  - pageInfo
+                  - ruleEtag
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RecurringOccurrence'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+                  ruleEtag:
+                    type: string
+                    description: Current template version, usable as If-Match when editing the series.
+                additionalProperties: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/RecurringOccurrenceId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: confirmRecurringOccurrence
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Confirm a recurring occurrence
+      description: >-
+        The rule creator with a workspace write role can confirm a reminder by booking a confirmed transaction,
+        or confirm the existing draft or pending transaction in place. Any other state conflicts with this command.
+      tags:
+        - Recurring
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          $ref: '#/components/responses/RecurringOccurrenceResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/skip:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/RecurringOccurrenceId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: skipRecurringOccurrence
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Skip a recurring occurrence
+      description: >-
+        The rule creator with a workspace write role can skip a scheduled occurrence, a reminder,
+        or a draft or pending occurrence. A linked draft or pending transaction is voided through the ledger
+        and remains linked for audit. A skipped occurrence is never materialized again. Confirmed, reconciled,
+        voided and already skipped occurrences conflict with this command.
+      tags:
+        - Recurring
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          $ref: '#/components/responses/RecurringOccurrenceResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
       x-idempotency-required: true

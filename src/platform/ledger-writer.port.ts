@@ -1,6 +1,28 @@
 import type { TransactionClient } from './pg-transaction.js';
 
 export const LEDGER_WRITER = Symbol('LedgerWriter');
+export const OCCURRENCE_LEDGER_WRITER = Symbol('OccurrenceLedgerWriter');
+
+export interface OccurrenceBooking {
+  readonly id: string;
+  readonly accountId: string;
+  readonly status: 'draft' | 'pending';
+  readonly version: number;
+}
+
+export interface OccurrenceLedgerWriter {
+  createTransaction: LedgerWriter['createTransaction'];
+  confirmOccurrenceBooking(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+  ): Promise<'confirmed' | 'conflict' | 'invalid'>;
+  voidOccurrenceBooking(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+  ): Promise<boolean>;
+}
 
 export interface AdjustmentTransactionCommand {
   readonly accountId: string;

@@ -226,6 +226,9 @@ jobs:
       - name: recurring rules list integration
         shell: bash
         run: pnpm test:integration:recurring-rules-list
+      - name: recurring occurrences integration
+        shell: bash
+        run: pnpm test:integration:recurring-occurrences
       - name: subscriptions schema integration
         shell: bash
         run: pnpm test:integration:subscriptions-schema

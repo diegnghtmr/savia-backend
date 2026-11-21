@@ -9,6 +9,7 @@ import { JobsModule } from './jobs/jobs.module.js';
 import { LedgerModule } from './ledger/ledger.module.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { RecurringModule } from './recurring/recurring.module.js';
+import { RecurringOccurrenceActionsModule } from './recurring/recurring-occurrence-actions.module.js';
 import { ReconciliationsModule } from './reconciliations/reconciliations.module.js';
 import { ExportsModule } from './exports/exports.module.js';
 import { ImportsModule } from './imports/imports.module.js';
@@ -37,6 +38,7 @@ import { CliDeviceModule } from './cli-device/cli-device.module.js';
     CurrenciesModule,
     CatalogsModule,
     RecurringModule,
+    RecurringOccurrenceActionsModule,
     JobsModule,
     ReconciliationsModule,
     ExportsModule,

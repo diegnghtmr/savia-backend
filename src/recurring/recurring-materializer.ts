@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type {
   CreateTransactionCommand,
   LedgerWriter,
@@ -19,6 +18,7 @@ export interface DueOccurrence {
 }
 
 export interface DueRule {
+  readonly occurrenceId: string;
   readonly frequency: RecurringFrequency;
   readonly rrule: string | null;
   readonly behavior: RecurringBehavior;
@@ -33,6 +33,7 @@ export interface MaterializedOccurrence {
   readonly behavior: RecurringBehavior;
   readonly transactionId: string | null;
   readonly nextOccurrenceAt: string | null;
+  readonly skipped?: boolean;
 }
 
 export interface OccurrenceStore {
@@ -72,16 +73,7 @@ export class RecurringMaterializer {
     if (!rule) return null;
 
     const scheduledAt = new Date(due.scheduledAt);
-    const { nextOccurrenceAt } = computeNextOccurrence({
-      frequency: rule.frequency,
-      rrule: rule.rrule,
-      currentOccurrence: scheduledAt,
-      anchorDayOfMonth: rule.anchorDayOfMonth,
-      anchorMonth: new Date(rule.startsAt).getUTCMonth(),
-    });
-    const isLast =
-      rule.endsAt !== null && nextOccurrenceAt > new Date(rule.endsAt);
-    const id = randomUUID();
+    const id = rule.occurrenceId;
     const status = statusByBehavior[rule.behavior];
     const transactionId =
       status === null
@@ -106,13 +98,32 @@ export class RecurringMaterializer {
       id,
       behavior: rule.behavior,
       transactionId,
-      nextOccurrenceAt: isLast ? null : nextOccurrenceAt.toISOString(),
+      nextOccurrenceAt: followingSlot(rule, scheduledAt),
     });
     return id;
   }
 }
 
+export function followingSlot(rule: DueRule, scheduledAt: Date): string | null {
+  const { nextOccurrenceAt } = computeNextOccurrence({
+    frequency: rule.frequency,
+    rrule: rule.rrule,
+    currentOccurrence: scheduledAt,
+    anchorDayOfMonth: rule.anchorDayOfMonth,
+    anchorMonth: new Date(rule.startsAt).getUTCMonth(),
+  });
+  return rule.endsAt !== null && nextOccurrenceAt > new Date(rule.endsAt)
+    ? null
+    : nextOccurrenceAt.toISOString();
+}
+
 function requireCreatedId(outcome: unknown): string {
+  const id = createdTransactionId(outcome);
+  if (id !== undefined) return id;
+  throw new Error('Recurring occurrence transaction was not created.');
+}
+
+export function createdTransactionId(outcome: unknown): string | undefined {
   if (
     typeof outcome === 'object' &&
     outcome !== null &&
@@ -126,5 +137,5 @@ function requireCreatedId(outcome: unknown): string {
   ) {
     return outcome.transaction.id;
   }
-  throw new Error('Recurring occurrence transaction was not created.');
+  return undefined;
 }

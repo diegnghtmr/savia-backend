@@ -642,6 +642,21 @@ returning
     };
   }
 
+  public async confirmOccurrencePostings(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: { readonly id: string; readonly status: 'draft' | 'pending' },
+  ): Promise<void> {
+    const updated = await client.query(
+      `update public.ledger_postings set status = 'confirmed'
+        where workspace_id = $1::uuid and transaction_id = $2::uuid and status = $3`,
+      [workspaceId, booking.id, booking.status],
+    );
+    if (updated.rowCount !== 2)
+      throw new Error('Occurrence posting pair was not confirmed.');
+    await enforceDeferredConstraints(client);
+  }
+
   public async voidTransaction(
     client: TransactionClient,
     workspaceId: string,
@@ -649,6 +664,7 @@ returning
     accountId: string,
     postingStatus: string,
     expectedVersions?: number | readonly number[],
+    expectedOccurrenceState?: 'draft' | 'pending',
   ): Promise<Transaction | undefined> {
     // 1. Mandatory per-account advisory lock (serialized against closeAccount and createTransaction)
     await client.query(
@@ -672,7 +688,7 @@ update public.transactions
        version = version + 1
  where workspace_id = $1::uuid
    and id = $2::uuid
-   and status in ('pending', 'confirmed')
+   and ${expectedOccurrenceState === undefined ? "status in ('pending', 'confirmed')" : 'status = $4'}
    and ($3::integer[] is null or version = any($3::integer[]))
 returning
    id::text,
@@ -696,7 +712,14 @@ returning
 
     const result = await client.query<TransactionRow & { voidedAt: Date }>(
       sql,
-      [workspaceId, transactionId, versionParam],
+      [
+        workspaceId,
+        transactionId,
+        versionParam,
+        ...(expectedOccurrenceState === undefined
+          ? []
+          : [expectedOccurrenceState]),
+      ],
     );
     const row = result.rows[0];
     if (!row) {

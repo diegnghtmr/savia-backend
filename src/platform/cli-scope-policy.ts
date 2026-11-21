@@ -50,6 +50,10 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
       [SAVIA_SCOPES.TRANSACTIONS_READ],
     ],
     [routeKey('GET', '/v1/recurring-rules'), [SAVIA_SCOPES.TRANSACTIONS_READ]],
+    [
+      routeKey('GET', '/v1/recurring-rules/:ruleId/occurrences'),
+      [SAVIA_SCOPES.TRANSACTIONS_READ],
+    ],
     [routeKey('GET', '/v1/report-definitions'), [SAVIA_SCOPES.REPORTS_READ]],
     [
       routeKey('GET', '/v1/report-runs/:reportRunId'),
@@ -145,6 +149,20 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     ],
     [
       routeKey('POST', '/v1/recurring-rules'),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'POST',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId/confirm',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'POST',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId/skip',
+      ),
       [SAVIA_SCOPES.TRANSACTIONS_WRITE],
     ],
     [routeKey('POST', '/v1/report-definitions'), [SAVIA_SCOPES.REPORTS_WRITE]],

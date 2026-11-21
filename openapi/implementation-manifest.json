@@ -263,6 +263,21 @@
       "path": "/v1/recurring-rules"
     },
     {
+      "operationId": "listRecurringOccurrences",
+      "method": "GET",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences"
+    },
+    {
+      "operationId": "confirmRecurringOccurrence",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/confirm"
+    },
+    {
+      "operationId": "skipRecurringOccurrence",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/skip"
+    },
+    {
       "operationId": "listSubscriptions",
       "method": "GET",
       "path": "/v1/subscriptions"

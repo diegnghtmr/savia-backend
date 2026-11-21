@@ -45,6 +45,7 @@ export class PostgresOccurrenceAdapter implements OccurrenceStore {
   ): Promise<DueRule | undefined> {
     const result = await client.query<DueRuleRow>(
       `select frequency, rrule, behavior, template,
+              public.recurring_occurrence_slot_id(id, next_occurrence_at)::text as "occurrenceId",
               starts_at as "startsAt", ends_at as "endsAt",
               anchor_day_of_month as "anchorDayOfMonth"
          from public.recurring_rules
@@ -62,31 +63,53 @@ export class PostgresOccurrenceAdapter implements OccurrenceStore {
     if (!rule) return undefined;
 
     // Recheck after locking the rule and hold the creator's write access through COMMIT.
+    return (await this.lockCreatorMembership(client, workspaceId))
+      ? rule
+      : undefined;
+  }
+
+  public async lockCreatorMembership(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<boolean> {
     const membership = await client.query<{ allowed: boolean }>(
       'select public.lock_recurring_creator_membership($1::uuid) as allowed',
       [workspaceId],
     );
-    return membership.rows[0]?.allowed ? rule : undefined;
+    return membership.rows[0]?.allowed === true;
   }
 
   public async record(
     client: TransactionClient,
     { workspaceId, ruleId, scheduledAt }: DueOccurrence,
-    { id, behavior, transactionId, nextOccurrenceAt }: MaterializedOccurrence,
+    occurrence: MaterializedOccurrence,
   ): Promise<void> {
-    await client.query(
+    const { id, behavior, transactionId, skipped } = occurrence;
+    const inserted = await client.query(
       `insert into public.recurring_occurrences
-         (id, workspace_id, rule_id, scheduled_at, behavior, transaction_id)
-       values ($1::uuid, $2::uuid, $3::uuid, $4::timestamptz, $5, $6::uuid)`,
-      [id, workspaceId, ruleId, scheduledAt, behavior, transactionId],
+         (id, workspace_id, rule_id, scheduled_at, behavior, transaction_id, template, skipped_at)
+       select $1::uuid, workspace_id, r.id, $4::timestamptz, $5, $6::uuid, template,
+              case when $7::boolean then now() end
+         from public.recurring_rules r
+        where workspace_id = $2::uuid and r.id = $3::uuid`,
+      [
+        id,
+        workspaceId,
+        ruleId,
+        scheduledAt,
+        behavior,
+        transactionId,
+        skipped ?? false,
+      ],
     );
+    if (inserted.rowCount !== 1) throw new Error('Occurrence insert failed.');
     // Inactive rules retain their last date for the non-null RecurringRule projection.
     const result = await client.query(
       `update public.recurring_rules
           set next_occurrence_at = coalesce($3::timestamptz, next_occurrence_at),
               active = $3::timestamptz is not null
         where workspace_id = $1::uuid and id = $2::uuid`,
-      [workspaceId, ruleId, nextOccurrenceAt],
+      [workspaceId, ruleId, occurrence.nextOccurrenceAt],
     );
     if (result.rowCount !== 1)
       throw new Error('Recurring occurrence cursor was not advanced.');

@@ -15,7 +15,10 @@ import { PostgresCurrencyExchangeAdapter } from './postgres-currency-exchange.ad
 import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PlatformModule } from '../platform/platform.module.js';
-import { LEDGER_WRITER } from '../platform/ledger-writer.port.js';
+import {
+  LEDGER_WRITER,
+  OCCURRENCE_LEDGER_WRITER,
+} from '../platform/ledger-writer.port.js';
 
 @Global()
 @Module({
@@ -72,7 +75,8 @@ import { LEDGER_WRITER } from '../platform/ledger-writer.port.js';
     { provide: TRANSFER_PORT, useExisting: TransferService },
     { provide: CURRENCY_EXCHANGE_PORT, useExisting: CurrencyExchangeService },
     { provide: LEDGER_WRITER, useExisting: TransactionService },
+    { provide: OCCURRENCE_LEDGER_WRITER, useExisting: TransactionService },
   ],
-  exports: [LEDGER_WRITER, LEDGER_PORT],
+  exports: [LEDGER_WRITER, LEDGER_PORT, OCCURRENCE_LEDGER_WRITER],
 })
 export class LedgerModule {}
