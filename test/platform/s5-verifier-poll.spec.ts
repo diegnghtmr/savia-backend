@@ -92,3 +92,46 @@ it('keeps sweeps serial and cancels the next sweep on stop', async () => {
     vi.useRealTimers();
   }
 });
+
+it('S5 retries rejected sweeps during a blocked claim and drains on stop', async () => {
+  vi.useFakeTimers();
+  const claim = Promise.withResolvers<[]>();
+  const drain = Promise.withResolvers<number>();
+  const sweep = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('database unavailable'))
+    .mockReturnValueOnce(drain.promise)
+    .mockResolvedValue(0);
+  const runner = Reflect.construct(JobRunner, [
+    { claim: () => claim.promise },
+    {},
+    {},
+    new WorkerConfig(1, 300, 1000, 1),
+    undefined,
+    undefined,
+    { sweep },
+  ]) as JobRunner;
+  try {
+    await runner.start();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(sweep).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sweep).toHaveBeenCalledTimes(2);
+    claim.resolve([]);
+    await vi.advanceTimersByTimeAsync(0);
+    const stopped = runner.stop();
+    expect(runner.activeJobsCount).toBe(1);
+    drain.resolve(0);
+    await vi.advanceTimersByTimeAsync(3050);
+    await stopped;
+    expect(sweep).toHaveBeenCalledTimes(2);
+    expect(runner.activeJobsCount).toBe(0);
+  } finally {
+    claim.resolve([]);
+    drain.resolve(0);
+    const stopped = runner.stop();
+    await vi.advanceTimersByTimeAsync(1050);
+    await stopped;
+    vi.useRealTimers();
+  }
+});

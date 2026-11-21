@@ -1473,4 +1473,94 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       bootstrap.mockRestore();
     }
   }, 10000);
+  it('S5 rechecks a non-key demotion that wins the row lock', async () => {
+    const creator = ownerB;
+    const ruleId = id(8401);
+    const scheduledAt = '2024-01-01T00:00:00.000Z';
+    await admin.query(
+      `insert into public.workspace_memberships
+      (workspace_id,profile_id,role,status) values ($1,$2,'editor','active')
+      on conflict (workspace_id,profile_id) do update set role='editor', status='active'`,
+      [ws1Id, creator],
+    );
+    await admin.query(
+      `insert into public.recurring_rules
+      (id,workspace_id,name,frequency,behavior,account_id,template,active,created_by,
+       starts_at,ends_at,next_occurrence_at,anchor_day_of_month)
+      values ($1,$2,'Revocation-first probe','daily','remind',$3,$4,true,$5,$6,$6,$6,1)`,
+      [
+        ruleId,
+        ws1Id,
+        id(8201),
+        JSON.stringify({
+          type: 'expense',
+          accountId: id(8201),
+          amount: { amountMinor: '2', currency: 'USD' },
+          status: 'draft',
+          occurredAt: scheduledAt,
+        }),
+        creator,
+        scheduledAt,
+      ],
+    );
+    const acl = await admin.query(`select role, has_function_privilege(role,
+      'public.lock_recurring_creator_membership(uuid)', 'EXECUTE') as allowed
+      from unnest(array['anon','authenticated','savia_application','savia_worker','service_role']) role
+      order by role`);
+    expect(acl.rows.map(({ allowed }) => allowed)).toEqual([
+      false,
+      false,
+      true,
+      false,
+      false,
+    ]);
+    const holder = await admin.connect();
+    let locking: Promise<unknown> | undefined;
+    try {
+      await holder.query('begin');
+      const {
+        rows: [{ pid: holderPid }],
+      } = await holder.query('select pg_backend_pid() pid');
+      await holder.query(
+        `update public.workspace_memberships set role='viewer'
+        where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, creator],
+      );
+      const connected = Promise.withResolvers<number>();
+      locking = transaction.run(creator, async (client) => {
+        const {
+          rows: [{ pid }],
+        } = await client.query<{ pid: number }>('select pg_backend_pid() pid');
+        connected.resolve(pid);
+        return new PostgresOccurrenceAdapter().lockDue(client, {
+          workspaceId: ws1Id,
+          subject: creator,
+          ruleId,
+          scheduledAt,
+          asOf: scheduledAt,
+        });
+      });
+      void locking.catch(() => undefined);
+      const pid = await connected.promise;
+      await vi.waitFor(
+        async () => {
+          const { rows } = await admin.query(
+            'select $1::int = any(pg_blocking_pids($2)) blocked',
+            [holderPid, pid],
+          );
+          expect(rows[0].blocked).toBe(true);
+        },
+        { timeout: 1000 },
+      );
+      await holder.query('commit');
+      expect(await locking).toBeUndefined();
+      console.log(
+        'S5 demotion-first probe: waiter observed, denied after commit; helper ACL application-only',
+      );
+    } finally {
+      await holder.query('rollback');
+      holder.release();
+      await locking?.catch(() => undefined);
+    }
+  });
 });
