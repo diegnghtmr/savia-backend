@@ -261,8 +261,6 @@ const tools: readonly Tool[] = [
         destinationAccountId: uuid,
         amount: money,
         occurredAt: date,
-        fee: money,
-        description,
       },
       ['sourceAccountId', 'destinationAccountId', 'amount', 'occurredAt'],
     ),
@@ -271,9 +269,9 @@ const tools: readonly Tool[] = [
     (command) => ({
       sourceAccountId: command.sourceAccountId,
       destinationAccountId: command.destinationAccountId,
-      fee: command.fee ?? null,
+      // The ledger records neither a transfer fee nor a description, so the tool accepts neither.
       consequences:
-        'Moves the amount from the source to the destination and charges any fee to the source after confirmation.',
+        'Moves the amount from the source to the destination after confirmation.',
     }),
   ),
 ];

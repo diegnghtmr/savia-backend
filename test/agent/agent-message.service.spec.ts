@@ -243,66 +243,70 @@ describe('tool rounds', () => {
     },
   );
 
-  it.each(['valid', 'wrong type', 'missing field', 'extra field'] as const)(
-    'handles a %s transfer proposal',
-    async (mode) => {
-      const input = {
-        sourceAccountId: workspace,
-        ...(mode !== 'missing field' && { destinationAccountId: conversation }),
-        amount: {
-          amountMinor: mode === 'wrong type' ? 25 : '25',
-          currency: 'USD',
-        },
-        occurredAt: '2026-01-02T00:00:00Z',
-        ...(mode === 'extra field' && { workspaceId: conversation }),
-      };
-      const {
-        stream,
-        validateTransfer,
-        canUseAccount,
-        createApproval,
-        events,
-      } = await run('create_transfer', input);
-      if (mode !== 'valid') {
-        expect(stream.mock.calls[1]?.[3]?.history?.at(-1)).toMatchObject({
-          role: 'tool',
-          content: '{"error":"Invalid tool arguments"}',
-        });
-        expect(validateTransfer).not.toHaveBeenCalled();
-        expect(canUseAccount).not.toHaveBeenCalled();
-        expect(createApproval).not.toHaveBeenCalled();
-        return;
-      }
-      expect(validateTransfer).toHaveBeenCalledExactlyOnceWith(input);
-      expect(canUseAccount.mock.calls).toEqual([
-        [{ subject, workspaceId: workspace }, workspace],
-        [{ subject, workspaceId: workspace }, conversation],
-      ]);
-      expect(createApproval).toHaveBeenCalledExactlyOnceWith(
-        { subject, workspaceId: workspace },
-        expect.objectContaining({
-          toolName: 'create_transfer',
-          channel: 'agent',
-          riskClass: 'financial_write',
-          preview: expect.objectContaining({
-            sourceAccountId: workspace,
-            destinationAccountId: conversation,
-            amount: '25',
-            currency: 'USD',
-          }),
-        }),
-      );
-      expect(stream).toHaveBeenCalledOnce();
-      expect(events.at(-2)).toEqual({
-        type: 'approval_required',
-        data: {
-          toolName: 'create_transfer',
-          callId: 'call_1',
-          approvalId: 'approval',
-        },
+  // The ledger does not record a transfer fee or description, so the tool must not accept them.
+  it.each([
+    'valid',
+    'wrong type',
+    'missing field',
+    'extra field',
+    'fee field',
+    'description field',
+  ] as const)('handles a %s transfer proposal', async (mode) => {
+    const input = {
+      sourceAccountId: workspace,
+      ...(mode !== 'missing field' && { destinationAccountId: conversation }),
+      amount: {
+        amountMinor: mode === 'wrong type' ? 25 : '25',
+        currency: 'USD',
+      },
+      occurredAt: '2026-01-02T00:00:00Z',
+      ...(mode === 'extra field' && { workspaceId: conversation }),
+      ...(mode === 'fee field' && {
+        fee: { amountMinor: '5', currency: 'USD' },
+      }),
+      ...(mode === 'description field' && { description: 'Rent' }),
+    };
+    const { stream, validateTransfer, canUseAccount, createApproval, events } =
+      await run('create_transfer', input);
+    if (mode !== 'valid') {
+      expect(stream.mock.calls[1]?.[3]?.history?.at(-1)).toMatchObject({
+        role: 'tool',
+        content: '{"error":"Invalid tool arguments"}',
       });
-    },
-  );
+      expect(validateTransfer).not.toHaveBeenCalled();
+      expect(canUseAccount).not.toHaveBeenCalled();
+      expect(createApproval).not.toHaveBeenCalled();
+      return;
+    }
+    expect(validateTransfer).toHaveBeenCalledExactlyOnceWith(input);
+    expect(canUseAccount.mock.calls).toEqual([
+      [{ subject, workspaceId: workspace }, workspace],
+      [{ subject, workspaceId: workspace }, conversation],
+    ]);
+    expect(createApproval).toHaveBeenCalledExactlyOnceWith(
+      { subject, workspaceId: workspace },
+      expect.objectContaining({
+        toolName: 'create_transfer',
+        channel: 'agent',
+        riskClass: 'financial_write',
+        preview: expect.objectContaining({
+          sourceAccountId: workspace,
+          destinationAccountId: conversation,
+          amount: '25',
+          currency: 'USD',
+        }),
+      }),
+    );
+    expect(stream).toHaveBeenCalledOnce();
+    expect(events.at(-2)).toEqual({
+      type: 'approval_required',
+      data: {
+        toolName: 'create_transfer',
+        callId: 'call_1',
+        approvalId: 'approval',
+      },
+    });
+  });
 
   it('refuses to dispatch a fifth round', async () => {
     const { stream, listAccounts, events } = await run(
