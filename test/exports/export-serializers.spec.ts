@@ -425,3 +425,39 @@ describe('export serializers delivery budget and formatting', () => {
     });
   });
 });
+
+it.each(['accounts', 'transactions'] as const)(
+  'hardens LF-prefixed legacy %s descriptions without changing signed numbers',
+  async (resource) => {
+    const rows = [{ description: '\nhello', amount: '-1.2e+2' }];
+    const result = await serialize('csv', {
+      accounts: resource === 'accounts' ? rows : [],
+      transactions: resource === 'transactions' ? rows : [],
+    });
+
+    expect(result.content.toString('utf8')).toBe(
+      `description,amount\n"'\nhello","-1.2e+2"`,
+    );
+  },
+);
+
+it('writes debt money as exact XLSX text and leaves an undated cell blank', async () => {
+  const principal = { amountMinor: '9007199254740993', currency: 'USD' };
+  const result = await serialize('xlsx', {
+    accounts: [],
+    transactions: [],
+    financial: {
+      resource: 'debts',
+      rows: [{ name: '=2+2', principal, startDate: null }],
+    },
+  });
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(result.content as never);
+  const sheet = workbook.getWorksheet('export')!;
+  expect(sheet.getCell('A2').type).toBe(ExcelJS.ValueType.String);
+  expect(sheet.getCell('A2').value).toBe('=2+2');
+  expect(sheet.getCell('B2').type).toBe(ExcelJS.ValueType.String);
+  expect(sheet.getCell('B2').value).toBe(JSON.stringify(principal));
+  expect(sheet.getCell('C2').value).toBeNull();
+});
