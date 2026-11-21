@@ -1,3 +1,4 @@
+// Also verifies 202609170007_frankfurter_rate_insert.sql through the worker DB boundary.
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -36,6 +37,27 @@ describe('ExchangeRateService createManualExchangeRate database boundary', () =>
 
   const workspace1Id = id(881);
   const workspace2Id = id(882);
+
+  const frankfurterRate = {
+    workspace_id: workspace1Id,
+    base_currency: 'USD',
+    quote_currency: 'SEK',
+    effective_on: '2026-08-31',
+    rate: '10.00000000000000008900',
+  };
+  const append = (rates: readonly (typeof frankfurterRate)[]) =>
+    transaction.runAsQueueConsumer((client) =>
+      client.query('select public.append_frankfurter_rates($1::jsonb)', [
+        JSON.stringify(rates),
+      ]),
+    );
+
+  const readPair = (workspaceId: string, quoteCurrency: string) =>
+    service.list(subjectOwner, {
+      workspaceId,
+      baseCurrency: 'USD',
+      quoteCurrency,
+    });
 
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
@@ -386,6 +408,145 @@ describe('ExchangeRateService createManualExchangeRate database boundary', () =>
     expect(second.kind).toBe(
       EXCHANGE_RATE_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT,
     );
+  });
+
+  it('appends precise rates per workspace and publication date without replacing manual history on retry', async () => {
+    const command = {
+      baseCurrency: 'USD',
+      quoteCurrency: 'SEK',
+      rate: '9.9000',
+      effectiveAt: '2026-08-31T00:00:00.000Z',
+      notes: 'Independent manual quote',
+    };
+    const manual = await service.createManual(
+      subjectOwner,
+      workspace1Id,
+      command,
+      '00000000-0000-4000-8000-000000002011',
+    );
+    if (manual.kind !== EXCHANGE_RATE_CREATE_OUTCOMES.CREATED) {
+      throw new Error('Expected manual rate to be created.');
+    }
+    await append([
+      frankfurterRate,
+      { ...frankfurterRate, workspace_id: workspace2Id },
+    ]);
+    const original = await readPair(workspace1Id, 'SEK');
+    expect(original).toEqual({
+      kind: 'ok',
+      exchangeRates: expect.arrayContaining([
+        manual.exchangeRate,
+        {
+          id: expect.any(String),
+          baseCurrency: 'USD',
+          quoteCurrency: 'SEK',
+          rate: frankfurterRate.rate,
+          effectiveAt: command.effectiveAt,
+          source: 'frankfurter',
+          manual: false,
+        },
+      ]),
+    });
+    if (original.kind !== 'ok')
+      throw new Error('Expected pair to be readable.');
+    expect(original.exchangeRates).toHaveLength(2);
+
+    await append([{ ...frankfurterRate, rate: '11.00' }]);
+    expect(await readPair(workspace1Id, 'SEK')).toEqual(original);
+    await append([
+      { ...frankfurterRate, effective_on: '2026-09-01', rate: '12.00' },
+    ]);
+    expect(await readPair(workspace1Id, 'SEK')).toEqual({
+      kind: 'ok',
+      exchangeRates: [
+        expect.objectContaining({
+          rate: '12.00',
+          effectiveAt: '2026-09-01T00:00:00.000Z',
+        }),
+        ...original.exchangeRates,
+      ],
+    });
+    expect(await readPair(workspace2Id, 'SEK')).toEqual({
+      kind: 'ok',
+      exchangeRates: [
+        expect.objectContaining({
+          rate: frankfurterRate.rate,
+          source: 'frankfurter',
+        }),
+      ],
+    });
+  });
+
+  it('rolls back a whole worker batch on one rejected rate and leaves manual rows intact', async () => {
+    const manual = await service.createManual(
+      subjectOwner,
+      workspace1Id,
+      {
+        baseCurrency: 'USD',
+        quoteCurrency: 'NOK',
+        rate: '10.0000',
+        effectiveAt: '2026-08-31T00:00:00.000Z',
+      },
+      '00000000-0000-4000-8000-000000002012',
+    );
+    if (manual.kind !== EXCHANGE_RATE_CREATE_OUTCOMES.CREATED) {
+      throw new Error('Expected manual rate to be created.');
+    }
+    const rate = { ...frankfurterRate, quote_currency: 'NOK' };
+    await expect(
+      append([rate, { ...rate, workspace_id: workspace2Id, rate: '0' }]),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'exchange_rates_rate_positive_check',
+    });
+    expect(await readPair(workspace1Id, 'NOK')).toEqual({
+      kind: 'ok',
+      exchangeRates: [manual.exchangeRate],
+    });
+    expect(await readPair(workspace2Id, 'NOK')).toEqual({
+      kind: 'ok',
+      exchangeRates: [],
+    });
+  });
+
+  it('lets neither the application nor the worker bypass the append boundary', async () => {
+    await expect(
+      transaction.run(subjectOwner, (client) =>
+        client.query('select public.append_frankfurter_rates($1::jsonb)', [
+          JSON.stringify([frankfurterRate]),
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(
+      transaction.run(subjectOwner, (client) =>
+        client.query(
+          `insert into public.exchange_rates
+        (workspace_id, base_currency, quote_currency, rate, effective_at, source, manual, created_by)
+        values ($1, 'USD', 'DKK', 1, '2026-08-31T00:00:00Z', 'frankfurter', false, $2)`,
+          [workspace1Id, subjectOwner],
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'exchange_rates_system_provenance_check',
+    });
+
+    for (const sql of [
+      'select * from public.exchange_rates',
+      `insert into public.exchange_rates
+        (workspace_id, base_currency, quote_currency, rate, effective_at, source, manual)
+        values ('${workspace1Id}', 'USD', 'DKK', 1, '2026-08-31T00:00:00Z', 'frankfurter', false)`,
+      'update public.exchange_rates set rate = 1 where false',
+      'delete from public.exchange_rates where false',
+    ]) {
+      await expect(
+        transaction.runAsQueueConsumer((client) => client.query(sql)),
+      ).rejects.toMatchObject({ code: '42501' });
+    }
+    expect(await readPair(workspace1Id, 'DKK')).toEqual({
+      kind: 'ok',
+      exchangeRates: [],
+    });
   });
 
   it('persists 500-char notes to database and read projection deliberately omits it', async () => {
