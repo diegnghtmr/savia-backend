@@ -1,9 +1,15 @@
 import ExcelJS from 'exceljs';
 import { inflateRawSync } from 'node:zlib';
 import type { ImportFormat, ParsedImportRow } from './import.port.js';
+import { parseOfx } from './ofx-parser.js';
+import { parseQif } from './qif-parser.js';
+import {
+  MAX_IMPORT_ROWS,
+  OFX_COLUMNS,
+  STATEMENT_COLUMNS,
+} from './statement-fields.js';
 
-export const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;
-export const MAX_IMPORT_ROWS = 10_000;
+export { MAX_IMPORT_FILE_BYTES, MAX_IMPORT_ROWS } from './statement-fields.js';
 export const MAX_XLSX_DECOMPRESSED_BYTES = 16 * 1024 * 1024;
 export const MAX_XLSX_SHARED_STRINGS = 100_000;
 export const MAX_XLSX_SHARED_STRING_LENGTH = 100_000;
@@ -21,6 +27,7 @@ function fieldIndex(
 }
 function parseRows(
   values: readonly (readonly unknown[])[],
+  normalizedStatement = false,
 ): readonly ParsedImportRow[] {
   const headers = (values[0] ?? []).map((v) => String(v ?? ''));
   const dateAt = fieldIndex(headers, ['date', 'fecha', 'occurred_at']);
@@ -54,7 +61,10 @@ function parseRows(
       Number.isNaN(new Date(`${date}T00:00:00Z`).getTime())
     )
       errors.push('date must be YYYY-MM-DD');
-    if (!Number.isSafeInteger(amount) || !Number.isFinite(amount))
+    if (
+      (normalizedStatement && raw[amountAt] === null) ||
+      !Number.isSafeInteger(amount)
+    )
       errors.push('amount must be a safe integer minor-unit amount');
     if (!description) errors.push('description is required');
     if (widthError)
@@ -303,7 +313,7 @@ export async function parseImport(
 ): Promise<readonly ParsedImportRow[]> {
   if (format === 'csv') return parseCsv(bytes);
   if (format === 'xlsx') return parseXlsx(bytes);
-  throw new Error(
-    `The declared ${format.toUpperCase()} format is not yet supported.`,
-  );
+  if (format === 'qif')
+    return parseRows([STATEMENT_COLUMNS, ...parseQif(bytes)], true);
+  return parseRows([OFX_COLUMNS, ...parseOfx(bytes)], true);
 }

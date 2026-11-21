@@ -3,7 +3,9 @@ import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
+  IMPORT_FORMATS,
   IMPORT_OUTCOMES,
+  type ImportFormat,
   type ImportCreateOutcome,
   type ImportGetOutcome,
   type ImportsPort,
@@ -16,6 +18,10 @@ import {
   parseImport,
   normalizeImportDescription,
 } from './import-parsers.js';
+import {
+  QIF_CURRENCY_DIGITS,
+  statementCurrencyDigits,
+} from './statement-fields.js';
 import type { JobWriter } from '../platform/job-writer.port.js';
 import type { LedgerWriter } from '../platform/ledger-writer.port.js';
 import {
@@ -59,6 +65,21 @@ export const IMPORT_COMMIT_STATEMENT_TIMEOUT_MS = 2_000;
  */
 export const IMPORT_COMMIT_CALLBACK_TIMEOUT_MS = 5_000;
 class ImportValidationError extends Error {}
+
+function isOfx(format: ImportFormat | null): boolean {
+  return format === 'ofx' || format === 'qfx';
+}
+
+function importRowIdentity(format: ImportFormat, row: ParsedImportRow): string {
+  const identity = `${row.parsedDate}|${row.parsedAmountMinor}|${normalizeImportDescription(row.parsedDescription!)}`;
+  if (format === 'csv' || format === 'xlsx') return identity;
+  const field = (name: string) =>
+    row.rawValues[row.sourceColumns.indexOf(name)];
+  const fitid = field('fitid');
+  return fitid
+    ? JSON.stringify(['fitid', fitid])
+    : JSON.stringify(['row', identity, field('reference')]);
+}
 
 const DEBIT_INDICATORS = new Set(['debit', 'd', 'dr', 'db', 'debito', 'cargo']);
 const CREDIT_INDICATORS = new Set(['credit', 'c', 'cr', 'credito', 'abono']);
@@ -125,11 +146,11 @@ export class ImportService implements ImportsPort {
       formatHint: command.formatHint,
       bytes: command.bytes.toString('base64'),
     });
-    let format = command.formatHint;
-    if (!format)
-      format = command.fileName.toLowerCase().endsWith('.xlsx')
-        ? 'xlsx'
-        : 'csv';
+    const extension = /\.([^.]+)$/u.exec(command.fileName.toLowerCase())?.[1];
+    const format =
+      command.formatHint ??
+      IMPORT_FORMATS.find((known) => known === extension) ??
+      'csv';
     let rows: readonly ParsedImportRow[];
     try {
       rows = await parseImport(format, command.bytes);
@@ -156,7 +177,7 @@ export class ImportService implements ImportsPort {
         errors += 1;
         return row;
       }
-      const key = `${row.parsedDate}|${row.parsedAmountMinor}|${normalizeImportDescription(row.parsedDescription!)}`;
+      const key = importRowIdentity(format, row);
       if (seen.has(key)) {
         duplicate += 1;
         return { ...row, classification: 'duplicate' as const };
@@ -313,6 +334,17 @@ export class ImportService implements ImportsPort {
             kind: IMPORT_MUTATION_OUTCOMES.INVALID,
             detail: 'dateFormat is not supported.',
           };
+        if (
+          importJob.detectedFormat === 'qif' &&
+          statementCurrencyDigits(account.currency) !== QIF_CURRENCY_DIGITS
+        )
+          return {
+            kind: IMPORT_MUTATION_OUTCOMES.INVALID,
+            detail: 'QIF requires a two-decimal account currency.',
+          };
+        const currencyIndex = isOfx(importJob.detectedFormat)
+          ? importJob.sourceColumns.indexOf('currency')
+          : null;
         const rows = await this.store.findRows(client, workspaceId, id);
         const prepared: Array<{
           date: string;
@@ -321,6 +353,13 @@ export class ImportService implements ImportsPort {
         }> = [];
         for (const row of rows) {
           if (row.classification !== 'valid') continue;
+          if (
+            currencyIndex !== null &&
+            row.rawValues[currencyIndex] !== account.currency
+          )
+            throw new ImportValidationError(
+              'Statement currency must match the selected account currency.',
+            );
           const date = parseImportDate(
             String(row.rawValues[index('date')] ?? '').trim(),
             dateFormat,

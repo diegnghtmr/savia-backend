@@ -178,20 +178,31 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       validRows: 1,
     });
   });
-  it.each(['qif', 'ofx', 'qfx'] as const)(
-    'rejects unsupported %s with actionable detail',
+  it.each(['ofx', 'qfx'] as const)(
+    'rejects malformed %s without creating a job',
     async (format) => {
+      const before = await admin.query(
+        'select count(*)::int as count from public.import_jobs where workspace_id=$1',
+        [workspace],
+      );
       const response = await upload(
         app,
-        Buffer.from('unsupported'),
+        Buffer.from('<OFX><BANKTRANLIST>'),
         `statement.${format}`,
         `00000000-0000-4000-8000-00000000552${format.length}`,
         format,
       );
       expect(response.statusCode).toBe(422);
-      expect(JSON.parse(response.payload).detail).toContain(
-        'not yet supported',
+      expect(response.json()).toMatchObject({
+        title: 'Import analysis failed',
+        status: 422,
+        detail: 'OFX statement is invalid or unsupported.',
+      });
+      const after = await admin.query(
+        'select count(*)::int as count from public.import_jobs where workspace_id=$1',
+        [workspace],
       );
+      expect(after.rows).toEqual(before.rows);
     },
   );
   it('rejects a file over the configured multipart size limit', async () => {
@@ -326,25 +337,117 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
     );
     expect(count.rows[0].count).toBe(10_000);
   });
-  it('rejects an invalid upload without creating a job', async () => {
-    const before = await admin.query(
-      'select count(*)::int as count from public.import_jobs where workspace_id=$1',
-      [workspace],
-    );
-    const response = await upload(
+  it('rejects malformed QIF without reserving its key, then analyzes corrected QIF', async () => {
+    const key = '00000000-0000-4000-8000-000000005523';
+    const bad = await upload(
       app,
-      Buffer.from('not supported'),
-      'rejected.csv',
-      '00000000-0000-4000-8000-000000005523',
-      'qif',
+      Buffer.from('!Type:Bank\nD2/9/2026'),
+      'checks.qif',
+      key,
     );
-    expect(response.statusCode).toBe(422);
-    const after = await admin.query(
-      'select count(*)::int as count from public.import_jobs where workspace_id=$1',
-      [workspace],
+    expect(bad.statusCode).toBe(422);
+    expect(bad.json()).toMatchObject({
+      title: 'Import analysis failed',
+      status: 422,
+      detail: 'QIF statement is invalid or unsupported.',
+    });
+    const check = (reference: string) =>
+      `D2/9/2026\nT-1.25\nPCheck\nN${reference}\n^\n`;
+    const good = await upload(
+      app,
+      Buffer.from(`!Type:Bank\n${check('1')}${check('2')}${check('1')}`),
+      'checks.QIF',
+      key,
     );
-    expect(after.rows[0].count).toBe(before.rows[0].count);
+    expect(good.statusCode).toBe(202);
+    expect(good.json()).toMatchObject({
+      detectedFormat: 'qif',
+      status: 'awaiting_mapping',
+      totalRows: 3,
+      validRows: 2,
+      duplicateRows: 1,
+      errorRows: 0,
+    });
   });
+  it.each(['USD', 'JPY'])(
+    'analyzes QFX FITIDs and checks %s at commit',
+    async (currency) => {
+      const record = (fitid: string, amount: number) =>
+        `<STMTTRN><DTPOSTED>20260309</DTPOSTED><TRNAMT>${amount}</TRNAMT><FITID>${fitid}</FITID><NAME>QFX test</NAME></STMTTRN>`;
+      const data = `<OFX><CCSTMTRS><CURDEF>${currency}</CURDEF><BANKTRANLIST>${record('a', -12)}${record('b', -12)}${record('a', -13)}</BANKTRANLIST></CCSTMTRS></OFX>`;
+      const suffix = currency === 'USD' ? '1' : '2';
+      const uploaded = await upload(
+        app,
+        Buffer.from(data),
+        'statement.dat',
+        `00000000-0000-4000-8000-00000000554${suffix}`,
+        'qfx',
+      );
+      expect(uploaded.statusCode).toBe(202);
+      const body = uploaded.json();
+      expect(body).toMatchObject({
+        detectedFormat: 'qfx',
+        totalRows: 3,
+        validRows: 2,
+        duplicateRows: 1,
+        errorRows: 0,
+      });
+      const committed = await app.inject({
+        method: 'POST',
+        url: `/v1/import-jobs/${body.id}/commit`,
+        headers: {
+          authorization: 'Bearer accepted-token',
+          'x-workspace-id': workspace,
+          'idempotency-key': `00000000-0000-4000-8000-00000000555${suffix}`,
+        },
+        payload: {
+          accountId,
+          columnMapping: {
+            date: 'date',
+            amount: 'amount',
+            description: 'description',
+          },
+        },
+      });
+      const status = await app.inject({
+        method: 'GET',
+        url: `/v1/import-jobs/${body.id}`,
+        headers: {
+          authorization: 'Bearer accepted-token',
+          'x-workspace-id': workspace,
+        },
+      });
+      expect(status.statusCode).toBe(200);
+      if (currency === 'USD') {
+        expect(committed.statusCode).toBe(202);
+        expect(status.json()).toMatchObject({ status: 'completed', accountId });
+      } else {
+        expect(committed.statusCode).toBe(422);
+        expect(committed.json()).toMatchObject({
+          detail:
+            'Statement currency must match the selected account currency.',
+        });
+        expect(status.json()).toMatchObject({
+          status: 'awaiting_mapping',
+          validRows: 2,
+          duplicateRows: 1,
+          errorRows: 0,
+        });
+      }
+      const transactions = await admin.query(
+        'select amount_minor::text, currency from public.transactions where import_job_id = $1',
+        [body.id],
+      );
+      expect(transactions.rows).toEqual(
+        currency === 'USD'
+          ? Array.from({ length: 2 }, () => ({
+              amount_minor: '-1200',
+              currency: 'USD',
+            }))
+          : [],
+      );
+    },
+  );
   it('counts malformed rows without failing the job', async () => {
     const response = await upload(
       app,
