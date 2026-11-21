@@ -38,7 +38,7 @@ export function serializeCsv(
   const cols = columns(rows);
   const neutralize = (value: string): string => {
     if (/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value)) return value;
-    return /^[=+\-@]|^[\t\r]/.test(value) ? `'${value}` : value;
+    return /^[=+\-@]|^[\t\r\n]/.test(value) ? `'${value}` : value;
   };
   const esc = (v: unknown) => escapeCsvField(v, neutralize);
   const lines: string[] = [cols.join(',')];

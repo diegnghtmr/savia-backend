@@ -128,6 +128,48 @@ describe('scoped financial resource serialization', () => {
       ).toEqual(['name', 'money', row.name, JSON.stringify(row.money)]);
     });
   });
+
+  it('neutralizes formula prefixes in every CSV text field, including LF', async () => {
+    const values = [
+      '\n=1+1',
+      '=1+1',
+      '+1+1',
+      '-1+1',
+      '@SUM(1)',
+      '\t=1+1',
+      '\r=1+1',
+    ];
+    const keys = ['name', 'equals', 'plus', 'minus', 'at', 'tab', 'cr'];
+    const result = await serialize('csv', {
+      accounts: [],
+      transactions: [],
+      financial: {
+        resource: 'budgets',
+        rows: [Object.fromEntries(keys.map((key, i) => [key, values[i]]))],
+      },
+    });
+    expect(result.content.toString()).toBe(
+      `${keys.join(',')}\n${values.map((value) => `"'${value}"`).join(',')}`,
+    );
+  });
+
+  it('stores nested allocation text in a literal XLSX string cell', async () => {
+    const allocations = [{ label: '=1+1', note: '\n@SUM(1)' }];
+    const result = await serialize('xlsx', {
+      accounts: [],
+      transactions: [],
+      financial: { resource: 'budgets', rows: [{ name: '+1+1', allocations }] },
+    });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(result.content as never);
+    const sheet = workbook.getWorksheet('export')!;
+    expect(sheet.getCell('A2').type).toBe(ExcelJS.ValueType.String);
+    expect(sheet.getCell('A2').value).toBe('+1+1');
+    expect(sheet.getCell('B2').type).toBe(ExcelJS.ValueType.String);
+    expect(JSON.parse(sheet.getCell('B2').value as string)).toEqual(
+      allocations,
+    );
+  });
 });
 
 describe('export serializers delivery budget and formatting', () => {
