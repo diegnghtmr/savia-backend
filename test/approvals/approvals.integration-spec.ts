@@ -1,15 +1,21 @@
-// Migration under test: 202609060001_approvals.sql
+// Migrations under test: 202609060001_approvals.sql, 202609170004_approval_execution.sql
 import { randomUUID } from 'node:crypto';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
+import {
+  APPROVALS_PORT,
+  type ApprovalAction,
+  type ApprovalsPort,
+} from '../../src/approvals/approval.port.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
+import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -98,7 +104,8 @@ describe('Approvals integration contract and endpoint suite', () => {
         ($1, $5, 'viewer', 'active'),
         ($1, $6, 'administrator', 'active'),
         ($7, $8, 'owner', 'active'),
-        ($7, $6, 'administrator', 'active')`,
+        ($7, $6, 'administrator', 'active'),
+        ($7, $4, 'editor', 'active')`,
       [
         workspace1Id,
         ownerId,
@@ -145,6 +152,348 @@ describe('Approvals integration contract and endpoint suite', () => {
     if (admin) {
       await admin.end();
     }
+  });
+
+  describe('Approval execution foundation', () => {
+    const action = {
+      toolName: 'create_transaction',
+      arguments: { amount: 5, currency: 'USD' },
+    };
+    const port = () => application.get<ApprovalsPort>(APPROVALS_PORT);
+    const conflict = { kind: 'conflict' };
+    async function createPending(
+      channel: 'agent' | 'mcp' = 'agent',
+      workspace = workspace1Id,
+    ) {
+      const expiresAt = new Date(Date.now() + 60_000);
+      const result = await port().createApproval(editorId, workspace, {
+        ...action,
+        channel,
+        riskClass: 'financial_write',
+        preview: action.arguments,
+        expiresAt,
+      });
+      if (result.kind !== 'ok') throw new Error('Expected pending approval');
+      expect(result.approval).toMatchObject({
+        toolName: action.toolName,
+        riskClass: 'financial_write',
+        status: 'pending',
+        preview: action.arguments,
+        expiresAt: expiresAt.toISOString(),
+      });
+      return result.approval;
+    }
+
+    async function approved(workspace = workspace1Id, approver = ownerId) {
+      const approval = await createPending('agent', workspace);
+      const result = await port().confirmApproval(
+        approver,
+        workspace,
+        approval.id,
+        { argumentsHash: approval.argumentsHash },
+        randomUUID(),
+      );
+      if (result.kind !== 'ok') throw new Error('Expected confirmed approval');
+      return result.approval;
+    }
+
+    async function beginClaim(client: PoolClient, actor = editorId) {
+      await client.query('begin');
+      await client.query('set local role savia_application');
+      await client.query("select set_config('app.subject_id', $1, true)", [
+        actor,
+      ]);
+    }
+
+    async function claim(client: PoolClient, id: string, hash: string) {
+      const { rows } = await client.query<{ kind: string }>(
+        'select public.claim_approval($1, $2, $3, $4) as kind',
+        [workspace1Id, id, action.toolName, hash],
+      );
+      return rows[0]?.kind;
+    }
+
+    async function backendPid(client: PoolClient) {
+      const { rows } = await client.query<{ pid: number }>(
+        'select pg_backend_pid() as pid',
+      );
+      if (!rows[0]) throw new Error('Expected backend PID');
+      return rows[0].pid;
+    }
+
+    async function expectBlocked(waiter: number, holder: number) {
+      await expect
+        .poll(
+          async () => {
+            const { rows } = await admin.query<{ blocked: boolean }>(
+              'select $2::int = any(pg_blocking_pids($1::int)) as blocked',
+              [waiter, holder],
+            );
+            return rows[0]?.blocked;
+          },
+          { interval: 5, timeout: 400 },
+        )
+        .toBe(true);
+    }
+
+    it('does not consume an approval that expires while the claim waits', async () => {
+      const { id, argumentsHash } = await approved();
+      const locker = await admin.connect();
+      const claimant = await admin.connect();
+      let pending: Promise<string | undefined> | undefined;
+      try {
+        const holder = await backendPid(locker);
+        const waiter = await backendPid(claimant);
+        await beginClaim(claimant);
+        await locker.query(
+          "update public.approvals set expires_at = clock_timestamp() + interval '1 second' where id = $1",
+          [id],
+        );
+        await locker.query('begin');
+        await locker.query(
+          'select id from public.approvals where id = $1 for update',
+          [id],
+        );
+        pending = claim(claimant, id, argumentsHash);
+        void pending.catch(() => undefined);
+        await expectBlocked(waiter, holder);
+        await locker.query(
+          `select pg_sleep(greatest(0, extract(epoch from expires_at - clock_timestamp()))::double precision + 0.01)
+             from public.approvals where id = $1`,
+          [id],
+        );
+        await locker.query('commit');
+        expect(await pending).toBe('conflict');
+        await claimant.query('commit');
+        const { rows } = await admin.query<{
+          status: string;
+          usedAt: Date | null;
+        }>(
+          'select status, used_at as "usedAt" from public.approvals where id = $1',
+          [id],
+        );
+        expect(rows).toEqual([{ status: 'approved', usedAt: null }]);
+      } finally {
+        await locker.query('rollback');
+        await pending?.catch(() => undefined);
+        await claimant.query('rollback');
+        locker.release();
+        claimant.release();
+      }
+    });
+
+    it('does not let the application role consume for another actor or update arbitrary columns', async () => {
+      const approval = await approved();
+      const { id, argumentsHash } = approval;
+      const session = await admin.connect();
+      try {
+        await beginClaim(session, ownerId);
+        expect(await claim(session, id, argumentsHash)).toBe('conflict');
+        const update = await session.query(
+          "update public.approvals set status = 'consumed' where id = $1",
+          [id],
+        );
+        expect(update.rowCount).toBe(0);
+        await expect(
+          session.query(
+            "update public.approvals set arguments_hash = 'changed' where id = $1",
+            [id],
+          ),
+        ).rejects.toMatchObject({ code: '42501' });
+      } finally {
+        await session.query('rollback');
+        session.release();
+      }
+      expect(await port().getApproval(editorId, workspace1Id, id)).toEqual({
+        kind: 'ok',
+        approval,
+      });
+    });
+
+    it('restricts elevated consumption to the actor and current workspace', async () => {
+      const other = await approved(workspace2Id, otherOwnerId);
+      const session = await admin.connect();
+      try {
+        await beginClaim(session);
+        await session.query('set local role savia_elevated');
+        await session.query(
+          "select set_config('app.approval_workspace_id', $1, true)",
+          [workspace1Id],
+        );
+        const update = await session.query(
+          "update public.approvals set status = 'consumed', used_at = clock_timestamp() where id = $1",
+          [other.id],
+        );
+        expect(update.rowCount).toBe(0);
+      } finally {
+        await session.query('rollback');
+        session.release();
+      }
+      const stored = await port().getApproval(editorId, workspace2Id, other.id);
+      expect(stored).toEqual({ kind: 'ok', approval: other });
+    });
+
+    it('commits exactly one concurrent claim and holds the membership lock through the action', async () => {
+      const { id, argumentsHash } = await approved();
+      const rival = await admin.connect();
+      const remover = await admin.connect();
+      const entered = Promise.withResolvers<number>();
+      const finish = Promise.withResolvers<void>();
+      const execute = vi.fn(async (client: TransactionClient) => {
+        const { rows } = await client.query<{ pid: number }>(
+          'select pg_backend_pid() as pid',
+        );
+        if (!rows[0]) throw new Error('Expected action transaction PID');
+        entered.resolve(rows[0].pid);
+        await finish.promise;
+        return 'written';
+      });
+      let competing: Promise<string | undefined> | undefined;
+      let removing: Promise<unknown> | undefined;
+      const winner = port().executeApprovedAction(
+        editorId,
+        workspace1Id,
+        id,
+        action,
+        execute,
+      );
+      void winner.catch(entered.reject);
+      try {
+        const holder = await entered.promise;
+        const rivalPid = await backendPid(rival);
+        const removerPid = await backendPid(remover);
+        await beginClaim(rival);
+        await remover.query('begin');
+        competing = claim(rival, id, argumentsHash);
+        void competing.catch(() => undefined);
+        await expectBlocked(rivalPid, holder);
+        removing = remover.query(
+          'delete from public.workspace_memberships where workspace_id = $1 and profile_id = $2',
+          [workspace1Id, editorId],
+        );
+        void removing.catch(() => undefined);
+        await expectBlocked(removerPid, holder);
+        finish.resolve();
+        expect(await winner).toEqual({ kind: 'ok', result: 'written' });
+        expect(await competing).toBe('conflict');
+        await rival.query('commit');
+        await removing;
+        expect(execute).toHaveBeenCalledTimes(1);
+      } finally {
+        finish.resolve();
+        await winner.catch(() => undefined);
+        await competing?.catch(() => undefined);
+        await rival.query('rollback');
+        await removing?.catch(() => undefined);
+        await remover.query('rollback');
+        rival.release();
+        remover.release();
+      }
+      const stored = await port().getApproval(editorId, workspace1Id, id);
+      expect(stored).toMatchObject({
+        kind: 'ok',
+        approval: { status: 'consumed' },
+      });
+    });
+
+    it('binds a confirmed preview to the actor, workspace, tool and canonical arguments for one execution', async () => {
+      const approval = await createPending();
+      const { id } = approval;
+      const api = port();
+      const key = randomUUID();
+      const confirm = () =>
+        application.inject({
+          method: 'POST',
+          url: `/v1/approvals/${approval.id}/confirm`,
+          headers: {
+            authorization: 'Bearer admin-token',
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': key,
+          },
+          payload: { argumentsHash: approval.argumentsHash },
+        });
+      const execute = vi.fn().mockResolvedValue('written');
+      const run = (
+        tool: ApprovalAction = action,
+        subject = editorId,
+        workspace = workspace1Id,
+      ) => {
+        return api.executeApprovedAction(subject, workspace, id, tool, execute);
+      };
+      const read = () => api.getApproval(editorId, workspace1Id, id);
+      expect(await run()).toEqual(conflict);
+      expect(await read()).toEqual({ kind: 'ok', approval });
+      expect((await confirm()).statusCode).toBe(200);
+
+      expect(await run(action, adminId)).toEqual(conflict);
+      expect(await run(action, editorId, workspace2Id)).toEqual(conflict);
+      const otherTool = { ...action, toolName: 'create_transfer' };
+      expect(await run(otherTool)).toEqual(conflict);
+      const changed = { ...action, arguments: { amount: 6, currency: 'USD' } };
+      expect(await run(changed)).toEqual(conflict);
+      expect(execute).not.toHaveBeenCalled();
+      expect(await read()).toEqual({
+        kind: 'ok',
+        approval: { ...approval, status: 'approved' },
+      });
+
+      const reordered = {
+        ...action,
+        arguments: { currency: 'USD', amount: 5 },
+      };
+      const results = await Promise.all([run(reordered), run(reordered)]);
+      expect(results).toContainEqual(conflict);
+      expect(results).toContainEqual({ kind: 'ok', result: 'written' });
+      expect(execute).toHaveBeenCalledExactlyOnceWith(
+        expect.anything(),
+        action.arguments,
+      );
+      expect(await read()).toEqual({
+        kind: 'ok',
+        approval: { ...approval, status: 'consumed' },
+      });
+      expect((await confirm()).statusCode).toBe(409);
+    });
+
+    it('does not consume expired approvals or approvals for actors who lost write access', async () => {
+      const approval = await createPending('mcp');
+      const { id, argumentsHash } = approval;
+      const api = port();
+      const execute = vi.fn();
+      const run = () =>
+        api.executeApprovedAction(editorId, workspace1Id, id, action, execute);
+      const confirmed = await api.confirmApproval(
+        ownerId,
+        workspace1Id,
+        id,
+        { argumentsHash },
+        randomUUID(),
+      );
+      expect(confirmed.kind).toBe('ok');
+      const role = (value: string) =>
+        admin.query(
+          'update public.workspace_memberships set role = $1 where workspace_id = $2 and profile_id = $3',
+          [value, workspace1Id, editorId],
+        );
+      await role('viewer');
+      try {
+        expect(await run()).toEqual({ kind: 'forbidden' });
+      } finally {
+        await role('editor');
+      }
+      const expiresAt = new Date(Date.now() - 1_000).toISOString();
+      await admin.query(
+        'update public.approvals set expires_at = $1 where id = $2',
+        [expiresAt, id],
+      );
+      expect(await run()).toEqual(conflict);
+      expect(execute).not.toHaveBeenCalled();
+      const stored = await api.getApproval(editorId, workspace1Id, id);
+      expect(stored).toEqual({
+        kind: 'ok',
+        approval: { ...approval, expiresAt, status: 'approved' },
+      });
+    });
   });
 
   describe('Database schema and constraints', () => {

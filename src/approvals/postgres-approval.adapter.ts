@@ -1,8 +1,10 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
+  ApprovalClaim,
   ApprovalRecord,
   ApprovalStatus,
   ApprovalStore,
+  CreateApprovalCommand,
   RiskClass,
 } from './approval.port.js';
 
@@ -49,7 +51,56 @@ function mapApproval(row: ApprovalRow): ApprovalRecord {
   };
 }
 
+const approvalColumns = `id,
+  workspace_id as "workspaceId", tool_name as "toolName",
+  risk_class as "riskClass", arguments_hash as "argumentsHash", preview, status,
+  expires_at as "expiresAt", decided_by as "decidedBy", decided_at as "decidedAt",
+  decision_reason as "decisionReason", created_by as "createdBy", created_at as "createdAt"`;
+
 export class PostgresApprovalAdapter implements ApprovalStore {
+  public async insertApproval(
+    client: TransactionClient,
+    workspaceId: string,
+    command: Omit<CreateApprovalCommand, 'arguments'>,
+    argumentsHash: string,
+  ): Promise<ApprovalRecord | undefined> {
+    const { toolName, riskClass, preview, expiresAt, channel } = command;
+    const result = await client.query<ApprovalRow>(
+      `insert into public.approvals
+        (workspace_id, tool_name, risk_class, arguments_hash, preview, status, expires_at, created_by, channel)
+       select $1::uuid, $2, $3, $4, $5::jsonb, 'pending', $6::timestamptz,
+              nullif(current_setting('app.subject_id', true), '')::uuid, $7
+        where $6::timestamptz > clock_timestamp()
+       returning ${approvalColumns}`,
+      [
+        workspaceId,
+        toolName,
+        riskClass,
+        argumentsHash,
+        JSON.stringify(preview),
+        expiresAt,
+        channel,
+      ],
+    );
+    const row = result.rows[0];
+    return row ? mapApproval(row) : undefined;
+  }
+
+  public async claimApproval(
+    client: TransactionClient,
+    workspaceId: string,
+    approvalId: string,
+    toolName: string,
+    argumentsHash: string,
+  ): Promise<ApprovalClaim> {
+    const { rows } = await client.query<{ kind: ApprovalClaim }>(
+      'select public.claim_approval($1::uuid, $2::uuid, $3, $4) as kind',
+      [workspaceId, approvalId, toolName, argumentsHash],
+    );
+    if (!rows[0]) throw new Error('Approval claim returned no outcome');
+    return rows[0].kind;
+  }
+
   public async readActiveRole(
     client: TransactionClient,
     workspaceId: string,
@@ -67,19 +118,7 @@ export class PostgresApprovalAdapter implements ApprovalStore {
     approvalId: string,
   ): Promise<ApprovalRecord | undefined> {
     const result = await client.query<ApprovalRow>(
-      `select id,
-              workspace_id as "workspaceId",
-              tool_name as "toolName",
-              risk_class as "riskClass",
-              arguments_hash as "argumentsHash",
-              preview,
-              status,
-              expires_at as "expiresAt",
-              decided_by as "decidedBy",
-              decided_at as "decidedAt",
-              decision_reason as "decisionReason",
-              created_by as "createdBy",
-              created_at as "createdAt"
+      `select ${approvalColumns}
          from public.approvals
         where workspace_id = $1::uuid
           and id = $2::uuid`,
@@ -109,19 +148,7 @@ export class PostgresApprovalAdapter implements ApprovalStore {
           and id = $2::uuid
           and status = 'pending'
           and expires_at > $5::timestamptz
-        returning id,
-                  workspace_id as "workspaceId",
-                  tool_name as "toolName",
-                  risk_class as "riskClass",
-                  arguments_hash as "argumentsHash",
-                  preview,
-                  status,
-                  expires_at as "expiresAt",
-                  decided_by as "decidedBy",
-                  decided_at as "decidedAt",
-                  decision_reason as "decisionReason",
-                  created_by as "createdBy",
-                  created_at as "createdAt"`,
+        returning ${approvalColumns}`,
       [workspaceId, approvalId, status, decidedBy, decidedAt, decisionReason],
     );
 
