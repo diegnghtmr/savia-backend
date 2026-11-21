@@ -9,6 +9,7 @@ export const JOB_WRITER_TYPES = {
   REPORT_RUN: 'report_run',
   EXPORT_JOB: 'export_job',
   RECEIPT_OCR: 'receipt_ocr',
+  RECURRING_MATERIALIZATION: 'recurring_materialization',
 } as const;
 
 export type JobWriterType =

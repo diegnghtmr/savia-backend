@@ -37,6 +37,12 @@ import { ActorVerificationError, PgTransaction } from './pg-transaction.js';
 import { UUID_PATTERN } from './uuid.js';
 import { WorkerConfig } from './worker-config.js';
 
+export const JOB_SWEEP = Symbol('JobSweep');
+
+export interface JobSweep {
+  sweep(): Promise<number>;
+}
+
 const TERMINAL_JOB_STATUSES = {
   COMPLETED: 'completed',
   FAILED: 'failed',
@@ -155,6 +161,8 @@ export class JobRunner
   private isRunning = false;
   private isStopping = false;
   private pollTimer?: NodeJS.Timeout;
+  private sweepTimer?: NodeJS.Timeout;
+  private sweepInFlight = false;
   private runningJobsCount = 0;
 
   public get activeJobsCount(): number {
@@ -182,6 +190,7 @@ export class JobRunner
     @Optional()
     handlers?: readonly JobHandler[] | JobHandler,
     @Optional() clock?: () => number,
+    @Optional() @Inject(JOB_SWEEP) private readonly jobSweep?: JobSweep,
   ) {
     super();
     this.ocrSemaphore = new AsyncSemaphore(this.config.ocrConcurrency);
@@ -305,6 +314,29 @@ export class JobRunner
     };
 
     void poll();
+    if (this.jobSweep) void this.pollSweep(this.jobSweep);
+  }
+
+  private async pollSweep(sweep: JobSweep): Promise<void> {
+    if (!this.isRunning || this.sweepInFlight) return;
+    this.sweepInFlight = true;
+    this.runningJobsCount++;
+    try {
+      await sweep.sweep();
+    } catch {
+      this.logger.warn(
+        'Scheduled job sweep failed; it will retry on the next sweep.',
+      );
+    } finally {
+      this.sweepInFlight = false;
+      this.runningJobsCount--;
+      if (this.isRunning) {
+        this.sweepTimer = setTimeout(
+          () => void this.pollSweep(sweep),
+          this.config.pollIntervalMs,
+        );
+      }
+    }
   }
 
   public async stop(): Promise<void> {
@@ -313,6 +345,10 @@ export class JobRunner
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = undefined;
+    }
+    if (this.sweepTimer) {
+      clearTimeout(this.sweepTimer);
+      this.sweepTimer = undefined;
     }
 
     const drainDeadline = Date.now() + this.config.drainTimeoutSeconds * 1_000;
