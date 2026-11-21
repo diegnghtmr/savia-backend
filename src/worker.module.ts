@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { buildSubscriptionPriceIncreases } from './analytics/advanced-metrics.js';
+import { PostgresAnalyticsAdapter } from './analytics/postgres-analytics.adapter.js';
 import { BudgetAlertSweep } from './budgets/budget-alert-sweep.js';
 import { PostgresBudgetAdapter } from './budgets/postgres-budget.adapter.js';
 import { ForecastJobHandler } from './forecasts/forecast-job.handler.js';
@@ -28,6 +30,7 @@ import { RecurringJobSweep } from './recurring/recurring-job-sweep.js';
 import { RecurringJobHandler } from './recurring/recurring-job.handler.js';
 import { RecurringMaterializer } from './recurring/recurring-materializer.js';
 import { PostgresOccurrenceAdapter } from './recurring/postgres-occurrence.adapter.js';
+import { SubscriptionDetectionSweep } from './recurring/subscription-detection-sweep.js';
 
 @Module({
   imports: [
@@ -73,12 +76,36 @@ import { PostgresOccurrenceAdapter } from './recurring/postgres-occurrence.adapt
         ),
     },
     {
+      provide: SubscriptionDetectionSweep,
+      inject: [PgTransaction, NOTIFICATION_WRITER, WorkerConfig],
+      useFactory: (
+        transaction: PgTransaction,
+        notifications: NotificationWriter,
+        config: WorkerConfig,
+      ) => {
+        const analytics = new PostgresAnalyticsAdapter();
+        return new SubscriptionDetectionSweep(
+          transaction,
+          notifications,
+          async (client, workspaceId) =>
+            buildSubscriptionPriceIncreases(
+              await analytics.readSubscriptionsWithPreviousAmount(
+                client,
+                workspaceId,
+              ),
+            ).items,
+          config.queueTimeoutMs,
+        );
+      },
+    },
+    {
       provide: JOB_SWEEP,
-      inject: [RecurringJobSweep, BudgetAlertSweep],
+      inject: [RecurringJobSweep, BudgetAlertSweep, SubscriptionDetectionSweep],
       useFactory: (
         recurring: RecurringJobSweep,
         budgetAlerts: BudgetAlertSweep,
-      ) => [recurring, budgetAlerts],
+        subscriptionDetection: SubscriptionDetectionSweep,
+      ) => [recurring, budgetAlerts, subscriptionDetection],
     },
     {
       provide: RecurringJobHandler,

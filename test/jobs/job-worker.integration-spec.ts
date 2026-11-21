@@ -1,4 +1,4 @@
-// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql, 202609170008_recurring_job_type.sql, 202609170011_recurring_creator_lock.sql, 202609170013_budget_alert_discovery.sql
+// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql, 202609170008_recurring_job_type.sql, 202609170011_recurring_creator_lock.sql, 202609170013_budget_alert_discovery.sql, 202609170017_subscription_detection.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -31,6 +31,9 @@ import * as tesseractAdapter from '../../src/platform/system-tesseract.adapter.j
 import { WorkerConfig } from '../../src/platform/worker-config.js';
 import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import { RecurringJobSweep } from '../../src/recurring/recurring-job-sweep.js';
+import { RecurringService } from '../../src/recurring/recurring.service.js';
+import { PostgresRecurringAdapter } from '../../src/recurring/postgres-recurring.adapter.js';
+import { createSubscriptionListQuery } from '../../src/recurring/subscription-query.js';
 import { PostgresOccurrenceAdapter } from '../../src/recurring/postgres-occurrence.adapter.js';
 import { PostgresWorkspaceMemberAdapter } from '../../src/identity/postgres-workspace-member.adapter.js';
 import { PostgresTransactionAdapter } from '../../src/ledger/postgres-transaction.adapter.js';
@@ -372,6 +375,220 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
         config: ['search_path=pg_catalog, public'],
       },
     ]);
+  });
+
+  it('proposes only regular confirmed expenses, preserves candidate identity, and alerts once per price change', async () => {
+    const idempotency = new PostgresIdempotencyAdapter();
+    const ledger = new TransactionService(
+      transaction,
+      new PostgresTransactionAdapter(),
+      idempotency,
+    );
+    const recurring = new RecurringService(
+      transaction,
+      new PostgresRecurringAdapter(),
+      idempotency,
+    );
+    const notifications = new NotificationService(
+      transaction,
+      new PostgresNotificationAdapter(),
+      idempotency,
+    );
+    const at = (days: number) =>
+      new Date(Date.now() + days * 86_400_000).toISOString();
+    const charge = async (
+      description: string,
+      days: number,
+      amountMinor = '1000',
+      payeeId?: string,
+      status: 'draft' | 'confirmed' = 'confirmed',
+    ) => {
+      const result = await ledger.create(
+        ownerA,
+        ws1Id,
+        {
+          type: 'expense',
+          accountId: id(8201),
+          amount: { currency: 'USD', amountMinor },
+          occurredAt: at(days),
+          description,
+          status,
+          ...(payeeId === undefined ? {} : { payeeId }),
+        },
+        randomUUID(),
+      );
+      expect(result.kind).toBe('created');
+    };
+    for (const [offset, day] of [-92, -62, -32].entries())
+      await charge(
+        ['Stream Plus', 'stream   plus', 'STREAM PLUS'][offset]!,
+        day,
+      );
+    for (const [offset, day] of [-15, -8, -1].entries())
+      await charge('Weekly delivery', day, offset === 2 ? '900' : '1000');
+    for (const day of [-732, -367, -2]) await charge('Annual licence', day);
+    await charge('One-off', -1);
+    for (const day of [-70, -34, -1]) await charge('Irregular', day);
+    for (const [offset, day] of [-62, -32, -2].entries()) {
+      const payee = id(8190 + offset);
+      await admin.query(
+        `insert into public.payees (id,workspace_id,name,created_by) values ($1,$2,$3,$4)`,
+        [payee, ws1Id, `Shop ${offset}`, ownerA],
+      );
+      await charge('Same receipt description', day, '1000', payee);
+      await charge('Draft only', day, '1000', undefined, 'draft');
+      await charge('Unrelated prices', day, String(1000 * (offset + 1)));
+    }
+    await admin.query(
+      `insert into public.subscriptions
+      (workspace_id, payee_name, current_amount_minor, current_currency, previous_amount_minor, previous_currency, frequency, status, created_by)
+      values ($1,'Legacy subscription',1100,'USD',1000,'USD','monthly','confirmed',$2)`,
+      [ws2Id, ownerB],
+    );
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    try {
+      const appRunner = app.get(JobRunner);
+      const sweep = async () => {
+        await appRunner.start();
+        await vi.waitFor(() => expect(appRunner.activeJobsCount).toBe(0));
+        await appRunner.stop();
+      };
+      const list = async (actor = viewerA, workspaceId = ws1Id) => {
+        const result = await recurring.listSubscriptions(
+          actor,
+          createSubscriptionListQuery({ workspaceId, statusParam: 'detected' }),
+        );
+        if (result.kind !== 'ok')
+          throw new Error('Could not list detected subscriptions');
+        return [...result.page.items].sort((a, b) =>
+          a.frequency.localeCompare(b.frequency),
+        );
+      };
+      const alerts = async (subject: string) =>
+        (
+          await notifications.listNotifications(subject, {
+            subject,
+            limit: 50,
+            unreadOnly: false,
+          })
+        ).page.items.filter(
+          ({ type }) => type === 'subscription_price_increase',
+        );
+      await sweep();
+      const initial = await list();
+      expect(initial).toEqual([
+        expect.objectContaining({
+          frequency: 'monthly',
+          status: 'detected',
+          currentAmount: { currency: 'USD', amountMinor: '1000' },
+          increasePercent: 0,
+        }),
+        expect.objectContaining({
+          frequency: 'weekly',
+          status: 'detected',
+          payeeName: 'Weekly delivery',
+          increasePercent: -10,
+        }),
+        expect.objectContaining({
+          frequency: 'yearly',
+          status: 'detected',
+          payeeName: 'Annual licence',
+          increasePercent: 0,
+        }),
+      ]);
+      expect(initial[0]?.payeeName.toLowerCase()).toBe('stream plus');
+      expect(await list(ownerB, ws2Id)).toEqual([]);
+      expect(
+        await recurring.listSubscriptions(
+          ownerB,
+          createSubscriptionListQuery({ workspaceId: ws1Id }),
+        ),
+      ).toEqual({ kind: 'forbidden' });
+      expect(await alerts(ownerA)).toEqual([]);
+      const legacy = await alerts(ownerB);
+      expect(legacy).toEqual([
+        expect.objectContaining({
+          title: 'Subscription “Legacy subscription” increased by 10%',
+        }),
+      ]);
+      await charge('Stream Plus', -2, '1100');
+      await sweep();
+      const updated = await list();
+      expect(updated).toEqual([
+        {
+          ...initial[0],
+          payeeName: 'Stream Plus',
+          currentAmount: { currency: 'USD', amountMinor: '1100' },
+          increasePercent: 10,
+          nextExpectedAt: expect.any(String),
+        },
+        initial[1],
+        initial[2],
+      ]);
+      const increased = await alerts(ownerA);
+      expect(increased).toEqual([
+        expect.objectContaining({
+          title: 'Subscription “Stream Plus” increased by 10%',
+          body: null,
+          actionUrl: null,
+          read: false,
+        }),
+      ]);
+      await sweep();
+      expect(await list()).toEqual(updated);
+      expect(await alerts(ownerA)).toEqual(increased);
+      expect(await alerts(ownerB)).toEqual(legacy);
+      expect(await alerts(viewerA)).toEqual([]);
+      expect(
+        (await admin.query('select id from public.recurring_rules')).rows,
+      ).toEqual([]);
+    } finally {
+      await app.close();
+      preflight.mockRestore();
+    }
+  }, 10_000);
+
+  it('grants only worker execution of fixed-path subscription discovery, without direct table grants', async () => {
+    const { rows } = await admin.query(`
+      select r as role, has_function_privilege(r, f.oid, 'EXECUTE') as execute,
+             f.proconfig as config
+      from pg_proc f cross join unnest(array['anon','authenticated','savia_application','savia_worker','service_role']) r
+      where f.oid = to_regprocedure('public.find_subscription_detection_targets(uuid)') order by role`);
+    expect(rows).toEqual(
+      [
+        'anon',
+        'authenticated',
+        'savia_application',
+        'savia_worker',
+        'service_role',
+      ].map((role) => ({
+        role,
+        execute: role === 'savia_worker',
+        config: ['search_path=pg_catalog, public'],
+      })),
+    );
+    const result = await transaction.runAsQueueConsumer((client) =>
+      client.query(
+        `select * from public.find_subscription_detection_targets(null)`,
+      ),
+    );
+    expect(result.rows).toEqual([
+      { workspaceId: ws1Id, subject: ownerA },
+      { workspaceId: ws2Id, subject: ownerB },
+    ]);
+    for (const table of ['subscriptions', 'transactions', 'payees']) {
+      const error = await capturePgError(() =>
+        transaction.runAsQueueConsumer((client) =>
+          client.query(`select 1 from public.${table}`),
+        ),
+      );
+      expect(error.code).toBe('42501');
+    }
   });
 
   describe('Probe job execution and creator RLS scoping', () => {
