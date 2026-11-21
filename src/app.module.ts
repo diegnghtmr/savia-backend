@@ -24,6 +24,7 @@ import { NotificationsModule } from './notifications/notifications.module.js';
 import { ReceiptsModule } from './receipts/receipts.module.js';
 import { McpGrantsModule } from './mcp/mcp-grants.module.js';
 import { AICredentialsModule } from './ai/ai-credentials.module.js';
+import { AICredentialService } from './ai/ai-credential.service.js';
 import { AgentConversationsModule } from './agent/agent-conversations.module.js';
 import { CliDeviceModule } from './cli-device/cli-device.module.js';
 
@@ -53,7 +54,11 @@ import { CliDeviceModule } from './cli-device/cli-device.module.js';
     ReceiptsModule,
     McpGrantsModule,
     AICredentialsModule,
-    AgentConversationsModule,
+    AgentConversationsModule.withCredentialResolver([AICredentialsModule], {
+      inject: [AICredentialService],
+      useFactory: (ai: AICredentialService) => (subject, workspaceId) =>
+        ai.resolveAgentCredential(subject, workspaceId),
+    }),
     CliDeviceModule,
   ],
 })

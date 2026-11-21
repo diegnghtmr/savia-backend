@@ -40,10 +40,24 @@ export interface AgentProviderChunk {
   readonly type: 'text_delta' | 'tool_proposed' | 'tool_completed';
   readonly data: Record<string, unknown>;
 }
+interface AgentProviderContext {
+  readonly subject: string;
+  readonly workspaceId: string;
+}
+export type AgentCredentialResolver = (
+  subject: string,
+  workspaceId: string,
+) => Promise<{
+  readonly model: string;
+  readonly baseUrl: string;
+  readonly credentialType: 'api_key' | 'gateway_token' | 'local_endpoint';
+  readonly secret: string | null;
+} | null>;
 export interface AgentProviderPort {
   stream(
     command: AgentMessageCommand,
     signal: AbortSignal,
+    context: AgentProviderContext,
   ): AsyncIterable<AgentProviderChunk>;
 }
 export interface AgentMessageStore {

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
+import { AgentProviderFailure } from './agent-provider.adapter.js';
 import {
   AGENT_EVENT_TYPES,
   AGENT_MESSAGE_OUTCOMES,
@@ -111,7 +112,10 @@ export class AgentMessageService implements AgentMessagePort {
     };
     push(AGENT_EVENT_TYPES.RUN_STARTED, {});
     try {
-      for await (const chunk of this.provider.stream(command, signal)) {
+      for await (const chunk of this.provider.stream(command, signal, {
+        subject,
+        workspaceId,
+      })) {
         if (signal.aborted) break;
         push(chunk.type, chunk.data);
         if (terminal) break;
@@ -124,62 +128,43 @@ export class AgentMessageService implements AgentMessagePort {
             reason: 'Approval creation is not exposed by APPROVALS_PORT.',
           });
       }
-      if (!signal.aborted) push(AGENT_EVENT_TYPES.RUN_COMPLETED, {});
-      if (!signal.aborted)
-        await this.tx.run(subject, async (client) => {
-          await this.store.saveRun(
-            client,
-            workspaceId,
-            conversationId,
-            subject,
-            runId,
-            command.message,
-            events,
-          );
-          await this.store.finalizeIdempotency(
-            client,
-            subject,
-            workspaceId,
-            conversationId,
-            key,
-            events,
-          );
-        });
-      else
-        await this.tx.run(subject, (client) =>
-          this.store.releaseIdempotency(
-            client,
-            subject,
-            workspaceId,
-            conversationId,
-            key,
-          ),
-        );
     } catch (error) {
-      if (!signal.aborted) {
-        push(AGENT_EVENT_TYPES.RUN_FAILED, {
-          message: error instanceof Error ? error.message : 'Provider failed',
-        });
-        await this.tx.run(subject, async (client) => {
-          await this.store.saveRun(
-            client,
-            workspaceId,
-            conversationId,
-            subject,
-            runId,
-            command.message,
-            events,
-          );
-          await this.store.finalizeIdempotency(
-            client,
-            subject,
-            workspaceId,
-            conversationId,
-            key,
-            events,
-          );
-        });
-      }
+      const failure = error instanceof AgentProviderFailure ? error : null;
+      push(AGENT_EVENT_TYPES.RUN_FAILED, {
+        message: failure?.message ?? 'Provider failed',
+      });
+    }
+    if (!signal.aborted) {
+      push(AGENT_EVENT_TYPES.RUN_COMPLETED, {});
+      await this.tx.run(subject, async (client) => {
+        await this.store.saveRun(
+          client,
+          workspaceId,
+          conversationId,
+          subject,
+          runId,
+          command.message,
+          events,
+        );
+        await this.store.finalizeIdempotency(
+          client,
+          subject,
+          workspaceId,
+          conversationId,
+          key,
+          events,
+        );
+      });
+    } else {
+      await this.tx.run(subject, (client) =>
+        this.store.releaseIdempotency(
+          client,
+          subject,
+          workspaceId,
+          conversationId,
+          key,
+        ),
+      );
     }
   }
 }

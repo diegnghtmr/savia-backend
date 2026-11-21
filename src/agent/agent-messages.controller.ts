@@ -89,7 +89,9 @@ export class AgentMessagesController {
         Connection: 'keep-alive',
       });
       const controller = new AbortController();
-      req.raw.once('close', () => controller.abort());
+      reply.raw.once('close', () => {
+        if (!reply.raw.writableEnded) controller.abort();
+      });
       const write = (event: {
         type: string;
         runId: string;

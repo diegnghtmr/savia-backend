@@ -14,6 +14,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
@@ -188,6 +189,56 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
       editor,
     ]);
     await admin?.end();
+  });
+
+  it('uses the workspace credential and replays a redacted failure', async () => {
+    const secret = 'synthetic-gateway-secret';
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/ai/credentials',
+      headers: headers(),
+      payload: {
+        ownerType: 'workspace',
+        providerId: 'openai-compatible',
+        credentialType: 'gateway_token',
+        secret,
+        metadata: { baseUrl: 'https://gateway.example/v1' },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const credentialId = (JSON.parse(created.payload) as { id: string }).id;
+    const configured = await app.inject({
+      method: 'PUT',
+      url: '/v1/ai/default-model',
+      headers: headers(),
+      payload: { modelRef: 'openai-compatible:demo', credentialId },
+    });
+    expect(configured.statusCode).toBe(204);
+    const unauthorized = new Response(secret, { status: 401 });
+    const upstream = vi.fn<typeof fetch>().mockResolvedValue(unauthorized);
+    vi.stubGlobal('fetch', upstream);
+    try {
+      const conversation = await createConversation();
+      const id = key();
+      const failure = await request(conversation, 'prompt', 'owner', id);
+      expect(failure.statusCode).toBe(200);
+      expect(
+        parseEvents(failure.payload).map(({ type, data }) => [type, data]),
+      ).toEqual([
+        ['run_started', {}],
+        ['run_failed', { message: 'Provider HTTP 401' }],
+      ]);
+      const replay = await request(conversation, 'prompt', 'owner', id);
+      expect(replay.statusCode).toBe(200);
+      expect(parseEvents(replay.payload)).toEqual(parseEvents(failure.payload));
+      const auth = { Authorization: `Bearer ${secret}` };
+      expect(upstream).toHaveBeenCalledExactlyOnceWith(
+        new URL('https://gateway.example/v1/chat/completions'),
+        expect.objectContaining({ headers: expect.objectContaining(auth) }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('returns the SSE headers and exact event/data wire format', async () => {

@@ -101,6 +101,9 @@ class FakeStore implements Store {
   public async revoke() {
     return this.revokeResult;
   }
+  public async readDefault() {
+    return undefined;
+  }
   public async setDefault() {
     return this.setDefaultResult;
   }

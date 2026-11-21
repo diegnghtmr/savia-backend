@@ -187,7 +187,7 @@ describe('in-flight idempotency', () => {
           await new Promise<void>((resolve) =>
             signal.addEventListener('abort', () => resolve(), { once: true }),
           );
-          yield { type: 'text_delta', data: { text: 'never emitted' } };
+          signal.throwIfAborted();
         } finally {
           closed = true;
         }
@@ -217,6 +217,6 @@ describe('in-flight idempotency', () => {
     await execution;
     expect(closed).toBe(true);
     expect(releaseIdempotency).toHaveBeenCalledOnce();
-    expect(events).not.toContain('run_completed');
+    expect(events).toEqual(['run_started', 'text_delta']);
   });
 });

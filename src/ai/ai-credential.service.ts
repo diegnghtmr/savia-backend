@@ -11,6 +11,7 @@ import {
   type UpdateCredentialCommand,
   type AIIdempotencyStore,
 } from './ai-credential.port.js';
+const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 export const PROVIDERS: readonly ProviderDescriptor[] = Object.freeze([
   {
     providerId: 'openai',
@@ -266,6 +267,38 @@ export class AICredentialService implements AIServicePort {
         if (error instanceof AIRollbackError) return { kind: error.outcome };
         throw error;
       });
+  }
+  /** Backend-only runtime read; the HTTP service port never exposes this result. */
+  public async resolveAgentCredential(subject: string, workspaceId: string) {
+    const row = await this.tx.runRead(subject, (c) =>
+      this.store.readDefault(c, workspaceId),
+    );
+    if (!row) return null;
+    const { credentialType, encryptedSecret } = row;
+    const separator = row.modelRef.indexOf(':');
+    const providerId = row.modelRef.slice(0, separator);
+    const model = row.modelRef.slice(separator + 1);
+    const provider = PROVIDERS.find((item) => item.providerId === providerId);
+    if (
+      !model ||
+      !provider ||
+      !isProviderPolicyAllowed(provider) ||
+      !encryptedSecret ||
+      (credentialType !== 'api_key' &&
+        credentialType !== 'gateway_token' &&
+        credentialType !== 'local_endpoint') ||
+      !provider.credentialTypes.includes(credentialType)
+    )
+      throw new Error('Workspace AI credential unavailable');
+    const secret = this.crypto.decrypt(encryptedSecret);
+    const local = credentialType === 'local_endpoint';
+    const configured = providerId === 'openai' ? OPENAI_BASE_URL : '';
+    return {
+      model,
+      credentialType,
+      baseUrl: local ? secret : (row.baseUrl ?? configured),
+      secret: local ? null : secret,
+    };
   }
   public async setDefaultModel(
     subject: string,

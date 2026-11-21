@@ -1,4 +1,9 @@
-import { Module } from '@nestjs/common';
+import {
+  Module,
+  type DynamicModule,
+  type FactoryProvider,
+  type ModuleMetadata,
+} from '@nestjs/common';
 import { PlatformModule } from '../platform/platform.module.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
@@ -10,10 +15,15 @@ import { AgentMessagesController } from './agent-messages.controller.js';
 import {
   AGENT_MESSAGE_PORT,
   AGENT_PROVIDER_PORT,
+  type AgentCredentialResolver,
+  type AgentProviderPort,
 } from './agent-message.port.js';
 import { AgentMessageService } from './agent-message.service.js';
-import { LocalAgentProviderAdapter } from './agent-provider.adapter.js';
+import { OpenAICompatibleAgentProviderAdapter } from './agent-provider.adapter.js';
 import { PostgresAgentMessageAdapter } from './postgres-agent-message.adapter.js';
+
+const RESOLVE_AGENT_CREDENTIAL = Symbol('ResolveAgentCredential');
+
 @Module({
   imports: [PlatformModule],
   controllers: [AgentConversationsController, AgentMessagesController],
@@ -37,17 +47,33 @@ import { PostgresAgentMessageAdapter } from './postgres-agent-message.adapter.js
       useExisting: AgentConversationService,
     },
     PostgresAgentMessageAdapter,
-    { provide: AGENT_PROVIDER_PORT, useClass: LocalAgentProviderAdapter },
+    {
+      provide: AGENT_PROVIDER_PORT,
+      inject: [RESOLVE_AGENT_CREDENTIAL],
+      useFactory: (resolve: AgentCredentialResolver) =>
+        new OpenAICompatibleAgentProviderAdapter(resolve),
+    },
     {
       provide: AgentMessageService,
       inject: [PgTransaction, PostgresAgentMessageAdapter, AGENT_PROVIDER_PORT],
       useFactory: (
         tx: PgTransaction,
         store: PostgresAgentMessageAdapter,
-        provider: LocalAgentProviderAdapter,
+        provider: AgentProviderPort,
       ) => new AgentMessageService(tx, store, provider),
     },
     { provide: AGENT_MESSAGE_PORT, useExisting: AgentMessageService },
   ],
 })
-export class AgentConversationsModule {}
+export class AgentConversationsModule {
+  public static withCredentialResolver(
+    imports: ModuleMetadata['imports'],
+    factory: Omit<FactoryProvider<AgentCredentialResolver>, 'provide'>,
+  ): DynamicModule {
+    return {
+      module: AgentConversationsModule,
+      imports,
+      providers: [{ ...factory, provide: RESOLVE_AGENT_CREDENTIAL }],
+    };
+  }
+}
