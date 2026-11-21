@@ -37,6 +37,12 @@ import { ActorVerificationError, PgTransaction } from './pg-transaction.js';
 import { UUID_PATTERN } from './uuid.js';
 import { WorkerConfig } from './worker-config.js';
 
+export const JOB_SWEEP = Symbol('JobSweep');
+
+export interface JobSweep {
+  sweep(): Promise<number>;
+}
+
 const TERMINAL_JOB_STATUSES = {
   COMPLETED: 'completed',
   FAILED: 'failed',
@@ -182,6 +188,7 @@ export class JobRunner
     @Optional()
     handlers?: readonly JobHandler[] | JobHandler,
     @Optional() clock?: () => number,
+    @Optional() @Inject(JOB_SWEEP) private readonly jobSweep?: JobSweep,
   ) {
     super();
     this.ocrSemaphore = new AsyncSemaphore(this.config.ocrConcurrency);
@@ -290,7 +297,14 @@ export class JobRunner
     const poll = async () => {
       if (!this.isRunning) return;
       try {
-        await this.runOnce();
+        if (this.jobSweep) {
+          await Promise.allSettled([
+            this.runOnce(),
+            this.sweepOnce(this.jobSweep),
+          ]);
+        } else {
+          await this.runOnce();
+        }
       } catch (error) {
         // Runner loop must not crash on transient unexpected errors
         void error;
@@ -305,6 +319,19 @@ export class JobRunner
     };
 
     void poll();
+  }
+
+  private async sweepOnce(sweep: JobSweep): Promise<void> {
+    this.runningJobsCount++;
+    try {
+      await sweep.sweep();
+    } catch {
+      this.logger.warn(
+        'Scheduled job sweep failed; it will retry on the next poll.',
+      );
+    } finally {
+      this.runningJobsCount--;
+    }
   }
 
   public async stop(): Promise<void> {

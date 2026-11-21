@@ -1,4 +1,5 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
 import type {
   DueOccurrence,
   DueRule,
@@ -9,6 +10,35 @@ import type {
 interface DueRuleRow extends DueRule, Record<string, unknown> {}
 
 export class PostgresOccurrenceAdapter implements OccurrenceStore {
+  public async findDue(
+    client: TransactionClient,
+    asOf: string,
+  ): Promise<readonly DueOccurrence[]> {
+    const { rows } = await client.query<
+      Omit<DueOccurrence, 'asOf'> & Record<string, unknown>
+    >('select * from public.find_due_recurring_occurrences($1::timestamptz)', [
+      asOf,
+    ]);
+    return rows.map((row) => ({ ...row, asOf }));
+  }
+
+  public async hasJob(
+    client: TransactionClient,
+    due: DueOccurrence,
+  ): Promise<boolean> {
+    const { rows } = await client.query(
+      `select 1 from public.jobs where workspace_id = $1::uuid and type = $2
+        and payload->>'ruleId' = $3 and payload->>'scheduledAt' = $4`,
+      [
+        due.workspaceId,
+        JOB_WRITER_TYPES.RECURRING_MATERIALIZATION,
+        due.ruleId,
+        due.scheduledAt,
+      ],
+    );
+    return rows.length > 0;
+  }
+
   public async lockDue(
     client: TransactionClient,
     { workspaceId, ruleId, subject, scheduledAt, asOf }: DueOccurrence,

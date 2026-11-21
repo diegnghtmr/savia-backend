@@ -68,6 +68,7 @@ it.each([
           ...rule.template,
           occurredAt: due.scheduledAt,
           status,
+          receiptId: null,
         },
         id,
       );
@@ -109,6 +110,29 @@ it.each([
     );
   },
 );
+
+it('does not attach the template receipt to a new transaction', async () => {
+  const { materializer, createTransaction } = setup({
+    ...rule,
+    template: {
+      ...rule.template,
+      receiptId: '00000000-0000-4000-8000-000000000001',
+    },
+  });
+  const id = await materializer.materialize(client, due);
+  expect(createTransaction).toHaveBeenCalledExactlyOnceWith(
+    client,
+    due.subject,
+    due.workspaceId,
+    {
+      ...rule.template,
+      occurredAt: due.scheduledAt,
+      status: 'confirmed',
+      receiptId: null,
+    },
+    id,
+  );
+});
 
 it('does not record or advance a failed ledger write', async () => {
   const { materializer, store, createTransaction } = setup();

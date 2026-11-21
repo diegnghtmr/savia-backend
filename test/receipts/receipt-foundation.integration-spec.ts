@@ -1,4 +1,4 @@
-// Migration under test: 202609170003_receipt_ocr.sql
+// Migrations under test: 202609170003_receipt_ocr.sql, 202609170008_recurring_job_type.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -145,6 +145,7 @@ describe('Receipt OCR foundation schema, constraints, grants, and trigger (20260
         'import_commit',
         'import_rollback',
         'receipt_ocr',
+        'recurring_materialization',
         'report_run',
       ]);
     });

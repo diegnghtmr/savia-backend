@@ -95,6 +95,7 @@ export class RecurringMaterializer {
                 ...rule.template,
                 status,
                 occurredAt: scheduledAt.toISOString(),
+                receiptId: null,
               },
               id,
             ),
