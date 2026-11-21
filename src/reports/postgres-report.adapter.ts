@@ -197,6 +197,7 @@ left join lateral (
 left join lateral (
   select rate::text as rate from public.exchange_rates
    where workspace_id = t.workspace_id and base_currency = t.currency and quote_currency = w.base_currency
+     and not (source = 'frankfurter' and effective_at <= $5::timestamptz - interval '72 hours')
    order by (effective_at <= $5::timestamptz) desc, case when effective_at <= $5::timestamptz then effective_at end desc, effective_at asc, id desc
    limit 1
 ) rates on t.currency <> w.base_currency

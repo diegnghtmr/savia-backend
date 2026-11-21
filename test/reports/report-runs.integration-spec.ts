@@ -6,7 +6,15 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
@@ -16,6 +24,7 @@ import {
   type RenderingJobHandler,
 } from '../../src/platform/job-handler.port.js';
 import { JobRunner } from '../../src/platform/job-runner.js';
+import { ReceiptWorkerModule } from '../../src/receipts/receipt-worker.module.js';
 import {
   ARTIFACT_STORAGE,
   ArtifactStorageClientError,
@@ -436,7 +445,15 @@ describe('Report runs integration contract and endpoint suite', () => {
       .overrideProvider(ARTIFACT_STORAGE)
       .useValue(inMemoryStorage)
       .compile();
-    await workerModule.init();
+    // This suite runs the real report worker, not the unrelated receipt OCR preflight.
+    const ocrPreflight = vi
+      .spyOn(ReceiptWorkerModule.prototype, 'onModuleInit')
+      .mockResolvedValue(undefined);
+    try {
+      await workerModule.init();
+    } finally {
+      ocrPreflight.mockRestore();
+    }
     runner = workerModule.get(JobRunner);
   });
 

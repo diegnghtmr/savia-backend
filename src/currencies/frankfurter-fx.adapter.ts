@@ -71,11 +71,28 @@ function publicationTimestamp(value: unknown): string {
   return iso;
 }
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+/** Plaintext is only for loopback fakes under the test runner; production requires https. */
+function assertProviderUrl(baseUrl: string): void {
+  const url = new URL(baseUrl);
+  if (url.protocol === 'https:') return;
+  if (
+    url.protocol === 'http:' &&
+    process.env.NODE_ENV === 'test' &&
+    LOOPBACK_HOSTS.has(url.hostname)
+  )
+    return;
+  throw new Error('Frankfurter base URL must use https.');
+}
+
 export class FrankfurterFxAdapter implements FxProvider {
   public constructor(
     private readonly baseUrl = 'https://api.frankfurter.app',
     private readonly timeoutMs = 3_000,
-  ) {}
+  ) {
+    assertProviderUrl(baseUrl);
+  }
 
   public async latest(
     baseCurrency: string,
