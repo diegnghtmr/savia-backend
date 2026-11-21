@@ -101,3 +101,20 @@ it('S10: the production configuration cannot opt into a plaintext provider', asy
     });
   }
 });
+
+it.each([
+  ['test', 'http://example.test', false],
+  ['test', 'http://localhost.example.test', false],
+  ['test', 'http://[::1]:3210', true],
+  ['development', 'http://localhost:3210', false],
+  ['production', 'https://example.test', true],
+])('S10: %s provider URL policy for %s', (env, url, allowed) => {
+  vi.stubEnv('NODE_ENV', env);
+  try {
+    const construct = () => new FrankfurterFxAdapter(url);
+    if (allowed) expect(construct).not.toThrow();
+    else expect(construct).toThrow(/^Frankfurter base URL must use https\.$/);
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
