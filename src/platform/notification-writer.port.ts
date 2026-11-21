@@ -1,4 +1,4 @@
-import type { TransactionClient } from './pg-transaction.js';
+import type { ActorWriteTransactionClient } from './pg-transaction.js';
 
 export const NOTIFICATION_WRITER = Symbol('NotificationWriter');
 
@@ -12,5 +12,8 @@ export interface NotificationEvent {
 
 export interface NotificationWriter {
   /** Best-effort insert in the originating write transaction; do not publish after it commits. */
-  publish(client: TransactionClient, event: NotificationEvent): Promise<void>;
+  publish(
+    client: ActorWriteTransactionClient,
+    event: NotificationEvent,
+  ): Promise<void>;
 }

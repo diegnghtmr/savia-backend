@@ -10,7 +10,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
-import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import {
+  PgTransaction,
+  type TransactionClient,
+} from '../../src/platform/pg-transaction.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { PostgresNotificationAdapter } from '../../src/notifications/postgres-notification.adapter.js';
 
 const url = process.env.DATABASE_URL;
@@ -105,7 +109,18 @@ describe('Notifications integration contract and endpoint suite', () => {
        ($1, $3, 'editor', 'active'), ($1, $4, 'owner', 'active'), ($2, $3, 'owner', 'active')`,
       [workspaceId, otherWorkspaceId, user1Id, user2Id],
     );
-    const tx = application.get(PgTransaction);
+    const tx = new PgTransaction(application.get(PostgresPool), {
+      callbackTimeoutMs: 3_000,
+      statementTimeoutMs: 850,
+      lockTimeoutMs: 650,
+    });
+    const readLimits = async (client: TransactionClient) => {
+      const result =
+        await client.query(`select current_setting('statement_timeout') as statement,
+                                                current_setting('lock_timeout') as lock`);
+      return result.rows[0];
+    };
+    const limits = { statement: '850ms', lock: '650ms' };
     const writer = application.get(PostgresNotificationAdapter);
     const event = {
       workspaceId,
@@ -136,13 +151,16 @@ describe('Notifications integration contract and endpoint suite', () => {
       });
 
     await tx.run(user1Id, async (client) => {
+      expect(await readLimits(client)).toEqual(limits);
       await writer.publish(client, { ...event, title: '' }); // Constraint failure must not abort this transaction.
+      expect(await readLimits(client)).toEqual(limits);
       await writer.publish(client, {
         ...event,
         recipientId: user2Id,
         title: 'Forged recipient',
       });
       await writer.publish(client, event);
+      expect(await readLimits(client)).toEqual(limits);
       await writer.publish(client, {
         ...event,
         workspaceId: otherWorkspaceId,

@@ -4,11 +4,16 @@ import type {
   NotificationEvent,
   NotificationWriter,
 } from '../platform/notification-writer.port.js';
-import type { TransactionClient } from '../platform/pg-transaction.js';
+import type {
+  ActorWriteTransactionClient,
+  TransactionClient,
+} from '../platform/pg-transaction.js';
 import type {
   NotificationRow,
   NotificationStore,
 } from './notification.port.js';
+
+const NOTIFICATION_INSERT_TIMEOUT_MS = 200;
 
 interface NotificationSqlRow extends Record<string, unknown> {
   readonly id: string;
@@ -27,7 +32,7 @@ export class PostgresNotificationAdapter
   private readonly logger = new Logger(PostgresNotificationAdapter.name);
 
   public async publish(
-    client: TransactionClient,
+    client: ActorWriteTransactionClient,
     event: NotificationEvent,
   ): Promise<void> {
     await client.query('savepoint notification_publish');
@@ -43,6 +48,7 @@ export class PostgresNotificationAdapter
           event.resourceId,
           event.title,
         ],
+        { statementTimeoutMs: NOTIFICATION_INSERT_TIMEOUT_MS },
       );
     } catch {
       // A statement rejection must not leave the caller's transaction aborted.

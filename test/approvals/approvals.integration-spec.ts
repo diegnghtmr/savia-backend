@@ -260,6 +260,27 @@ describe('Approvals integration contract and endpoint suite', () => {
       }
     });
 
+    it('commits a pending approval when notification insertion is blocked', async () => {
+      const locker = await admin.connect();
+      try {
+        await locker.query('begin');
+        await locker.query('lock table public.notifications in share mode');
+        const approval = await createPending('agent');
+        const committed = await admin.query(
+          'select status from public.approvals where id = $1 and workspace_id = $2',
+          [approval.id, workspace1Id],
+        );
+        expect(committed.rows).toEqual([{ status: 'pending' }]);
+        const notifications = await admin.query(
+          'select id from public.notifications where workspace_id = $1 and resource_id = $2',
+          [workspace1Id, approval.id],
+        );
+        expect(notifications.rows).toEqual([]);
+      } finally {
+        await locker.query('rollback').finally(() => locker.release());
+      }
+    });
+
     it('does not consume an approval that expires while the claim waits', async () => {
       const { id, argumentsHash } = await approved();
       const locker = await admin.connect();

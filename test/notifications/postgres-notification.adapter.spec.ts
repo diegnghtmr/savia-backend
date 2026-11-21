@@ -29,6 +29,7 @@ describe('PostgresNotificationAdapter publication', () => {
           event.resourceId,
           event.title,
         ],
+        { statementTimeoutMs: 200 },
       ],
       ['release savepoint notification_publish'],
     ]);
