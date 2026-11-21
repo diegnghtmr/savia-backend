@@ -18,6 +18,7 @@ import {
   parseImport,
   normalizeImportDescription,
 } from './import-parsers.js';
+import { parseQifDate, previewQifDate } from './qif-parser.js';
 import {
   QIF_CURRENCY_DIGITS,
   statementCurrencyDigits,
@@ -345,6 +346,11 @@ export class ImportService implements ImportsPort {
         const currencyIndex = isOfx(importJob.detectedFormat)
           ? importJob.sourceColumns.indexOf('currency')
           : null;
+        const dateColumn = index('date');
+        const isQifDate =
+          importJob.detectedFormat === 'qif' &&
+          importJob.sourceColumns[dateColumn] === 'date';
+        const skipDuplicates = command.skipDuplicateCandidates !== false;
         const rows = await this.store.findRows(client, workspaceId, id);
         const prepared: Array<{
           date: string;
@@ -352,7 +358,11 @@ export class ImportService implements ImportsPort {
           description: string;
         }> = [];
         for (const row of rows) {
-          if (row.classification !== 'valid') continue;
+          if (
+            row.classification === 'error' ||
+            (skipDuplicates && row.classification === 'duplicate')
+          )
+            continue;
           if (
             currencyIndex !== null &&
             row.rawValues[currencyIndex] !== account.currency
@@ -360,10 +370,16 @@ export class ImportService implements ImportsPort {
             throw new ImportValidationError(
               'Statement currency must match the selected account currency.',
             );
-          const date = parseImportDate(
-            String(row.rawValues[index('date')] ?? '').trim(),
-            dateFormat,
-          );
+          const rawDate = String(row.rawValues[dateColumn] ?? '').trim();
+          const date =
+            isQifDate && command.dateFormat !== 'YYYY-MM-DD'
+              ? parseImportDate(
+                  command.dateFormat == null
+                    ? previewQifDate(rawDate) || rawDate
+                    : parseQifDate(rawDate, dateFormat === 'DD/MM/YYYY'),
+                  'YYYY-MM-DD',
+                )
+              : parseImportDate(rawDate, dateFormat);
           let amount = Number(row.rawValues[index('amount')]);
           if (!Number.isSafeInteger(amount))
             throw new ImportValidationError(
@@ -385,15 +401,16 @@ export class ImportService implements ImportsPort {
           ).trim();
           prepared.push({ date, amountMinor: String(amount), description });
         }
-        const duplicateIndexes =
-          command.skipDuplicateCandidates !== false
-            ? await this.store.findExistingBatch(
-                client,
-                workspaceId,
-                command.accountId,
-                prepared,
-              )
-            : new Set<number>();
+        // FITID is only used within a statement. Cross-import matching still
+        // compares date, amount and description within the selected account.
+        const duplicateIndexes = skipDuplicates
+          ? await this.store.findExistingBatch(
+              client,
+              workspaceId,
+              command.accountId,
+              prepared,
+            )
+          : new Set<number>();
         await this.ledger.createImportedTransactions(
           client,
           workspaceId,

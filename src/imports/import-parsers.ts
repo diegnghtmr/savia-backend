@@ -2,7 +2,7 @@ import ExcelJS from 'exceljs';
 import { inflateRawSync } from 'node:zlib';
 import type { ImportFormat, ParsedImportRow } from './import.port.js';
 import { parseOfx } from './ofx-parser.js';
-import { parseQif } from './qif-parser.js';
+import { parseQif, previewQifDate } from './qif-parser.js';
 import {
   MAX_IMPORT_ROWS,
   OFX_COLUMNS,
@@ -28,6 +28,7 @@ function fieldIndex(
 function parseRows(
   values: readonly (readonly unknown[])[],
   normalizedStatement = false,
+  normalizeDate?: (value: string) => string,
 ): readonly ParsedImportRow[] {
   const headers = (values[0] ?? []).map((v) => String(v ?? ''));
   const dateAt = fieldIndex(headers, ['date', 'fecha', 'occurred_at']);
@@ -45,7 +46,8 @@ function parseRows(
   ]);
   return values.slice(1).map((raw, index) => {
     const widthError = raw.length !== headers.length;
-    const date = dateAt < 0 ? '' : String(raw[dateAt] ?? '').trim();
+    const dateText = dateAt < 0 ? '' : String(raw[dateAt] ?? '').trim();
+    const date = normalizeDate ? normalizeDate(dateText) : dateText;
     const amountText =
       amountAt < 0
         ? ''
@@ -314,6 +316,10 @@ export async function parseImport(
   if (format === 'csv') return parseCsv(bytes);
   if (format === 'xlsx') return parseXlsx(bytes);
   if (format === 'qif')
-    return parseRows([STATEMENT_COLUMNS, ...parseQif(bytes)], true);
+    return parseRows(
+      [STATEMENT_COLUMNS, ...parseQif(bytes)],
+      true,
+      previewQifDate,
+    );
   return parseRows([OFX_COLUMNS, ...parseOfx(bytes)], true);
 }

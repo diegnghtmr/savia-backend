@@ -8,19 +8,23 @@ import {
   type StatementRow,
 } from './statement-fields.js';
 
-function qifDate(value: string): string {
+export function parseQifDate(value: string, dayFirst = false): string {
   const match = /^(\d{1,2})\/\s*(\d{1,2})\s*([/'])\s*(\d{2}|\d{4})$/u.exec(
     value,
   );
   if (!match) return '';
-  const [, month, day, separator, year] = match;
+  const [, first, second, separator, year] = match;
   return statementDate(
     year.length === 4
       ? year
       : `${separator === "'" || Number(year) < 70 ? '20' : '19'}${year}`,
-    month,
-    day,
+    dayFirst ? second : first,
+    dayFirst ? first : second,
   );
+}
+
+export function previewQifDate(value: string): string {
+  return parseQifDate(value) || parseQifDate(value, true);
 }
 
 export function parseQif(bytes: Buffer): StatementRow[] {
@@ -42,7 +46,7 @@ export function parseQif(bytes: Buffer): StatementRow[] {
         (grouped) => grouped.replaceAll(',', ''),
       );
       appendStatementRow(rows, [
-        qifDate(fields.get('D') ?? ''),
+        fields.get('D') ?? '',
         statementAmount(amount, QIF_CURRENCY_DIGITS),
         fields.get('P') || fields.get('M') || '',
         fields.get('N') ?? '',

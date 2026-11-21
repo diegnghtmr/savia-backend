@@ -15,7 +15,7 @@ describe('QIF statements', () => {
     expect(await parseImport('qif', bytes)).toEqual([
       {
         rowNumber: 2,
-        rawValues: ['2026-02-09', -123456, 'Coffee Shop', '0102'],
+        rawValues: ["2/ 9'26", -123456, 'Coffee Shop', '0102'],
         parsedDate: '2026-02-09',
         parsedAmountMinor: -123456,
         parsedDescription: 'Coffee Shop',
@@ -25,7 +25,7 @@ describe('QIF statements', () => {
       },
       {
         rowNumber: 3,
-        rawValues: ['2026-02-10', 10, 'Refund', ''],
+        rawValues: ['2/10/2026', 10, 'Refund', ''],
         parsedDate: '2026-02-10',
         parsedAmountMinor: 10,
         parsedDescription: 'Refund',
