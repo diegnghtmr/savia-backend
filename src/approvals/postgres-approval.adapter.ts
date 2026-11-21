@@ -1,6 +1,7 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   ApprovalClaim,
+  ApprovalListQuery,
   ApprovalRecord,
   ApprovalStatus,
   ApprovalStore,
@@ -112,6 +113,38 @@ export class PostgresApprovalAdapter implements ApprovalStore {
       [workspaceId],
     );
     return result.rows[0]?.role ?? undefined;
+  }
+
+  public async listApprovals(
+    client: TransactionClient,
+    workspaceId: string,
+    { status, limit, cursor }: ApprovalListQuery,
+    now: Date,
+  ): Promise<readonly (ApprovalRecord & { readonly cursorAt: string })[]> {
+    const result = await client.query<ApprovalRow & { cursorAt: string }>(
+      `select ${approvalColumns},
+              to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
+         from public.approvals
+        where workspace_id = $1::uuid
+          and created_by = nullif(current_setting('app.subject_id', true), '')::uuid
+          and case when status = 'pending' and expires_at <= $3::timestamptz
+                   then 'expired' else status end = $2
+          and ($4::timestamptz is null or (created_at, id) > ($4::timestamptz, $5::uuid))
+        order by created_at, id
+        limit $6`,
+      [
+        workspaceId,
+        status,
+        now,
+        cursor?.createdAt ?? null,
+        cursor?.id ?? null,
+        limit + 1,
+      ],
+    );
+    return result.rows.map((row) => ({
+      ...mapApproval(row),
+      cursorAt: row.cursorAt,
+    }));
   }
 
   public async findApprovalById(

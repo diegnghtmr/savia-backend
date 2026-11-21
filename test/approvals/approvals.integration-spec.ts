@@ -22,7 +22,9 @@ import {
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { createTransactionCommand } from '../../src/ledger/transaction-command.js';
 import { createTransferCommand } from '../../src/ledger/transfer-command.js';
+import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
+import { SAVIA_SCOPES } from '../../src/platform/savia-scopes.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 
 const url = process.env.DATABASE_URL;
@@ -143,6 +145,14 @@ describe('Approvals integration contract and endpoint suite', () => {
           throw new Error('token rejected');
         },
       })
+      .overrideProvider(CliTokenVerifier)
+      .useValue({
+        verify: async () => ({
+          subject: dualMemberId,
+          authMethod: 'cli_token',
+          scopes: Object.values(SAVIA_SCOPES),
+        }),
+      })
       .compile();
 
     application = moduleRef.createNestApplication<NestFastifyApplication>(
@@ -160,6 +170,144 @@ describe('Approvals integration contract and endpoint suite', () => {
     if (admin) {
       await admin.end();
     }
+  });
+
+  describe('GET /v1/approvals', () => {
+    const list = (
+      query = '',
+      token = 'dual-member-token',
+      workspace = workspace1Id,
+    ) =>
+      application.inject({
+        method: 'GET',
+        url: `/v1/approvals${query}`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-workspace-id': workspace,
+        },
+      });
+
+    it('lists only the session creator’s approvals, filters effective status, and pages without duplicates', async () => {
+      const closes = '2099-01-01T00:00:00.000Z';
+      const past = '2000-01-02T00:00:00.000Z';
+      const insert = async (
+        channel: 'agent' | 'mcp',
+        status: string,
+        expiresAt: string,
+        workspace: string,
+        subject: string,
+        fraction: string,
+      ) => {
+        const id = randomUUID();
+        await admin.query(
+          `insert into public.approvals
+             (id, workspace_id, tool_name, risk_class, arguments_hash, preview, status,
+              expires_at, created_by, channel, created_at, decided_by, decided_at)
+           values ($1, $2, 'create_transaction', 'financial_write', 'test-hash', $3, $4, $5, $6, $7,
+                   $8, case when $4 in ('approved', 'rejected', 'consumed') then $6::uuid end,
+                   case when $4 in ('approved', 'rejected', 'consumed') then now() end)`,
+          [
+            id,
+            workspace,
+            { channel },
+            status,
+            expiresAt,
+            subject,
+            channel,
+            `2000-01-01T00:00:00.${fraction}Z`,
+          ],
+        );
+        return {
+          id,
+          toolName: 'create_transaction',
+          riskClass: 'financial_write',
+          argumentsHash: 'test-hash',
+          preview: { channel },
+          status,
+          expiresAt,
+          createdAt: '2000-01-01T00:00:00.000Z',
+        };
+      };
+      const own = (
+        channel: 'agent' | 'mcp',
+        status: string,
+        expiresAt: string,
+        microsecond: number,
+      ) =>
+        insert(
+          channel,
+          status,
+          expiresAt,
+          workspace1Id,
+          dualMemberId,
+          String(microsecond).padStart(6, '0'),
+        );
+      const first = await own('agent', 'pending', closes, 1);
+      const second = await own('mcp', 'pending', closes, 2);
+      const elapsed = await own('mcp', 'pending', past, 3);
+      const rejected = await own('mcp', 'rejected', past, 4);
+      const approved = await own('mcp', 'approved', closes, 5);
+      const expired = await own('mcp', 'expired', past, 6);
+      const consumed = await own('mcp', 'consumed', closes, 7);
+      await insert('agent', 'pending', closes, workspace1Id, ownerId, '000000');
+      await insert(
+        'mcp',
+        'pending',
+        closes,
+        workspace2Id,
+        dualMemberId,
+        '000000',
+      );
+
+      const firstPage = await list('?limit=1');
+      expect(firstPage.statusCode).toBe(200);
+      const { pageInfo } = firstPage.json<{
+        pageInfo: { nextCursor: string };
+      }>();
+      expect(pageInfo.nextCursor).toEqual(expect.any(String));
+      expect(firstPage.json()).toEqual({
+        items: [first],
+        pageInfo: { hasNextPage: true, nextCursor: pageInfo.nextCursor },
+      });
+      const cursor = encodeURIComponent(pageInfo.nextCursor);
+      const next = await list(`?limit=1&status=pending&cursor=${cursor}`);
+      expect(next.statusCode).toBe(200);
+      const end = { hasNextPage: false, nextCursor: null };
+      expect(next.json()).toEqual({ items: [second], pageInfo: end });
+      for (const [status, items] of [
+        ['expired', [{ ...elapsed, status: 'expired' }, expired]],
+        ['approved', [approved]],
+        ['rejected', [rejected]],
+        ['consumed', [consumed]],
+      ] as const) {
+        const filtered = await list(`?status=${status}`);
+        expect(filtered.statusCode).toBe(200);
+        expect(filtered.json()).toEqual({ items, pageInfo: end });
+      }
+      for (const invalid of [
+        await list(`?status=expired&cursor=${cursor}`),
+        await list(`?cursor=${cursor}`, 'dual-member-token', workspace2Id),
+      ]) {
+        expect(invalid.statusCode).toBe(400);
+        expect(invalid.json()).toMatchObject({
+          title: 'Invalid approval list query',
+        });
+      }
+      expect((await list()).json()).toEqual({
+        items: [first, second],
+        pageInfo: end,
+      });
+    });
+
+    it.each([
+      ['invalid-token', 401],
+      ['svt_approvals_cli', 403],
+      ['non-member-token', 403],
+    ])('denies %s without exposing a preview', async (token, status) => {
+      const response = await list('', token);
+      expect(response.statusCode).toBe(status);
+      expect(response.json()).not.toHaveProperty('items');
+    });
   });
 
   describe('Approval execution foundation', () => {

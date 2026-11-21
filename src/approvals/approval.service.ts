@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { encodeCursor } from '../platform/cursor.js';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
@@ -12,6 +13,8 @@ import {
   type ApprovalExecutionOutcome,
   type ApprovalExecutors,
   type ApprovalGetOutcome,
+  type ApprovalListOutcome,
+  type ApprovalListQuery,
   type ApprovalRecord,
   type ApprovalRequestPayload,
   type ApprovalsPort,
@@ -258,6 +261,48 @@ export class ApprovalService implements ApprovalsPort {
       throw new ApprovalDecisionRollbackError(result.kind);
     if (result.result !== 'ok')
       throw new ApprovalDecisionRollbackError(result.result);
+  }
+
+  public listApprovals(
+    subject: string,
+    workspaceId: string,
+    query: ApprovalListQuery,
+  ): Promise<ApprovalListOutcome> {
+    return this.tx.runRead(subject, async (client) => {
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (
+        !['owner', 'administrator', 'editor', 'viewer'].includes(role ?? '')
+      ) {
+        return { kind: APPROVAL_OUTCOMES.FORBIDDEN };
+      }
+      const rows = await this.store.listApprovals(
+        client,
+        workspaceId,
+        query,
+        this.clock(),
+      );
+      const hasNextPage = rows.length > query.limit;
+      const items = rows.slice(0, query.limit);
+      const last = items.at(-1);
+      return {
+        kind: APPROVAL_OUTCOMES.OK,
+        page: {
+          items: items.map((approval) => toPayload(approval, query.status)),
+          pageInfo: {
+            hasNextPage,
+            nextCursor:
+              hasNextPage && last
+                ? encodeCursor({
+                    workspaceId,
+                    filter: query.status,
+                    createdAt: last.cursorAt,
+                    id: last.id,
+                  })
+                : null,
+          },
+        },
+      };
+    });
   }
 
   public async getApproval(

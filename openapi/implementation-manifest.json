@@ -378,6 +378,11 @@
       "path": "/v1/report-runs/{reportRunId}"
     },
     {
+      "operationId": "listApprovals",
+      "method": "GET",
+      "path": "/v1/approvals"
+    },
+    {
       "operationId": "getApproval",
       "method": "GET",
       "path": "/v1/approvals/{approvalId}"

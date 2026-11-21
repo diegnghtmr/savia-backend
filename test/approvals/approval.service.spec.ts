@@ -79,6 +79,7 @@ describe('ApprovalService', () => {
       insertApproval: vi.fn(),
       claimApproval: vi.fn(),
       readActiveRole: vi.fn().mockResolvedValue('owner'),
+      listApprovals: vi.fn(),
       findApprovalById: vi.fn().mockResolvedValue(samplePendingRecord),
       updateApprovalDecision: vi
         .fn()

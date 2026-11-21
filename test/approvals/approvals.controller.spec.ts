@@ -43,6 +43,7 @@ describe('ApprovalsController', () => {
     return {
       createApproval: vi.fn(),
       executeApprovedAction: vi.fn(),
+      listApprovals: vi.fn(),
       getApproval: vi.fn().mockResolvedValue({
         kind: APPROVAL_OUTCOMES.OK,
         approval: sampleApprovalPayload,
@@ -57,6 +58,67 @@ describe('ApprovalsController', () => {
       }),
     };
   }
+
+  describe('list', () => {
+    it('returns the default pending page for the caller in the header workspace', async () => {
+      const port = createMockPort();
+      const reply = createMockReply();
+      const page = {
+        items: [sampleApprovalPayload],
+        pageInfo: { hasNextPage: false, nextCursor: null },
+      };
+      vi.mocked(port.listApprovals).mockResolvedValue({ kind: 'ok', page });
+
+      await new ApprovalsController(port).listApprovals(
+        {
+          headers: { 'x-workspace-id': workspaceId },
+          identity: { subject },
+        } as unknown as AuthenticatedRequest,
+        reply,
+      );
+
+      expect(port.listApprovals).toHaveBeenCalledExactlyOnceWith(
+        subject,
+        workspaceId,
+        { status: 'pending', limit: 50 },
+      );
+      expect(reply.code).toHaveBeenCalledWith(200);
+      expect(reply.type).toHaveBeenCalledWith('application/json');
+      expect(reply.send).toHaveBeenCalledWith(page);
+    });
+
+    const invalidHeader = 'Invalid X-Workspace-Id header';
+    const invalidQuery = 'Invalid approval list query';
+    it.each([
+      { workspace: undefined, title: invalidHeader },
+      { workspace: 'broken', title: invalidHeader },
+      { workspace: workspaceId, limit: '0', title: invalidQuery },
+      { workspace: workspaceId, limit: '201', title: invalidQuery },
+      { workspace: workspaceId, cursor: 'bad cursor', title: invalidQuery },
+      { workspace: workspaceId, status: '', title: invalidQuery },
+    ])(
+      'rejects invalid workspace or query without reading approvals (%o)',
+      async ({ workspace, cursor, limit, status, title }) => {
+        const port = createMockPort();
+        const reply = createMockReply();
+        await new ApprovalsController(port).listApprovals(
+          {
+            headers: { 'x-workspace-id': workspace },
+            identity: { subject },
+          } as unknown as AuthenticatedRequest,
+          reply,
+          cursor,
+          limit,
+          status,
+        );
+        expect(reply.status).toHaveBeenCalledWith(400);
+        expect(reply.send).toHaveBeenCalledWith(
+          expect.objectContaining({ status: 400, title }),
+        );
+        expect(port.listApprovals).not.toHaveBeenCalled();
+      },
+    );
+  });
 
   describe('get', () => {
     it('returns 400 when X-Workspace-Id is missing or invalid', async () => {

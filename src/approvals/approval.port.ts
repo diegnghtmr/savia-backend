@@ -1,3 +1,4 @@
+import type { Cursor, PageInfo } from '../platform/cursor.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 
 export const APPROVALS_PORT = Symbol('ApprovalsPort');
@@ -90,6 +91,22 @@ export type ApprovalGetOutcome =
   | { readonly kind: typeof APPROVAL_OUTCOMES.NOT_FOUND }
   | { readonly kind: typeof APPROVAL_OUTCOMES.FORBIDDEN };
 
+export interface ApprovalListQuery {
+  readonly status: ApprovalStatus;
+  readonly limit: number;
+  readonly cursor?: Cursor;
+}
+
+export type ApprovalListOutcome =
+  | {
+      readonly kind: typeof APPROVAL_OUTCOMES.OK;
+      readonly page: {
+        readonly items: readonly ApprovalRequestPayload[];
+        readonly pageInfo: PageInfo;
+      };
+    }
+  | { readonly kind: typeof APPROVAL_OUTCOMES.FORBIDDEN };
+
 export type ApprovalDecisionOutcome =
   | {
       readonly kind: typeof APPROVAL_OUTCOMES.OK;
@@ -141,6 +158,13 @@ export interface ApprovalStore {
     workspaceId: string,
   ): Promise<string | undefined>;
 
+  listApprovals(
+    client: TransactionClient,
+    workspaceId: string,
+    query: ApprovalListQuery,
+    now: Date,
+  ): Promise<readonly (ApprovalRecord & { readonly cursorAt: string })[]>;
+
   findApprovalById(
     client: TransactionClient,
     workspaceId: string,
@@ -177,6 +201,12 @@ export interface ApprovalsPort {
       args: ApprovalAction['arguments'],
     ) => Promise<T>,
   ): Promise<ApprovalExecutionOutcome<T>>;
+
+  listApprovals(
+    subject: string,
+    workspaceId: string,
+    query: ApprovalListQuery,
+  ): Promise<ApprovalListOutcome>;
 
   getApproval(
     subject: string,

@@ -4,6 +4,7 @@ import {
   Inject,
   Param,
   Post,
+  Query,
   Req,
   Res,
   UseGuards,
@@ -26,6 +27,7 @@ import {
 } from './approval-command.js';
 import {
   ApprovalQueryValidationError,
+  createApprovalListQuery,
   validateApprovalId,
 } from './approval-query.js';
 
@@ -35,6 +37,56 @@ export class ApprovalsController {
   public constructor(
     @Inject(APPROVALS_PORT) private readonly port: ApprovalsPort,
   ) {}
+
+  @Get()
+  public async listApprovals(
+    @Req() req: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Query('cursor') cursorParam?: string,
+    @Query('limit') limitParam?: string,
+    @Query('status') statusParam?: unknown,
+  ): Promise<void> {
+    const h = parseWorkspaceHeader(req.headers['x-workspace-id']);
+    if (h.kind !== 'ok') {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+    }
+    let query;
+    try {
+      query = createApprovalListQuery(
+        h.workspaceId,
+        statusParam,
+        cursorParam,
+        limitParam,
+      );
+    } catch (error) {
+      if (error instanceof ApprovalQueryValidationError) {
+        return sendProblem(reply, {
+          type: PROBLEM_TYPES.BAD_REQUEST,
+          title: 'Invalid approval list query',
+          status: 400,
+          errors: error.violations,
+        });
+      }
+      throw error;
+    }
+    const outcome = await this.port.listApprovals(
+      req.identity.subject,
+      h.workspaceId,
+      query,
+    );
+    if (outcome.kind === APPROVAL_OUTCOMES.FORBIDDEN) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+    }
+    return reply.code(200).type('application/json').send(outcome.page);
+  }
 
   @Get(':approvalId')
   public async get(
