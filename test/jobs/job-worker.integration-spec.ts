@@ -1,4 +1,6 @@
-// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql
+// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql,
+// 202609170014_notification_delivery.sql
+import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
   afterAll,
@@ -1036,5 +1038,238 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       expect(Number.parseInt(observedTimeout, 10)).toBeGreaterThan(0);
       expect(Number.parseInt(observedTimeout, 10)).toBeLessThanOrEqual(5000);
     });
+  });
+});
+
+describe('Notification delivery outbox', () => {
+  const recipient = subject(9101);
+  const peer = subject(9102);
+  const email = 'notification-recipient@example.test';
+  const authIds = [recipient, peer];
+  let admin: Pool;
+  let worker: PgTransaction;
+
+  beforeAll(() => {
+    admin = new Pool({ connectionString: url });
+    worker = new PgTransaction(new PostgresPool(PostgresConfig.fromUrl(url!)), {
+      callbackTimeoutMs: 5000,
+    });
+  });
+
+  beforeEach(async () => {
+    await admin.query(
+      `insert into auth.users (id, email, email_confirmed_at)
+       values ($1, $3, now()), ($2, 'notification-peer@example.test', now())`,
+      [recipient, peer, email],
+    );
+  });
+
+  afterEach(async () => {
+    await admin.query('delete from auth.users where id = any($1::uuid[])', [
+      authIds,
+    ]);
+  });
+
+  afterAll(async () => {
+    await worker.close();
+    await admin.end();
+  });
+
+  async function notify(title: string, time?: string, user = recipient) {
+    const notification = randomUUID();
+    await admin.query(
+      `insert into public.notifications (id, subject_id, type, title, created_at)
+       values ($1, $2, 'report_available', $3, coalesce($4::timestamptz, now()))`,
+      [notification, user, title, time ?? null],
+    );
+    return notification;
+  }
+
+  function claim(emailConfigured = true) {
+    return worker.runAsQueueConsumer(async (client) => {
+      const { rows } = await client.query<{
+        delivery_id: string;
+        lease_id: string;
+        attempts: number;
+        recipient: string;
+        title: string;
+        body: string | null;
+      }>('select * from public.claim_notification_delivery($1)', [
+        emailConfigured,
+      ]);
+      return rows[0];
+    }, 5000);
+  }
+
+  function record(id: string, lease: string, outcome: string, seconds: number) {
+    return worker.runAsQueueConsumer(async (client) => {
+      const { rows } = await client.query<{ written: boolean }>(
+        'select public.finish_notification_delivery($1, $2, $3, $4) as written',
+        [id, lease, outcome, seconds],
+      );
+      return rows[0].written;
+    }, 5000);
+  }
+
+  it('deduplicates channels, skips unregistered pushes without an attempt, and claims email only once across workers', async () => {
+    const notification = await notify('Report available');
+    await admin.query(
+      `insert into public.notifications (id, subject_id, type, title)
+       values ($1, $2, 'report_available', 'Duplicate') on conflict (id) do nothing`,
+      [notification, recipient],
+    );
+    expect(await claim(false)).toBeUndefined();
+    const [a, b] = await Promise.all([claim(), claim()]);
+    const delivered = a ?? b;
+    expect(a === undefined || b === undefined).toBe(true);
+    expect(delivered).toMatchObject({
+      recipient: email,
+      title: 'Report available',
+      attempts: 1,
+    });
+    expect(
+      await record(delivered.delivery_id, delivered.lease_id, 'accepted', 5),
+    ).toBe(true);
+    expect(await claim()).toBeUndefined();
+    const { rows } = await admin.query(
+      `select channel, status, reason, attempts from public.notification_deliveries
+       where notification_id = $1 order by channel`,
+      [notification],
+    );
+    expect(rows).toEqual([
+      { channel: 'email', status: 'accepted', reason: null, attempts: 1 },
+      {
+        channel: 'push',
+        status: 'skipped',
+        reason: 'no_push_device',
+        attempts: 0,
+      },
+    ]);
+  });
+
+  it('defers quiet hours without using an attempt', async () => {
+    const notification = await notify('Quiet report');
+    await admin.query(
+      `insert into public.notification_delivery_preferences (subject_id, quiet_start, quiet_end)
+       values ($1, ((now() at time zone 'UTC') - interval '1 hour')::time,
+                   ((now() at time zone 'UTC') + interval '1 hour')::time)`,
+      [recipient],
+    );
+    expect(await claim()).toBeUndefined();
+    const { rows } = await admin.query(
+      `select status, attempts, available_at between now() + interval '55 min'
+         and now() + interval '65 min' as deferred from public.notification_deliveries
+       where notification_id = $1 and channel = 'email'`,
+      [notification],
+    );
+    expect(rows).toEqual([{ status: 'pending', attempts: 0, deferred: true }]);
+  });
+
+  it('backs off retries, fences expired leases, and records exhaustion durably', async () => {
+    const notification = await notify('Retry report');
+    const first = (await claim())!;
+    let last = first;
+    for (const [index, delay] of [5, 10, 20, 40, 80].entries()) {
+      if (index > 0) {
+        await admin.query(
+          `update public.notification_deliveries set available_at = now() - interval '1 second' where id = $1`,
+          [first.delivery_id],
+        );
+        last = (await claim())!;
+        expect(
+          await record(first.delivery_id, first.lease_id, 'accepted', 5),
+        ).toBe(false);
+      }
+      expect(last.delivery_id).toBe(first.delivery_id);
+      expect(last.attempts).toBe(index + 1);
+      expect(
+        await record(last.delivery_id, last.lease_id, 'retryable', delay),
+      ).toBe(true);
+      expect(await claim()).toBeUndefined();
+      const { rows } = await admin.query(
+        `select status, reason, attempts, available_at > now() + make_interval(secs => $2 - 1)
+         and available_at <= now() + make_interval(secs => $2) as backed_off,
+         resolved_at is not null as resolved from public.notification_deliveries
+         where notification_id = $1 and channel = 'email'`,
+        [notification, delay],
+      );
+      expect(rows).toEqual([
+        index === 4
+          ? {
+              status: 'failed',
+              reason: 'attempts_exhausted',
+              attempts: 5,
+              backed_off: false,
+              resolved: true,
+            }
+          : {
+              status: 'pending',
+              reason: 'provider_retryable',
+              attempts: index + 1,
+              backed_off: true,
+              resolved: false,
+            },
+      ]);
+    }
+  });
+
+  it('queues one digest on local Monday and summarizes only that subject’s preceding local week', async () => {
+    await admin.query(
+      `insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency)
+       values ($1, 'stale@example.test', 'Recipient', 'en', 'US', 'America/New_York', 'YYYY-MM-DD', 1, '1,234.56', 'USD')`,
+      [recipient],
+    );
+    await notify('Before the local week', '2026-03-02T04:59:59Z');
+    await notify('First local report', '2026-03-02T05:00:00Z');
+    await notify('Last local report', '2026-03-09T03:59:59Z');
+    await notify('Next local week', '2026-03-09T04:00:00Z');
+    await notify('Peer UTC report', '2026-03-02T00:00:00Z', peer);
+    const schedule = async (at: string) =>
+      (
+        await admin.query<{ count: number }>(
+          'select public.prepare_notification_digests($1::timestamptz) as count',
+          [at],
+        )
+      ).rows[0].count;
+    expect(await schedule('2026-03-09T03:59:59Z')).toBe(1); // Monday UTC; New York still Sunday.
+    expect(await schedule('2026-03-09T04:00:00Z')).toBe(1);
+    expect(await schedule('2026-03-09T04:01:00Z')).toBe(0);
+    await admin.query(
+      `update public.notification_deliveries set available_at = now() + interval '1 day' where channel <> 'digest'`,
+    );
+    const digests = [(await claim())!, (await claim())!];
+    expect(digests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          recipient: email,
+          title: 'Savia weekly digest · 2026-03-02',
+          body: '2 notifications\n- First local report\n- Last local report',
+        }),
+        expect.objectContaining({
+          recipient: 'notification-peer@example.test',
+          body: '1 notification\n- Peer UTC report',
+        }),
+      ]),
+    );
+    expect(await claim()).toBeUndefined();
+  });
+
+  it('permits worker function execution but denies worker table access and application claims', async () => {
+    await expect(
+      worker.runAsQueueConsumer((client) =>
+        client.query('select * from public.notification_deliveries'),
+      ),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(
+      worker.runAsQueueConsumer((client) =>
+        client.query('select email from auth.users'),
+      ),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(
+      worker.run(recipient, (client) =>
+        client.query('select * from public.claim_notification_delivery(true)'),
+      ),
+    ).rejects.toMatchObject({ code: '42501' });
+    expect(await claim()).toBeUndefined();
   });
 });
