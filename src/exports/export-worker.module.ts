@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, type DynamicModule } from '@nestjs/common';
+import type { ExportReaders } from '../platform/export-reader.port.js';
 import {
   ARTIFACT_STORAGE,
   type ArtifactStorage,
@@ -9,7 +10,6 @@ import { PostgresExportAdapter } from './postgres-export.adapter.js';
 
 @Module({
   providers: [
-    PostgresExportAdapter,
     SupabaseStorageAdapter,
     {
       provide: ARTIFACT_STORAGE,
@@ -24,4 +24,17 @@ import { PostgresExportAdapter } from './postgres-export.adapter.js';
   ],
   exports: [ExportJobHandler, ARTIFACT_STORAGE],
 })
-export class ExportWorkerModule {}
+export class ExportWorkerModule {
+  public static withReaders(readers: ExportReaders): DynamicModule {
+    return {
+      module: ExportWorkerModule,
+      providers: [
+        {
+          provide: PostgresExportAdapter,
+          useFactory: () =>
+            new PostgresExportAdapter(undefined, undefined, readers),
+        },
+      ],
+    };
+  }
+}

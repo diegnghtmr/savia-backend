@@ -6,7 +6,16 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import * as tesseractAdapter from '../../src/platform/system-tesseract.adapter.js';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
@@ -186,6 +195,30 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       [workspace1Id, tx1Id, acct1Usd],
     );
 
+    await admin.query(
+      `insert into public.budgets (workspace_id, name, method, period_start, period_end, currency, created_by) values
+       ($1, '=June', 'cash_flow', '2026-06-01', '2026-06-30', 'USD', $2),
+       ($1, 'Overlaps June', 'cash_flow', '2026-05-31', '2026-06-30', 'USD', $2),
+       ($1, 'Ends later', 'cash_flow', '2026-06-01', '2026-07-01', 'USD', $2),
+       ($3, 'Foreign budget', 'cash_flow', '2026-06-01', '2026-06-30', 'USD', $4)`,
+      [workspace1Id, ownerId, workspace2Id, otherOwnerId],
+    );
+    await admin.query(
+      `insert into public.budget_allocations (workspace_id, budget_id, category_id, planned_minor)
+       select workspace_id, id, $2::uuid, 6000 from public.budgets where workspace_id = $1 and name = '=June'`,
+      [workspace1Id, catExpenseId],
+    );
+    await admin.query(
+      `insert into public.debts (workspace_id, name, currency, principal_minor, annual_rate, rate_type, start_date) values
+       ($1, 'June start', 'USD', 9007199254740993, 0, 'fixed', '2026-06-01'),
+       ($1, 'June end', 'USD', 42, 0, 'fixed', '2026-06-30'),
+       ($1, 'Earlier', 'USD', 42, 0, 'fixed', '2026-05-31'),
+       ($1, 'Later', 'USD', 42, 0, 'fixed', '2026-07-01'),
+       ($1, 'Undated', 'USD', 42, 0, 'fixed', null),
+       ($2, 'Foreign debt', 'USD', 42, 0, 'fixed', '2026-06-01')`,
+      [workspace1Id, workspace2Id],
+    );
+
     // 7. Bootstrap Fastify API application
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -218,7 +251,11 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       .overrideProvider(ARTIFACT_STORAGE)
       .useValue(inMemoryStorage)
       .compile();
-    await workerModule.init();
+    // Export jobs do not use the OCR engine; its startup is tested separately.
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    await workerModule.init().finally(() => preflight.mockRestore());
     runner = workerModule.get(JobRunner);
   });
 
@@ -273,6 +310,10 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
   afterAll(async () => {
     await workerModule?.close();
     await application?.close();
+    await admin?.query(
+      'delete from public.budget_allocations where workspace_id = $1',
+      [workspace1Id],
+    );
     await admin?.query('delete from public.workspaces where id in ($1, $2)', [
       workspace1Id,
       workspace2Id,
@@ -585,6 +626,12 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       expect(inMemoryStorage.uploadCallCount).toBe(1);
       const expectedKey = `${workspace1Id}/${body.id}.csv`;
       expect(inMemoryStorage.uploaded.has(expectedKey)).toBe(true);
+      const legacyCsv = (
+        await inMemoryStorage.download(expectedKey)
+      ).toString();
+      expect(legacyCsv).toContain(acct1Usd);
+      expect(legacyCsv).toContain(tx1Id);
+      expect(legacyCsv).not.toMatch(/June|Undated/);
 
       // Check DB completed state
       const completedExport = await admin.query<{
@@ -822,7 +869,138 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       expect(Number(jobCount.rows[0]?.count)).toBe(1);
     });
 
-    it('synchronously rejects unsupported resources with 422', async () => {
+    async function financialArtifact(
+      payload: Record<string, unknown>,
+      extension: string,
+    ) {
+      const headers = {
+        authorization: 'Bearer editor-token',
+        'x-workspace-id': workspace1Id,
+      };
+      const queued = await application.inject({
+        method: 'POST',
+        url: '/v1/export-jobs',
+        payload,
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+      });
+      expect(queued.statusCode).toBe(202);
+      const { id } = queued.json<{ id: string }>();
+      expect(queued.json()).toMatchObject({
+        status: 'queued',
+        downloadUrl: null,
+      });
+      const key = `${workspace1Id}/${id}.${extension}`;
+      expect(inMemoryStorage.uploaded.has(key)).toBe(false);
+      await runner.drainOnce();
+      const completed = await application.inject({
+        method: 'GET',
+        url: `/v1/export-jobs/${id}`,
+        headers,
+      });
+      expect(completed.statusCode).toBe(200);
+      expect(completed.json()).toMatchObject({
+        status: 'completed',
+        downloadUrl: `https://storage.example.test/${key}`,
+      });
+      return (await inMemoryStorage.download(key)).toString();
+    }
+
+    it('exports only contained workspace budgets with allocated amounts and safe CSV names', async () => {
+      const csv = await financialArtifact(
+        {
+          format: 'csv',
+          resource: 'budgets',
+          from: '2026-06-01',
+          to: '2026-06-30',
+        },
+        'csv',
+      );
+      expect(csv.split('\n')).toHaveLength(2);
+      expect(csv).toContain(`"'=June"`);
+      expect(csv).toContain(catExpenseId);
+      expect(csv).toContain('""amountMinor"":""6000""');
+      expect(csv).not.toMatch(
+        /Overlaps June|Ends later|Foreign budget|Operating Account/,
+      );
+    });
+
+    it.each([
+      {
+        from: '2026-06-01',
+        to: '2026-06-30',
+        names: ['June end', 'June start'],
+      },
+      {
+        from: '2026-06-01',
+        to: null,
+        names: ['June end', 'June start', 'Later'],
+      },
+      {
+        from: null,
+        to: '2026-06-30',
+        names: ['Earlier', 'June end', 'June start'],
+      },
+      {
+        from: null,
+        to: null,
+        names: ['Earlier', 'June end', 'June start', 'Later', 'Undated'],
+      },
+    ])(
+      'exports workspace debts with from=$from and to=$to',
+      async ({ from, to, names }) => {
+        const artifact = JSON.parse(
+          await financialArtifact(
+            { format: 'json_backup', resource: 'debts', from, to },
+            'json',
+          ),
+        ) as {
+          accounts: unknown[];
+          transactions: unknown[];
+          debts: { name: string }[];
+        };
+        expect(artifact.accounts).toEqual([]);
+        expect(artifact.transactions).toEqual([]);
+        expect(artifact.debts.map(({ name }) => name).sort()).toEqual(names);
+        expect(
+          artifact.debts.find(({ name }) => name === 'June start'),
+        ).toMatchObject({
+          startDate: '2026-06-01',
+          principal: { amountMinor: '9007199254740993', currency: 'USD' },
+          outstandingBalance: {
+            amountMinor: '9007199254740993',
+            currency: 'USD',
+          },
+        });
+      },
+    );
+
+    it('preserves the unfiltered debt list when export-only date bounds are supplied', async () => {
+      const headers = {
+        authorization: 'Bearer editor-token',
+        'x-workspace-id': workspace1Id,
+      };
+      const base = await application.inject({
+        method: 'GET',
+        url: '/v1/debts',
+        headers,
+      });
+      const withBounds = await application.inject({
+        method: 'GET',
+        url: '/v1/debts?from=2026-06-01&to=2026-06-30',
+        headers,
+      });
+      expect(base.statusCode).toBe(200);
+      expect(withBounds.statusCode).toBe(200);
+      expect(withBounds.body).toBe(base.body);
+      expect(
+        base
+          .json<{ items: { name: string }[] }>()
+          .items.map(({ name }) => name)
+          .sort(),
+      ).toEqual(['Earlier', 'June end', 'June start', 'Later', 'Undated']);
+    });
+
+    it('synchronously rejects unsupported reports with 422', async () => {
       const response = await application.inject({
         method: 'POST',
         url: '/v1/export-jobs',
@@ -831,7 +1009,7 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
           'x-workspace-id': workspace1Id,
           'idempotency-key': randomUUID(),
         },
-        payload: { format: 'csv', resource: 'budgets' },
+        payload: { format: 'csv', resource: 'report' },
       });
       expect(response.statusCode).toBe(422);
       const body = JSON.parse(response.body) as {

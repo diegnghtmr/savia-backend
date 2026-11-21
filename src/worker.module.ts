@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { PostgresBudgetAdapter } from './budgets/postgres-budget.adapter.js';
+import { PostgresDebtAdapter } from './debts/postgres-debt.adapter.js';
 import { ForecastJobHandler } from './forecasts/forecast-job.handler.js';
 import { ForecastWorkerModule } from './forecasts/forecast-worker.module.js';
 import { PostgresJobsAdapter } from './jobs/postgres-jobs.adapter.js';
@@ -18,7 +20,10 @@ import { ReceiptWorkerModule } from './receipts/receipt-worker.module.js';
     WorkerPlatformModule,
     ForecastWorkerModule,
     ReportWorkerModule,
-    ExportWorkerModule,
+    ExportWorkerModule.withReaders({
+      budgets: new PostgresBudgetAdapter(),
+      debts: new PostgresDebtAdapter(),
+    }),
     ReceiptWorkerModule,
   ],
   providers: [

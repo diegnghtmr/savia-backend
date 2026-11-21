@@ -166,12 +166,33 @@ describe('ExportService', () => {
     });
   });
 
-  it('rejects unsupported resources synchronously without creating a job', async () => {
+  it.each(['budgets', 'debts'] as const)(
+    'enqueues a scoped %s export',
+    async (resource) => {
+      const h = harness();
+      const outcome = await h.service.createExportJob(
+        subject,
+        workspace,
+        { ...command, resource, from: '2026-06-01', to: '2026-06-30' },
+        'key-resource',
+      );
+      expect(outcome).toEqual({
+        kind: 'created',
+        job: job('00000000-0000-0000-0000-000000000003'),
+      });
+      expect(h.counts()).toEqual({
+        exportJobsCreated: 1,
+        queuedJobsCreated: 1,
+      });
+    },
+  );
+
+  it('rejects unsupported reports synchronously without creating a job', async () => {
     const h = harness();
     const outcome = await h.service.createExportJob(
       subject,
       workspace,
-      { ...command, resource: 'budgets' },
+      { ...command, resource: 'report' },
       'key-unsupported',
     );
     expect(outcome.kind).toBe('unsupported-resource');

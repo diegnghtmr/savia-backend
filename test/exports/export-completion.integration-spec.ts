@@ -5,7 +5,16 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import * as tesseractAdapter from '../../src/platform/system-tesseract.adapter.js';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import {
@@ -107,7 +116,11 @@ describe('export completion over Fastify HTTP and disposable PostgreSQL', () => 
       .overrideProvider(ARTIFACT_STORAGE)
       .useValue(storage)
       .compile();
-    await workerModule.init();
+    // Export jobs do not use the OCR engine; its startup is tested separately.
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    await workerModule.init().finally(() => preflight.mockRestore());
     runner = workerModule.get(JobRunner);
   });
 
