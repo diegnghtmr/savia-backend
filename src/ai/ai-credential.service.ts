@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { assertBearerToken } from './ai-credential-validation.js';
 import type { CredentialCrypto } from '../platform/credential-crypto.js';
 import type { PgTransaction } from '../platform/pg-transaction.js';
 import {
@@ -92,6 +93,7 @@ export class AICredentialService implements AIServicePort {
     command: CreateCredentialCommand,
     key: string,
   ): Promise<Outcome> {
+    assertBearerToken(command.credentialType, command.secret, 'secret');
     const provider = PROVIDERS.find(
       (item) => item.providerId === command.providerId,
     );
@@ -177,6 +179,16 @@ export class AICredentialService implements AIServicePort {
                 credential: existing.responseBody as never,
               }
             : { kind: AI_OUTCOMES.CONFLICT };
+        const replacement = command.replacementSecret;
+        if (replacement !== undefined) {
+          const current = await this.store.find(c, workspaceId, id);
+          if (!current) return { kind: AI_OUTCOMES.NOT_FOUND };
+          assertBearerToken(
+            current.credentialType,
+            replacement,
+            'replacementSecret',
+          );
+        }
         let credential: Awaited<ReturnType<Store['update']>>;
         try {
           credential = await this.store.update(

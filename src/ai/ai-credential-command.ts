@@ -4,13 +4,18 @@ import {
   sortViolations,
   type FieldViolation,
 } from '../platform/field-validation.js';
-import {
-  isUsableBearerToken,
-  type CreateCredentialCommand,
-  type SetDefaultModelCommand,
-  type UpdateCredentialCommand,
+import type {
+  CreateCredentialCommand,
+  SetDefaultModelCommand,
+  UpdateCredentialCommand,
 } from './ai-credential.port.js';
 import { PROVIDERS as PROVIDER_CATALOGUE } from './ai-credential.service.js';
+import {
+  AICredentialValidationError,
+  addBearerTokenViolation,
+} from './ai-credential-validation.js';
+
+export { AICredentialValidationError } from './ai-credential-validation.js';
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDER_IDS = [
@@ -28,11 +33,6 @@ const TYPES = [
   'gateway_token',
   'local_endpoint',
 ] as const;
-export class AICredentialValidationError extends Error {
-  public constructor(public readonly violations: readonly FieldViolation[]) {
-    super('AI credential validation failed.');
-  }
-}
 function fail(v: FieldViolation[]): never {
   throw new AICredentialValidationError(Object.freeze(sortViolations(v)));
 }
@@ -97,19 +97,7 @@ export function createCredentialCommand(
     typeof b.secret === 'string' && b.secret.length > 0
       ? b.secret
       : (add(v, 'secret', 'invalid-value', 'must be a non-empty string'), '');
-  if (
-    secret &&
-    (credentialType === 'api_key' ||
-      credentialType === 'gateway_token' ||
-      credentialType === 'access_token') &&
-    !isUsableBearerToken(secret)
-  )
-    add(
-      v,
-      'secret',
-      'invalid-value',
-      'must not contain surrounding whitespace or control characters',
-    );
+  if (secret) addBearerTokenViolation(v, credentialType, secret, 'secret');
   let alias: string | null = null;
   if (b.alias !== undefined && b.alias !== null)
     alias = nameValue(b.alias, 'alias', v, 120);

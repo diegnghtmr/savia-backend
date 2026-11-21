@@ -125,19 +125,6 @@ function guardCredential(secret: string) {
   };
 }
 
-function responseFilter(credential: Credential) {
-  const raw = credential.secret ?? credential.baseUrl;
-  const filterRaw = guardCredential(raw);
-  // Node sends header bytes as Latin-1 with a Buffer request body. Protect an
-  // upstream's UTF-8 interpretation of those bytes as well as the stored text.
-  if (credential.secret === null) return filterRaw;
-  const wire = Buffer.from(raw, 'latin1').toString('utf8');
-  if (wire === raw) return filterRaw;
-  const filterWire = guardCredential(wire);
-  return (delta: string | null) =>
-    filterWire(filterRaw(delta)) + (delta === null ? filterWire(null) : '');
-}
-
 async function* readData(body: IncomingMessage) {
   const decoder = new TextDecoder('utf-8', { fatal: true });
   let bytes = 0;
@@ -206,10 +193,8 @@ export class OpenAICompatibleAgentProviderAdapter implements AgentProviderPort {
         throw new AgentProviderFailure('No workspace AI credential configured');
       }
       const token = credential.secret;
-      if (
-        credential.credentialType !== 'local_endpoint' &&
-        (!token || token !== token.trim() || /\p{Cc}/u.test(token))
-      )
+      const isBearer = credential.credentialType !== 'local_endpoint';
+      if (isBearer && (!token || /[^!-~]/.test(token)))
         throw new AgentProviderFailure('Provider failed');
       response = await requestCompletion(credential, command.message, combined);
       const status = response.statusCode ?? 0;
@@ -218,7 +203,7 @@ export class OpenAICompatibleAgentProviderAdapter implements AgentProviderPort {
       const mediaType = response.headers['content-type'] ?? '';
       if (!/^text\/event-stream\b/i.test(mediaType))
         throw new AgentProviderFailure('Invalid provider stream');
-      const filter = responseFilter(credential);
+      const filter = guardCredential(credential.secret ?? credential.baseUrl);
       for await (const data of readData(response)) {
         combined.throwIfAborted();
         const text = filter(data === '[DONE]' ? null : parseDelta(data));

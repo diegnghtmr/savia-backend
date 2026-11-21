@@ -1,4 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import https from 'node:https';
+import { describe, expect, it, vi } from 'vitest';
+import type {
+  AgentEvent,
+  AgentMessageStore,
+} from '../../src/agent/agent-message.port.js';
+import { AgentMessageService } from '../../src/agent/agent-message.service.js';
+import { OpenAICompatibleAgentProviderAdapter } from '../../src/agent/agent-provider.adapter.js';
+import { AICredentialValidationError } from '../../src/ai/ai-credential-command.js';
 import { CredentialCrypto } from '../../src/platform/credential-crypto.js';
 import {
   CommitOutcomeUnknownError,
@@ -91,8 +99,9 @@ class FakeStore implements Store {
     if (this.createError) throw this.createError;
     return metadata;
   }
+  public findResult: Awaited<ReturnType<Store['find']>>;
   public async find() {
-    return undefined;
+    return this.findResult;
   }
   public async update() {
     if (this.updateError) throw this.updateError;
@@ -138,15 +147,14 @@ class FakeIdempotency implements IdempotencyStore {
 function harness() {
   const tx = new RecordingTransaction();
   const idempotency = new FakeIdempotency();
+  const store = new FakeStore();
+  const crypto = new CredentialCrypto(Buffer.alloc(32, 1).toString('base64'));
   return {
     tx,
     idempotency,
-    service: new AICredentialService(
-      tx as never,
-      new FakeStore(),
-      new CredentialCrypto(Buffer.alloc(32, 1).toString('base64')),
-      idempotency,
-    ),
+    store,
+    crypto,
+    service: new AICredentialService(tx as never, store, crypto, idempotency),
   };
 }
 
@@ -173,6 +181,147 @@ it.each([' sk-legacy', 'sk-legacy ', 'sk-\u007flegacy'])(
     );
   },
 );
+
+it('does not persist an invalid bearer supplied directly to creation', async () => {
+  const h = harness();
+  const create = vi.spyOn(h.store, 'create');
+  const credential = { ...command, secret: 'legacy token' };
+  const creation = h.service.createCredential(
+    subject,
+    workspace,
+    credential,
+    'key',
+  );
+  await expect(creation).rejects.toBeInstanceOf(AICredentialValidationError);
+  expect(create).not.toHaveBeenCalled();
+  expect(h.idempotency.record).toBeUndefined();
+  expect(h.tx.committed).toBe(0);
+});
+
+const invalidReplacements = [
+  'internal space',
+  'trailing ',
+  'embedded\u0000nul',
+  'café',
+];
+it.each(invalidReplacements)(
+  'rejects invalid bearer replacements before writing',
+  async (replacementSecret) => {
+    const h = harness();
+    h.store.findResult = { ...metadata, version: 1 };
+    const write = vi.spyOn(h.store, 'update');
+    const result = h.service.updateCredential(
+      subject,
+      workspace,
+      metadata.id,
+      { replacementSecret },
+      'key',
+      1,
+    );
+    await expect(result).rejects.toBeInstanceOf(AICredentialValidationError);
+    await expect(result).rejects.toMatchObject({
+      violations: [
+        {
+          field: 'replacementSecret',
+          code: 'invalid-value',
+          message: 'must contain only visible ASCII characters',
+        },
+      ],
+    });
+    expect(write).not.toHaveBeenCalled();
+    expect(h.idempotency.record).toBeUndefined();
+    expect(h.tx.committed).toBe(0);
+  },
+);
+
+it.each([
+  ['api_key', 'A-._~+/=z'],
+  ['service_account', '{\n  "key": "with spaces"\n}'],
+] as const)(
+  'rotates %s without changing the supplied secret',
+  async (credentialType, replacementSecret) => {
+    const h = harness();
+    const current = { ...metadata, credentialType, version: 1 };
+    h.store.findResult = current;
+    h.store.updateResult = current;
+    const store: Store = h.store;
+    const write = vi.spyOn(store, 'update');
+    const result = await h.service.updateCredential(
+      subject,
+      workspace,
+      metadata.id,
+      { replacementSecret },
+      'key',
+      1,
+    );
+    expect(result.kind).toBe('ok');
+    expect(write).toHaveBeenCalledOnce();
+    const encrypted = write.mock.calls[0][3].replacementSecret;
+    expect(encrypted).toBeDefined();
+    expect(h.crypto.decrypt(encrypted ?? '')).toBe(replacementSecret);
+    expect(h.tx.committed).toBe(1);
+    expect(h.idempotency.record?.responseStatus).toBe(200);
+  },
+);
+
+it('turns a legacy token with internal space into run_failed without dispatch', async () => {
+  const h = harness();
+  h.store.defaultRow = {
+    modelRef: 'openai-compatible:demo',
+    credentialType: 'gateway_token',
+    encryptedSecret: h.crypto.encrypt('legacy token'),
+    baseUrl: 'https://provider.example.test/v1',
+  };
+  const request = vi.spyOn(https, 'request').mockImplementation(() => {
+    throw new Error('Unexpected outbound request');
+  });
+  try {
+    const events: AgentEvent[] = [];
+    const runs = { saveRun: vi.fn(), finalizeIdempotency: vi.fn() };
+    const provider = new OpenAICompatibleAgentProviderAdapter((actor, id) =>
+      h.service.resolveAgentCredential(actor, id),
+    );
+    const messages = new AgentMessageService(
+      h.tx,
+      runs as unknown as AgentMessageStore,
+      provider,
+    );
+    await messages.execute(
+      subject,
+      workspace,
+      'conversation',
+      'key',
+      'run',
+      { message: 'prompt', modelRef: null, credentialId: null },
+      new AbortController().signal,
+      (event) => events.push(event),
+    );
+    expect(events.map(({ type, data }) => [type, data])).toEqual([
+      ['run_started', {}],
+      ['run_failed', { message: 'Provider failed' }],
+    ]);
+    expect(request).not.toHaveBeenCalled();
+    expect(runs.saveRun).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      workspace,
+      'conversation',
+      subject,
+      'run',
+      'prompt',
+      events,
+    );
+    expect(runs.finalizeIdempotency).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      subject,
+      workspace,
+      'conversation',
+      'key',
+      events,
+    );
+  } finally {
+    request.mockRestore();
+  }
+});
 
 describe('AICredentialService transaction semantics', () => {
   it('throws after a write when idempotency recording loses its race', async () => {

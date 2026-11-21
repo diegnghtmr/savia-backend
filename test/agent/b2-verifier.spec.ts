@@ -186,27 +186,29 @@ it('allows private DNS answers for explicit local endpoints', async () => {
   expect(connected.mock.calls[0][1]).not.toHaveProperty('Authorization');
 });
 
-it.each([` ${token}`, `${token} `, `${token}\u007f`])(
-  'refuses an unusable bearer before dispatch',
-  async (secret) => {
-    const response = stream(base, { secret });
-    await expect(response.next()).rejects.toThrow(new Error('Provider failed'));
-    expect(https.request).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
-  },
-);
+const invalidBearers = [
+  ` ${token}`,
+  `${token} `,
+  `prefix ${token}`,
+  `${token}\u007f`,
+  `é${token}`,
+];
+it.each(invalidBearers)('refuses an unsafe bearer', async (secret) => {
+  const response = stream(base, { secret });
+  await expect(response.next()).rejects.toThrow(new Error('Provider failed'));
+  expect(https.request).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
+});
 
-it.each(['raw', 'wire'] as const)(
-  'filters the %s bearer across deltas before yielding',
-  async (encoding) => {
-    const stored = 'synthetic-Ã©-bearer';
-    const wire = Buffer.from(stored, 'latin1').toString('utf8');
-    const echoed = encoding === 'raw' ? stored : wire;
-    answers({ address: '1.1.1.1', family: 4 });
-    fakeHttps(frame(echoed.slice(0, 11)) + frame(echoed.slice(11)));
-    const response = stream(base, { secret: stored });
-    await expect(response.next()).rejects.toThrow(
-      new Error('Invalid provider stream'),
-    );
-  },
-);
+it('filters the exact visible ASCII bearer across deltas', async () => {
+  const stored = 'A-._~+/=z';
+  answers({ address: '1.1.1.1', family: 4 });
+  const split = frame(stored.slice(0, 4)) + frame(stored.slice(4));
+  const connected = fakeHttps(split);
+  const response = stream(base, { secret: stored });
+  const invalidStream = new Error('Invalid provider stream');
+  await expect(response.next()).rejects.toThrow(invalidStream);
+  expect(connected.mock.calls[0][1]).toMatchObject({
+    Authorization: `Bearer ${stored}`,
+  });
+});

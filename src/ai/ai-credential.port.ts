@@ -12,7 +12,7 @@ export const AI_OUTCOMES = {
   PRECONDITION: 'precondition',
 } as const;
 export function isUsableBearerToken(value: string): boolean {
-  return value.length > 0 && value.trim() === value && !/\p{Cc}/u.test(value);
+  return value.length > 0 && !/[^!-~]/.test(value);
 }
 export type OwnerType = 'user' | 'workspace';
 export type CredentialType =
