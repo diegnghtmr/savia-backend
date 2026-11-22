@@ -1,5 +1,6 @@
 // Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql, 202609170008_recurring_job_type.sql, 202609170011_recurring_creator_lock.sql, 202609170013_budget_alert_discovery.sql, 202609170017_subscription_detection.sql, 202609170018_b6_alert_recipients.sql
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { Pool } from 'pg';
 import {
   afterAll,
@@ -2248,5 +2249,138 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
     ]);
     await b6Sweep();
     expect(await alerts()).toEqual(emitted);
+  });
+
+  it('S6 preserves populated 0017 subscription IDs and does not replay their price alerts after the 0018 upgrade', async () => {
+    const payee = id(9050);
+    const detected = id(9051);
+    const legacy = id(9052);
+    const detectedName = 'Upgrade detected';
+    const legacyName = 'Upgrade legacy';
+    const controlName = 'Upgrade control';
+    const priceTitle = (name: string) =>
+      `Subscription “${name}” increased by 10%`;
+    await admin.query(
+      `insert into public.payees (id, workspace_id, name, created_by) values ($1, $2, $3, $4)`,
+      [payee, ws1Id, detectedName, ownerA],
+    );
+    for (const day of [-62, -32]) {
+      expect((await b6Charge('Monthly archive', day, '1000', payee)).kind).toBe(
+        'created',
+      );
+    }
+    const newest = await b6Charge('MONTHLY   ARCHIVE', -2, '1100', payee);
+    if (newest.kind !== 'created')
+      throw new Error('Could not create the 0017 observation');
+    const observation = newest.transaction.id;
+
+    // 0017 grouped known payees without a description and used the raw charge ID for its alert.
+    await admin.query(
+      `insert into public.subscriptions
+         (id, workspace_id, created_by, status, detection_key, detection_observed_at, detection_observation_id,
+          payee_name, current_currency, current_amount_minor, previous_currency, previous_amount_minor, frequency, next_expected_at)
+       select $1, t.workspace_id, $2, 'detected',
+         encode(sha256(convert_to(jsonb_build_array(t.account_id, t.currency, t.payee_id, null)::text, 'UTF8')), 'hex'),
+         t.occurred_at, t.id, $3, t.currency, t.amount_minor, t.currency, 1000, 'monthly', t.occurred_at + interval '1 month'
+       from public.transactions t where t.id = $4`,
+      [detected, ownerA, detectedName, observation],
+    );
+    await admin.query(
+      `insert into public.subscriptions
+         (id, workspace_id, payee_name, current_amount_minor, current_currency, previous_amount_minor,
+          previous_currency, frequency, status, created_by)
+       values ($1,$2,$3,1100,'USD',1000,'USD','monthly','confirmed',$4),
+              ($5,$2,$6,1100,'USD',1000,'USD','monthly','confirmed',$4)`,
+      [legacy, ws1Id, legacyName, ownerA, id(9053), controlName],
+    );
+    // A legacy subscription has no observation metadata and uses the 0017 amount-pair UUID.
+    await admin.query(
+      `insert into public.notifications (workspace_id, subject_id, type, resource_id, title)
+       values ($1,$2,'subscription_price_increase',$3,$4),
+              ($1,$2,'subscription_price_increase',md5(jsonb_build_array($5::uuid, 1100, 'USD', 1000, 'USD')::text)::uuid,$6)`,
+      [
+        ws1Id,
+        ownerA,
+        observation,
+        priceTitle(detectedName),
+        legacy,
+        priceTitle(legacyName),
+      ],
+    );
+    const history = async () =>
+      (
+        await admin.query(
+          `select id, subject_id, resource_id, title from public.notifications
+       where workspace_id = $1 and type = 'subscription_price_increase' and title = any($2::text[]) order by title, id`,
+          [ws1Id, [priceTitle(detectedName), priceTitle(legacyName)]],
+        )
+      ).rows;
+    const original = await history();
+    expect(original).toEqual(
+      [detectedName, legacyName].map((name) =>
+        expect.objectContaining({
+          subject_id: ownerA,
+          title: priceTitle(name),
+        }),
+      ),
+    );
+
+    // The disposable runner installs the whole schema before fixtures. Run the
+    // two data statements verbatim on the seeded 0017 rows, without replaying DDL.
+    const migration = readFileSync(
+      'supabase/migrations/202609170018_b6_alert_recipients.sql',
+      'utf8',
+    );
+    const backfill =
+      migration.match(
+        /^(?:update public\.subscriptions s|insert into public\.subscription_notification_events \().*?;$/gms,
+      ) ?? [];
+    expect(backfill).toHaveLength(2);
+    await admin.query(backfill.join('\n'));
+
+    await admin.query(
+      `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+      [ws1Id, viewerA],
+    );
+    try {
+      await admin.query(
+        `update public.workspace_memberships set role='editor' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      await b6Sweep();
+      // The same sweep must deliver an unseen increase to the new recipient.
+      expect(
+        (
+          await admin.query(
+            `select subject_id from public.notifications where workspace_id=$1 and title=$2`,
+            [ws1Id, priceTitle(controlName)],
+          )
+        ).rows,
+      ).toEqual([{ subject_id: viewerA }]);
+      expect({
+        subscriptions: (
+          await admin.query(
+            `select id, status from public.subscriptions where workspace_id=$1 and payee_name = any($2::text[]) order by payee_name, id`,
+            [ws1Id, [detectedName, legacyName]],
+          )
+        ).rows,
+        alerts: await history(),
+      }).toEqual({
+        subscriptions: [
+          { id: detected, status: 'detected' },
+          { id: legacy, status: 'confirmed' },
+        ],
+        alerts: original,
+      });
+    } finally {
+      await admin.query(
+        `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      await admin.query(
+        `update public.workspace_memberships set role='viewer' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, viewerA],
+      );
+    }
   });
 });
