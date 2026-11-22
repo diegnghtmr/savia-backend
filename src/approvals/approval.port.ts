@@ -37,6 +37,7 @@ export interface ApprovalRecord {
   readonly workspaceId: string;
   readonly toolName: string;
   readonly channel: 'agent' | 'mcp' | null;
+  readonly mcp?: McpApprovalSnapshot;
   readonly riskClass: RiskClass;
   readonly argumentsHash: string;
   readonly preview: Record<string, unknown>;
@@ -65,6 +66,7 @@ export type ApprovalExecutor = (
   workspaceId: string,
   approvalId: string,
   args: ApprovalAction['arguments'],
+  mcpGrantId?: string,
 ) => Promise<'ok' | 'forbidden' | 'conflict' | 'invalid_action'>;
 export type ApprovalExecutors = ReadonlyMap<string, ApprovalExecutor>;
 
@@ -74,6 +76,21 @@ export interface CreateApprovalCommand extends ApprovalAction {
   readonly preview: Record<string, unknown>;
   readonly expiresAt: Date;
 }
+
+export interface McpApprovalSnapshot {
+  readonly grantId: string;
+  readonly arguments: ApprovalAction['arguments'];
+}
+
+export interface McpApprovalCommand extends ApprovalAction {
+  readonly grantId: string;
+  readonly riskClass: RiskClass;
+  readonly preview: Record<string, unknown>;
+}
+
+export type McpApprovalOutcome =
+  | { readonly kind: 'ok'; readonly body: unknown }
+  | { readonly kind: 'forbidden' | 'conflict' };
 
 export const APPROVAL_OUTCOMES = {
   OK: 'ok',
@@ -141,7 +158,9 @@ export interface ApprovalStore {
   insertApproval(
     client: TransactionClient,
     workspaceId: string,
-    command: Omit<CreateApprovalCommand, 'arguments'>,
+    command: Omit<CreateApprovalCommand, 'arguments'> & {
+      readonly mcp?: McpApprovalSnapshot;
+    },
     argumentsHash: string,
   ): Promise<ApprovalRecord | undefined>;
 

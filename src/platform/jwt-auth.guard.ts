@@ -7,7 +7,11 @@ import {
 } from '@nestjs/common';
 
 import type { AuthenticatedRequest } from './authenticated-request.js';
-import type { RequestIdentity } from './request-identity.js';
+import type {
+  McpProposalIdentity,
+  RequestIdentity,
+} from './request-identity.js';
+import type { FastifyRequest } from 'fastify';
 import { JoseJwtVerifier } from './jose-jwt-verifier.js';
 import { CliTokenVerifier } from './cli-token-verifier.js';
 import { CLI_SCOPE_POLICY, routeKey } from './cli-scope-policy.js';
@@ -45,6 +49,27 @@ export class JwtAuthGuard implements CanActivate {
       }
     }
     return true;
+  }
+}
+
+export interface McpProposalRequest extends FastifyRequest {
+  proposalIdentity: McpProposalIdentity;
+}
+
+@Injectable()
+export class McpProposalAuthGuard implements CanActivate {
+  public constructor(private readonly verifier: JoseJwtVerifier) {}
+
+  public async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest<McpProposalRequest>();
+    const token = extractBearerToken(request.headers.authorization);
+    if (!token || token.startsWith('svt_')) throw new UnauthorizedException();
+    try {
+      request.proposalIdentity = await this.verifier.verifyProposal(token);
+      return true;
+    } catch {
+      throw new UnauthorizedException();
+    }
   }
 }
 

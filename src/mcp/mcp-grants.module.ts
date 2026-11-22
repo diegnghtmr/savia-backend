@@ -26,5 +26,6 @@ import { McpGrantsController } from './mcp-grants.controller.js';
     },
     { provide: MCP_GRANTS_PORT, useExisting: McpGrantService },
   ],
+  exports: [PostgresMcpGrantAdapter],
 })
 export class McpGrantsModule {}

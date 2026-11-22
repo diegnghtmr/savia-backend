@@ -25,6 +25,8 @@ import {
 import { TransferService } from './ledger/transfer.service.js';
 import {
   LEDGER_WRITER,
+  type CreateTransactionCommand,
+  type CreateTransferCommand,
   type LedgerWriter,
 } from './platform/ledger-writer.port.js';
 import { PlatformModule } from './platform/platform.module.js';
@@ -45,9 +47,16 @@ import {
   type ApprovalExecutor,
   type ApprovalsPort,
 } from './approvals/approval.port.js';
+import { ApprovalService } from './approvals/approval.service.js';
+import type { TransactionClient } from './platform/pg-transaction.js';
+import type { McpProposalIdentity } from './platform/request-identity.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { ReceiptsModule } from './receipts/receipts.module.js';
 import { McpGrantsModule } from './mcp/mcp-grants.module.js';
+import { McpProposalsModule } from './mcp/mcp-proposals.module.js';
+import { MCP_TOOL_ANNOTATIONS } from './mcp/mcp-tools.js';
+import type { McpGrantAuthorizer } from './mcp/mcp-grant.port.js';
+import { PostgresMcpGrantAdapter } from './mcp/postgres-mcp-grant.adapter.js';
 import { AICredentialsModule } from './ai/ai-credentials.module.js';
 import { AICredentialService } from './ai/ai-credential.service.js';
 import { AgentConversationsModule } from './agent/agent-conversations.module.js';
@@ -99,51 +108,185 @@ function approvalOutcome(
   }
 }
 
-const approvals = ApprovalsModule.withExecutors([LedgerModule], {
-  inject: [LEDGER_WRITER, TransferService],
-  useFactory: (writer: LedgerWriter, transfers: TransferService) => {
-    const create: ApprovalExecutor = async (
-      client,
-      subject,
-      workspaceId,
-      approvalId,
-      args,
+function authorizeLedgerTool(
+  grants: McpGrantAuthorizer,
+  client: TransactionClient,
+  identity: McpProposalIdentity,
+  workspaceId: string,
+  toolName: string,
+  command: CreateTransactionCommand | CreateTransferCommand,
+): Promise<boolean> {
+  return grants.authorizeMcpGrant(client, {
+    ...identity,
+    workspaceId,
+    toolName,
+    accountIds:
+      'accountId' in command
+        ? [command.accountId]
+        : [command.sourceAccountId, command.destinationAccountId],
+    // A same-currency transfer is one monetary effect, not two.
+    amounts: [command.amount],
+  });
+}
+
+type ToolArguments = Record<string, unknown>;
+
+function normalizeMcpArguments(toolName: string, args: ToolArguments) {
+  if (toolName === CREATE_TRANSACTION_TOOL) {
+    const command = validateAgentTransaction(args);
+    if (!command) return null;
+    const tagIds = (command.tagIds ?? []).map((tag) => tag.toLowerCase());
+    if (new Set(tagIds).size !== tagIds.length) return null;
+    tagIds.sort();
+    return {
+      ...command,
+      accountId: command.accountId.toLowerCase(),
+      categoryId: command.categoryId?.toLowerCase() ?? null,
+      payeeId: command.payeeId?.toLowerCase() ?? null,
+      receiptId: command.receiptId?.toLowerCase() ?? null,
+      tagIds,
+      amount: {
+        ...command.amount,
+        amountMinor: BigInt(command.amount.amountMinor).toString(),
+      },
+    };
+  }
+  // The ledger posts only the two principal legs and stores no description.
+  if (toolName !== CREATE_TRANSFER_TOOL || hasUnsupportedTransferFields(args))
+    return null;
+  const command = validateAgentTransfer(args);
+  if (!command) return null;
+  return {
+    sourceAccountId: command.sourceAccountId.toLowerCase(),
+    destinationAccountId: command.destinationAccountId.toLowerCase(),
+    amount: {
+      ...command.amount,
+      amountMinor: BigInt(command.amount.amountMinor).toString(),
+    },
+    occurredAt: command.occurredAt,
+  };
+}
+
+function hasUnsupportedTransferFields(args: ToolArguments): boolean {
+  return Object.hasOwn(args, 'fee') || Object.hasOwn(args, 'description');
+}
+
+const approvals = ApprovalsModule.withExecutors(
+  [LedgerModule, McpGrantsModule],
+  {
+    inject: [LEDGER_WRITER, TransferService, PostgresMcpGrantAdapter],
+    useFactory: (
+      writer: LedgerWriter,
+      transfers: TransferService,
+      grants: McpGrantAuthorizer,
     ) => {
-      const command = validateAgentTransaction(args);
-      if (!command) return 'invalid_action';
-      // A key in the internal namespace cannot collide with UUID-only HTTP keys.
-      const result = await writer.createTransaction(
+      const create: ApprovalExecutor = async (
         client,
         subject,
         workspaceId,
-        command,
-        `agent:${approvalId}`,
-      );
-      return approvalOutcome(result);
-    };
-    const transfer: ApprovalExecutor = async (
-      client,
-      subject,
-      workspaceId,
-      approvalId,
-      args,
-    ) => {
-      const command = validateAgentTransfer(args);
-      if (!command) return 'invalid_action';
-      return approvalOutcome(
-        await transfers.createWithin(
+        approvalId,
+        args,
+        grantId,
+      ) => {
+        const command = validateAgentTransaction(args);
+        if (!command) return 'invalid_action';
+        if (
+          grantId &&
+          !(await authorizeLedgerTool(
+            grants,
+            client,
+            { subject, grantId },
+            workspaceId,
+            CREATE_TRANSACTION_TOOL,
+            command,
+          ))
+        ) {
+          return 'forbidden';
+        }
+        // A key in the internal namespace cannot collide with UUID-only HTTP keys.
+        const result = await writer.createTransaction(
           client,
           subject,
           workspaceId,
           command,
-          `agent:${approvalId}`,
-        ),
+          `${grantId ? 'mcp' : 'agent'}:${approvalId}`,
+        );
+        return approvalOutcome(result);
+      };
+      const transfer: ApprovalExecutor = async (
+        client,
+        subject,
+        workspaceId,
+        approvalId,
+        args,
+        grantId,
+      ) => {
+        const command = validateAgentTransfer(args);
+        if (!command || (grantId && hasUnsupportedTransferFields(args)))
+          return 'invalid_action';
+        if (
+          grantId &&
+          !(await authorizeLedgerTool(
+            grants,
+            client,
+            { subject, grantId },
+            workspaceId,
+            CREATE_TRANSFER_TOOL,
+            command,
+          ))
+        ) {
+          return 'forbidden';
+        }
+        return approvalOutcome(
+          await transfers.createWithin(
+            client,
+            subject,
+            workspaceId,
+            command,
+            `${grantId ? 'mcp' : 'agent'}:${approvalId}`,
+          ),
+        );
+      };
+      return new Map<string, ApprovalExecutor>([
+        [CREATE_TRANSACTION_TOOL, create],
+        [CREATE_TRANSFER_TOOL, transfer],
+      ]);
+    },
+  },
+);
+
+const proposalImports = [approvals, McpGrantsModule];
+const mcpProposals = McpProposalsModule.withPort(proposalImports, {
+  inject: [ApprovalService, PostgresMcpGrantAdapter],
+  useFactory: (requests: ApprovalService, grants: McpGrantAuthorizer) => {
+    return async (identity, workspaceId, toolName, args, key) => {
+      const tool = MCP_TOOL_ANNOTATIONS.get(toolName);
+      if (!tool?.requiresApproval || tool.riskClass === 'read')
+        return { kind: 'invalid' };
+      const command = normalizeMcpArguments(toolName, args);
+      if (!command) return { kind: 'invalid' };
+      return requests.createMcpProposal(
+        identity.subject,
+        workspaceId,
+        {
+          toolName,
+          grantId: identity.grantId,
+          riskClass: tool.riskClass,
+          arguments: command,
+          preview: { ...command, action: toolName, workspaceId },
+        },
+        key,
+        (client) =>
+          authorizeLedgerTool(
+            grants,
+            client,
+            identity,
+            workspaceId,
+            toolName,
+            command,
+          ),
       );
     };
-    return new Map<string, ApprovalExecutor>([
-      [CREATE_TRANSACTION_TOOL, create],
-      [CREATE_TRANSFER_TOOL, transfer],
-    ]);
   },
 });
 
@@ -172,6 +315,7 @@ const approvals = ApprovalsModule.withExecutors([LedgerModule], {
     NotificationsModule,
     ReceiptsModule,
     McpGrantsModule,
+    mcpProposals,
     AICredentialsModule,
     AgentConversationsModule.withCredentialResolver(
       [AICredentialsModule, AccountsModule, LedgerModule, approvals],

@@ -1,5 +1,6 @@
 import { SAVIA_SCOPES, type SaviaScope } from './savia-scopes.js';
 
+// POST /v1/mcp/proposals uses its own grant-bound OAuth guard, not CLI scopes.
 export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
   new Map([
     [

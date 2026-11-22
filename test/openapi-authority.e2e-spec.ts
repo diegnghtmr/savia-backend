@@ -186,7 +186,7 @@ describe('executable OpenAPI authority', () => {
   });
 
   it.skipIf(!authorityAvailable)(
-    'mirrors implemented budget and MCP grant schemas and pins MCP annotations to the authority',
+    'mirrors implemented budgets, MCP grants and proposals, and pins MCP annotations to the authority',
     () => {
       const bundle = (path: string) => {
         const directory = mkdtempSync(
@@ -230,16 +230,15 @@ describe('executable OpenAPI authority', () => {
           list: responseContent(paths['/v1/budgets']?.get?.responses),
           create: responseContent(paths['/v1/budgets']?.post?.responses),
           get: responseContent(paths['/v1/budgets/{budgetId}']?.get?.responses),
-          // OAuth transport and proposals are not implemented here. Compare
-          // the supported scope vocabulary, not the future transport URLs.
-          oauthScopes: (
-            schemas.securitySchemes?.mcpOAuth as {
-              flows: { authorizationCode: { scopes: unknown } };
-            }
-          ).flows.authorizationCode.scopes,
+          proposal: paths['/v1/mcp/proposals']?.post,
+          confirmDescription:
+            paths['/v1/approvals/{approvalId}/confirm']?.post?.description,
+          mcpOAuth: schemas.securitySchemes?.mcpOAuth,
           grantSchemas: Object.fromEntries(
             [
               'CreateMcpGrantRequest',
+              'CreateMcpProposalRequest',
+              'McpProposalApproval',
               'McpGrant',
               'McpGrantSchedule',
               'McpToolAllowlist',

@@ -12,3 +12,9 @@ export interface CliTokenIdentity {
 }
 
 export type RequestIdentity = SessionIdentity | CliTokenIdentity;
+
+// A proposal credential has no general API identity.
+export interface McpProposalIdentity {
+  readonly subject: string;
+  readonly grantId: string;
+}

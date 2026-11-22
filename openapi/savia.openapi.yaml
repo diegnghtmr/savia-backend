@@ -20,11 +20,19 @@ components:
       description: Savia-issued opaque CLI access token, prefixed svt_, scoped, revocable, expiring and stored as a SHA-256 hash.
     mcpOAuth:
       type: oauth2
-      description: OAuth 2.1 authorization used by remote MCP clients. The MCP transport itself is not described by this OpenAPI document.
+      description: >-
+        Remote MCP uses OAuth 2.1 authorization code flow with S256 PKCE. The authorization server and trusted
+        issuer are the configured Supabase Auth instance; the flow URLs below are placeholders for that instance.
+        For Streamable HTTP, clients request the canonical MCP server URL advertised in OAuth protected resource
+        metadata as the resource. The MCP server accepts only access tokens issued for that audience, not session
+        JWTs or tokens for another resource. An MCP resource token must not be forwarded to a different API
+        audience. Direct requests to the proposal API require an access token for the proposal API resource
+        bound to the authenticated subject and its Savia MCP grant. MCP transport is outside this OpenAPI document.
+        Validation with a local fake authorization server is planned; real Supabase Auth compatibility is unverified.
       flows:
         authorizationCode:
-          authorizationUrl: https://api.savia.app/oauth/authorize
-          tokenUrl: https://api.savia.app/oauth/token
+          authorizationUrl: https://project-ref.supabase.co/auth/v1/oauth/authorize
+          tokenUrl: https://project-ref.supabase.co/auth/v1/oauth/token
           scopes:
             accounts:read: Read accounts and balances.
             accounts:write: Create and modify accounts.
@@ -2492,6 +2500,40 @@ components:
     McpToolName:
       type: string
       description: Exact name from an operation's x-savia-mcp-tool annotation. Unannotated or unknown names are invalid.
+    CreateMcpProposalRequest:
+      type: object
+      required:
+        - toolName
+        - arguments
+      properties:
+        toolName:
+          $ref: '#/components/schemas/McpToolName'
+        arguments:
+          type: object
+          description: >-
+            Tool-specific arguments validated against the named tool's input schema. Do not include request context
+            such as the workspace, idempotency key, subject or grant, or server-derived fields such as preview or risk.
+          additionalProperties: true
+      additionalProperties: false
+    McpProposalApproval:
+      type: object
+      required:
+        - id
+        - preview
+        - expiresAt
+        - status
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        preview:
+          type: object
+          additionalProperties: true
+        expiresAt:
+          $ref: '#/components/schemas/DateTime'
+        status:
+          type: string
+          const: pending
+      additionalProperties: false
     McpToolAllowlist:
       type: array
       description: >-
@@ -7972,6 +8014,11 @@ paths:
     post:
       operationId: confirmApproval
       summary: Approve exact tool arguments
+      description: >-
+        Only the approval creator can confirm with a user session from Savia web or mobile. For an MCP proposal,
+        this call executes the approved action; there is no follow-up MCP call. The backend checks the argument
+        hash and reauthorizes the caller and the bound grant inside the transaction that applies the action and
+        consumes the approval. If a check fails, the action is not executed and the approval is not consumed.
       tags: [Approvals]
       responses:
         '400':
@@ -8375,6 +8422,57 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/ProblemDetails' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+  /v1/mcp/proposals:
+    post:
+      operationId: createMcpProposal
+      summary: Propose an MCP action that requires approval
+      description: >-
+        Creates a pending approval without executing the action. The API resolves the subject and grant from
+        the authenticated grant-bound OAuth context, and the workspace from X-Workspace-Id. The API checks
+        the tool's required scopes from x-savia-mcp-tool, the current workspace permissions and the grant
+        restrictions before accepting the proposal. It validates and normalizes the tool arguments and derives
+        the risk classification, preview and argument hash itself. The approval is bound to the subject,
+        workspace, tool, grant and exact normalized arguments. Only the creator can confirm it in Savia web
+        or mobile; confirmation executes the action.
+      security:
+        - mcpOAuth: []
+      tags: [Approvals]
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMcpProposalRequest'
+      responses:
+        '201':
+          description: Pending approval created. An identical replay with the same key returns the original response without creating another approval.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpProposalApproval'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller or grant does not authorize this operation, tool or amount in this workspace.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          description: Unknown tool, read tool, tool not requiring approval, or invalid tool arguments.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /v1/mcp/grants:
     get:
       operationId: listMcpGrants

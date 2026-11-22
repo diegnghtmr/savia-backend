@@ -21,6 +21,8 @@ import {
   type ApprovalStatus,
   type ApprovalStore,
   type CreateApprovalCommand,
+  type McpApprovalCommand,
+  type McpApprovalOutcome,
 } from './approval.port.js';
 import { Inject } from '@nestjs/common';
 
@@ -169,10 +171,7 @@ export class ApprovalService implements ApprovalsPort {
       ) {
         return { kind: APPROVAL_OUTCOMES.FORBIDDEN };
       }
-      if (!(expiresAt.getTime() > this.clock().getTime())) {
-        return { kind: APPROVAL_OUTCOMES.CONFLICT };
-      }
-      const approval = await this.store.insertApproval(
+      const approval = await this.insertPendingApproval(
         client,
         workspaceId,
         { ...command, preview, expiresAt },
@@ -182,6 +181,90 @@ export class ApprovalService implements ApprovalsPort {
         ? { kind: APPROVAL_OUTCOMES.OK, approval: toPayload(approval) }
         : { kind: APPROVAL_OUTCOMES.CONFLICT };
     });
+  }
+
+  private insertPendingApproval(
+    client: TransactionClient,
+    workspaceId: string,
+    command: Parameters<ApprovalStore['insertApproval']>[2],
+    hash: string,
+  ): Promise<ApprovalRecord | undefined> {
+    return command.expiresAt.getTime() > this.clock().getTime()
+      ? this.store.insertApproval(client, workspaceId, command, hash)
+      : Promise.resolve(undefined);
+  }
+
+  public async createMcpProposal(
+    subject: string,
+    workspaceId: string,
+    { arguments: args, grantId, ...command }: McpApprovalCommand,
+    key: string,
+    authorize: (client: TransactionClient) => Promise<boolean>,
+  ): Promise<McpApprovalOutcome> {
+    const route = 'POST /v1/mcp/proposals';
+    const canonical = canonicalArguments(args);
+    const hash = hashArguments(canonical);
+    const fingerprint = computeRequestFingerprint({
+      grantId,
+      toolName: command.toolName,
+      hash,
+    });
+    try {
+      return await this.tx.run(subject, async (client) => {
+        if (!(await authorize(client))) return { kind: 'forbidden' };
+        // PgTransaction serializes writers for the same subject, including this key.
+        const existing = await this.idempotency.read(
+          client,
+          subject,
+          route,
+          key,
+          workspaceId,
+        );
+        if (existing) {
+          return existing.requestFingerprint === fingerprint
+            ? { kind: 'ok', body: existing.responseBody }
+            : { kind: 'conflict' };
+        }
+        const approval = await this.insertPendingApproval(
+          client,
+          workspaceId,
+          {
+            ...command,
+            channel: 'mcp',
+            expiresAt: new Date(this.clock().getTime() + 15 * 60_000),
+            mcp: {
+              grantId,
+              arguments: JSON.parse(canonical) as ApprovalAction['arguments'],
+            },
+          },
+          hash,
+        );
+        if (!approval) return { kind: 'conflict' };
+        const { id, preview, expiresAt } = toPayload(approval);
+        const body = { id, preview, expiresAt, status: 'pending' };
+        const written = await this.idempotency.write(
+          client,
+          subject,
+          route,
+          key,
+          fingerprint,
+          201,
+          null,
+          body,
+          workspaceId,
+        );
+        if (!written) throw new ApprovalDecisionRollbackError('conflict');
+        return { kind: 'ok', body };
+      });
+    } catch (error) {
+      if (
+        error instanceof ApprovalDecisionRollbackError &&
+        error.outcome === 'conflict'
+      ) {
+        return { kind: 'conflict' };
+      }
+      throw error;
+    }
   }
 
   public async executeApprovedAction<T>(
@@ -230,13 +313,13 @@ export class ApprovalService implements ApprovalsPort {
     return { kind, result: await execute(client, snapshot) };
   }
 
-  private async executeAgentDecision(
+  private async executeDecision(
     client: TransactionClient,
     approver: string,
     approval: ApprovalRecord,
   ): Promise<void> {
     const execute = this.executors.get(approval.toolName);
-    const args = approval.preview.arguments;
+    const args = approval.mcp?.arguments ?? approval.preview.arguments;
     if (!execute || !args || typeof args !== 'object' || Array.isArray(args))
       throw new ApprovalDecisionRollbackError('conflict');
     const canonical = canonicalArguments(args as ApprovalAction['arguments']);
@@ -255,6 +338,7 @@ export class ApprovalService implements ApprovalsPort {
           approval.workspaceId,
           approval.id,
           snapshot,
+          approval.mcp?.grantId,
         ),
     );
     if (result.kind !== 'ok')
@@ -407,10 +491,12 @@ export class ApprovalService implements ApprovalsPort {
           workspaceId,
           approvalId,
         );
-        const agentConfirmation = confirming && approval?.channel === 'agent';
+        const creatorConfirmation =
+          confirming &&
+          (approval?.channel === 'agent' || approval?.mcp !== undefined);
         if (
-          agentConfirmation
-            ? approval.createdBy !== subject.toLowerCase()
+          creatorConfirmation
+            ? approval?.createdBy !== subject.toLowerCase()
             : !administrator
         ) {
           return { kind: APPROVAL_OUTCOMES.FORBIDDEN };
@@ -436,6 +522,15 @@ export class ApprovalService implements ApprovalsPort {
 
         const now = this.clock();
         if (approval.status === 'consumed') {
+          // A completed MCP write is safe to acknowledge, never to run again.
+          if (confirming && approval.mcp && existing) {
+            return {
+              kind: APPROVAL_OUTCOMES.REPLAYED,
+              status: existing.responseStatus,
+              etag: existing.responseEtag,
+              body: existing.responseBody,
+            };
+          }
           return {
             kind: APPROVAL_OUTCOMES.CONFLICT,
             reason: 'Approval has already been consumed',
@@ -509,13 +604,11 @@ export class ApprovalService implements ApprovalsPort {
           return { kind: APPROVAL_OUTCOMES.CONFLICT };
         }
 
-        const executeAgent =
-          targetStatus === 'approved' && updated.channel === 'agent';
-        if (executeAgent)
-          await this.executeAgentDecision(client, subject, updated);
+        if (creatorConfirmation)
+          await this.executeDecision(client, subject, updated);
         const responsePayload = toPayload(
           updated,
-          executeAgent ? 'consumed' : updated.status,
+          creatorConfirmation ? 'consumed' : updated.status,
         );
 
         const written = await this.idempotency.write(

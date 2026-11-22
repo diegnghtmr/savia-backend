@@ -41,7 +41,7 @@ const APPROVAL_EXECUTORS = Symbol('ApprovalExecutors');
     },
     { provide: APPROVALS_PORT, useExisting: ApprovalService },
   ],
-  exports: [APPROVALS_PORT],
+  exports: [APPROVALS_PORT, ApprovalService],
 })
 export class ApprovalsModule {
   public static withExecutors(

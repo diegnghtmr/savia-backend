@@ -26,6 +26,7 @@ import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { SAVIA_SCOPES } from '../../src/platform/savia-scopes.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
+import { mcpTokens } from '../helpers/mcp-jwt.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -33,6 +34,7 @@ if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 describe('Approvals integration contract and endpoint suite', () => {
   let admin: Pool;
   let application: NestFastifyApplication;
+  let signed: Awaited<ReturnType<typeof mcpTokens>>;
 
   const ownerId = '11111111-0000-4000-8000-000000000001';
   const adminId = '77777777-0000-4000-8000-000000000001';
@@ -129,11 +131,14 @@ describe('Approvals integration contract and endpoint suite', () => {
     );
 
     // Bootstrap Nest application
+    signed = await mcpTokens();
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(JoseJwtVerifier)
       .useValue({
+        verifyProposal: (token: string) =>
+          signed.verifier.verifyProposal(token),
         verify: async (token: string) => {
           if (token === 'owner-token') return { subject: ownerId };
           if (token === 'admin-token') return { subject: adminId };
@@ -308,6 +313,307 @@ describe('Approvals integration contract and endpoint suite', () => {
       expect(response.statusCode).toBe(status);
       expect(response.json()).not.toHaveProperty('items');
     });
+  });
+
+  // Exercises the snapshot and creator-only decision policy in 202609170019_mcp_proposals.sql.
+  describe('MCP proposals through session confirmation', () => {
+    const route = '/v1/mcp/proposals';
+    const headers = {
+      'x-workspace-id': workspace1Id,
+      authorization: 'Bearer editor-token',
+    };
+    const fullWeek = Array.from({ length: 7 }, (_, day) => ({
+      dayOfWeek: day + 1,
+      startTime: '00:00',
+      endTime: '24:00',
+    }));
+    const request = (
+      method: 'GET' | 'POST',
+      url: string,
+      payload?: Record<string, unknown>,
+      token = 'editor-token',
+      key = randomUUID(),
+    ) =>
+      application.inject({
+        method,
+        url,
+        headers: {
+          ...headers,
+          authorization: `Bearer ${token}`,
+          'idempotency-key': key,
+        },
+        ...(payload ? { payload } : {}),
+      });
+    async function account() {
+      const result = await request(
+        'POST',
+        '/v1/accounts',
+        { name: 'MCP proposal account', type: 'cash', currency: 'USD' },
+        'owner-token',
+      );
+      expect(result.statusCode).toBe(201);
+      return result.json<{ id: string }>().id;
+    }
+    async function grant(
+      accountIds: string[],
+      subject = editorId,
+      amount = '25',
+    ) {
+      const id = randomUUID();
+      const schedule = JSON.stringify(fullWeek);
+      await admin.query(
+        `insert into public.mcp_grants (id, subject_id, client_name, scopes, workspace_ids, account_ids, tool_allowlist, schedule, max_write_amount_minor, max_write_currency)
+         values ($1, $2, 'MCP test client', '{transactions:write}', array[$3::uuid], $4::uuid[], '{create_transaction,create_transfer}', $5::jsonb, $6, 'USD')`,
+        [id, subject, workspace1Id, accountIds, schedule, amount],
+      );
+      return { id, token: await signed.sign(editorId, id) };
+    }
+    const occurredAt = '2026-01-02T00:00:00Z';
+    const transaction = (
+      accountId: string,
+      amountMinor = '25',
+      currency = 'USD',
+    ) => ({
+      toolName: 'create_transaction',
+      arguments: {
+        accountId,
+        type: 'expense',
+        amount: { amountMinor, currency },
+        occurredAt,
+      },
+    });
+    const transfer = (
+      sourceAccountId: string,
+      destinationAccountId: string,
+      extra = {},
+    ) => ({
+      toolName: 'create_transfer',
+      arguments: {
+        sourceAccountId,
+        destinationAccountId,
+        amount: { amountMinor: '25', currency: 'USD' },
+        occurredAt,
+        ...extra,
+      },
+    });
+    const get = async (id: string, token = 'editor-token') => {
+      const result = await request(
+        'GET',
+        `/v1/approvals/${id}`,
+        undefined,
+        token,
+      );
+      expect(result.statusCode).toBe(200);
+      return result.json<{
+        id: string;
+        argumentsHash: string;
+        status: string;
+        preview: unknown;
+        expiresAt: string;
+      }>();
+    };
+    const list = async () => (await request('GET', '/v1/approvals')).json();
+    async function balance(id: string) {
+      const result = await request(
+        'GET',
+        `/v1/accounts/${id}/balance`,
+        undefined,
+        'owner-token',
+      );
+      expect(result.statusCode).toBe(200);
+      const { nativeBalance } = result.json<{
+        nativeBalance: { amountMinor: string };
+      }>();
+      return nativeBalance.amountMinor;
+    }
+    async function proposal(
+      token: string,
+      body: Record<string, unknown>,
+      key = randomUUID(),
+    ) {
+      const result = await request('POST', route, body, token, key);
+      expect(result.statusCode).toBe(201);
+      const created = result.json<{ id: string }>();
+      const details = await get(created.id);
+      expect(result.json()).toEqual({
+        id: details.id,
+        preview: details.preview,
+        expiresAt: details.expiresAt,
+        status: 'pending',
+      });
+      expect(details).toMatchObject({
+        riskClass: 'financial_write',
+        status: 'pending',
+        argumentsHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+      return details;
+    }
+    const confirm = (
+      id: string,
+      argumentsHash: string,
+      key = randomUUID(),
+      token = 'editor-token',
+    ) =>
+      request(
+        'POST',
+        `/v1/approvals/${id}/confirm`,
+        { argumentsHash },
+        token,
+        key,
+      );
+
+    it.each(['transaction', 'transfer'])(
+      'proposes a %s with no ledger effect, then executes exactly once as creator',
+      async (tool) => {
+        const source = await account();
+        const destination = await account();
+        const { token } = await grant([source, destination]);
+        const isTransfer = tool === 'transfer';
+        const body = isTransfer
+          ? transfer(source, destination)
+          : transaction(source, '-025');
+        const key = randomUUID();
+        const [pending, replay] = await Promise.all([
+          proposal(token, body, key),
+          proposal(token, body, key),
+        ]);
+        expect(replay).toEqual(pending);
+        expect(pending.preview).toMatchObject({
+          action: body.toolName,
+          amount: { amountMinor: isTransfer ? '25' : '-25', currency: 'USD' },
+        });
+        expect(pending.preview).not.toHaveProperty('grantId');
+        const conflict = await request(
+          'POST',
+          route,
+          transaction(source, '24'),
+          token,
+          key,
+        );
+        expect(conflict.statusCode).toBe(409);
+        expect(await balance(source)).toBe('0');
+        expect(await balance(destination)).toBe('0');
+        const { id, argumentsHash } = pending;
+        const otherActor = await confirm(
+          id,
+          argumentsHash,
+          randomUUID(),
+          'admin-token',
+        );
+        expect(otherActor.statusCode).toBe(403);
+        expect((await confirm(id, '0'.repeat(64))).statusCode).toBe(409);
+        expect(await get(id)).toEqual(pending);
+        const confirmKey = randomUUID();
+        const outcomes = await Promise.all([
+          confirm(id, argumentsHash, confirmKey),
+          confirm(id, argumentsHash, confirmKey),
+        ]);
+        for (const outcome of outcomes) {
+          expect(outcome.statusCode).toBe(200);
+          expect(outcome.json()).toEqual({ ...pending, status: 'consumed' });
+        }
+        expect((await confirm(id, argumentsHash)).statusCode).toBe(409);
+        expect(await balance(source)).toBe('-25');
+        expect(await balance(destination)).toBe(isTransfer ? '25' : '0');
+        expect(await get(id)).toEqual({ ...pending, status: 'consumed' });
+      },
+    );
+
+    it('denies forged context, invalid tools/arguments and out-of-grant ledger footprints without reserving a key', async () => {
+      const source = await account();
+      const destination = await account();
+      const original = await grant([source]);
+      const other = await grant([source], ownerId);
+      const revoked = await grant([source]);
+      await admin.query(
+        "update public.mcp_grants set status = 'revoked', revoked_at = now() where id = $1",
+        [revoked.id],
+      );
+      const before = await list();
+      const key = randomUUID();
+      for (const [status, token, body] of [
+        [403, other.token, transaction(source)],
+        [403, revoked.token, transaction(source)],
+        [403, original.token, transaction(source, '26')],
+        [403, original.token, transaction(source, '25', 'EUR')],
+        [403, original.token, transfer(source, destination)],
+        [422, original.token, { ...transaction(source), grantId: original.id }],
+        [422, original.token, { toolName: 'not_a_tool', arguments: {} }],
+        [422, original.token, { toolName: 'list_accounts', arguments: {} }],
+        [
+          422,
+          original.token,
+          { toolName: 'update_transaction', arguments: {} },
+        ],
+        [
+          422,
+          original.token,
+          transfer(source, destination, {
+            fee: { amountMinor: '1', currency: 'USD' },
+          }),
+        ],
+        [
+          422,
+          original.token,
+          transfer(source, destination, { description: 'not stored' }),
+        ],
+        [422, original.token, transaction(source, '1.5')],
+      ] as const) {
+        const response = await request('POST', route, body, token, key);
+        expect(response.statusCode).toBe(status);
+        expect(response.headers['content-type']).toContain(
+          'application/problem+json',
+        );
+        expect(response.json()).toMatchObject({ status });
+      }
+      expect(await list()).toEqual(before);
+      expect(await balance(source)).toBe('0');
+      expect(await balance(destination)).toBe('0');
+      await proposal(original.token, transaction(source), key);
+    });
+
+    it.each(['revocation', 'expiry', 'schedule', 'role', 'ledger validation'])(
+      'rolls back confirmation after %s',
+      async (restriction) => {
+        const source = await account();
+        const { id: grantId, token } = await grant([source]);
+        const body = transaction(source);
+        const ledgerFailure = restriction === 'ledger validation';
+        const pending = await proposal(
+          token,
+          ledgerFailure
+            ? {
+                ...body,
+                arguments: { ...body.arguments, categoryId: randomUUID() },
+              }
+            : body,
+        );
+        const setRole = (role: string) =>
+          admin.query(
+            'update public.workspace_memberships set role = $1 where workspace_id = $2 and profile_id = $3',
+            [role, workspace1Id, editorId],
+          );
+        const setGrant = (clause: string) => {
+          const sql = `update public.mcp_grants set ${clause} where id = $1`;
+          return admin.query(sql, [grantId]);
+        };
+        if (restriction === 'revocation')
+          await setGrant("status = 'revoked', revoked_at = now()");
+        if (restriction === 'expiry')
+          await setGrant("expires_at = now() - interval '1 second'");
+        if (restriction === 'schedule')
+          await setGrant("schedule = '[]'::jsonb");
+        if (restriction === 'role') await setRole('viewer');
+        try {
+          const response = await confirm(pending.id, pending.argumentsHash);
+          expect(response.statusCode).toBe(ledgerFailure ? 422 : 403);
+          expect(await get(pending.id, 'owner-token')).toEqual(pending);
+          expect(await balance(source)).toBe('0');
+        } finally {
+          if (restriction === 'role') await setRole('editor');
+        }
+      },
+    );
   });
 
   describe('Approval execution foundation', () => {
