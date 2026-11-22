@@ -1,4 +1,4 @@
-// Migration under test: 202609170012_recurring_occurrence_actions.sql
+// Migrations under test: 202609170012_recurring_occurrence_actions.sql, 202609170021_recurring_occurrence_edits.sql
 import { randomUUID } from 'node:crypto';
 import {
   FastifyAdapter,
@@ -13,7 +13,10 @@ import { TransactionService } from '../../src/ledger/transaction.service.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
 import { PostgresOccurrenceAdapter } from '../../src/recurring/postgres-occurrence.adapter.js';
-import { RecurringMaterializer } from '../../src/recurring/recurring-materializer.js';
+import {
+  RecurringMaterializer,
+  type DueOccurrence,
+} from '../../src/recurring/recurring-materializer.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -28,7 +31,7 @@ const amount = { amountMinor: '6500', currency: 'USD' };
 const start = '2026-09-01T09:00:00.000Z';
 const root = '/v1/recurring-rules';
 const occurrencePath = (id: string) => `${root}/${id}/occurrences`;
-const headers = (actor = owner) => ({
+const headers = (actor: string = owner) => ({
   authorization: `Bearer ${actor}`,
   'x-workspace-id': workspace,
 });
@@ -148,14 +151,14 @@ describe('Recurring occurrence actions through HTTP and PostgreSQL', () => {
     return result.json<Rule>();
   }
 
-  function materialize(rule: Rule) {
+  function materialize(rule: Rule, asOf = rule.nextOccurrenceAt) {
     return transaction.run(owner, (client) =>
       materializer.materialize(client, {
         workspaceId: workspace,
         ruleId: rule.id,
         subject: owner,
         scheduledAt: rule.nextOccurrenceAt,
-        asOf: rule.nextOccurrenceAt,
+        asOf,
       }),
     );
   }
@@ -187,6 +190,40 @@ describe('Recurring occurrence actions through HTTP and PostgreSQL', () => {
       },
     });
   }
+
+  function change(
+    rule: Rule,
+    action: 'reschedule' | 'edit-one' | 'edit-series',
+    payload: object,
+    options: {
+      item?: Occurrence;
+      match?: string;
+      key?: string;
+      actor?: string;
+    } = {},
+  ) {
+    const itemPath = `${occurrencePath(rule.id)}/${options.item?.id}`;
+    const url =
+      action === 'edit-series'
+        ? `${root}/${rule.id}/edit-series`
+        : action === 'edit-one'
+          ? itemPath
+          : `${itemPath}/reschedule`;
+    const match = options.match ?? options.item?.etag;
+    return app.inject({
+      method: action === 'edit-one' ? 'PATCH' : 'POST',
+      url,
+      headers: {
+        ...headers(options.actor),
+        'idempotency-key': options.key ?? randomUUID(),
+        ...(match ? { 'if-match': match } : {}),
+      },
+      payload,
+    });
+  }
+
+  const plusHours = (date: string, hours: number) =>
+    new Date(Date.parse(date) + hours * 3_600_000).toISOString();
 
   function problem(
     response: Awaited<ReturnType<typeof command>>,
@@ -397,6 +434,264 @@ describe('Recurring occurrence actions through HTTP and PostgreSQL', () => {
       expect(await balance(before.scheduledAt)).toBe(initialBalance);
     },
   );
+
+  it('discovers and delivers a moved occurrence independently of its original cursor', async () => {
+    const rule = await createRule('remind');
+    const item = (await list(rule.id)).items[0]!;
+    const store = new PostgresOccurrenceAdapter();
+    const discovered = (cutoff: string) =>
+      transaction.runAsQueueConsumer(async (client) => {
+        const candidates = await store.findDue(client, cutoff);
+        return candidates.filter(({ ruleId }) => ruleId === rule.id);
+      });
+    const deliver = (work: DueOccurrence) =>
+      transaction.run(owner, (client) =>
+        materializer.materialize(client, work),
+      );
+    const [original] = await discovered(item.originalScheduledAt);
+    expect(original?.scheduleVersion).toBeUndefined();
+    expect(original).toBeDefined();
+    const scheduledAt = plusHours(item.scheduledAt, 2);
+    const moved = await change(rule, 'reschedule', { scheduledAt }, { item });
+    expect(moved.statusCode, moved.payload).toBe(200);
+    expect(await deliver(original!)).toBeNull();
+    expect(await discovered(item.originalScheduledAt)).toEqual([]);
+    const [current] = await discovered(scheduledAt);
+    expect(current).toMatchObject({
+      scheduledAt: original!.scheduledAt,
+      scheduleVersion: expect.any(Number),
+    });
+    const results = await Promise.all([deliver(current!), deliver(current!)]);
+    expect(results).toContain(item.id);
+    expect(results).toContain(null);
+    expect(await discovered(scheduledAt)).toEqual([]);
+    expect((await list(rule.id)).items[0]).toMatchObject({
+      ...item,
+      scheduledAt,
+      status: 'reminder',
+      etag: expect.any(String),
+    });
+  });
+
+  it('reschedules a prospective slot once, keeping its original ID and the daily cadence', async () => {
+    const rule = await createRule('remind');
+    const before = await list(rule.id);
+    const item = before.items[0]!;
+    const scheduledAt = plusHours(item.scheduledAt, 26);
+    const key = randomUUID();
+    const move = (time: string, actor = owner, idempotencyKey = key) =>
+      change(
+        rule,
+        'reschedule',
+        { scheduledAt: time },
+        { item, key: idempotencyKey, actor },
+      );
+    problem(await move(scheduledAt, editor), 403, 'Workspace access forbidden');
+    problem(
+      await move(plusHours(item.scheduledAt, 48)),
+      409,
+      'Recurring occurrence state conflict',
+    );
+    expect(await list(rule.id)).toEqual(before);
+    const moved = await move(scheduledAt);
+    expect(moved.statusCode, moved.payload).toBe(200);
+    expect(moved.json()).toEqual({
+      ...item,
+      scheduledAt,
+      etag: moved.headers.etag,
+    });
+    expect(moved.headers.etag).not.toBe(item.etag);
+    expect((await move(scheduledAt)).json()).toEqual(moved.json());
+    expect((await move(plusHours(scheduledAt, 1))).statusCode).toBe(409);
+    expect(
+      (await move(plusHours(scheduledAt, 1), owner, randomUUID())).statusCode,
+    ).toBe(412);
+    expect(await materialize(rule)).toBeNull();
+    const next = {
+      ...rule,
+      nextOccurrenceAt: plusHours(item.originalScheduledAt, 24),
+    };
+    expect(await materialize(next)).not.toBeNull();
+    expect(await materialize(rule, scheduledAt)).toBe(item.id);
+    expect(await materialize(rule, scheduledAt)).toBeNull();
+    const page = await list(rule.id);
+    expect(page.items.find(({ id }) => id === item.id)).toEqual({
+      ...moved.json<Occurrence>(),
+      status: 'reminder',
+      etag: expect.any(String),
+    });
+    expect(
+      page.items.filter(
+        ({ originalScheduledAt }) =>
+          originalScheduledAt === item.originalScheduledAt,
+      ),
+    ).toHaveLength(1);
+    expect(
+      page.items.find(({ status }) => status === 'scheduled')?.scheduledAt,
+    ).toBe(plusHours(item.originalScheduledAt, 48));
+  });
+
+  it.each(['create_draft', 'create_pending'])(
+    'rejects editing a linked %s booking but reschedules it in place',
+    async (behavior) => {
+      const rule = await createRule(behavior);
+      await materialize(rule);
+      const before = await list(rule.id);
+      const item = before.items[0]!;
+      const booking = () =>
+        app.inject({
+          method: 'GET',
+          url: `/v1/transactions/${item.transactionId}`,
+          headers: headers(),
+        });
+      const originalBooking = (await booking()).json<{ occurredAt: string }>();
+      problem(
+        await change(rule, 'edit-one', { description: 'Booked' }, { item }),
+        409,
+        'Recurring occurrence state conflict',
+      );
+      expect(await list(rule.id)).toEqual(before);
+      expect((await booking()).json()).toEqual(originalBooking);
+      const scheduledAt = plusHours(item.scheduledAt, 2);
+      const previousBalance = await balance(originalBooking.occurredAt);
+      const effectiveBalance = await balance(scheduledAt);
+      const moved = await change(rule, 'reschedule', { scheduledAt }, { item });
+      expect(moved.statusCode, moved.payload).toBe(200);
+      expect(moved.json()).toEqual({
+        ...item,
+        scheduledAt,
+        etag: moved.headers.etag,
+      });
+      expect((await booking()).json()).toMatchObject({
+        id: item.transactionId,
+        occurredAt: scheduledAt,
+        status: item.status,
+        amount,
+      });
+      expect(await balance(scheduledAt)).toBe(effectiveBalance);
+      const confirmed = await command(moved.json<Occurrence>(), 'confirm');
+      expect(confirmed.statusCode, confirmed.payload).toBe(200);
+      expect(await balance(originalBooking.occurredAt)).toBe(previousBalance);
+      expect(await balance(scheduledAt)).toBe(
+        effectiveBalance + BigInt(amount.amountMinor),
+      );
+      const newItem = confirmed.json<Occurrence>();
+      problem(
+        await change(
+          rule,
+          'reschedule',
+          { scheduledAt: plusHours(scheduledAt, 1) },
+          { item: newItem },
+        ),
+        409,
+        'Recurring occurrence state conflict',
+      );
+    },
+  );
+
+  it('preserves slots before the series boundary', async () => {
+    const rule = await createRule('create_pending');
+    const before = await list(rule.id);
+    const effectiveFrom = plusHours(rule.nextOccurrenceAt, 24);
+    const changes = { description: 'Starts tomorrow' };
+    const result = await change(
+      rule,
+      'edit-series',
+      { effectiveFrom, changes },
+      { match: before.ruleEtag },
+    );
+    expect(result.statusCode, result.payload).toBe(200);
+    expect(result.json()).toEqual({ ruleId: rule.id, effectiveFrom, changes });
+    expect((await list(rule.id)).items).toEqual(before.items);
+    await materialize(rule);
+    const next = { ...rule, nextOccurrenceAt: effectiveFrom };
+    await materialize(next);
+    const after = await list(rule.id);
+    expect(after.items[0]).toMatchObject({
+      status: 'pending',
+      description: before.items[0]?.description,
+    });
+    expect(after.items[1]).toMatchObject({
+      status: 'pending',
+      originalScheduledAt: effectiveFrom,
+      ...changes,
+    });
+  });
+
+  it('edits the series inclusively by original slot, preserving reminders and one-slot overrides', async () => {
+    const rule = await createRule('remind');
+    await materialize(rule);
+    const before = await list(rule.id);
+    const [reminder, scheduled] = before.items as [Occurrence, Occurrence];
+    const editedReminder = await change(
+      rule,
+      'edit-one',
+      { description: null },
+      { item: reminder },
+    );
+    expect(editedReminder.statusCode, editedReminder.payload).toBe(200);
+    expect(editedReminder.json()).toEqual({
+      ...reminder,
+      description: null,
+      etag: editedReminder.headers.etag,
+    });
+    const edited = await change(
+      rule,
+      'edit-one',
+      { description: 'Only this one' },
+      { item: scheduled },
+    );
+    expect(edited.statusCode, edited.payload).toBe(200);
+    expect(edited.json()).toEqual({
+      ...scheduled,
+      description: 'Only this one',
+      etag: edited.headers.etag,
+    });
+    const key = randomUUID();
+    const changes = {
+      amount: { ...amount, amountMinor: '4200' },
+      description: 'New series',
+    };
+    const invalid = await change(rule, 'edit-series', {
+      effectiveFrom: '2000-01-01T00:00:00.000Z',
+      changes,
+    });
+    expect(invalid.statusCode, invalid.payload).toBe(422);
+    const payload = { effectiveFrom: scheduled.originalScheduledAt, changes };
+    const series = await change(rule, 'edit-series', payload, {
+      key,
+      match: before.ruleEtag,
+    });
+    expect(series.statusCode, series.payload).toBe(200);
+    expect(series.json()).toEqual({ ruleId: rule.id, ...payload });
+    expect(series.headers.etag).not.toBe(before.ruleEtag);
+    expect(
+      (
+        await change(rule, 'edit-series', payload, {
+          key,
+          match: before.ruleEtag,
+        })
+      ).json(),
+    ).toEqual(series.json());
+    expect(
+      (await change(rule, 'edit-series', payload, { match: before.ruleEtag }))
+        .statusCode,
+    ).toBe(412);
+    await materialize({
+      ...rule,
+      nextOccurrenceAt: scheduled.originalScheduledAt,
+    });
+    const after = await list(rule.id);
+    expect(after.ruleEtag).toBe(series.headers.etag);
+    expect(after.items[0]).toEqual(editedReminder.json());
+    expect(after.items[1]).toMatchObject({
+      id: scheduled.id,
+      status: 'reminder',
+      description: 'Only this one',
+      amount: changes.amount,
+    });
+    expect(after.items[2]).toMatchObject({ status: 'scheduled', ...changes });
+  });
 
   it('serializes confirm and skip of the same reminder so exactly one wins', async () => {
     const rule = await createRule('remind');

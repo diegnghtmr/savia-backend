@@ -17,6 +17,12 @@ export interface OccurrenceLedgerWriter {
     workspaceId: string,
     booking: OccurrenceBooking,
   ): Promise<'confirmed' | 'conflict' | 'invalid'>;
+  rescheduleOccurrenceBooking(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+    occurredAt: string,
+  ): Promise<boolean>;
   voidOccurrenceBooking(
     client: TransactionClient,
     workspaceId: string,

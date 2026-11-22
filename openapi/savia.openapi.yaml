@@ -1341,6 +1341,60 @@ components:
           type: string
           description: Current occurrence version, usable as If-Match on occurrence commands.
       additionalProperties: false
+    RescheduleRecurringOccurrenceRequest:
+      type: object
+      required:
+        - scheduledAt
+      properties:
+        scheduledAt:
+          $ref: '#/components/schemas/DateTime'
+      additionalProperties: false
+    RecurringTemplateChanges:
+      type: object
+      minProperties: 1
+      properties:
+        amount:
+          $ref: '#/components/schemas/Money'
+          description: Positive amount in the currency of the rule's account.
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+          description: Pass null to clear the description.
+        categoryId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: A category in the rule's workspace. Pass null to clear the category.
+      additionalProperties: false
+    EditRecurringSeriesRequest:
+      type: object
+      required:
+        - effectiveFrom
+        - changes
+      properties:
+        effectiveFrom:
+          $ref: '#/components/schemas/DateTime'
+          description: Inclusive original schedule boundary. Must not be in the past when first accepted.
+        changes:
+          $ref: '#/components/schemas/RecurringTemplateChanges'
+      additionalProperties: false
+    EditRecurringSeriesResult:
+      type: object
+      required:
+        - ruleId
+        - effectiveFrom
+        - changes
+      properties:
+        ruleId:
+          $ref: '#/components/schemas/Uuid'
+        effectiveFrom:
+          $ref: '#/components/schemas/DateTime'
+        changes:
+          $ref: '#/components/schemas/RecurringTemplateChanges'
+      additionalProperties: false
     Subscription:
       type: object
       additionalProperties: false
@@ -5496,6 +5550,155 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/RecurringOccurrenceResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/reschedule:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/RecurringOccurrenceId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: rescheduleRecurringOccurrence
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Reschedule one recurring occurrence
+      description: >-
+        The rule creator with a workspace write role can move a scheduled occurrence, reminder, draft or pending
+        occurrence without changing its ID, original schedule slot or the rule cadence. A linked draft or pending
+        booking date is updated in place. The original time will not produce a second occurrence. A target time
+        occupied by another occurrence of this rule, or any other occurrence state, conflicts with this command.
+      tags:
+        - Recurring
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RescheduleRecurringOccurrenceRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/RecurringOccurrenceResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/RecurringOccurrenceId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    patch:
+      operationId: editRecurringOccurrence
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Edit one recurring occurrence before booking
+      description: >-
+        The rule creator with a workspace write role can override the amount, description or category on a scheduled
+        occurrence or reminder without changing the series template. An already booked or skipped occurrence conflicts
+        with this command. Omitted fields are unchanged.
+      tags:
+        - Recurring
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecurringTemplateChanges'
+      responses:
+        '200':
+          $ref: '#/components/responses/RecurringOccurrenceResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/recurring-rules/{ruleId}/edit-series:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: editRecurringSeries
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Edit a recurring series from a future boundary
+      description: >-
+        The rule creator with a workspace write role can change the template amount, description or category
+        for occurrences not yet materialized whose original schedule slot is at or after effectiveFrom.
+        Earlier slots, existing reminders and ledger bookings are unchanged. Occurrence-specific overrides
+        take precedence over the template.
+      tags:
+        - Recurring
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditRecurringSeriesRequest'
+      responses:
+        '200':
+          description: Series template change accepted.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditRecurringSeriesResult'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':

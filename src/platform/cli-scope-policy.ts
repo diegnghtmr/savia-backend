@@ -165,6 +165,24 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
       ),
       [SAVIA_SCOPES.TRANSACTIONS_WRITE],
     ],
+    [
+      routeKey(
+        'POST',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId/reschedule',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'PATCH',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey('POST', '/v1/recurring-rules/:ruleId/edit-series'),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
     [routeKey('POST', '/v1/report-definitions'), [SAVIA_SCOPES.REPORTS_WRITE]],
     [routeKey('POST', '/v1/report-runs'), [SAVIA_SCOPES.REPORTS_READ]],
     [routeKey('POST', '/v1/scenarios'), [SAVIA_SCOPES.REPORTS_WRITE]],

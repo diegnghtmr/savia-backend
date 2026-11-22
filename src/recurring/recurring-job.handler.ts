@@ -10,7 +10,10 @@ import type {
   RecurringMaterializer,
 } from './recurring-materializer.js';
 
-type Payload = Pick<DueOccurrence, 'ruleId' | 'scheduledAt' | 'asOf'>;
+type Payload = Pick<
+  DueOccurrence,
+  'ruleId' | 'scheduledAt' | 'asOf' | 'scheduleVersion'
+>;
 
 function utcTimestamp(value: unknown): value is string {
   return (
@@ -30,16 +33,29 @@ export class RecurringJobHandler
   public parsePayload(raw: unknown): Payload {
     if (typeof raw !== 'object' || raw === null)
       throw new Error('Invalid recurring job payload.');
-    const { ruleId, scheduledAt, asOf } = raw as Record<string, unknown>;
+    const { ruleId, scheduledAt, asOf, scheduleVersion } = raw as Record<
+      string,
+      unknown
+    >;
     if (
       typeof ruleId !== 'string' ||
       !UUID_PATTERN.test(ruleId) ||
       !utcTimestamp(scheduledAt) ||
-      !utcTimestamp(asOf)
+      !utcTimestamp(asOf) ||
+      (scheduleVersion !== undefined &&
+        (typeof scheduleVersion !== 'number' ||
+          !Number.isInteger(scheduleVersion) ||
+          scheduleVersion < 2 ||
+          scheduleVersion > 2_147_483_647))
     ) {
       throw new Error('Invalid recurring job payload.');
     }
-    return { ruleId, scheduledAt, asOf };
+    return {
+      ruleId,
+      scheduledAt,
+      asOf,
+      ...(scheduleVersion !== undefined && { scheduleVersion }),
+    };
   }
 
   public compute(): Promise<void> {

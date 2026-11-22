@@ -15,6 +15,7 @@ export interface DueOccurrence {
   readonly ruleId: string;
   readonly scheduledAt: string;
   readonly asOf: string;
+  readonly scheduleVersion?: number;
 }
 
 export interface DueRule {
@@ -26,6 +27,8 @@ export interface DueRule {
   readonly startsAt: Date | string;
   readonly endsAt: Date | string | null;
   readonly anchorDayOfMonth: number;
+  readonly effectiveAt?: string;
+  readonly detached?: boolean;
 }
 
 export interface MaterializedOccurrence {
@@ -34,6 +37,7 @@ export interface MaterializedOccurrence {
   readonly transactionId: string | null;
   readonly nextOccurrenceAt: string | null;
   readonly skipped?: boolean;
+  readonly detached?: boolean;
 }
 
 export interface OccurrenceStore {
@@ -86,7 +90,7 @@ export class RecurringMaterializer {
               {
                 ...rule.template,
                 status,
-                occurredAt: scheduledAt.toISOString(),
+                occurredAt: rule.effectiveAt ?? scheduledAt.toISOString(),
                 receiptId: null,
               },
               id,
@@ -98,7 +102,8 @@ export class RecurringMaterializer {
       id,
       behavior: rule.behavior,
       transactionId,
-      nextOccurrenceAt: followingSlot(rule, scheduledAt),
+      nextOccurrenceAt: rule.detached ? null : followingSlot(rule, scheduledAt),
+      ...(rule.detached && { detached: true }),
     });
     return id;
   }

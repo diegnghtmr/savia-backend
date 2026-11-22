@@ -118,6 +118,12 @@ export interface LedgerStore {
     expectedVersions?: number | readonly number[],
     expectedOccurrenceState?: OccurrenceBooking['status'],
   ): Promise<Transaction | undefined>;
+  rescheduleOccurrencePostings?(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+    occurredAt: string,
+  ): Promise<void>;
   confirmOccurrencePostings?(
     client: TransactionClient,
     workspaceId: string,
@@ -398,6 +404,31 @@ export class TransactionService
       throw new Error('Store cannot confirm occurrence postings.');
     await this.store.confirmOccurrencePostings(client, workspaceId, booking);
     return 'confirmed';
+  }
+
+  public async rescheduleOccurrenceBooking(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+    occurredAt: string,
+  ): Promise<boolean> {
+    const updated = await this.store.updateTransaction(
+      client,
+      workspaceId,
+      booking.id,
+      { occurredAt },
+      booking.version,
+    );
+    if (!updated) return false;
+    if (!this.store.rescheduleOccurrencePostings)
+      throw new Error('Store cannot reschedule occurrence postings.');
+    await this.store.rescheduleOccurrencePostings(
+      client,
+      workspaceId,
+      booking,
+      occurredAt,
+    );
+    return true;
   }
 
   public async voidOccurrenceBooking(

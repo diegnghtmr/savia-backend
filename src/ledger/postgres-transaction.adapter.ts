@@ -642,6 +642,22 @@ returning
     };
   }
 
+  public async rescheduleOccurrencePostings(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: { readonly id: string; readonly status: 'draft' | 'pending' },
+    occurredAt: string,
+  ): Promise<void> {
+    const updated = await client.query(
+      `update public.ledger_postings set occurred_at = $4::timestamptz
+        where workspace_id = $1::uuid and transaction_id = $2::uuid and status = $3`,
+      [workspaceId, booking.id, booking.status, occurredAt],
+    );
+    if (updated.rowCount !== 2)
+      throw new Error('Occurrence posting pair was not rescheduled.');
+    await enforceDeferredConstraints(client);
+  }
+
   public async confirmOccurrencePostings(
     client: TransactionClient,
     workspaceId: string,

@@ -278,6 +278,21 @@
       "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/skip"
     },
     {
+      "operationId": "rescheduleRecurringOccurrence",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/reschedule"
+    },
+    {
+      "operationId": "editRecurringOccurrence",
+      "method": "PATCH",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}"
+    },
+    {
+      "operationId": "editRecurringSeries",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/edit-series"
+    },
+    {
       "operationId": "listSubscriptions",
       "method": "GET",
       "path": "/v1/subscriptions"

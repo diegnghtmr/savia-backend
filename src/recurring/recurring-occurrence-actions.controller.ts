@@ -1,8 +1,10 @@
 import {
+  Body,
   Controller,
   Get,
   Inject,
   Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -23,6 +25,10 @@ import {
 import { UUID_PATTERN } from '../platform/uuid.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import {
+  parseOccurrenceEdit,
+  type OccurrenceEdit,
+} from './occurrence-edit-command.js';
+import {
   OCCURRENCE_STATUSES,
   type OccurrenceStatus,
 } from './postgres-occurrence-actions.adapter.js';
@@ -30,6 +36,7 @@ import {
   occurrenceFilter,
   RecurringOccurrenceActionsService,
   type ActionOutcome,
+  type OccurrenceCommand,
   type OccurrenceAction,
   type RuleTarget,
 } from './recurring-occurrence-actions.service.js';
@@ -63,6 +70,11 @@ const problems = {
   invalid: {
     type: PROBLEM_TYPES.UNPROCESSABLE,
     title: 'Recurring occurrence booking failed',
+    status: 422,
+  },
+  invalidChange: {
+    type: PROBLEM_TYPES.UNPROCESSABLE,
+    title: 'Invalid recurring template change',
     status: 422,
   },
 } as const satisfies Record<Exclude<ActionOutcome['kind'], 'ok'>, Problem>;
@@ -99,7 +111,7 @@ function parseRule(
   return { workspaceId: header.workspaceId, ruleId: ruleId.toLowerCase() };
 }
 
-@Controller('v1/recurring-rules/:ruleId/occurrences')
+@Controller('v1/recurring-rules/:ruleId')
 @UseGuards(JwtAuthGuard)
 export class RecurringOccurrenceActionsController {
   public constructor(
@@ -107,7 +119,7 @@ export class RecurringOccurrenceActionsController {
     private readonly service: RecurringOccurrenceActionsService,
   ) {}
 
-  @Get()
+  @Get('occurrences')
   public async list(
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,
@@ -158,7 +170,7 @@ export class RecurringOccurrenceActionsController {
     respond(reply, result);
   }
 
-  @Post(':occurrenceId/confirm')
+  @Post('occurrences/:occurrenceId/confirm')
   public confirm(
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,
@@ -168,7 +180,7 @@ export class RecurringOccurrenceActionsController {
     return this.run(request, reply, ruleId, occurrenceId, 'confirm');
   }
 
-  @Post(':occurrenceId/skip')
+  @Post('occurrences/:occurrenceId/skip')
   public skip(
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,
@@ -178,16 +190,52 @@ export class RecurringOccurrenceActionsController {
     return this.run(request, reply, ruleId, occurrenceId, 'skip');
   }
 
+  @Post('occurrences/:occurrenceId/reschedule')
+  public reschedule(
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Param('ruleId') ruleId: string,
+    @Param('occurrenceId') occurrenceId: string,
+    @Body() input: unknown,
+  ): Promise<void> {
+    return this.run(request, reply, ruleId, occurrenceId, 'reschedule', input);
+  }
+
+  @Patch('occurrences/:occurrenceId')
+  public editOne(
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Param('ruleId') ruleId: string,
+    @Param('occurrenceId') occurrenceId: string,
+    @Body() input: unknown,
+  ): Promise<void> {
+    return this.run(request, reply, ruleId, occurrenceId, 'edit-one', input);
+  }
+
+  @Post('edit-series')
+  public editSeries(
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Param('ruleId') ruleId: string,
+    @Body() input: unknown,
+  ): Promise<void> {
+    return this.run(request, reply, ruleId, undefined, 'edit-series', input);
+  }
+
   private async run(
     request: AuthenticatedRequest,
     reply: FastifyReply,
     ruleId: string,
-    occurrenceId: string,
-    action: OccurrenceAction,
+    occurrenceId: string | undefined,
+    action: OccurrenceAction | OccurrenceEdit['action'],
+    input?: unknown,
   ): Promise<void> {
     const target = parseRule(request, reply, ruleId);
     if (!target) return;
-    if (!UUID_PATTERN.test(occurrenceId))
+    if (
+      action !== 'edit-series' &&
+      (!occurrenceId || !UUID_PATTERN.test(occurrenceId))
+    )
       return badRequest(reply, 'Invalid recurring occurrence ID');
     const key = validateIdempotencyKey(request.headers['idempotency-key']);
     if (key.kind !== 'ok')
@@ -195,13 +243,19 @@ export class RecurringOccurrenceActionsController {
     const ifMatch = parseIfMatch(request.headers['if-match']);
     if (ifMatch.kind === 'malformed')
       return badRequest(reply, 'Invalid If-Match header');
-    const result = await this.service.run(request.identity.subject, {
-      ...target,
-      occurrenceId: occurrenceId.toLowerCase(),
-      action,
-      key: key.key,
-      ifMatch,
-    });
-    respond(reply, result);
+    const context = { ...target, key: key.key, ifMatch };
+    const edit: { action: OccurrenceAction } | OccurrenceEdit | undefined =
+      action === 'confirm' || action === 'skip'
+        ? { action }
+        : parseOccurrenceEdit(action, input);
+    if (!edit)
+      return badRequest(reply, 'Invalid recurring occurrence command body');
+    let command: OccurrenceCommand;
+    if (edit.action === 'edit-series') command = { ...context, ...edit };
+    else if (occurrenceId) {
+      const id = occurrenceId.toLowerCase();
+      command = { ...context, ...edit, occurrenceId: id };
+    } else throw new Error('Occurrence ID was not validated.');
+    respond(reply, await this.service.run(request.identity.subject, command));
   }
 }
