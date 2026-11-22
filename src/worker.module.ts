@@ -7,6 +7,7 @@ import { ForecastJobHandler } from './forecasts/forecast-job.handler.js';
 import { ForecastWorkerModule } from './forecasts/forecast-worker.module.js';
 import { PostgresJobsAdapter } from './jobs/postgres-jobs.adapter.js';
 import { NotificationWriterModule } from './notifications/notification-writer.module.js';
+import { PostgresNotificationAdapter } from './notifications/postgres-notification.adapter.js';
 import { JOB_HANDLERS } from './platform/job-handler.port.js';
 import { JOB_SWEEP, JobRunner } from './platform/job-runner.js';
 import {
@@ -62,10 +63,10 @@ import { SubscriptionDetectionSweep } from './recurring/subscription-detection-s
     },
     {
       provide: BudgetAlertSweep,
-      inject: [PgTransaction, NOTIFICATION_WRITER, WorkerConfig],
+      inject: [PgTransaction, PostgresNotificationAdapter, WorkerConfig],
       useFactory: (
         transaction: PgTransaction,
-        notifications: NotificationWriter,
+        notifications: PostgresNotificationAdapter,
         config: WorkerConfig,
       ) =>
         new BudgetAlertSweep(

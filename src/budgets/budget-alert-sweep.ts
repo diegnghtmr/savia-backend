@@ -1,5 +1,8 @@
 import { Logger } from '@nestjs/common';
-import type { NotificationWriter } from '../platform/notification-writer.port.js';
+import type {
+  BudgetThreshold,
+  BudgetThresholdNotificationWriter,
+} from '../platform/notification-writer.port.js';
 import type { PgTransaction } from '../platform/pg-transaction.js';
 import type { BudgetStore } from './budget.port.js';
 
@@ -9,7 +12,7 @@ interface Target extends Record<string, unknown> {
   readonly subject: string;
 }
 
-const THRESHOLDS = [80n, 100n] as const;
+const THRESHOLDS = [80, 100] as const satisfies readonly BudgetThreshold[];
 
 export class BudgetAlertSweep {
   public readonly intervalMs = 60_000;
@@ -19,10 +22,10 @@ export class BudgetAlertSweep {
   public constructor(
     private readonly transaction: Pick<
       PgTransaction,
-      'run' | 'runAsQueueConsumer'
+      'runRead' | 'runAsQueueConsumer'
     >,
     private readonly budgets: Pick<BudgetStore, 'findBudget'>,
-    private readonly notifications: NotificationWriter,
+    private readonly notifications: BudgetThresholdNotificationWriter,
     private readonly timeoutMs: number,
   ) {}
 
@@ -54,7 +57,7 @@ export class BudgetAlertSweep {
       if (timeoutMs <= 0) break;
       this.afterId = budgetId;
       try {
-        evaluated += await this.transaction.run(
+        const crossed = await this.transaction.runRead(
           subject,
           async (client) => {
             const budget = await this.budgets.findBudget(
@@ -62,32 +65,37 @@ export class BudgetAlertSweep {
               workspaceId,
               budgetId,
             );
-            if (budget === undefined) return 0;
+            if (budget === undefined) return undefined;
             let actual = 0n;
             let planned = 0n;
             for (const allocation of budget.allocations) {
               actual += BigInt(allocation.actual.amountMinor);
               planned += BigInt(allocation.planned.amountMinor);
             }
-            // A budget ID identifies one immutable period. B4 deduplicates by
-            // workspace, recipient, event type (including threshold), and budget ID.
-            for (const threshold of THRESHOLDS) {
-              if (planned > 0n && actual * 100n >= planned * threshold) {
-                await this.notifications.publish(client, {
-                  workspaceId,
-                  recipientId: subject,
-                  resourceId: budgetId,
-                  type: `budget_threshold_${threshold}`,
-                  title: `Budget “${budget.name}” reached ${threshold}%`,
-                });
-              }
-            }
-            return 1;
+            return THRESHOLDS.filter(
+              (threshold) =>
+                planned > 0n && actual * 100n >= planned * BigInt(threshold),
+            );
           },
-          undefined,
-          undefined,
           timeoutMs,
         );
+        if (crossed === undefined) continue;
+        if (crossed.length > 0) {
+          const publishTimeout = remaining();
+          if (publishTimeout <= 0) break;
+          await this.transaction.runAsQueueConsumer(
+            (client) =>
+              this.notifications.publishBudgetThresholds(
+                client,
+                workspaceId,
+                budgetId,
+                day,
+                crossed,
+              ),
+            publishTimeout,
+          );
+        }
+        evaluated++;
       } catch {
         this.logger.warn(
           'Budget evaluation failed; it will retry on a later sweep.',

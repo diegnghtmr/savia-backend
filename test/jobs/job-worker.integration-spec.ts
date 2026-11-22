@@ -1,4 +1,4 @@
-// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql, 202609170008_recurring_job_type.sql, 202609170011_recurring_creator_lock.sql, 202609170013_budget_alert_discovery.sql, 202609170017_subscription_detection.sql
+// Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql, 202609170008_recurring_job_type.sql, 202609170011_recurring_creator_lock.sql, 202609170013_budget_alert_discovery.sql, 202609170017_subscription_detection.sql, 202609170018_b6_alert_recipients.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -224,7 +224,7 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
     const budgets = [
       [id(8171), 'Groceries', ownerA, day(-1), day(1), 1000],
       [id(8172), 'Expired', ownerA, day(-5), day(-4), 1],
-      [id(8173), 'Viewer', viewerA, day(-1), day(1), 1],
+      [id(8173), 'Non-member', ownerB, day(-1), day(1), 1],
       [id(8174), 'No plan', ownerA, day(-1), day(1), 0],
     ] as const;
     const idempotency = new PostgresIdempotencyAdapter();
@@ -375,6 +375,30 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
         config: ['search_path=pg_catalog, public'],
       },
     ]);
+  });
+
+  it('does not give a viewer access to the worker budget publisher or notification writes', async () => {
+    const attemptedWrite = (sql: string, values: string[]) =>
+      capturePgError(() =>
+        transaction.run(viewerA, (client) => client.query(sql, values)),
+      );
+    expect(
+      (
+        await attemptedWrite(
+          `select public.publish_budget_thresholds($1, $2, current_date, array[80])`,
+          [ws1Id, id(8171)],
+        )
+      ).code,
+    ).toBe('42501');
+    expect(
+      (
+        await attemptedWrite(
+          `insert into public.notifications (workspace_id, subject_id, type, resource_id, title)
+      values ($1,$2,'budget_threshold_80',$3,'Should not be inserted')`,
+          [ws1Id, viewerA, id(8171)],
+        )
+      ).code,
+    ).toBe('42501');
   });
 
   it('proposes only regular confirmed expenses, preserves candidate identity, and alerts once per price change', async () => {
@@ -1754,6 +1778,12 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
     } finally {
       await app.close();
       bootstrap.mockRestore();
+      await admin.query(
+        `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+         values ($1,$2,'viewer','active') on conflict (workspace_id, profile_id)
+         do update set role = excluded.role, status = excluded.status`,
+        [ws1Id, creator],
+      );
     }
   }, 10000);
   it('S5 does not book after an in-flight creator removal commits', async () => {
@@ -1946,5 +1976,277 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       holder.release();
       await locking?.catch(() => undefined);
     }
+  });
+
+  // Reviewer regressions for B6 (verify task mwr1jzkz). Insert inside the outer describe of
+  // test/jobs/job-worker.integration-spec.ts, before its final "});".
+  const b6Ledger = () =>
+    new TransactionService(
+      transaction,
+      new PostgresTransactionAdapter(),
+      new PostgresIdempotencyAdapter(),
+    );
+  const b6Charge = (
+    description: string,
+    days: number,
+    amountMinor: string,
+    payeeId?: string,
+    categoryId?: string,
+  ) =>
+    b6Ledger().create(
+      ownerA,
+      ws1Id,
+      {
+        type: 'expense',
+        accountId: id(8201),
+        amount: { currency: 'USD', amountMinor },
+        occurredAt: new Date(Date.now() + days * 86_400_000).toISOString(),
+        description,
+        status: 'confirmed',
+        payeeId,
+        categoryId,
+      },
+      randomUUID(),
+    );
+  const b6Sweep = async () => {
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    try {
+      const runner = app.get(JobRunner);
+      await runner.start();
+      await vi.waitFor(() => expect(runner.activeJobsCount).toBe(0));
+      await runner.stop();
+    } finally {
+      await app.close();
+      preflight.mockRestore();
+    }
+  };
+
+  it('S6 alerts an active creator who retained read access after demotion', async () => {
+    const category = id(9001);
+    const budget = id(9002);
+    await admin.query(
+      `insert into public.categories (id, workspace_id, name, kind, created_by)
+      values ($1,$2,'Demotion category','expense',$3)`,
+      [category, ws1Id, ownerA],
+    );
+    await admin.query(
+      `insert into public.budgets (id, workspace_id, name, method, period_start, period_end, currency, created_by)
+      values ($1,$2,'Demotion budget','envelope',(now() at time zone 'UTC')::date-1,(now() at time zone 'UTC')::date+1,'USD',$3)`,
+      [budget, ws1Id, ownerA],
+    );
+    await admin.query(
+      `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor)
+      values ($1,$2,$3,1000)`,
+      [ws1Id, budget, category],
+    );
+    expect(
+      (await b6Charge('Demotion expense', 0, '1000', undefined, category)).kind,
+    ).toBe('created');
+    await admin.query(
+      `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+      [ws1Id, viewerA],
+    );
+    try {
+      await admin.query(
+        `update public.workspace_memberships set role='viewer' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      expect(
+        (
+          await transaction.runRead(ownerA, (client) =>
+            client.query(`select id from public.budgets where id=$1`, [budget]),
+          )
+        ).rows,
+      ).toEqual([{ id: budget }]);
+      await b6Sweep();
+      await b6Sweep();
+      const rows = (
+        await admin.query(
+          `select subject_id, type from public.notifications where resource_id=$1 order by type`,
+          [budget],
+        )
+      ).rows;
+      expect(rows).toEqual([
+        { subject_id: ownerA, type: 'budget_threshold_100' },
+        { subject_id: ownerA, type: 'budget_threshold_80' },
+      ]);
+    } finally {
+      await admin.query(
+        `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      await admin.query(
+        `update public.workspace_memberships set role='viewer' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, viewerA],
+      );
+    }
+  });
+
+  it('S6 does not merge distinct one-off purchases from a known payee', async () => {
+    const payee = id(9003);
+    await admin.query(
+      `insert into public.payees (id,workspace_id,name,created_by)
+      values ($1,$2,'Office Supply Store',$3)`,
+      [payee, ws1Id, ownerA],
+    );
+    for (const [i, item] of ['Printer ink', 'USB cable', 'Mouse pad'].entries())
+      expect((await b6Charge(item, -16 + 7 * i, '1999', payee)).kind).toBe(
+        'created',
+      );
+    await b6Sweep();
+    expect(
+      (
+        await admin.query(
+          `select status, frequency from public.subscriptions where workspace_id=$1 and payee_name='Office Supply Store'`,
+          [ws1Id],
+        )
+      ).rows,
+    ).toEqual([]);
+  });
+
+  it('S6 alerts on a 25% increase in an already established monthly series', async () => {
+    for (const day of [-92, -62, -32])
+      expect((await b6Charge('Cloud archive', day, '1000')).kind).toBe(
+        'created',
+      );
+    await b6Sweep();
+    const rows = async () =>
+      (
+        await admin.query(
+          `select id, current_amount_minor from public.subscriptions where workspace_id=$1 and payee_name='Cloud archive'`,
+          [ws1Id],
+        )
+      ).rows;
+    expect((await rows()).map((row) => row.current_amount_minor)).toEqual([
+      '1000',
+    ]);
+    const subscriptionId = (await rows())[0].id;
+    expect((await b6Charge('Cloud archive', -2, '1250')).kind).toBe('created');
+    await b6Sweep();
+    await b6Sweep();
+    expect({
+      rows: await rows(),
+      alerts: (
+        await admin.query(
+          `select title from public.notifications where workspace_id=$1 and title like 'Subscription “Cloud archive”%'`,
+          [ws1Id],
+        )
+      ).rows,
+    }).toEqual({
+      rows: [{ id: subscriptionId, current_amount_minor: '1250' }],
+      alerts: [{ title: 'Subscription “Cloud archive” increased by 25%' }],
+    });
+  });
+
+  it('S6 does not re-emit the same subscription increase when the workspace actor changes', async () => {
+    await admin.query(
+      `insert into public.subscriptions
+      (workspace_id, payee_name, current_amount_minor, current_currency, previous_amount_minor, previous_currency, frequency, status, created_by)
+      values ($1,'Owner rotation',1100,'USD',1000,'USD','monthly','confirmed',$2)`,
+      [ws1Id, ownerA],
+    );
+    const alerts = async () =>
+      (
+        await admin.query(
+          `select resource_id, subject_id from public.notifications
+      where workspace_id=$1 and title = 'Subscription “Owner rotation” increased by 10%' order by subject_id`,
+          [ws1Id],
+        )
+      ).rows;
+    await b6Sweep();
+    const first = await alerts();
+    expect(first).toEqual([
+      { resource_id: expect.any(String), subject_id: ownerA },
+    ]);
+    await admin.query(
+      `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+      [ws1Id, viewerA],
+    );
+    try {
+      await admin.query(
+        `update public.workspace_memberships set role='editor' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      await b6Sweep();
+      expect(await alerts()).toEqual(first);
+    } finally {
+      await admin.query(
+        `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      await admin.query(
+        `update public.workspace_memberships set role='viewer' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, viewerA],
+      );
+    }
+  });
+
+  it('S6 alerts once when a tracked series changes frequency', async () => {
+    for (const day of [-75, -45, -15])
+      expect((await b6Charge('Change cadence', day, '1000')).kind).toBe(
+        'created',
+      );
+    const subscriptions = new RecurringService(
+      transaction,
+      new PostgresRecurringAdapter(),
+      new PostgresIdempotencyAdapter(),
+    );
+    const query = createSubscriptionListQuery({
+      workspaceId: ws1Id,
+      statusParam: 'detected',
+    });
+    const candidate = async () => {
+      const listed = await subscriptions.listSubscriptions(ownerA, query);
+      if (listed.kind !== 'ok') throw new Error('Could not list candidates');
+      return listed.page.items.find(
+        ({ payeeName }) => payeeName === 'Change cadence',
+      );
+    };
+    const notifications = new NotificationService(
+      transaction,
+      new PostgresNotificationAdapter(),
+      new PostgresIdempotencyAdapter(),
+    );
+    const alerts = async () =>
+      (
+        await notifications.listNotifications(ownerA, {
+          subject: ownerA,
+          limit: 50,
+          unreadOnly: false,
+        })
+      ).page.items.filter(({ title }) =>
+        title.startsWith('Subscription “Change cadence”'),
+      );
+    await b6Sweep();
+    const initial = await candidate();
+    expect(initial).toMatchObject({ frequency: 'monthly', status: 'detected' });
+    expect(await alerts()).toEqual([]);
+    for (const day of [-8, -1])
+      expect((await b6Charge('Change cadence', day, '1000')).kind).toBe(
+        'created',
+      );
+    await b6Sweep();
+    expect(await candidate()).toMatchObject({
+      id: initial?.id,
+      frequency: 'weekly',
+      status: 'detected',
+    });
+    const emitted = await alerts();
+    expect(emitted).toEqual([
+      expect.objectContaining({
+        type: 'subscription_frequency_change',
+        title: 'Subscription “Change cadence” changed from monthly to weekly',
+        read: false,
+        body: null,
+        actionUrl: null,
+      }),
+    ]);
+    await b6Sweep();
+    expect(await alerts()).toEqual(emitted);
   });
 });

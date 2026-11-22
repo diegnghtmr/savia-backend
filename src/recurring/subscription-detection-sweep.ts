@@ -64,21 +64,37 @@ export class SubscriptionDetectionSweep {
         await this.transaction.run(
           subject,
           async (client) => {
-            await updateDetectedSubscriptions(
+            const changes = await updateDetectedSubscriptions(
               client,
               workspaceId,
               subject,
               cutoff,
             );
+            for (const {
+              resourceId,
+              payeeName,
+              previousFrequency,
+              frequency,
+            } of changes) {
+              await this.notifications.publish(client, {
+                workspaceId,
+                recipientId: subject,
+                resourceId,
+                type: 'subscription_frequency_change',
+                title: `Subscription “${payeeName}” changed from ${previousFrequency} to ${frequency}`,
+              });
+            }
             const increases = await this.priceIncreases(client, workspaceId);
             if (increases.length === 0) return;
             const { rows } = await client.query<{
               id: string;
               resourceId: string;
             }>(
-              `select id, coalesce(detection_observation_id, md5(jsonb_build_array(
-                  id, current_amount_minor, current_currency, previous_amount_minor, previous_currency
-                )::text)::uuid) as "resourceId"
+              `select id, case when detection_observation_id is not null
+                  then md5(jsonb_build_array(id, detection_observation_id)::text)::uuid
+                  else md5(jsonb_build_array(id, current_amount_minor, current_currency,
+                      previous_amount_minor, previous_currency)::text)::uuid
+                end as "resourceId"
              from public.subscriptions where workspace_id = $1 and id = any($2::uuid[])`,
               [workspaceId, increases.map((item) => item.subscriptionId)],
             );
