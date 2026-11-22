@@ -10,6 +10,11 @@ import {
   type TransferPort,
 } from './transfer.port.js';
 
+type CreateAccountFailure =
+  | 'account_unresolved'
+  | 'account_closed'
+  | 'currency_mismatch';
+
 export interface TransferAccountRecord {
   readonly id: string;
   readonly status: string;
@@ -58,6 +63,37 @@ export class TransferService implements TransferPort {
     );
   }
 
+  public async checkCreateAccounts(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateTransferCommand,
+  ): Promise<CreateAccountFailure | undefined> {
+    const { sourceAccount, destinationAccount } =
+      await this.store.lockAndReadAccounts(
+        client,
+        workspaceId,
+        command.sourceAccountId,
+        command.destinationAccountId,
+      );
+    if (!sourceAccount || !destinationAccount)
+      return TRANSFER_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED;
+    if (
+      sourceAccount.status === 'closed' ||
+      destinationAccount.status === 'closed'
+    ) {
+      return TRANSFER_CREATE_OUTCOMES.ACCOUNT_CLOSED;
+    }
+    if (
+      sourceAccount.currency !== destinationAccount.currency ||
+      command.amount.currency !== sourceAccount.currency ||
+      (command.fee !== undefined &&
+        command.fee.currency !== sourceAccount.currency)
+    ) {
+      return TRANSFER_CREATE_OUTCOMES.CURRENCY_MISMATCH;
+    }
+    return undefined;
+  }
+
   public async createWithin(
     client: TransactionClient,
     subject: string,
@@ -96,42 +132,15 @@ export class TransferService implements TransferPort {
       };
     }
 
-    // 3. Lock and read both accounts in workspace (locks acquired in sorted order)
-    const { sourceAccount, destinationAccount } =
-      await this.store.lockAndReadAccounts(
-        client,
-        workspaceId,
-        command.sourceAccountId,
-        command.destinationAccountId,
-      );
+    // Lock and validate both accounts before writing or reserving the key.
+    const failure = await this.checkCreateAccounts(
+      client,
+      workspaceId,
+      command,
+    );
+    if (failure) return { kind: failure };
 
-    if (sourceAccount === undefined || destinationAccount === undefined) {
-      return { kind: TRANSFER_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED };
-    }
-
-    if (
-      sourceAccount.status === 'closed' ||
-      destinationAccount.status === 'closed'
-    ) {
-      return { kind: TRANSFER_CREATE_OUTCOMES.ACCOUNT_CLOSED };
-    }
-
-    // 4. Same currency check (currency conversion is Épica 3; refuse rather than convert)
-    if (
-      sourceAccount.currency !== destinationAccount.currency ||
-      command.amount.currency !== sourceAccount.currency
-    ) {
-      return { kind: TRANSFER_CREATE_OUTCOMES.CURRENCY_MISMATCH };
-    }
-
-    if (
-      command.fee !== undefined &&
-      command.fee.currency !== sourceAccount.currency
-    ) {
-      return { kind: TRANSFER_CREATE_OUTCOMES.CURRENCY_MISMATCH };
-    }
-
-    // 5. Create transfer via store
+    // 4. Create transfer via store
     const transfer = await this.store.createTransfer(
       client,
       workspaceId,
@@ -139,7 +148,7 @@ export class TransferService implements TransferPort {
       command,
     );
 
-    // 6. Write idempotency record (NO ETag response header for createTransfer)
+    // 5. Write idempotency record (NO ETag response header for createTransfer)
     const written = await this.idempotencyStore.write(
       client,
       subject,

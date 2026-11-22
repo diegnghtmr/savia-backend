@@ -572,6 +572,134 @@ describe('Approvals integration contract and endpoint suite', () => {
       await proposal(original.token, transaction(source), key);
     });
 
+    it('rejects a USD-to-EUR plain transfer without creating an approval or reserving the key', async () => {
+      const source = await account();
+      await admin.query(
+        `insert into public.exchange_rates
+           (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+         values ($1, 'EUR', 'USD', 1.08, '2025-01-01T00:00:00Z', 'manual', $2)`,
+        [workspace1Id, ownerId],
+      );
+      const eur = await request(
+        'POST',
+        '/v1/accounts',
+        { name: 'MCP EUR account', type: 'cash', currency: 'EUR' },
+        'owner-token',
+      );
+      expect(eur.statusCode).toBe(201);
+      const destination = eur.json<{ id: string }>().id;
+      const usdDestination = await account();
+      const { token } = await grant([source, destination, usdDestination]);
+      const key = randomUUID();
+      const before = await list();
+
+      const invalid = await request(
+        'POST',
+        route,
+        transfer(source, destination),
+        token,
+        key,
+      );
+      expect.soft(invalid.statusCode).toBe(422);
+      expect.soft(await list()).toEqual(before);
+      expect(await balance(source)).toBe('0');
+      expect(await balance(destination)).toBe('0');
+
+      const corrected = await request(
+        'POST',
+        route,
+        transfer(source, usdDestination),
+        token,
+        key,
+      );
+      expect(corrected.statusCode).toBe(201);
+    });
+
+    it.each(['transaction', 'transfer'])(
+      'rejects non-native amounts and closed accounts before reserving a %s',
+      async (tool) => {
+        const source = await account();
+        const destination = await account();
+        const openDestination = await account();
+        const { id, token } = await grant([
+          source,
+          destination,
+          openDestination,
+        ]);
+        // A grant without an amount cap allows both currencies on its own.
+        await admin.query(
+          'update public.mcp_grants set max_write_amount_minor = null, max_write_currency = null where id = $1',
+          [id],
+        );
+        const closed = await request(
+          'POST',
+          `/v1/accounts/${destination}/close`,
+          {},
+          'owner-token',
+        );
+        expect(closed.statusCode).toBe(200);
+        const [wrongCurrency, closedAccount, valid] =
+          tool === 'transfer'
+            ? [
+                transfer(source, openDestination, {
+                  amount: { amountMinor: '25', currency: 'EUR' },
+                }),
+                transfer(source, destination),
+                transfer(source, openDestination),
+              ]
+            : [
+                transaction(source, '25', 'EUR'),
+                transaction(destination),
+                transaction(source),
+              ];
+        const key = randomUUID();
+        const before = await list();
+        for (const invalid of [wrongCurrency, closedAccount]) {
+          const response = await request('POST', route, invalid, token, key);
+          expect.soft(response.json()).toMatchObject({
+            status: 422,
+            title: 'Invalid MCP proposal tool or arguments',
+          });
+        }
+        expect.soft(await list()).toEqual(before);
+        expect(await balance(source)).toBe('0');
+        expect(await balance(destination)).toBe('0');
+        await proposal(token, valid, key);
+      },
+    );
+
+    it('does not reserve a key for invalid transaction references, dates, or an already-linked receipt', async () => {
+      const source = await account();
+      const receiptId = randomUUID();
+      const body = transaction(source);
+      const existing = await request('POST', '/v1/transactions', {
+        ...body.arguments,
+        receiptId,
+      });
+      expect(existing.statusCode).toBe(201);
+      const startingBalance = await balance(source);
+      const { token } = await grant([source]);
+      const before = await list();
+      const key = randomUUID();
+      const invalidTitle = 'Invalid MCP proposal tool or arguments';
+      for (const [status, title, fields] of [
+        [422, invalidTitle, { categoryId: randomUUID() }],
+        [422, invalidTitle, { payeeId: randomUUID() }],
+        [422, invalidTitle, { occurredAt: '2026-02-30T00:00:00Z' }],
+        [409, 'MCP proposal conflict', { receiptId }],
+      ] as const) {
+        const payload = {
+          ...body,
+          arguments: { ...body.arguments, ...fields },
+        };
+        const response = await request('POST', route, payload, token, key);
+        expect.soft(response.json()).toMatchObject({ status, title });
+      }
+      expect.soft(await list()).toEqual(before);
+      expect(await balance(source)).toBe(startingBalance);
+      await proposal(token, body, key);
+    });
+
     it.each(['revocation', 'expiry', 'schedule', 'role', 'ledger validation'])(
       'rolls back confirmation after %s',
       async (restriction) => {
@@ -579,15 +707,16 @@ describe('Approvals integration contract and endpoint suite', () => {
         const { id: grantId, token } = await grant([source]);
         const body = transaction(source);
         const ledgerFailure = restriction === 'ledger validation';
-        const pending = await proposal(
-          token,
-          ledgerFailure
-            ? {
-                ...body,
-                arguments: { ...body.arguments, categoryId: randomUUID() },
-              }
-            : body,
-        );
+        const pending = await proposal(token, body);
+        if (ledgerFailure) {
+          const closed = await request(
+            'POST',
+            `/v1/accounts/${source}/close`,
+            {},
+            'owner-token',
+          );
+          expect(closed.statusCode).toBe(200);
+        }
         const setRole = (role: string) =>
           admin.query(
             'update public.workspace_memberships set role = $1 where workspace_id = $2 and profile_id = $3',

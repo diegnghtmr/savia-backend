@@ -23,6 +23,7 @@ import {
   type CreateApprovalCommand,
   type McpApprovalCommand,
   type McpApprovalOutcome,
+  type McpApprovalValidation,
 } from './approval.port.js';
 import { Inject } from '@nestjs/common';
 
@@ -200,6 +201,7 @@ export class ApprovalService implements ApprovalsPort {
     { arguments: args, grantId, ...command }: McpApprovalCommand,
     key: string,
     authorize: (client: TransactionClient) => Promise<boolean>,
+    validate: (client: TransactionClient) => Promise<McpApprovalValidation>,
   ): Promise<McpApprovalOutcome> {
     const route = 'POST /v1/mcp/proposals';
     const canonical = canonicalArguments(args);
@@ -225,6 +227,8 @@ export class ApprovalService implements ApprovalsPort {
             ? { kind: 'ok', body: existing.responseBody }
             : { kind: 'conflict' };
         }
+        const kind = await validate(client);
+        if (kind !== 'ok') return { kind };
         const approval = await this.insertPendingApproval(
           client,
           workspaceId,

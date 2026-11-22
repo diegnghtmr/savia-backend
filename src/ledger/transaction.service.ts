@@ -82,6 +82,11 @@ export interface LedgerStore {
     workspaceId: string,
     accountId: string,
   ): Promise<LedgerAccountRecord | undefined>;
+  readCreateFieldValidity?(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateTransactionCommand,
+  ): Promise<CreateFieldValidity>;
   createTransaction(
     client: TransactionClient,
     workspaceId: string,
@@ -135,6 +140,18 @@ export interface LedgerStore {
   ): Promise<void>;
 }
 
+export interface CreateFieldValidity {
+  readonly validDate: boolean;
+  readonly validCategory: boolean;
+  readonly validPayee: boolean;
+  readonly receiptAvailable: boolean;
+}
+
+type CreateAccountFailure =
+  | 'account_unresolved'
+  | 'account_closed'
+  | 'currency_mismatch';
+
 export class TransactionService implements LedgerPort, LedgerWriter {
   public constructor(
     private readonly transaction: LedgerTransaction,
@@ -157,6 +174,43 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         idempotencyKey,
       );
     });
+  }
+
+  private async checkCreateAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateTransactionCommand,
+  ): Promise<CreateAccountFailure | undefined> {
+    const account = await this.store.lockAndReadAccount(
+      client,
+      workspaceId,
+      command.accountId,
+    );
+    if (!account) return TRANSACTION_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED;
+    if (account.status === 'closed')
+      return TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED;
+    if (account.currency !== command.amount.currency)
+      return TRANSACTION_CREATE_OUTCOMES.CURRENCY_MISMATCH;
+    return undefined;
+  }
+
+  public async preflightCreateWithin(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateTransactionCommand,
+  ): Promise<'ok' | 'invalid' | 'conflict'> {
+    if (await this.checkCreateAccount(client, workspaceId, command))
+      return 'invalid';
+    const fields = await this.store.readCreateFieldValidity?.(
+      client,
+      workspaceId,
+      command,
+    );
+    if (!fields)
+      throw new Error('Transaction field validation is unavailable.');
+    if (!fields.validDate || !fields.validCategory || !fields.validPayee)
+      return 'invalid';
+    return fields.receiptAvailable ? 'ok' : 'conflict';
   }
 
   public async createWithin(
@@ -199,20 +253,8 @@ export class TransactionService implements LedgerPort, LedgerWriter {
     }
 
     // 3. Lock and read account in workspace
-    const account = await this.store.lockAndReadAccount(
-      client,
-      workspaceId,
-      command.accountId,
-    );
-    if (account === undefined) {
-      return { kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED };
-    }
-    if (account.status === 'closed') {
-      return { kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED };
-    }
-    if (command.amount.currency !== account.currency) {
-      return { kind: TRANSACTION_CREATE_OUTCOMES.CURRENCY_MISMATCH };
-    }
+    const failure = await this.checkCreateAccount(client, workspaceId, command);
+    if (failure) return { kind: failure };
 
     // 4. Create transaction via store
     let transaction: Transaction;

@@ -88,9 +88,11 @@ export interface McpApprovalCommand extends ApprovalAction {
   readonly preview: Record<string, unknown>;
 }
 
+export type McpApprovalValidation = 'ok' | 'invalid' | 'conflict';
+
 export type McpApprovalOutcome =
   | { readonly kind: 'ok'; readonly body: unknown }
-  | { readonly kind: 'forbidden' | 'conflict' };
+  | { readonly kind: 'forbidden' | 'invalid' | 'conflict' };
 
 export const APPROVAL_OUTCOMES = {
   OK: 'ok',

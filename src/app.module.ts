@@ -18,6 +18,7 @@ import {
   TransactionCommandValidationError,
 } from './ledger/transaction-command.js';
 import { TransactionSplitsUnsupportedError } from './ledger/splits-guard.js';
+import { TransactionService } from './ledger/transaction.service.js';
 import {
   createTransferCommand,
   TransferCommandValidationError,
@@ -255,10 +256,20 @@ const approvals = ApprovalsModule.withExecutors(
   },
 );
 
-const proposalImports = [approvals, McpGrantsModule];
+const proposalImports = [approvals, McpGrantsModule, LedgerModule];
 const mcpProposals = McpProposalsModule.withPort(proposalImports, {
-  inject: [ApprovalService, PostgresMcpGrantAdapter],
-  useFactory: (requests: ApprovalService, grants: McpGrantAuthorizer) => {
+  inject: [
+    ApprovalService,
+    PostgresMcpGrantAdapter,
+    TransactionService,
+    TransferService,
+  ],
+  useFactory: (
+    requests: ApprovalService,
+    grants: McpGrantAuthorizer,
+    transactions: TransactionService,
+    transfers: TransferService,
+  ) => {
     return async (identity, workspaceId, toolName, args, key) => {
       const tool = MCP_TOOL_ANNOTATIONS.get(toolName);
       if (!tool?.requiresApproval || tool.riskClass === 'read')
@@ -285,6 +296,21 @@ const mcpProposals = McpProposalsModule.withPort(proposalImports, {
             toolName,
             command,
           ),
+        async (client) => {
+          if ('accountId' in command) {
+            return transactions.preflightCreateWithin(
+              client,
+              workspaceId,
+              command,
+            );
+          }
+          const failure = await transfers.checkCreateAccounts(
+            client,
+            workspaceId,
+            command,
+          );
+          return failure ? 'invalid' : 'ok';
+        },
       );
     };
   },
