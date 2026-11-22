@@ -648,9 +648,11 @@ returning
     booking: { readonly id: string; readonly status: 'draft' | 'pending' },
     occurredAt: string,
   ): Promise<void> {
+    // A standalone PATCH may have changed the booking status, not the pair.
     const updated = await client.query(
-      `update public.ledger_postings set occurred_at = $4::timestamptz
-        where workspace_id = $1::uuid and transaction_id = $2::uuid and status = $3`,
+      `update public.ledger_postings set status = $3, occurred_at = $4::timestamptz
+        where workspace_id = $1::uuid and transaction_id = $2::uuid
+          and status in ('draft', 'pending', 'confirmed')`,
       [workspaceId, booking.id, booking.status, occurredAt],
     );
     if (updated.rowCount !== 2)
@@ -661,12 +663,13 @@ returning
   public async confirmOccurrencePostings(
     client: TransactionClient,
     workspaceId: string,
-    booking: { readonly id: string; readonly status: 'draft' | 'pending' },
+    booking: { readonly id: string },
   ): Promise<void> {
     const updated = await client.query(
       `update public.ledger_postings set status = 'confirmed'
-        where workspace_id = $1::uuid and transaction_id = $2::uuid and status = $3`,
-      [workspaceId, booking.id, booking.status],
+        where workspace_id = $1::uuid and transaction_id = $2::uuid
+          and status in ('draft', 'pending', 'confirmed')`,
+      [workspaceId, booking.id],
     );
     if (updated.rowCount !== 2)
       throw new Error('Occurrence posting pair was not confirmed.');
@@ -742,8 +745,25 @@ returning
       return undefined;
     }
 
-    // 3. Append compensating posting set (negated amounts, same currency, void instant occurred_at)
-    const postingsSql = `
+    if (expectedOccurrenceState !== undefined) {
+      // Skip neutralizes the actual pair at its original balance cutoff. A
+      // standalone PATCH may have changed the booking but not its postings.
+      const compensated = await client.query(
+        `insert into public.ledger_postings (
+           workspace_id, transaction_id, account_id, leg_kind, amount_minor,
+           currency, status, occurred_at
+         )
+         select workspace_id, transaction_id, account_id, leg_kind, -amount_minor,
+                currency, status, occurred_at
+           from public.ledger_postings
+          where workspace_id = $1::uuid and transaction_id = $2::uuid`,
+        [workspaceId, row.id],
+      );
+      if (compensated.rowCount !== 2)
+        throw new Error('Occurrence posting pair was not compensated.');
+    } else {
+      // Standalone void keeps its existing status and void-instant cutoff.
+      const postingsSql = `
 insert into public.ledger_postings (
   workspace_id,
   transaction_id,
@@ -758,18 +778,19 @@ values
   ($1::uuid, $2::uuid, $3::uuid, 'account', $4, $5, $6, $7),
   ($1::uuid, $2::uuid, null, 'external', $8, $5, $6, $7)`;
 
-    const postingsValues = [
-      workspaceId,
-      row.id,
-      row.accountId,
-      negateAmountMinor(String(row.amountMinor)),
-      row.currency,
-      postingStatus,
-      row.voidedAt,
-      String(row.amountMinor),
-    ];
+      const postingsValues = [
+        workspaceId,
+        row.id,
+        row.accountId,
+        negateAmountMinor(String(row.amountMinor)),
+        row.currency,
+        postingStatus,
+        row.voidedAt,
+        String(row.amountMinor),
+      ];
 
-    await client.query(postingsSql, postingsValues);
+      await client.query(postingsSql, postingsValues);
+    }
 
     // 4. Enforce deferred constraints (balanced postings check) before commit
     await enforceDeferredConstraints(client);

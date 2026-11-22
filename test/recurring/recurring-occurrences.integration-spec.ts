@@ -693,6 +693,206 @@ describe('Recurring occurrence actions through HTTP and PostgreSQL', () => {
     expect(after.items[2]).toMatchObject({ status: 'scheduled', ...changes });
   });
 
+  // Reviewer regressions (verify mwr708uy); migration 202609170024_recurring_series_rls.sql.
+  it.each(['confirm', 'reschedule'] as const)(
+    'can %s a linked booking after PATCH transitions it from draft to pending',
+    async (action) => {
+      const rule = await createRule('create_draft');
+      await materialize(rule);
+      const draft = (await list(rule.id)).items[0]!;
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: `/v1/transactions/${draft.transactionId}`,
+        headers: { ...headers(), 'idempotency-key': randomUUID() },
+        payload: { status: 'pending' },
+      });
+      expect(patched.statusCode, patched.payload).toBe(200);
+      const pending = (await list(rule.id)).items[0]!;
+      expect(pending.status).toBe('pending');
+      const scheduledAt = plusHours(pending.scheduledAt, 2);
+      const snapshot = async () =>
+        (
+          await db.query(
+            `select md5(to_jsonb(t)::text || coalesce((select jsonb_agg(to_jsonb(p) order by p.id)::text
+              from public.ledger_postings p where p.transaction_id = t.id), '[]')) as state
+              from public.transactions t where t.id = $1`,
+            [draft.transactionId],
+          )
+        ).rows[0].state;
+      const before = await snapshot();
+      const result =
+        action === 'confirm'
+          ? await command(pending, 'confirm')
+          : await change(
+              rule,
+              'reschedule',
+              { scheduledAt },
+              { item: pending },
+            );
+      if (result.statusCode !== 200) {
+        expect(await snapshot()).toBe(before);
+        expect((await list(rule.id)).items[0]).toEqual(pending);
+      }
+      expect(result.statusCode, result.payload).toBe(200);
+      const current = result.json<Occurrence>();
+      expect(current.transactionId).toBe(draft.transactionId);
+      expect(current.status).toBe(
+        action === 'confirm' ? 'confirmed' : 'pending',
+      );
+      const postings = await db.query(
+        `select status, occurred_at from public.ledger_postings where transaction_id = $1`,
+        [draft.transactionId],
+      );
+      expect(postings.rows).toEqual(
+        Array.from({ length: 2 }, () => ({
+          status: current.status,
+          occurred_at: new Date(current.scheduledAt),
+        })),
+      );
+    },
+  );
+
+  it('does not leave a balance contribution behind when skipping a PATCH-demoted booking', async () => {
+    const rule = await createRule('confirm_automatically');
+    const initial = await balance(rule.nextOccurrenceAt);
+    await materialize(rule);
+    const booked = (await list(rule.id)).items[0]!;
+    expect(await balance(booked.scheduledAt)).toBe(
+      initial + BigInt(amount.amountMinor),
+    );
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: `/v1/transactions/${booked.transactionId}`,
+      headers: { ...headers(), 'idempotency-key': randomUUID() },
+      payload: { status: 'pending' },
+    });
+    expect(patched.statusCode, patched.payload).toBe(200);
+    const pending = (await list(rule.id)).items[0]!;
+    expect(pending.status).toBe('pending');
+    const skipped = await command(pending, 'skip');
+    expect(skipped.statusCode, skipped.payload).toBe(200);
+    expect(skipped.json()).toMatchObject({
+      status: 'skipped',
+      transactionId: booked.transactionId,
+    });
+    expect(await balance(booked.scheduledAt)).toBe(initial);
+  });
+
+  it('enforces creator-only series edits under the application RLS role', async () => {
+    const rule = await createRule('remind');
+    const before = (await list(rule.id)).ruleEtag;
+    const result = await transaction
+      .run(editor, (client) =>
+        client.query(
+          `update public.recurring_rules set version = version + 1,
+            series_changes = series_changes || $2::jsonb where id = $1`,
+          [
+            rule.id,
+            JSON.stringify([
+              {
+                effectiveFrom: rule.nextOccurrenceAt,
+                changes: { description: 'Denied' },
+              },
+            ]),
+          ],
+        ),
+      )
+      .catch((error: { code?: string }) => {
+        if (error.code === '42501') return { rowCount: 0 };
+        throw error;
+      });
+    expect(result.rowCount).toBe(0);
+    expect((await list(rule.id)).ruleEtag).toBe(before);
+  });
+
+  it('races a materializer delivery, reschedule and skip on the same slot', async () => {
+    const rule = await createRule('confirm_automatically');
+    const item = (await list(rule.id)).items[0]!;
+    const dest = plusHours(item.scheduledAt, 3);
+    const [worker, moved, skipped] = await Promise.all([
+      materialize(rule),
+      change(rule, 'reschedule', { scheduledAt: dest }, { item }),
+      command(item, 'skip'),
+    ]);
+    expect(
+      Number(worker !== null) +
+        Number(moved.statusCode === 200) +
+        Number(skipped.statusCode === 200),
+    ).toBe(1);
+    for (const res of [moved, skipped]) {
+      if (res.statusCode !== 200)
+        problem(res, 412, 'Recurring occurrence version mismatch');
+    }
+    const checked = (await list(rule.id)).items.find(
+      ({ id }) => id === item.id,
+    )!;
+    if (moved.statusCode === 200) {
+      expect(checked.scheduledAt).toBe(dest);
+      expect(await materialize(rule, dest)).toBe(item.id);
+    }
+    expect(await materialize(rule, dest)).toBeNull();
+    const stored = await db.query(
+      `select transaction_id from public.recurring_occurrences where rule_id = $1 and scheduled_at = $2`,
+      [rule.id, item.originalScheduledAt],
+    );
+    expect(stored.rowCount).toBe(1);
+    const transactionId = stored.rows[0].transaction_id;
+    if (skipped.statusCode === 200) expect(transactionId).toBeNull();
+    else {
+      expect(transactionId).toEqual(expect.any(String));
+      const { rows } = await db.query(
+        `select status, occurred_at from public.ledger_postings where transaction_id = $1`,
+        [transactionId],
+      );
+      expect(rows).toEqual(
+        Array.from({ length: 2 }, () => ({
+          status: 'confirmed',
+          occurred_at: new Date(
+            moved.statusCode === 200 ? dest : item.scheduledAt,
+          ),
+        })),
+      );
+    }
+  });
+
+  it('retains the original and compensating postings when skipping pending', async () => {
+    const rule = await createRule('create_pending');
+    await materialize(rule);
+    const item = (await list(rule.id)).items[0]!;
+    const postings = async () =>
+      (
+        await db.query(
+          `select id, leg_kind, amount_minor, status, occurred_at from public.ledger_postings where transaction_id = $1 order by id`,
+          [item.transactionId],
+        )
+      ).rows;
+    const initial = await postings();
+    expect(initial).toHaveLength(2);
+    const before = await balance(item.scheduledAt);
+    const result = await command(item, 'skip');
+    expect(result.statusCode, result.payload).toBe(200);
+    expect(result.json()).toMatchObject({
+      status: 'skipped',
+      transactionId: item.transactionId,
+    });
+    const all = await postings();
+    expect(all).toHaveLength(4);
+    expect(
+      all.filter((row) => initial.some(({ id }) => row.id === id)),
+    ).toEqual(initial);
+    for (const row of initial) {
+      expect(
+        all.find(
+          (extra) => extra.id !== row.id && extra.leg_kind === row.leg_kind,
+        ),
+      ).toMatchObject({
+        status: row.status,
+        amount_minor: String(-BigInt(row.amount_minor)),
+      });
+    }
+    expect(await balance(item.scheduledAt)).toBe(before);
+  });
+
   it('serializes confirm and skip of the same reminder so exactly one wins', async () => {
     const rule = await createRule('remind');
     await materialize(rule);

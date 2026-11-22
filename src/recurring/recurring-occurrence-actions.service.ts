@@ -196,7 +196,12 @@ export class RecurringOccurrenceActionsService {
         return { kind: 'forbidden' };
       // Same rule lock used by the worker; keep the membership valid through commit.
       const rule = await this.store.readRule(client, workspaceId, ruleId, true);
-      if (!rule) return { kind: 'notFound' };
+      if (!rule) {
+        // Creator-only UPDATE RLS also filters SELECT FOR UPDATE. Preserve
+        // the distinction between a readable rule and an absent rule.
+        const visible = await this.store.readRule(client, workspaceId, ruleId);
+        return { kind: visible ? 'forbidden' : 'notFound' };
+      }
       if (
         rule.creator !== subject.toLowerCase() ||
         !(await this.store.lockCreatorMembership(client, workspaceId))
