@@ -12,6 +12,7 @@ import { ReportJobHandler } from './reports/report-job.handler.js';
 import { ReportWorkerModule } from './reports/report-worker.module.js';
 import { ExportJobHandler } from './exports/export-job.handler.js';
 import { ExportWorkerModule } from './exports/export-worker.module.js';
+import { WorkspaceBackupHandler } from './exports/workspace-backup.handler.js';
 import { ReceiptOcrJobHandler } from './receipts/receipt-ocr-job.handler.js';
 import { ReceiptWorkerModule } from './receipts/receipt-worker.module.js';
 
@@ -38,14 +39,16 @@ import { ReceiptWorkerModule } from './receipts/receipt-worker.module.js';
         ForecastJobHandler,
         ReportJobHandler,
         ExportJobHandler,
+        WorkspaceBackupHandler,
         ReceiptOcrJobHandler,
       ],
       useFactory: (
         forecast: ForecastJobHandler,
         report: ReportJobHandler,
         exportJob: ExportJobHandler,
+        workspaceBackup: WorkspaceBackupHandler,
         receiptOcr: ReceiptOcrJobHandler,
-      ) => [forecast, report, exportJob, receiptOcr],
+      ) => [forecast, report, exportJob, workspaceBackup, receiptOcr],
     },
     JobRunner,
   ],

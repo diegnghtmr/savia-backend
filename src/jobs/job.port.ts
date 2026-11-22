@@ -20,6 +20,7 @@ export const JOB_TYPES = [
   'balance_forecast',
   'report_run',
   'export_job',
+  'workspace_backup',
   'receipt_ocr',
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];

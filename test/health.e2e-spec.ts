@@ -127,6 +127,8 @@ describe('health endpoint', () => {
       'POST /v1/reconciliations/:reconciliationId/complete',
       'POST /v1/export-jobs',
       'GET /v1/export-jobs/:exportJobId',
+      'POST /v1/backup-jobs',
+      'GET /v1/backup-jobs/:backupJobId',
       'POST /v1/import-jobs',
       'POST /v1/import-jobs/:importJobId/commit',
       'POST /v1/import-jobs/:importJobId/rollback',

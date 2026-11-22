@@ -8,6 +8,7 @@ export const JOB_WRITER_TYPES = {
   BALANCE_FORECAST: 'balance_forecast',
   REPORT_RUN: 'report_run',
   EXPORT_JOB: 'export_job',
+  WORKSPACE_BACKUP: 'workspace_backup',
   RECEIPT_OCR: 'receipt_ocr',
 } as const;
 

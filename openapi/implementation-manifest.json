@@ -283,6 +283,16 @@
       "path": "/v1/export-jobs/{exportJobId}"
     },
     {
+      "operationId": "createWorkspaceBackupJob",
+      "method": "POST",
+      "path": "/v1/backup-jobs"
+    },
+    {
+      "operationId": "getWorkspaceBackupJob",
+      "method": "GET",
+      "path": "/v1/backup-jobs/{backupJobId}"
+    },
+    {
       "operationId": "createImportJob",
       "method": "POST",
       "path": "/v1/import-jobs"

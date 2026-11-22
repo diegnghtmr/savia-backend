@@ -1,5 +1,6 @@
 import { SAVIA_SCOPES, type SaviaScope } from './savia-scopes.js';
 
+// Workspace backup routes are session-only and must not appear in this allowlist.
 export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
   new Map([
     [

@@ -1408,6 +1408,40 @@ components:
         expiresAt: { type: [string, 'null'], format: date-time }
         createdAt: { type: string, format: date-time }
       additionalProperties: false
+    WorkspaceBackupJob:
+      type: object
+      required:
+        - id
+        - status
+        - createdAt
+        - downloadUrl
+        - expiresAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        status:
+          type: string
+          enum:
+            - queued
+            - processing
+            - completed
+            - failed
+        createdAt:
+          $ref: '#/components/schemas/DateTime'
+        downloadUrl:
+          type:
+            - string
+            - 'null'
+          format: uri
+          pattern: '^https://'
+          description: Signed URL for the ZIP archive; null unless the job completed and the link is still valid.
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Expiration of downloadUrl; null whenever downloadUrl is null.
+      additionalProperties: false
     ImportJob:
       type: object
       required: [id, status, fileName, createdAt]
@@ -5498,6 +5532,99 @@ paths:
                   { schema: { $ref: '#/components/schemas/ProblemDetails' } },
               },
           }
+  /v1/backup-jobs:
+    post:
+      operationId: createWorkspaceBackupJob
+      security:
+        - bearerAuth: []
+      summary: Create a complete workspace backup job
+      description: >-
+        Queues a complete, unfiltered backup for the workspace owner. The ZIP archive represents one
+        workspace snapshot and includes versioned JSON, CSV, permitted attachments and audit records,
+        workspace metadata, exchange rates, report definitions and a manifest identifying the format version,
+        snapshot time and included files. Credentials, tokens, secrets and other workspaces' data are not included.
+        This operation exports data; restoring a backup is outside this API's scope. A replay of the same
+        Idempotency-Key returns the original job instead of creating another one.
+      tags:
+        - Exports
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Backup queued. Poll the workspace backup job by its returned ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceBackupJob'
+              examples:
+                queued:
+                  value:
+                    id: b624296c-557f-45c7-bfe2-8b5b85935285
+                    status: queued
+                    createdAt: '2026-11-21T12:00:00Z'
+                    downloadUrl: null
+                    expiresAt: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /v1/backup-jobs/{backupJobId}:
+    parameters:
+      - name: backupJobId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Uuid'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    get:
+      operationId: getWorkspaceBackupJob
+      security:
+        - bearerAuth: []
+      summary: Get workspace backup status and download link
+      description: >-
+        Only the requester, while still the workspace owner, may retrieve the job. A completed job exposes
+        an expiring signed HTTPS URL for the ZIP archive until the link expires. Treat the link as a secret;
+        do not forward the API session credential when downloading. No link is returned before completion
+        or after expiration.
+      tags:
+        - Exports
+      responses:
+        '200':
+          description: Backup status and an unexpired download link, if available.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceBackupJob'
+              examples:
+                completed:
+                  value:
+                    id: b624296c-557f-45c7-bfe2-8b5b85935285
+                    status: completed
+                    createdAt: '2026-11-21T12:00:00Z'
+                    downloadUrl: https://storage.savia.app/backups/b624296c.zip?token=example
+                    expiresAt: '2026-11-21T12:15:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /v1/import-jobs:
     post:
       operationId: createImportJob

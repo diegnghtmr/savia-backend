@@ -1,18 +1,18 @@
 {
   "planningSource": {
-    "revision": "03a8d8c2aeab711dc1c27d2c13e508c006491563",
+    "revision": "c1656d9355c9605ba1301bbc4344652087b08f59",
     "path": "docs/savia-openapi.yaml",
-    "sha256": "c8172a1ec54fc1ee3329cb51e3991ecf60616d748c846cd5446d00b7626fb1d6",
-    "bytes": 183089,
-    "operationCount": 95
+    "sha256": "d1da44443396bc595860f256e4eb7abebbe0f6870f0becd44ca9fda97914a11c",
+    "bytes": 234781,
+    "operationCount": 112
   },
   "backendCi": {
     "planningSourceAccess": "Backend CI cannot access, authenticate, or independently re-hash this local source; it validates only these committed constants and executable contract identity."
   },
   "executableContract": {
     "path": "openapi/savia.openapi.yaml",
-    "sha256": "7ef2efa32e210a4ea57eb7a6319c8abcfd6d6272d6dd630a19e2454cf1fe853c",
-    "operationCount": 95,
-    "bytes": 242557
+    "sha256": "a766d6270b85cf6f5eb44008d05321219a8d882bb824e87f6c2894a4653e6ee7",
+    "operationCount": 97,
+    "bytes": 247217
   }
 }

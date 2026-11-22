@@ -1,5 +1,6 @@
 // Migrations under test: 202608310003_export_jobs.sql, 202608310004_export_storage.sql, 202609060012_export_completion_rls.sql, 202609160001_export_jobs_async.sql
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { crc32 } from 'node:zlib';
 import { Pool } from 'pg';
 import {
   FastifyAdapter,
@@ -18,10 +19,12 @@ import {
 import * as tesseractAdapter from '../../src/platform/system-tesseract.adapter.js';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { JobRunner } from '../../src/platform/job-runner.js';
 import {
   ARTIFACT_STORAGE,
+  ArtifactStorageClientError,
   type ArtifactStorage,
 } from '../../src/platform/artifact-storage.port.js';
 import {
@@ -42,6 +45,35 @@ import { PostgresExportAdapter } from '../../src/exports/postgres-export.adapter
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 
+function readStoredZip(zip: Buffer): Map<string, Buffer> {
+  const files = new Map<string, Buffer>();
+  const end = zip.length - 22;
+  expect(zip.readUInt32LE(end)).toBe(0x06054b50);
+  const count = zip.readUInt16LE(end + 10);
+  let cursor = zip.readUInt32LE(end + 16);
+  for (let index = 0; index < count; index++) {
+    expect(zip.readUInt32LE(cursor)).toBe(0x02014b50);
+    const nameLength = zip.readUInt16LE(cursor + 28);
+    const name = zip.toString('utf8', cursor + 46, cursor + 46 + nameLength);
+    const local = zip.readUInt32LE(cursor + 42);
+    expect(zip.readUInt32LE(local)).toBe(0x04034b50);
+    expect(zip.readUInt16LE(local + 8)).toBe(0);
+    const start =
+      local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+    const bytes = zip.subarray(start, start + zip.readUInt32LE(cursor + 24));
+    expect(crc32(bytes)).toBe(zip.readUInt32LE(cursor + 16));
+    expect(files.has(name)).toBe(false);
+    files.set(name, bytes);
+    cursor +=
+      46 +
+      nameLength +
+      zip.readUInt16LE(cursor + 30) +
+      zip.readUInt16LE(cursor + 32);
+  }
+  expect(cursor).toBe(end);
+  return files;
+}
+
 class InMemoryArtifactStorage implements ArtifactStorage {
   public readonly uploaded = new Map<
     string,
@@ -51,6 +83,7 @@ class InMemoryArtifactStorage implements ArtifactStorage {
   public signCallCount = 0;
   public removeCallCount = 0;
   public failSigning = false;
+  public beforeSign?: () => Promise<void>;
 
   public async upload(
     path: string,
@@ -66,10 +99,15 @@ class InMemoryArtifactStorage implements ArtifactStorage {
     expiresAt: Date,
   ): Promise<{ url: string; expiresAt: Date }> {
     this.signCallCount++;
+    await this.beforeSign?.();
     if (this.failSigning) {
-      throw new Error('Signing failed for storage artifact.');
+      throw new ArtifactStorageClientError(
+        403,
+        'Signing failed for storage artifact.',
+      );
     }
-    return { url: `https://storage.example.test/${path}`, expiresAt };
+    const query = path.startsWith('backups/') ? '?token=fake-signature' : '';
+    return { url: `https://storage.example.test/${path}${query}`, expiresAt };
   }
 
   public async download(path: string): Promise<Buffer> {
@@ -226,12 +264,28 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       .overrideProvider(JoseJwtVerifier)
       .useValue({
         verify: async (token: string) => {
-          if (token === 'owner-token') return { subject: ownerId };
-          if (token === 'editor-token') return { subject: editorId };
-          if (token === 'viewer-token') return { subject: viewerId };
-          if (token === 'other-owner-token') return { subject: otherOwnerId };
+          if (token === 'owner-token') {
+            return { subject: ownerId, authMethod: 'session' };
+          }
+          if (token === 'editor-token') {
+            return { subject: editorId, authMethod: 'session' };
+          }
+          if (token === 'viewer-token') {
+            return { subject: viewerId, authMethod: 'session' };
+          }
+          if (token === 'other-owner-token') {
+            return { subject: otherOwnerId, authMethod: 'session' };
+          }
           throw new Error('token rejected');
         },
+      })
+      .overrideProvider(CliTokenVerifier)
+      .useValue({
+        verify: async () => ({
+          subject: ownerId,
+          authMethod: 'cli_token',
+          scopes: ['reports:read', 'reports:write'],
+        }),
       })
       .overrideProvider(ARTIFACT_STORAGE)
       .useValue(inMemoryStorage)
@@ -261,6 +315,7 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
 
   afterEach(async () => {
     inMemoryStorage.failSigning = false;
+    inMemoryStorage.beforeSign = undefined;
     await admin.query(
       `update public.workspace_memberships
           set role = 'editor'
@@ -325,6 +380,341 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       otherOwnerId,
     ]);
     await admin?.end();
+  });
+
+  describe('Workspace backup (202609170023_full_backup.sql)', () => {
+    const endpoint = '/v1/backup-jobs';
+    const ownerHeaders = (): Record<string, string> => ({
+      authorization: 'Bearer owner-token',
+      'x-workspace-id': workspace1Id,
+      'idempotency-key': randomUUID(),
+    });
+    const noLink = { downloadUrl: null, expiresAt: null };
+    type Job = { id: string; createdAt: string };
+    type SignedLink = { downloadUrl: string; expiresAt: string };
+
+    async function create(headers = ownerHeaders()) {
+      return application.inject({ method: 'POST', url: endpoint, headers });
+    }
+
+    async function poll(id: string, headers = ownerHeaders()) {
+      return application.inject({
+        method: 'GET',
+        url: `${endpoint}/${id}`,
+        headers,
+      });
+    }
+
+    function expectProblem(
+      response: Awaited<ReturnType<typeof create>>,
+      status: number,
+      code: string,
+    ) {
+      expect(response.statusCode).toBe(status);
+      const mediaType = response.headers['content-type'];
+      expect(mediaType).toContain('application/problem+json');
+      expect(response.json()).toMatchObject({ status, code });
+    }
+
+    async function setRole(subject: string, role: string) {
+      await admin.query(
+        `update public.workspace_memberships set role = $3
+          where workspace_id = $1 and profile_id = $2`,
+        [workspace1Id, subject, role],
+      );
+    }
+
+    it('requires owner session and replays one job', async () => {
+      const headers = ownerHeaders();
+      const invalid = { ...headers, authorization: 'Bearer invalid' };
+      const cli = { ...headers, authorization: 'Bearer svt_owner' };
+      const editor = { ...headers, authorization: 'Bearer editor-token' };
+      const viewer = { ...headers, authorization: 'Bearer viewer-token' };
+      const foreign = {
+        ...headers,
+        authorization: 'Bearer other-owner-token',
+        'x-workspace-id': workspace2Id,
+      };
+      expectProblem(await create(invalid), 401, 'unauthorized');
+      expectProblem(await create(cli), 401, 'unauthorized');
+      expectProblem(await create(editor), 403, 'forbidden');
+      const invalidWorkspace = await create({
+        ...headers,
+        'x-workspace-id': '-',
+      });
+      const invalidKey = await create({ ...headers, 'idempotency-key': '-' });
+      expectProblem(invalidWorkspace, 400, 'bad-request');
+      expectProblem(invalidKey, 400, 'bad-request');
+      const filtered = await application.inject({
+        method: 'POST',
+        url: endpoint,
+        headers,
+        payload: { resource: 'accounts' },
+      });
+      expectProblem(filtered, 400, 'bad-request');
+
+      const responses = await Promise.all([create(headers), create(headers)]);
+      for (const response of responses) expect(response.statusCode).toBe(202);
+      expect(responses[0].json()).toEqual(responses[1].json());
+      const body = responses[0].json<Job>();
+      expect(body).toEqual({
+        id: expect.any(String),
+        status: 'queued',
+        createdAt: expect.any(String),
+        ...noLink,
+      });
+      expectProblem(await poll('-', headers), 400, 'bad-request');
+      expectProblem(await poll(body.id, cli), 401, 'unauthorized');
+      expectProblem(await poll(body.id, viewer), 403, 'forbidden');
+      expectProblem(await poll(body.id, foreign), 404, 'not-found');
+      await setRole(editorId, 'owner');
+      expectProblem(await poll(body.id, editor), 404, 'not-found');
+      await setRole(ownerId, 'editor');
+      try {
+        expectProblem(await poll(body.id, headers), 403, 'forbidden');
+        expectProblem(await create(headers), 403, 'forbidden');
+      } finally {
+        await setRole(ownerId, 'owner');
+      }
+
+      const status = await poll(body.id);
+      expect(status.statusCode).toBe(200);
+      expect(status.headers['cache-control']).toBe('no-store');
+      expect(status.json()).toEqual(body);
+      expect(await runner.drainOnce()).toBe(1);
+      expect(await runner.drainOnce()).toBe(0);
+    });
+
+    function receiptStoragePath(workspace: string, id: string) {
+      return `workspaces/${workspace}/receipts/${id}/invoice.png`;
+    }
+
+    async function seedReceipt(id: string, path: string) {
+      await admin.query(
+        `insert into public.receipts
+          (id,workspace_id,status,file_name,processing_location,storage_path,created_by)
+          values ($1,$2,'uploaded','invoice.png','device',$3,$4)`,
+        [id, workspace1Id, path, ownerId],
+      );
+    }
+
+    it('publishes a portable ZIP via an unexpired link only', async () => {
+      const created = await create();
+      expect(created.statusCode).toBe(202);
+      const { id, createdAt } = created.json<Job>();
+      const receipt = randomUUID();
+      const receiptPath = receiptStoragePath(workspace1Id, receipt);
+      const bytes = Buffer.from('portable receipt bytes');
+      await inMemoryStorage.upload(receiptPath, bytes, 'image/png');
+      await seedReceipt(receipt, receiptPath);
+      await admin.query(
+        `insert into public.exchange_rates
+          (workspace_id,base_currency,quote_currency,rate,effective_at,source,created_by)
+          values ($1,'USD','EUR',0.900000000000000001,now(),'manual',$2)`,
+        [workspace1Id, ownerId],
+      );
+      await admin.query(
+        `insert into public.report_definitions
+          (workspace_id,name,dimensions,measures,visualization,created_by)
+          values ($1,'Portable report','[]','["sum"]','table',$2)`,
+        [workspace1Id, ownerId],
+      );
+      try {
+        const baseline = inMemoryStorage.signCallCount;
+        const before = await poll(id);
+        expect(before.json()).toEqual({
+          id,
+          status: 'queued',
+          createdAt,
+          ...noLink,
+        });
+        inMemoryStorage.beforeSign = async () => {
+          const processing = await poll(id);
+          expect(processing.statusCode).toBe(200);
+          expect(processing.json()).toEqual({
+            id,
+            status: 'processing',
+            createdAt,
+            ...noLink,
+          });
+        };
+        expect(await runner.drainOnce()).toBe(1);
+        const result = await poll(id);
+        expect(result.statusCode).toBe(200);
+        expect(result.headers['cache-control']).toBe('no-store');
+        const complete = result.json<SignedLink>();
+        expect(complete).toEqual({
+          id,
+          status: 'completed',
+          createdAt,
+          downloadUrl: expect.stringMatching(/^https:\/\//),
+          expiresAt: expect.any(String),
+        });
+        const link = new URL(complete.downloadUrl);
+        expect(link.searchParams.get('token')).toBe('fake-signature');
+        const expiry = Date.parse(complete.expiresAt);
+        expect(expiry - Date.now()).toBeLessThanOrEqual(15 * 60_000);
+        const key = link.pathname.slice(1);
+        const prefix = `backups/${workspace1Id}/${id}/`;
+        expect(key.startsWith(prefix)).toBe(true);
+        expect(key.slice(prefix.length)).toMatch(/^[a-f0-9-]+\.zip$/);
+        const artifact = inMemoryStorage.uploaded.get(key);
+        expect(artifact?.contentType).toBe('application/zip');
+        const files = readStoredZip(await inMemoryStorage.download(key));
+        const snapshotText = files.get('workspace.json')!.toString();
+        const manifestText = files.get('manifest.json')!.toString();
+        const manifest = JSON.parse(manifestText) as {
+          schemaVersion: number;
+          snapshotAt: string;
+          workspaceId: string;
+          files: { path: string; count: number; sha256: string }[];
+        };
+        expect(manifest).toMatchObject({
+          schemaVersion: 1,
+          snapshotAt: expect.any(String),
+          workspaceId: workspace1Id,
+        });
+        const paths = manifest.files.map((file) => file.path).sort();
+        expect(paths).toEqual(
+          [...files.keys()].filter((name) => name !== 'manifest.json').sort(),
+        );
+        for (const file of manifest.files) {
+          const content = files.get(file.path)!;
+          const sha256 = createHash('sha256').update(content).digest('hex');
+          expect(file.sha256).toBe(sha256);
+        }
+        const { datasets, schemaVersion } = JSON.parse(snapshotText) as {
+          datasets: Record<string, unknown[]>;
+          schemaVersion: number;
+        };
+        expect(schemaVersion).toBe(1);
+        expect(datasets.workspaces).toEqual([
+          expect.objectContaining({ id: workspace1Id, name: 'Workspace 1' }),
+        ]);
+        expect(datasets.accounts).toEqual([
+          expect.objectContaining({ id: acct1Usd }),
+        ]);
+        expect(datasets.transactions).toEqual([
+          expect.objectContaining({ id: tx1Id }),
+        ]);
+        expect(datasets.exchange_rates).toEqual([
+          expect.objectContaining({ rate: '0.900000000000000001' }),
+        ]);
+        expect(datasets.report_definitions).toEqual([
+          expect.objectContaining({ name: 'Portable report' }),
+        ]);
+        expect(datasets.job_transitions.length).toBeGreaterThan(0);
+        expect(datasets.debts).toContainEqual(
+          expect.objectContaining({ principal_minor: '9007199254740993' }),
+        );
+        expect(datasets.budgets).toHaveLength(3);
+        const excluded = [
+          'Foreign budget',
+          'Foreign debt',
+          'Workspace 2',
+          'storage_path',
+          'cli_device_tokens',
+          'credential_ciphertext',
+        ];
+        for (const marker of excluded) {
+          expect(snapshotText).not.toContain(marker);
+        }
+        expect(files.get('csv/budgets.csv')!.toString()).toContain("'=June");
+        expect(manifest.files).toContainEqual(
+          expect.objectContaining({ path: 'csv/budgets.csv', count: 3 }),
+        );
+        expect(files.get(`attachments/${receipt}.png`)).toEqual(bytes);
+        expect(inMemoryStorage.signCallCount).toBe(baseline + 1);
+
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(expiry);
+        try {
+          expect((await poll(id)).json()).toEqual({
+            id,
+            status: 'completed',
+            createdAt,
+            ...noLink,
+          });
+        } finally {
+          clock.mockRestore();
+        }
+        expect(inMemoryStorage.signCallCount).toBe(baseline + 1);
+      } finally {
+        await admin.query('delete from public.receipts where id = $1', [
+          receipt,
+        ]);
+      }
+    });
+
+    it('preserves CLI create and poll for legacy exports', async () => {
+      const headers = { ...ownerHeaders(), authorization: 'Bearer svt_owner' };
+      const created = await application.inject({
+        method: 'POST',
+        url: '/v1/export-jobs',
+        headers,
+        payload: { format: 'json_backup', resource: 'transactions' },
+      });
+      expect(created.statusCode).toBe(202);
+      const body = created.json<{ id: string }>();
+      expect(body).toEqual({
+        id: expect.any(String),
+        format: 'json_backup',
+        status: 'queued',
+        createdAt: expect.any(String),
+        ...noLink,
+      });
+      const read = await application.inject({
+        method: 'GET',
+        url: `/v1/export-jobs/${body.id}`,
+        headers,
+      });
+      expect(read.statusCode).toBe(200);
+      expect(read.json()).toEqual(body);
+      expect(read.headers['cache-control']).toBeUndefined();
+    });
+
+    it('rejects foreign receipt paths before storage access', async () => {
+      const receipt = randomUUID();
+      const foreign = receiptStoragePath(workspace2Id, receipt);
+      await seedReceipt(receipt, foreign);
+      const download = vi.spyOn(inMemoryStorage, 'download');
+      try {
+        const result = await create();
+        expect(result.statusCode).toBe(202);
+        const { id, createdAt } = result.json<Job>();
+        expect(await runner.drainOnce()).toBe(1);
+        const after = await poll(id);
+        expect(after.statusCode).toBe(200);
+        expect(after.json()).toEqual({
+          id,
+          status: 'failed',
+          createdAt,
+          ...noLink,
+        });
+        expect(download).not.toHaveBeenCalled();
+      } finally {
+        download.mockRestore();
+        await admin.query('delete from public.receipts where id = $1', [
+          receipt,
+        ]);
+      }
+    });
+
+    it('returns a terminal failure without a partial link', async () => {
+      inMemoryStorage.failSigning = true;
+      const result = await create();
+      expect(result.statusCode).toBe(202);
+      const { id, createdAt } = result.json<Job>();
+      expect(await runner.drainOnce()).toBe(1);
+      const after = await poll(id);
+      expect(after.statusCode).toBe(200);
+      expect(after.headers['cache-control']).toBe('no-store');
+      expect(after.json()).toEqual({
+        id,
+        status: 'failed',
+        createdAt,
+        ...noLink,
+      });
+    });
   });
 
   describe('Policy recreate and grant pin', () => {
