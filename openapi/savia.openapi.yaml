@@ -23,8 +23,8 @@ components:
       description: OAuth 2.1 authorization used by remote MCP clients. The MCP transport itself is not described by this OpenAPI document.
       flows:
         authorizationCode:
-          authorizationUrl: https://api.savia.app/oauth/authorize
-          tokenUrl: https://api.savia.app/oauth/token
+          authorizationUrl: https://project-ref.supabase.co/auth/v1/oauth/authorize
+          tokenUrl: https://project-ref.supabase.co/auth/v1/oauth/token
           scopes:
             accounts:read: Read accounts and balances.
             accounts:write: Create and modify accounts.
@@ -57,6 +57,9 @@ components:
       required: false
       schema: { type: string, examples: ['"7"'] }
   headers:
+    ETag:
+      description: Current resource version.
+      schema: { type: string, examples: ['"7"'] }
     RetryAfter:
       description: Seconds before the client should retry.
       schema:
@@ -1563,8 +1566,7 @@ components:
         - status
       properties:
         id:
-          type: string
-          format: uuid
+          $ref: '#/components/schemas/Uuid'
         name:
           type: string
         currency:
@@ -1585,6 +1587,19 @@ components:
           format: uuid
         recommendedMonthlyContribution:
           $ref: '#/components/schemas/Money'
+        objective:
+          type: [string, 'null']
+          maxLength: 500
+          description: Optional description of what the fund is for.
+        responsibleMemberIds:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/Uuid' }
+          description: Workspace membership IDs of the people responsible for the fund. This does not grant access.
+        etag:
+          type: string
+          description: Current fund ETag, usable as If-Match. Always present on detail and update responses.
+          examples: ['"7"']
         status:
           type: string
           enum:
@@ -1592,6 +1607,66 @@ components:
             - completed
             - paused
             - archived
+      additionalProperties: false
+    FundDetail:
+      $ref: '#/components/schemas/Fund'
+      required: [etag]
+    UpdateFundRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Non-blank fund name.
+        objective:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 500
+          description: Non-blank purpose of the fund. Use null to clear it.
+        targetAmount:
+          $ref: '#/components/schemas/PositiveFundAmount'
+        targetDate:
+          type: [string, 'null']
+          format: date
+          description: Use null to clear the target date.
+        linkedAccountId:
+          type: [string, 'null']
+          format: uuid
+          description: An account in the same workspace. Use null to unlink it. Neither change moves money.
+        responsibleMemberIds:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/Uuid' }
+          description: Replaces the list with active workspace membership IDs. Use an empty array to clear it.
+      additionalProperties: false
+    PositiveFundAmount:
+      type: object
+      description: A positive amount in the fund's native currency.
+      required: [amountMinor, currency]
+      properties:
+        amountMinor:
+          type: string
+          pattern: '^0*[1-9][0-9]*$'
+          description: Positive minor-unit integer within the signed 64-bit range, serialized as a string.
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+      additionalProperties: false
+    CreateFundWithdrawalRequest:
+      type: object
+      required: [accountId, amount, reason]
+      properties:
+        accountId:
+          $ref: '#/components/schemas/Uuid'
+          description: Destination account in the same workspace. It must not be closed and must use the fund's currency.
+        amount:
+          $ref: '#/components/schemas/PositiveFundAmount'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Non-blank explanation for the withdrawal, recorded in the ledger transaction.
       additionalProperties: false
     CreateFundRequest:
       type: object
@@ -6152,6 +6227,106 @@ paths:
           requiredScopes: [budgets:write],
         }
       x-idempotency-required: true
+  /v1/funds/{fundId}:
+    parameters:
+      - name: fundId
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/Uuid' }
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    get:
+      operationId: getFund
+      security:
+        - bearerAuth: []
+        - cliTokenAuth: [budgets:read]
+      summary: Get a sinking fund
+      description: Active workspace members can read the fund. The response body carries the same ETag as the header.
+      tags: [Funds]
+      responses:
+        '200':
+          description: Current fund and its ETag.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FundDetail' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-savia-mcp-tool:
+        name: get_sinking_fund
+        riskClass: read
+        requiresApproval: false
+        requiredScopes: [budgets:read]
+    patch:
+      operationId: updateFund
+      security:
+        - bearerAuth: []
+        - cliTokenAuth: [budgets:write]
+      summary: Update a sinking fund's metadata
+      description: >-
+        An owner, administrator or editor can edit fund metadata without changing the currency, saved amount,
+        status or ledger. Omitted fields are unchanged. While authorized, replaying the same fund ID, body
+        and If-Match with the same Idempotency-Key returns the original response and ETag without reapplying
+        the edit. A new request with a stale If-Match returns 412 and changes nothing.
+      tags: [Funds]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: If-Match
+          in: header
+          required: true
+          description: Supply one strong ETag from the fund detail response. Wildcard and weak ETags are not accepted.
+          schema: { type: string, examples: ['"7"'] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateFundRequest' }
+            example:
+              name: Emergency reserve
+              objective: Cover essential expenses after an income interruption.
+              targetAmount: { amountMinor: '150000', currency: USD }
+              targetDate: '2027-06-01'
+      responses:
+        '200':
+          description: Updated fund. The ETag in the header matches the one in the body.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FundDetail' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          description: The required If-Match header is missing.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-savia-mcp-tool:
+        name: update_sinking_fund
+        riskClass: low_risk_write
+        requiresApproval: true
+        requiredScopes: [budgets:write]
+      x-idempotency-required: true
   /v1/funds/{fundId}/contributions:
     parameters:
       - {
@@ -6238,6 +6413,91 @@ paths:
           requiresApproval: true,
           requiredScopes: [transactions:write, budgets:write],
         }
+      x-idempotency-required: true
+  /v1/funds/{fundId}/withdrawals:
+    parameters:
+      - name: fundId
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/Uuid' }
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: withdrawFromFund
+      security:
+        - bearerAuth: []
+        - cliTokenAuth: [transactions:write, budgets:write]
+      summary: Withdraw saved money from a sinking fund
+      description: >-
+        An owner, administrator or editor can release saved money to an explicit destination account and
+        must record a reason. The server books the withdrawal at the current time. The amount must not
+        exceed the fund's saved amount at booking time (effective confirmed or reconciled contributions minus
+        withdrawals; future-dated contributions do not count). The balance check, fund debit and ledger
+        credit are atomic, including across competing withdrawals. Rejection changes neither balance.
+        The ledger entry is a confirmed adjustment linked to the fund, with a positive destination-account
+        posting and an equal negative external posting. This reverses the direction of a contribution;
+        it is not income. The destination account's confirmed and available balances increase by the
+        amount from the booking time, with no separate release from a reserve. The reason is stored in
+        the transaction's notes. While authorized, replaying the same Idempotency-Key and request returns
+        the original transaction without another withdrawal.
+      tags: [Funds]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateFundWithdrawalRequest' }
+            example:
+              accountId: c878af78-9cb9-4938-ad55-03427865ac79
+              amount: { amountMinor: '2500', currency: USD }
+              reason: Replace a broken appliance.
+      responses:
+        '201':
+          description: Withdrawal recorded and destination account credited.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+              example:
+                id: b087d49c-adc0-4d8e-b4f0-2d9ea4016d73
+                type: adjustment
+                status: confirmed
+                accountId: c878af78-9cb9-4938-ad55-03427865ac79
+                amount: { amountMinor: '2500', currency: USD }
+                notes: Replace a broken appliance.
+                occurredAt: '2026-11-21T12:00:00Z'
+                createdAt: '2026-11-21T12:00:00Z'
+                updatedAt: '2026-11-21T12:00:00Z'
+                version: 1
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          description: Invalid amount or currency, an ineligible destination account, or insufficient saved balance.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+              examples:
+                insufficientFundBalance:
+                  value:
+                    type: https://savia.app/problems/insufficient-fund-balance
+                    title: Withdrawal exceeds the saved amount
+                    status: 422
+                    code: insufficient-fund-balance
+                    traceId: req-42
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-savia-mcp-tool:
+        name: withdraw_from_fund
+        riskClass: financial_write
+        requiresApproval: true
+        requiredScopes: [transactions:write, budgets:write]
       x-idempotency-required: true
   /v1/debts:
     get:

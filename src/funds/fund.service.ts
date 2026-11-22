@@ -6,12 +6,16 @@ import {
   FUND_OUTCOMES,
   type CreateFundContributionRequest,
   type CreateFundRequest,
-  type FundContributeOutcome,
+  type CreateFundWithdrawalRequest,
   type FundCreateOutcome,
+  type FundDetailOutcome,
+  type FundMovementOutcome,
   type FundListOutcome,
   type FundListQuery,
   type FundsPort,
   type FundStore,
+  type FundUpdateOutcome,
+  type UpdateFundRequest,
 } from './fund.port.js';
 
 export class FundCreateRollbackError extends Error {
@@ -55,6 +59,133 @@ export class FundService implements FundsPort {
     private readonly store: FundStore,
     private readonly idempotency: IdempotencyStore,
   ) {}
+
+  public async getFund(
+    subject: string,
+    workspaceId: string,
+    id: string,
+  ): Promise<FundDetailOutcome> {
+    return this.tx.runRead(subject, async (client) => {
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (
+        !['owner', 'administrator', 'editor', 'viewer'].includes(role ?? '')
+      ) {
+        return { kind: FUND_OUTCOMES.FORBIDDEN };
+      }
+      const detail = await this.store.readFundDetail(client, workspaceId, id);
+      return detail
+        ? { kind: 'ok', fund: detail.fund }
+        : { kind: FUND_OUTCOMES.NOT_FOUND };
+    });
+  }
+
+  public async updateFund(
+    subject: string,
+    workspaceId: string,
+    fundId: string,
+    command: UpdateFundRequest,
+    ifMatch: string,
+    key: string,
+  ): Promise<FundUpdateOutcome> {
+    const route = 'PATCH /v1/funds/{fundId}';
+    const fingerprint = computeRequestFingerprint({
+      fundId,
+      ifMatch,
+      command,
+    });
+    // PgTransaction serializes this subject's writes, including idempotency records.
+    return this.tx.run(subject, async (client) => {
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (!['owner', 'administrator', 'editor'].includes(role ?? '')) {
+        return { kind: FUND_OUTCOMES.FORBIDDEN };
+      }
+      const existing = await this.idempotency.read(
+        client,
+        subject,
+        route,
+        key,
+        workspaceId,
+      );
+      if (existing) {
+        return existing.requestFingerprint !== fingerprint
+          ? { kind: FUND_OUTCOMES.CONFLICT }
+          : {
+              kind: FUND_OUTCOMES.REPLAYED,
+              status: existing.responseStatus,
+              etag: existing.responseEtag,
+              body: existing.responseBody,
+            };
+      }
+
+      await this.store.lockFund(client, workspaceId, fundId);
+      const current = await this.store.readFundDetail(
+        client,
+        workspaceId,
+        fundId,
+      );
+      if (!current) return { kind: FUND_OUTCOMES.NOT_FOUND };
+      if (current.fund.etag !== ifMatch) return { kind: 'stale' };
+      if (
+        command.targetAmount &&
+        command.targetAmount.currency !== current.fund.currency
+      ) {
+        return { kind: FUND_OUTCOMES.CURRENCY_MISMATCH };
+      }
+      if (
+        command.linkedAccountId &&
+        !(await this.store.lockAndReadAccount(
+          client,
+          workspaceId,
+          command.linkedAccountId,
+        ))
+      ) {
+        return { kind: FUND_OUTCOMES.LINKED_ACCOUNT_NOT_FOUND };
+      }
+      if (
+        command.responsibleMemberIds &&
+        !(await this.store.hasActiveMembers(
+          client,
+          workspaceId,
+          command.responsibleMemberIds,
+        ))
+      ) {
+        return { kind: 'inactive-members' };
+      }
+      if (
+        !(await this.store.updateFund(
+          client,
+          workspaceId,
+          fundId,
+          command,
+          current.version,
+        ))
+      ) {
+        return { kind: 'stale' };
+      }
+      const updated = await this.store.readFundDetail(
+        client,
+        workspaceId,
+        fundId,
+      );
+      if (
+        !updated ||
+        !(await this.idempotency.write(
+          client,
+          subject,
+          route,
+          key,
+          fingerprint,
+          200,
+          updated.fund.etag,
+          updated.fund,
+          workspaceId,
+        ))
+      ) {
+        throw new Error('Updated fund response could not be recorded.');
+      }
+      return { kind: 'ok', fund: updated.fund };
+    });
+  }
 
   public async createFund(
     subject: string,
@@ -200,14 +331,37 @@ export class FundService implements FundsPort {
     });
   }
 
-  public async contributeToFund(
+  public contributeToFund(
     subject: string,
     workspaceId: string,
     fundId: string,
     command: CreateFundContributionRequest,
     key: string,
-  ): Promise<FundContributeOutcome> {
-    const route = 'POST /v1/funds/{fundId}/contributions';
+  ): Promise<FundMovementOutcome> {
+    return this.moveFund(subject, workspaceId, fundId, command, key);
+  }
+
+  public withdrawFromFund(
+    subject: string,
+    workspaceId: string,
+    fundId: string,
+    command: CreateFundWithdrawalRequest,
+    key: string,
+  ): Promise<FundMovementOutcome> {
+    return this.moveFund(subject, workspaceId, fundId, command, key);
+  }
+
+  private async moveFund(
+    subject: string,
+    workspaceId: string,
+    fundId: string,
+    command: CreateFundContributionRequest | CreateFundWithdrawalRequest,
+    key: string,
+  ): Promise<FundMovementOutcome> {
+    const route =
+      'reason' in command
+        ? 'POST /v1/funds/{fundId}/withdrawals'
+        : 'POST /v1/funds/{fundId}/contributions';
     const fingerprint = computeRequestFingerprint({
       fundId,
       ...command,
@@ -238,6 +392,8 @@ export class FundService implements FundsPort {
             : { kind: FUND_OUTCOMES.CONFLICT };
         }
 
+        // Lock ordering: subject (transaction runner), then fund, then account.
+        await this.store.lockFund(client, workspaceId, fundId);
         const fund = await this.store.findFund(client, workspaceId, fundId);
         if (!fund) {
           return { kind: FUND_OUTCOMES.NOT_FOUND };
@@ -263,13 +419,23 @@ export class FundService implements FundsPort {
           return { kind: FUND_OUTCOMES.ACCOUNT_CURRENCY_MISMATCH };
         }
 
-        const transaction = await this.store.contributeToFund(
-          client,
-          workspaceId,
-          subject,
-          fund,
-          command,
-        );
+        const transaction =
+          'reason' in command
+            ? await this.store.withdrawFromFund(
+                client,
+                workspaceId,
+                subject,
+                fund,
+                command,
+              )
+            : await this.store.contributeToFund(
+                client,
+                workspaceId,
+                subject,
+                fund,
+                command,
+              );
+        if (!transaction) return { kind: FUND_OUTCOMES.INSUFFICIENT_SAVED };
 
         const written = await this.idempotency.write(
           client,

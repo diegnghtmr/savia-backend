@@ -1,4 +1,4 @@
-// Migrations under test: 202609030001_funds.sql
+// Migrations under test: 202609030001_funds.sql, 202609170025_fund_withdrawals.sql
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import {
@@ -25,11 +25,15 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
   const viewerId = '22222222-0000-4000-8000-000000000001';
   const otherOwnerId = '33333333-0000-4000-8000-000000000001';
   const nonMemberId = '44444444-0000-4000-8000-000000000001';
+  const editorId = '55555555-0000-4000-8000-000000000001';
 
   const workspace1Id = 'aaaaaaaa-0000-4000-8000-000000000001';
   const workspace2Id = 'bbbbbbbb-0000-4000-8000-000000000001';
 
   const account1Id = 'cccccccc-0000-4000-8000-000000000001';
+  const account2Id = 'cccccccc-0000-4000-8000-000000000002';
+  const closedAccountId = 'cccccccc-0000-4000-8000-000000000003';
+  const viewerMembershipId = 'cccccccc-0000-4000-8000-000000000004';
   const accountWs2Id = 'dddddddd-0000-4000-8000-000000000001';
 
   beforeAll(async () => {
@@ -48,8 +52,9 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
         ($1, 'funds-owner@example.test'),
         ($2, 'funds-viewer@example.test'),
         ($3, 'funds-other@example.test'),
-        ($4, 'funds-nonmember@example.test')`,
-      [ownerId, viewerId, otherOwnerId, nonMemberId],
+        ($4, 'funds-nonmember@example.test'),
+        ($5, 'funds-editor@example.test')`,
+      [ownerId, viewerId, otherOwnerId, nonMemberId, editorId],
     );
 
     for (const [userId, email, name] of [
@@ -57,6 +62,7 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
       [viewerId, 'funds-viewer@example.test', 'Funds Viewer'],
       [otherOwnerId, 'funds-other@example.test', 'Funds Other Owner'],
       [nonMemberId, 'funds-nonmember@example.test', 'Funds Non Member'],
+      [editorId, 'funds-editor@example.test', 'Funds Editor'],
     ] as const) {
       await admin.query(
         `insert into public.profiles (
@@ -80,18 +86,29 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
 
     // Seed memberships
     await admin.query(
-      `insert into public.workspace_memberships (workspace_id, profile_id, role, status) values
-        ($1, $2, 'owner', 'active'),
-        ($1, $3, 'viewer', 'active'),
-        ($4, $5, 'owner', 'active')`,
-      [workspace1Id, ownerId, viewerId, workspace2Id, otherOwnerId],
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status, id) values
+        ($1, $2, 'owner', 'active', default),
+        ($1, $3, 'viewer', 'active', $7),
+        ($4, $5, 'owner', 'active', default),
+        ($1, $6, 'editor', 'active', default)`,
+      [
+        workspace1Id,
+        ownerId,
+        viewerId,
+        workspace2Id,
+        otherOwnerId,
+        editorId,
+        viewerMembershipId,
+      ],
     );
 
     // Seed accounts
     await admin.query(
-      `insert into public.accounts (id, workspace_id, name, type, currency, status, created_by) values
-        ($1, $2, 'Checking Account', 'checking', 'USD', 'active', $3),
-        ($4, $5, 'EUR Account', 'checking', 'EUR', 'active', $6)`,
+      `insert into public.accounts (id, workspace_id, name, type, currency, status, created_by, closed_at) values
+        ($1, $2, 'Checking Account', 'checking', 'USD', 'active', $3, null),
+        ($4, $5, 'EUR Account', 'checking', 'EUR', 'active', $6, null),
+        ($7, $2, 'Second destination', 'checking', 'USD', 'active', $3, null),
+        ($8, $2, 'Closed destination', 'checking', 'USD', 'closed', $3, now())`,
       [
         account1Id,
         workspace1Id,
@@ -99,6 +116,8 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
         accountWs2Id,
         workspace2Id,
         otherOwnerId,
+        account2Id,
+        closedAccountId,
       ],
     );
 
@@ -112,6 +131,7 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
           if (token === 'viewer-token') return { subject: viewerId };
           if (token === 'other-owner-token') return { subject: otherOwnerId };
           if (token === 'non-member-token') return { subject: nonMemberId };
+          if (token === 'editor-token') return { subject: editorId };
           throw new Error('token rejected');
         },
       })
@@ -1428,6 +1448,367 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
       expect(fund.recommendedMonthlyContribution).toEqual({
         amountMinor: '51',
         currency: 'USD',
+      });
+    });
+  });
+
+  describe('L12 fund operations', () => {
+    const money = (amountMinor: string, currency = 'USD') => ({
+      amountMinor,
+      currency,
+    });
+    const headers = (actor = 'owner', workspace = workspace1Id) => ({
+      authorization: `Bearer ${actor}-token`,
+      'x-workspace-id': workspace,
+    });
+    const create = () =>
+      application.inject({
+        method: 'POST',
+        url: '/v1/funds',
+        headers: { ...headers(), 'idempotency-key': randomUUID() },
+        payload: {
+          name: 'L12 fund',
+          currency: 'USD',
+          targetAmount: money('1000'),
+        },
+      });
+    const detail = (id: string, actor?: string, workspace?: string) =>
+      application.inject({
+        method: 'GET',
+        url: `/v1/funds/${id}`,
+        headers: headers(actor, workspace),
+      });
+    const patch = (
+      id: string,
+      payload: object,
+      tag?: string,
+      key = randomUUID(),
+      actor = 'owner',
+    ) =>
+      application.inject({
+        method: 'PATCH',
+        url: `/v1/funds/${id}`,
+        headers: {
+          ...headers(actor),
+          'idempotency-key': key,
+          ...(tag === undefined ? {} : { 'if-match': tag }),
+        },
+        payload,
+      });
+    const contribute = (
+      id: string,
+      amount: string,
+      occurredAt = '2020-01-01T00:00:00Z',
+    ) =>
+      application.inject({
+        method: 'POST',
+        url: `/v1/funds/${id}/contributions`,
+        headers: { ...headers(), 'idempotency-key': randomUUID() },
+        payload: { accountId: account1Id, amount: money(amount), occurredAt },
+      });
+    const withdraw = (
+      id: string,
+      payload: object,
+      key = randomUUID(),
+      actor = 'owner',
+    ) =>
+      application.inject({
+        method: 'POST',
+        url: `/v1/funds/${id}/withdrawals`,
+        headers: { ...headers(actor), 'idempotency-key': key },
+        payload,
+      });
+    const accountBalance = async (accountId = account1Id) => {
+      const response = await application.inject({
+        method: 'GET',
+        url: `/v1/accounts/${accountId}/balance`,
+        headers: headers(),
+      });
+      expect(response.statusCode).toBe(200);
+      return BigInt(response.json().nativeBalance.amountMinor);
+    };
+
+    it('gets a workspace fund as a viewer with the same strong ETag in header and body', async () => {
+      const { id } = (await create()).json();
+      const response = await detail(id, 'viewer');
+      expect(response.statusCode).toBe(200);
+      expect(response.headers.etag).toMatch(/^"[^" ]+"$/);
+      expect(response.json()).toEqual({
+        id,
+        name: 'L12 fund',
+        currency: 'USD',
+        targetAmount: money('1000'),
+        currentAmount: money('0'),
+        status: 'active',
+        targetDate: null,
+        linkedAccountId: null,
+        objective: null,
+        responsibleMemberIds: [],
+        etag: response.headers.etag,
+      });
+      expect((await detail(id, 'non-member')).statusCode).toBe(403);
+      const otherWorkspace = await detail(id, 'other-owner', workspace2Id);
+      expect(otherWorkspace.statusCode).toBe(404);
+      expect((await detail('invalid')).statusCode).toBe(400);
+    });
+
+    it('updates only metadata, clears nullable fields and replays the original ETag', async () => {
+      const { id } = (await create()).json();
+      const before = (await detail(id)).json();
+      const payload = {
+        name: 'Emergency reserve',
+        objective: 'Cover essential expenses after an income interruption.',
+        targetAmount: money('150000'),
+        targetDate: '2027-06-01',
+        linkedAccountId: account1Id,
+        responsibleMemberIds: [viewerMembershipId],
+      };
+      const key = randomUUID();
+      expect((await patch(id, payload, undefined, key)).statusCode).toBe(428);
+      for (const invalid of ['*', `W/${before.etag}`, `${before.etag}, "7"`]) {
+        expect((await patch(id, payload, invalid, key)).statusCode).toBe(400);
+      }
+      expect(
+        (await patch(id, payload, before.etag, key, 'viewer')).statusCode,
+      ).toBe(403);
+      expect((await detail(id)).json()).toEqual(before);
+      const updated = await patch(id, payload, before.etag, key, 'editor');
+      expect(updated.statusCode).toBe(200);
+      expect(updated.headers.etag).not.toBe(before.etag);
+      expect(updated.json()).toMatchObject({
+        ...before,
+        ...payload,
+        etag: updated.headers.etag,
+      });
+      const clear = {
+        objective: null,
+        targetDate: null,
+        linkedAccountId: null,
+        responsibleMemberIds: [],
+      };
+      const staleKey = randomUUID();
+      expect(
+        (await patch(id, clear, before.etag, staleKey, 'editor')).statusCode,
+      ).toBe(412);
+      expect((await detail(id)).json()).toEqual(updated.json());
+      const cleared = await patch(
+        id,
+        clear,
+        updated.json().etag,
+        staleKey,
+        'editor',
+      );
+      expect(cleared.statusCode).toBe(200);
+      expect(cleared.json()).toMatchObject({ ...payload, ...clear });
+      const replay = await patch(id, payload, before.etag, key, 'editor');
+      expect(replay.statusCode).toBe(200);
+      expect(replay.headers.etag).toBe(updated.headers.etag);
+      expect(replay.payload).toBe(updated.payload);
+      const etag = cleared.json().etag;
+      const conflict = await patch(id, payload, etag, key, 'editor');
+      expect(conflict.statusCode).toBe(409);
+      expect((await detail(id)).json()).toEqual(cleared.json());
+    });
+
+    it('rejects invalid metadata without changing the fund or consuming the key', async () => {
+      const { id } = (await create()).json();
+      const before = (await detail(id)).json();
+      const key = randomUUID();
+      for (const invalid of [
+        {},
+        { name: ' ' },
+        { objective: ' ' },
+        { name: 'a'.repeat(121) },
+        { objective: 'a'.repeat(501) },
+        { status: 'archived' },
+        { currentAmount: money('1') },
+        { currency: 'EUR' },
+        { targetAmount: money('0') },
+        { targetAmount: money('1', 'EUR') },
+        { targetAmount: money('9223372036854775808') },
+        { targetDate: '2027-02-29' },
+        { targetDate: '0000-01-01' },
+        { linkedAccountId: accountWs2Id },
+        { responsibleMemberIds: [randomUUID()] },
+        { responsibleMemberIds: [viewerMembershipId, viewerMembershipId] },
+      ]) {
+        const rejected = await patch(id, invalid, before.etag, key);
+        expect(rejected.statusCode).toBe(422);
+        expect(rejected.headers['content-type']).toContain(
+          'application/problem+json',
+        );
+        expect((await detail(id)).json()).toEqual(before);
+      }
+      const payload = { name: 'Valid update' };
+      const accepted = await patch(id, payload, before.etag, key);
+      expect(accepted.statusCode).toBe(200);
+    });
+
+    it('rejects invalid withdrawals and future savings, then credits exactly once as an adjustment', async () => {
+      const { id } = (await create()).json();
+      expect((await contribute(id, '100')).statusCode).toBe(201);
+      expect(
+        (await contribute(id, '200', '2099-01-01T00:00:00Z')).statusCode,
+      ).toBe(201);
+      const before = (await detail(id)).json();
+      expect(before.currentAmount).toEqual(money('100'));
+      const balance = await accountBalance();
+      const key = randomUUID();
+      const payload = {
+        accountId: account1Id,
+        amount: money('100'),
+        reason: 'Replace a broken appliance.',
+      };
+      for (const invalid of [
+        { amount: money('100'), reason: payload.reason },
+        { ...payload, reason: ' ' },
+        { ...payload, reason: 'a'.repeat(501) },
+        { ...payload, accountId: accountWs2Id },
+        { ...payload, accountId: closedAccountId },
+        { ...payload, amount: money('0') },
+        { ...payload, amount: money('-1') },
+        { ...payload, amount: money('9223372036854775808') },
+        { ...payload, amount: money('1', 'EUR') },
+        { ...payload, occurredAt: '2020-01-01T00:00:00Z' },
+      ]) {
+        const rejected = await withdraw(id, invalid, key);
+        expect(rejected.statusCode).toBe(422);
+        expect(rejected.headers['content-type']).toContain(
+          'application/problem+json',
+        );
+      }
+      expect((await withdraw(id, payload, key, 'viewer')).statusCode).toBe(403);
+      const excessive = await withdraw(
+        id,
+        { ...payload, amount: money('101') },
+        key,
+      );
+      expect(excessive.statusCode).toBe(422);
+      expect(excessive.json()).toMatchObject({
+        type: 'https://savia.app/problems/insufficient-fund-balance',
+        title: 'Withdrawal exceeds the saved amount',
+        status: 422,
+        code: 'insufficient-fund-balance',
+      });
+      expect(await accountBalance()).toBe(balance);
+      expect((await detail(id)).json()).toEqual(before);
+      const started = Date.now();
+      const accepted = await withdraw(id, payload, key);
+      expect(accepted.statusCode).toBe(201);
+      expect(accepted.json()).toMatchObject({
+        type: 'adjustment',
+        status: 'confirmed',
+        accountId: account1Id,
+        amount: money('100'),
+        notes: payload.reason,
+        version: 1,
+      });
+      const bookedAt = Date.parse(accepted.json().occurredAt);
+      expect(bookedAt).toBeGreaterThanOrEqual(started);
+      expect(bookedAt).toBeLessThanOrEqual(Date.now());
+      expect(await accountBalance()).toBe(balance + 100n);
+      const next = (await detail(id)).json();
+      expect(next.currentAmount).toEqual(money('0'));
+      expect(next.etag).not.toBe(before.etag);
+      const replay = await withdraw(id, payload, key);
+      expect(replay.statusCode).toBe(201);
+      expect(replay.json()).toEqual(accepted.json());
+      const changed = { ...payload, reason: 'Other reason' };
+      expect((await withdraw(id, changed, key)).statusCode).toBe(409);
+      expect(await accountBalance()).toBe(balance + 100n);
+      expect((await detail(id)).json()).toEqual(next);
+    });
+
+    it('serializes withdrawals across actors and destinations, including a contribution race', async () => {
+      const { id } = (await create()).json();
+      expect((await contribute(id, '100')).statusCode).toBe(201);
+      const total = async () =>
+        (await accountBalance()) + (await accountBalance(account2Id));
+      const balance = await total();
+      const payload = {
+        accountId: account1Id,
+        amount: money('75'),
+        reason: 'Competing adjustment',
+      };
+      const toSecondAccount = { ...payload, accountId: account2Id };
+      const results = await Promise.all([
+        withdraw(id, payload),
+        withdraw(id, toSecondAccount, randomUUID(), 'editor'),
+      ]);
+      const statuses = results.map((result) => result.statusCode).sort();
+      expect(statuses).toEqual([201, 422]);
+      expect(
+        results.find((result) => result.statusCode === 422)?.json().code,
+      ).toBe('insufficient-fund-balance');
+      expect((await detail(id)).json().currentAmount).toEqual(money('25'));
+      expect(await total()).toBe(balance + 75n);
+
+      const [contribution, withdrawal] = await Promise.all([
+        contribute(id, '50'),
+        withdraw(id, toSecondAccount, randomUUID(), 'editor'),
+      ]);
+      expect(contribution.statusCode).toBe(201);
+      expect([201, 422]).toContain(withdrawal.statusCode);
+      const posted = withdrawal.statusCode === 201;
+      const { currentAmount } = (await detail(id)).json();
+      expect(currentAmount).toEqual(money(posted ? '0' : '75'));
+      expect(await total()).toBe(balance + (posted ? 100n : 25n));
+    });
+
+    it('preserves the legacy create response', async () => {
+      const response = await create();
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({
+        id: expect.any(String),
+        name: 'L12 fund',
+        currency: 'USD',
+        targetAmount: money('1000'),
+        currentAmount: money('0'),
+        status: 'active',
+        targetDate: null,
+        linkedAccountId: null,
+        version: 1,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      });
+    });
+
+    it('preserves the legacy list item response', async () => {
+      const created = (await create()).json();
+      const response = await application.inject({
+        method: 'GET',
+        url: '/v1/funds',
+        headers: headers(),
+      });
+      expect(response.statusCode).toBe(200);
+      const { items } = response.json();
+      const found = items.find(
+        (item: { id: string }) => item.id === created.id,
+      );
+      expect(found).toEqual(created);
+    });
+
+    it('preserves the legacy contribution response', async () => {
+      const { id } = (await create()).json();
+      const response = await contribute(id, '20');
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({
+        id: expect.any(String),
+        type: 'fund_contribution',
+        status: 'confirmed',
+        accountId: account1Id,
+        amount: money('-20'),
+        occurredAt: '2020-01-01T00:00:00.000Z',
+        categoryId: null,
+        payeeId: null,
+        description: null,
+        notes: null,
+        tagIds: [],
+        receiptId: null,
+        reconciliationId: null,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+        version: 1,
       });
     });
   });

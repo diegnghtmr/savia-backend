@@ -1,16 +1,20 @@
 import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
+import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import { negateAmountMinor } from '../platform/amount-minor.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { calculateRecommendedMonthlyContribution } from './fund-derivation.js';
 import type {
   CreateFundContributionRequest,
   CreateFundRequest,
+  CreateFundWithdrawalRequest,
   Fund,
   FundAccountRecord,
+  FundDetail,
   FundItem,
   FundListQuery,
   FundStore,
   FundTransaction,
+  UpdateFundRequest,
 } from './fund.port.js';
 
 export function toIso(value: unknown): string {
@@ -39,6 +43,9 @@ interface FundRow extends Record<string, unknown> {
   readonly updatedAt: Date | string;
   readonly currentAmountMinor?: string;
   readonly cursorAt?: string;
+  readonly objective?: string | null;
+  readonly responsibleMemberIds?: string[];
+  readonly bookedAt?: string;
 }
 
 interface TransactionRow extends Record<string, unknown> {
@@ -96,6 +103,21 @@ function mapFund(row: FundRow): Fund {
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
   };
+}
+
+// The same signed account leg represents either direction of fund movement.
+// Existing list/create reads include future-dated postings; detail/withdrawals use an effective cutoff.
+function savedAmountSql(effective = false): string {
+  return `coalesce((
+    select -sum(p.amount_minor)
+    from public.fund_contributions fc
+    join public.ledger_postings p
+      on p.workspace_id = fc.workspace_id and p.transaction_id = fc.transaction_id
+    where fc.workspace_id = f.workspace_id and fc.fund_id = f.id
+      and p.account_id is not null and p.currency = f.currency
+      and p.status in ('confirmed', 'reconciled')
+      ${effective ? 'and p.occurred_at <= statement_timestamp()' : ''}
+  ), 0)::text`;
 }
 
 export class PostgresFundAdapter implements FundStore {
@@ -186,11 +208,100 @@ returning
     return mapFund({ ...row, currentAmountMinor: '0' });
   }
 
+  public async lockFund(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ): Promise<void> {
+    await client.query(
+      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [`fund:${workspaceId.toLowerCase()}:${id.toLowerCase()}`],
+    );
+  }
+
   public async findFund(
     client: TransactionClient,
     workspaceId: string,
     id: string,
   ): Promise<Fund | undefined> {
+    const row = await this.findFundRow(client, workspaceId, id);
+    return row && mapFund(row);
+  }
+
+  public async readFundDetail(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ): Promise<{ fund: FundDetail; version: number } | undefined> {
+    const row = await this.findFundRow(client, workspaceId, id, true);
+    if (!row) return undefined;
+    const { version, createdAt, updatedAt, ...fund } = mapFund(row);
+    // The version avoids an ABA even if an edit restores the same metadata.
+    const body = {
+      ...fund,
+      objective: row.objective ?? null,
+      responsibleMemberIds: row.responsibleMemberIds ?? [],
+    };
+    const fingerprint = computeRequestFingerprint({
+      version,
+      createdAt,
+      updatedAt,
+      ...body,
+    });
+    return { fund: { ...body, etag: `"${fingerprint}"` }, version };
+  }
+
+  public async hasActiveMembers(
+    client: TransactionClient,
+    workspaceId: string,
+    ids: readonly string[],
+  ): Promise<boolean> {
+    if (ids.length === 0) return true;
+    const result = await client.query<{ valid: boolean }>(
+      `select count(*) = cardinality($2::uuid[]) as valid
+       from public.workspace_member_roster($1::uuid)
+       where status = 'active' and membership_id = any($2::uuid[])`,
+      [workspaceId, ids],
+    );
+    return result.rows[0]?.valid === true;
+  }
+
+  public async updateFund(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    command: UpdateFundRequest,
+    version: number,
+  ): Promise<boolean> {
+    const result = await client.query(
+      `update public.funds f set
+         name = coalesce($3::jsonb ->> 'name', f.name),
+         objective = case when $3::jsonb ? 'objective' then $3::jsonb ->> 'objective' else f.objective end,
+         target_amount_minor = coalesce(($3::jsonb #>> '{targetAmount,amountMinor}')::bigint, f.target_amount_minor),
+         target_date = case when $3::jsonb ? 'targetDate' then ($3::jsonb ->> 'targetDate')::date else f.target_date end,
+         linked_account_id = case when $3::jsonb ? 'linkedAccountId' then ($3::jsonb ->> 'linkedAccountId')::uuid else f.linked_account_id end,
+         responsible_member_ids = coalesce($4::uuid[], f.responsible_member_ids),
+         version = f.version + 1,
+         updated_at = now()
+       where f.workspace_id = $1::uuid and f.id = $2::uuid and f.version = $5::integer
+       returning f.id`,
+      [
+        workspaceId,
+        id,
+        JSON.stringify(command),
+        command.responsibleMemberIds ?? null,
+        version,
+      ],
+    );
+    return result.rows.length === 1;
+  }
+
+  private async findFundRow(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    effective = false,
+  ): Promise<FundRow | undefined> {
     const sql = `
 select
   f.id::text,
@@ -204,31 +315,14 @@ select
   f.version,
   f.created_at as "createdAt",
   f.updated_at as "updatedAt",
-  coalesce(
-    (
-      select -sum(p.amount_minor)
-      from public.fund_contributions fc
-      join public.ledger_postings p
-        on p.workspace_id = fc.workspace_id
-       and p.transaction_id = fc.transaction_id
-      where fc.workspace_id = f.workspace_id
-        and fc.fund_id = f.id
-        and p.account_id is not null
-        and p.currency = f.currency
-        and p.status in ('confirmed', 'reconciled')
-    ),
-    0
-  )::text as "currentAmountMinor"
+  ${savedAmountSql(effective)} as "currentAmountMinor"
+  ${effective ? ', f.objective, f.responsible_member_ids as "responsibleMemberIds", statement_timestamp()::text as "bookedAt"' : ''}
 from public.funds f
 where f.workspace_id = $1::uuid
   and f.id = $2::uuid`;
 
     const result = await client.query<FundRow>(sql, [workspaceId, id]);
-    const row = result.rows[0];
-    if (!row) {
-      return undefined;
-    }
-    return mapFund(row);
+    return result.rows[0];
   }
 
   public async listFunds(
@@ -250,21 +344,7 @@ select
   f.created_at as "createdAt",
   f.updated_at as "updatedAt",
   to_char(f.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt",
-  coalesce(
-    (
-      select -sum(p.amount_minor)
-      from public.fund_contributions fc
-      join public.ledger_postings p
-        on p.workspace_id = fc.workspace_id
-       and p.transaction_id = fc.transaction_id
-      where fc.workspace_id = f.workspace_id
-        and fc.fund_id = f.id
-        and p.account_id is not null
-        and p.currency = f.currency
-        and p.status in ('confirmed', 'reconciled')
-    ),
-    0
-  )::text as "currentAmountMinor"
+  ${savedAmountSql()} as "currentAmountMinor"
 from public.funds f
 where f.workspace_id = $1::uuid
   and ($2::timestamptz is null or (f.created_at, f.id) > ($2::timestamptz, $3::uuid))
@@ -292,7 +372,53 @@ limit $4`;
     fund: Fund,
     command: CreateFundContributionRequest,
   ): Promise<FundTransaction> {
-    // 1. Insert transaction row with type = 'fund_contribution'
+    return this.writeMovement(
+      client,
+      workspaceId,
+      subject,
+      fund,
+      command,
+      'fund_contribution',
+    );
+  }
+
+  public async withdrawFromFund(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    fund: Fund,
+    command: CreateFundWithdrawalRequest,
+  ): Promise<FundTransaction | undefined> {
+    // The fund lock is already held. Read the effective savings snapshot and timestamp together.
+    const row = await this.findFundRow(client, workspaceId, fund.id, true);
+    if (!row?.bookedAt || row.currentAmountMinor === undefined) {
+      throw new Error('Fund savings could not be read under lock.');
+    }
+    if (BigInt(row.currentAmountMinor) < BigInt(command.amount.amountMinor)) {
+      return undefined;
+    }
+    return this.writeMovement(
+      client,
+      workspaceId,
+      subject,
+      fund,
+      { ...command, occurredAt: row.bookedAt, notes: command.reason },
+      'adjustment',
+    );
+  }
+
+  private async writeMovement(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    fund: Fund,
+    command: CreateFundContributionRequest,
+    type: 'fund_contribution' | 'adjustment',
+  ): Promise<FundTransaction> {
+    const accountMinor =
+      type === 'adjustment'
+        ? command.amount.amountMinor
+        : negateAmountMinor(command.amount.amountMinor);
     const txnSql = `
 insert into public.transactions (
   workspace_id,
@@ -308,7 +434,7 @@ insert into public.transactions (
 values (
   $1::uuid,
   $2::uuid,
-  'fund_contribution',
+  $8,
   'confirmed',
   $3::bigint,
   $4,
@@ -338,11 +464,12 @@ returning
     const txnValues = [
       workspaceId,
       command.accountId,
-      negateAmountMinor(command.amount.amountMinor),
+      accountMinor,
       command.amount.currency,
       command.occurredAt,
       command.notes ?? null,
       subject,
+      type,
     ];
 
     const txnResult = await client.query<TransactionRow>(txnSql, txnValues);
@@ -351,9 +478,7 @@ returning
       throw new Error('Created transaction row could not be read.');
     }
 
-    // 2. Insert balanced pair of ledger postings:
-    //    account leg (leg_kind = 'account', account_id set, amount_minor negative outflow)
-    //    counter leg (leg_kind = 'external', account_id null, amount_minor positive counter-leg)
+    // The external posting has the opposite sign to the account posting.
     const postingsSql = `
 insert into public.ledger_postings (
   workspace_id,
@@ -373,10 +498,10 @@ values
       workspaceId,
       txnRow.id,
       command.accountId,
-      negateAmountMinor(command.amount.amountMinor),
+      accountMinor,
       command.amount.currency,
-      txnRow.occurredAt,
-      command.amount.amountMinor,
+      type === 'adjustment' ? command.occurredAt : txnRow.occurredAt,
+      negateAmountMinor(accountMinor),
     ];
 
     await client.query(postingsSql, postingsValues);

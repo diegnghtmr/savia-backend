@@ -53,9 +53,24 @@
       "path": "/v1/funds"
     },
     {
+      "operationId": "getFund",
+      "method": "GET",
+      "path": "/v1/funds/{fundId}"
+    },
+    {
+      "operationId": "updateFund",
+      "method": "PATCH",
+      "path": "/v1/funds/{fundId}"
+    },
+    {
       "operationId": "contributeToFund",
       "method": "POST",
       "path": "/v1/funds/{fundId}/contributions"
+    },
+    {
+      "operationId": "withdrawFromFund",
+      "method": "POST",
+      "path": "/v1/funds/{fundId}/withdrawals"
     },
     {
       "operationId": "listDebts",

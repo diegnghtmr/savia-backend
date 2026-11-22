@@ -9,7 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 
 const root = process.cwd();
 const verifier = resolve(root, 'scripts/verify-openapi.mjs');
@@ -66,6 +66,7 @@ afterEach(() => {
   for (const [path, content] of originals) writeFileSync(path, content);
   rmSync(planningSnapshot, { force: true });
 });
+afterAll(() => rmSync(testRoot, { force: true, recursive: true }));
 
 describe('executable OpenAPI authority', () => {
   it(
@@ -184,7 +185,7 @@ describe('executable OpenAPI authority', () => {
   });
 
   it.skipIf(!authorityAvailable)(
-    'mirrors budget response schemas and MCP OAuth scopes semantically',
+    'mirrors budget response schemas, L12 fund operations, and MCP OAuth scopes semantically',
     () => {
       const bundle = (path: string) => {
         const directory = mkdtempSync(
@@ -224,7 +225,26 @@ describe('executable OpenAPI authority', () => {
               .filter(([, response]) => response.content !== undefined)
               .map(([status, response]) => [status, response.content]),
           );
+        const fundOperations = (path: string) =>
+          Object.fromEntries(
+            Object.entries(paths[path] ?? {}).map(([method, operation]) => {
+              if (method === 'parameters') return [method, operation];
+              const contract = { ...operation };
+              delete contract['x-idempotency-required'];
+              return [method, contract];
+            }),
+          );
         return {
+          funds: fundOperations('/v1/funds/{fundId}'),
+          withdrawals: fundOperations('/v1/funds/{fundId}/withdrawals'),
+          fundSchemas: [
+            'Fund',
+            'FundDetail',
+            'UpdateFundRequest',
+            'PositiveFundAmount',
+            'CreateFundWithdrawalRequest',
+          ].map((name) => schemas.schemas?.[name]),
+          fundTag: schemas.headers?.ETag,
           list: responseContent(paths['/v1/budgets']?.get?.responses),
           create: responseContent(paths['/v1/budgets']?.post?.responses),
           get: responseContent(paths['/v1/budgets/{budgetId}']?.get?.responses),
