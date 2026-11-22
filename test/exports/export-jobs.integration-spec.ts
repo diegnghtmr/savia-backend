@@ -699,7 +699,9 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       }
     });
 
-    it('returns a terminal failure without a partial link', async () => {
+    it('cleans up the ZIP when signing fails without publishing a link', async () => {
+      const before = [...inMemoryStorage.uploaded.keys()];
+      const removals = inMemoryStorage.removeCallCount;
       inMemoryStorage.failSigning = true;
       const result = await create();
       expect(result.statusCode).toBe(202);
@@ -714,6 +716,179 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
         createdAt,
         ...noLink,
       });
+      expect([...inMemoryStorage.uploaded.keys()]).toEqual(before);
+      expect(inMemoryStorage.removeCallCount).toBe(removals + 1);
+    });
+
+    it('removes only the superseded ZIP when a retry completes first', async () => {
+      const before = [...inMemoryStorage.uploaded.keys()];
+      const removals = inMemoryStorage.removeCallCount;
+      const created = await create();
+      expect(created.statusCode).toBe(202);
+      const { id, createdAt } = created.json<Job>();
+      inMemoryStorage.beforeSign = async () => {
+        inMemoryStorage.beforeSign = undefined;
+        // Redeliver while the original attempt is between upload and completion.
+        await admin.query(
+          `update pgmq.q_savia_jobs set vt = clock_timestamp()
+            where message->>'job_id' = (
+              select job_id::text from public.workspace_backups where id = $1
+            )`,
+          [id],
+        );
+        expect(await runner.drainOnce()).toBe(1);
+      };
+
+      expect(await runner.drainOnce()).toBe(1);
+      const completed = await poll(id);
+      expect(completed.statusCode).toBe(200);
+      const link = completed.json<SignedLink>();
+      expect(link).toEqual({
+        id,
+        status: 'completed',
+        createdAt,
+        downloadUrl: expect.stringMatching(/^https:\/\//),
+        expiresAt: expect.any(String),
+      });
+      const winner = new URL(link.downloadUrl).pathname.slice(1);
+      expect([...inMemoryStorage.uploaded.keys()]).toEqual([...before, winner]);
+      expect(inMemoryStorage.removeCallCount).toBe(removals + 1);
+      expect(await runner.drainOnce()).toBe(0);
+    });
+
+    // Reviewer regressions (verify mwr85oza, PASS WITH FINDINGS).
+    it('denies administrators and nonmembers without changing queued data', async () => {
+      const created = await create();
+      expect(created.statusCode).toBe(202);
+      const { id } = created.json<Job>();
+      const state = async () =>
+        (
+          await admin.query(
+            `select md5(jsonb_agg(to_jsonb(b) order by b.id)::text) as hash,
+                    (select count(*) from public.jobs where type = $1) as jobs
+               from public.workspace_backups b`,
+            ['workspace_backup'],
+          )
+        ).rows[0];
+
+      const before = await state();
+      await setRole(editorId, 'administrator');
+      for (const credential of [
+        'editor-token',
+        'viewer-token',
+        'other-owner-token',
+      ]) {
+        const headers = {
+          ...ownerHeaders(),
+          authorization: `Bearer ${credential}`,
+        };
+        expectProblem(await create(headers), 403, 'forbidden');
+        expectProblem(await poll(id, headers), 403, 'forbidden');
+      }
+      expect(await state()).toEqual(before);
+      expect(await runner.drainOnce()).toBe(1);
+      expect(await runner.drainOnce()).toBe(0);
+    });
+
+    it('excludes seeded source secrets and fails oversized ZIPs without publishing', async () => {
+      const raw = 'b19-local-raw-import-marker';
+      const secret = 'b19-local-encrypted-credential-marker';
+      const agent = 'b19-local-agent-text-marker';
+      const importId = randomUUID();
+      const credentialId = randomUUID();
+      const conversationId = randomUUID();
+      const receipt = randomUUID();
+      const path = receiptStoragePath(workspace1Id, receipt);
+
+      try {
+        await admin.query(
+          `insert into public.import_jobs
+         (id, workspace_id, file_name, status, created_by)
+       values ($1, $2, $3, $4, $5)`,
+          [importId, workspace1Id, 'local.csv', 'uploaded', ownerId],
+        );
+        await admin.query(
+          `insert into public.import_job_rows
+         (workspace_id, import_job_id, row_number, raw_values, classification)
+       values ($1, $2, 2, $3, $4)`,
+          [workspace1Id, importId, JSON.stringify([raw]), 'valid'],
+        );
+        await admin.query(
+          `insert into public.ai_credentials
+         (id, workspace_id, owner_type, provider_id, credential_type,
+          encrypted_secret, masked_identifier, created_by_subject_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            credentialId,
+            workspace1Id,
+            'workspace',
+            'test-provider',
+            'api_key',
+            secret,
+            'test-mask',
+            ownerId,
+          ],
+        );
+        await admin.query(
+          `insert into public.agent_conversations
+         (id, workspace_id, created_by_subject_id, title)
+       values ($1, $2, $3, $4)`,
+          [conversationId, workspace1Id, ownerId, agent],
+        );
+
+        const { id } = (await create()).json<Job>();
+        expect(await runner.drainOnce()).toBe(1);
+        const complete = await poll(id);
+        expect(complete.statusCode).toBe(200);
+        expect(complete.json()).toMatchObject({ status: 'completed' });
+        const key = new URL(
+          complete.json<SignedLink>().downloadUrl,
+        ).pathname.slice(1);
+        const contents = readStoredZip(await inMemoryStorage.download(key));
+        expect(contents.get('workspace.json')!.toString()).toContain(importId);
+        for (const bytes of contents.values()) {
+          for (const marker of [raw, secret, agent]) {
+            expect(bytes.includes(marker)).toBe(false);
+          }
+        }
+
+        await seedReceipt(receipt, path);
+        await inMemoryStorage.upload(
+          path,
+          Buffer.alloc(50_000_001),
+          'image/png',
+        );
+        const { id: oversized, createdAt } = (await create()).json<Job>();
+        const before = [...inMemoryStorage.uploaded.keys()];
+        const signs = inMemoryStorage.signCallCount;
+
+        expect(await runner.drainOnce()).toBe(1);
+        const failed = await poll(oversized);
+        expect(failed.statusCode).toBe(200);
+        expect(failed.json()).toEqual({
+          id: oversized,
+          status: 'failed',
+          createdAt,
+          ...noLink,
+        });
+        expect([...inMemoryStorage.uploaded.keys()]).toEqual(before);
+        expect(inMemoryStorage.signCallCount).toBe(signs);
+      } finally {
+        await admin.query('delete from public.receipts where id = $1', [
+          receipt,
+        ]);
+        await admin.query(
+          'delete from public.agent_conversations where id = $1',
+          [conversationId],
+        );
+        await admin.query('delete from public.ai_credentials where id = $1', [
+          credentialId,
+        ]);
+        await admin.query('delete from public.import_jobs where id = $1', [
+          importId,
+        ]);
+        inMemoryStorage.uploaded.delete(path);
+      }
     });
   });
 
