@@ -6,6 +6,7 @@ import type {
 } from '../platform/ledger-writer.port.js';
 import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
 import { negateAmountMinor } from '../platform/amount-minor.js';
+import { fundSavedAmountSql, lockFund } from '../platform/fund-savings.js';
 import type {
   CreateTransactionCommand,
   Transaction,
@@ -14,6 +15,7 @@ import type {
 } from './ledger.port.js';
 import { IMPORT_COMMIT_BATCH_SIZE } from '../platform/import-batch-policy.js';
 import {
+  FundContributionVoidConflict,
   TransactionCategoryNotFoundError,
   TransactionPayeeNotFoundError,
   type LedgerAccountRecord,
@@ -640,6 +642,46 @@ returning
       updatedAt: toIso(row.updatedAt),
       version: row.version,
     };
+  }
+
+  public async voidFundContribution(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+    accountId: string,
+    postingStatus: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<Transaction | undefined> {
+    const linked = await client.query<{ fundId: string }>(
+      `select fund_id::text as "fundId" from public.fund_contributions
+       where workspace_id = $1::uuid and transaction_id = $2::uuid`,
+      [workspaceId, transactionId],
+    );
+    const fundId = linked.rows[0]?.fundId;
+    if (fundId) await lockFund(client, workspaceId, fundId);
+
+    const voided = await this.voidTransaction(
+      client,
+      workspaceId,
+      transactionId,
+      accountId,
+      postingStatus,
+      expectedVersions,
+    );
+    if (voided && fundId) {
+      // Check the actual projection including our uncommitted reversal. Throw
+      // before writing idempotency so the runner rolls back the whole void.
+      const savings = await client.query<{ balance: string }>(
+        `select ${fundSavedAmountSql(true)} as balance
+         from public.funds f where f.workspace_id = $1::uuid and f.id = $2::uuid`,
+        [workspaceId, fundId],
+      );
+      const balance = savings.rows[0]?.balance;
+      if (balance === undefined || BigInt(balance) < 0n) {
+        throw new FundContributionVoidConflict();
+      }
+    }
+    return voided;
   }
 
   public async voidTransaction(

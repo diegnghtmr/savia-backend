@@ -325,6 +325,7 @@ export const TRANSACTION_VOID_OUTCOMES = {
   DRAFT: 'draft',
   VOIDED: 'voided',
   RECONCILED: 'reconciled',
+  FUND_OVERDRAW: 'fund_overdraw',
 } as const;
 export type TransactionVoidOutcomeKind =
   (typeof TRANSACTION_VOID_OUTCOMES)[keyof typeof TRANSACTION_VOID_OUTCOMES];
@@ -372,7 +373,7 @@ export interface TransactionVoidReconciled {
 // voidTransaction declares 200, 401, 403, 404, 409, 412, 422 in the authority:
 // - 403 when the caller has no active role or is a viewer
 // - 404 when the transaction does not exist or belongs to another workspace (scoped SQL predicate)
-// - 409 on idempotency conflict, when transaction is draft, voided, or reconciled (Épica 5 stub)
+// - 409 on idempotency conflict, ineligible transaction status, or fund overdraw
 // - 412 when If-Match version precondition fails
 // - 422 on input validation errors (reason length bounds, missing/unknown properties)
 export type TransactionVoidOutcome =
@@ -384,7 +385,8 @@ export type TransactionVoidOutcome =
   | TransactionVoidVersionConflict
   | TransactionVoidDraft
   | TransactionVoidVoided
-  | TransactionVoidReconciled;
+  | TransactionVoidReconciled
+  | { readonly kind: typeof TRANSACTION_VOID_OUTCOMES.FUND_OVERDRAW };
 
 export interface LedgerPort {
   create(

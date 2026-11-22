@@ -1,6 +1,7 @@
 import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import { negateAmountMinor } from '../platform/amount-minor.js';
+import { fundSavedAmountSql, lockFund } from '../platform/fund-savings.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import { calculateRecommendedMonthlyContribution } from './fund-derivation.js';
 import type {
@@ -105,21 +106,6 @@ function mapFund(row: FundRow): Fund {
   };
 }
 
-// The same signed account leg represents either direction of fund movement.
-// Existing list/create reads include future-dated postings; detail/withdrawals use an effective cutoff.
-function savedAmountSql(effective = false): string {
-  return `coalesce((
-    select -sum(p.amount_minor)
-    from public.fund_contributions fc
-    join public.ledger_postings p
-      on p.workspace_id = fc.workspace_id and p.transaction_id = fc.transaction_id
-    where fc.workspace_id = f.workspace_id and fc.fund_id = f.id
-      and p.account_id is not null and p.currency = f.currency
-      and p.status in ('confirmed', 'reconciled')
-      ${effective ? 'and p.occurred_at <= statement_timestamp()' : ''}
-  ), 0)::text`;
-}
-
 export class PostgresFundAdapter implements FundStore {
   public async readActiveRole(
     client: TransactionClient,
@@ -213,10 +199,7 @@ returning
     workspaceId: string,
     id: string,
   ): Promise<void> {
-    await client.query(
-      'select pg_advisory_xact_lock(hashtextextended($1, 0))',
-      [`fund:${workspaceId.toLowerCase()}:${id.toLowerCase()}`],
-    );
+    await lockFund(client, workspaceId, id);
   }
 
   public async findFund(
@@ -315,7 +298,7 @@ select
   f.version,
   f.created_at as "createdAt",
   f.updated_at as "updatedAt",
-  ${savedAmountSql(effective)} as "currentAmountMinor"
+  ${fundSavedAmountSql(effective)} as "currentAmountMinor"
   ${effective ? ', f.objective, f.responsible_member_ids as "responsibleMemberIds", statement_timestamp()::text as "bookedAt"' : ''}
 from public.funds f
 where f.workspace_id = $1::uuid
@@ -344,7 +327,7 @@ select
   f.created_at as "createdAt",
   f.updated_at as "updatedAt",
   to_char(f.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt",
-  ${savedAmountSql()} as "currentAmountMinor"
+  ${fundSavedAmountSql()} as "currentAmountMinor"
 from public.funds f
 where f.workspace_id = $1::uuid
   and ($2::timestamptz is null or (f.created_at, f.id) > ($2::timestamptz, $3::uuid))

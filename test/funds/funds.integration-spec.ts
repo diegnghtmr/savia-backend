@@ -1755,6 +1755,61 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
       expect(await total()).toBe(balance + (posted ? 100n : 25n));
     });
 
+    it('does not let a voided future contribution reduce effective savings', async () => {
+      const { id } = (await create()).json();
+      expect((await contribute(id, '2500')).statusCode).toBe(201);
+      const future = await contribute(id, '1000', '2099-01-01T00:00:00Z');
+      expect(future.statusCode).toBe(201);
+
+      const voided = await application.inject({
+        method: 'POST',
+        url: `/v1/transactions/${future.json().id}/void`,
+        headers: { ...headers(), 'idempotency-key': randomUUID() },
+        payload: { reason: 'Cancelled before booking' },
+      });
+      expect(voided.statusCode).toBe(200);
+
+      const effectiveBefore = (await detail(id)).json().currentAmount;
+      const result = await withdraw(id, {
+        accountId: account2Id,
+        amount: money('2500'),
+        reason: 'Replace a broken appliance.',
+      });
+      expect([effectiveBefore, result.statusCode]).toEqual([
+        money('2500'),
+        201,
+      ]);
+      expect((await detail(id)).json().currentAmount).toEqual(money('0'));
+    });
+
+    it('does not overdraw a fund when voiding a contribution already withdrawn', async () => {
+      const { id } = (await create()).json();
+      const combinedBalance = async () =>
+        (await accountBalance(account1Id)) + (await accountBalance(account2Id));
+      const before = await combinedBalance();
+
+      const funding = await contribute(id, '100');
+      expect(funding.statusCode).toBe(201);
+      const withdrawal = await withdraw(id, {
+        accountId: account2Id,
+        amount: money('100'),
+        reason: 'Replace a broken appliance.',
+      });
+      expect(withdrawal.statusCode).toBe(201);
+      expect((await detail(id)).json().currentAmount).toEqual(money('0'));
+
+      const voided = await application.inject({
+        method: 'POST',
+        url: `/v1/transactions/${funding.json().id}/void`,
+        headers: { ...headers(), 'idempotency-key': randomUUID() },
+        payload: { reason: 'Wrong contribution' },
+      });
+
+      expect(voided.statusCode).toBeLessThan(500);
+      expect((await detail(id)).json().currentAmount).toEqual(money('0'));
+      expect(await combinedBalance()).toBe(before);
+    });
+
     it('preserves the legacy create response', async () => {
       const response = await create();
       expect(response.statusCode).toBe(201);
