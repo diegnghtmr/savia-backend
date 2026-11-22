@@ -2,6 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { crc32 } from 'node:zlib';
 import { Pool } from 'pg';
+import { Logger } from '@nestjs/common';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
@@ -34,6 +35,8 @@ import {
   type RenderingJobHandler,
 } from '../../src/platform/job-handler.port.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
+import { WorkerConfig } from '../../src/platform/worker-config.js';
 import { WorkerModule } from '../../src/worker.module.js';
 import {
   ExportJobHandler,
@@ -720,14 +723,60 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       expect(inMemoryStorage.removeCallCount).toBe(removals + 1);
     });
 
-    it('removes only the superseded ZIP when a retry completes first', async () => {
+    it('records signing failure independently of deletion and sanitizes cleanup logs', async () => {
+      inMemoryStorage.failSigning = true;
+      const deletion = Promise.withResolvers<void>();
+      const remove = vi
+        .spyOn(inMemoryStorage, 'remove')
+        .mockReturnValue(deletion.promise);
+      const warn = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      try {
+        const created = await create();
+        expect(created.statusCode).toBe(202);
+        const { id, createdAt } = created.json<Job>();
+        expect(await runner.drainOnce()).toBe(1);
+        const response = await poll(id);
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+          id,
+          createdAt,
+          status: 'failed',
+          ...noLink,
+        });
+        expect(remove).toHaveBeenCalledOnce();
+        expect(warn).not.toHaveBeenCalled();
+
+        deletion.reject(
+          new Error('simulated storage error with private details'),
+        );
+        await vi.waitFor(() => {
+          expect(warn.mock.calls).toEqual([
+            [
+              expect.stringMatching(
+                /^Workspace backup cleanup failed for job [0-9a-f-]+\.$/,
+              ),
+            ],
+          ]);
+        });
+      } finally {
+        deletion.resolve();
+        remove.mockRestore();
+        warn.mockRestore();
+      }
+    });
+
+    it('preserves the winning ZIP and leaves the superseded ZIP for retention', async () => {
       const before = [...inMemoryStorage.uploaded.keys()];
       const removals = inMemoryStorage.removeCallCount;
       const created = await create();
       expect(created.statusCode).toBe(202);
       const { id, createdAt } = created.json<Job>();
+      let superseded: string | undefined;
       inMemoryStorage.beforeSign = async () => {
         inMemoryStorage.beforeSign = undefined;
+        superseded = [...inMemoryStorage.uploaded.keys()].at(-1);
         // Redeliver while the original attempt is between upload and completion.
         await admin.query(
           `update pgmq.q_savia_jobs set vt = clock_timestamp()
@@ -751,9 +800,69 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
         expiresAt: expect.any(String),
       });
       const winner = new URL(link.downloadUrl).pathname.slice(1);
-      expect([...inMemoryStorage.uploaded.keys()]).toEqual([...before, winner]);
-      expect(inMemoryStorage.removeCallCount).toBe(removals + 1);
+      expect([...inMemoryStorage.uploaded.keys()]).toEqual([
+        ...before,
+        superseded,
+        winner,
+      ]);
+      expect(inMemoryStorage.removeCallCount).toBe(removals);
       expect(await runner.drainOnce()).toBe(0);
+    });
+
+    // Reviewer regression (verify mwrb1ac8).
+    it('preserves a definitive completion failure when ZIP deletion stalls', async () => {
+      const { id, createdAt } = (await create()).json<Job>();
+      const config = workerModule.get(WorkerConfig);
+      const originalTimeout = config.persistTimeoutMs;
+      Object.defineProperty(config, 'persistTimeoutMs', { value: 1_000 });
+      const remove = vi
+        .spyOn(inMemoryStorage, 'remove')
+        .mockImplementation(() => new Promise<void>(() => undefined));
+
+      const connect = PostgresPool.prototype.connect;
+      let rejected = 0;
+      const fault = vi
+        .spyOn(PostgresPool.prototype, 'connect')
+        .mockImplementation(async function (this: PostgresPool) {
+          const client = await connect.call(this);
+          return {
+            release: client.release.bind(client),
+            async query<Row extends Record<string, unknown>>(
+              sql: string,
+              args?: readonly unknown[],
+            ) {
+              if (
+                sql.includes(
+                  'update public.workspace_backups b set download_url',
+                ) &&
+                args?.[0] === id
+              ) {
+                rejected++;
+                return client.query<Row>('select 1 / 0');
+              }
+              return client.query<Row>(sql, args);
+            },
+          };
+        });
+
+      try {
+        await runner.drainOnce();
+        expect(rejected).toBe(1);
+        const response = await poll(id);
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+          id,
+          createdAt,
+          status: 'failed',
+          ...noLink,
+        });
+      } finally {
+        fault.mockRestore();
+        remove.mockRestore();
+        Object.defineProperty(config, 'persistTimeoutMs', {
+          value: originalTimeout,
+        });
+      }
     });
 
     // Reviewer regressions (verify mwr85oza, PASS WITH FINDINGS).

@@ -11,10 +11,7 @@ import {
   type RenderingJobHandler,
 } from '../platform/job-handler.port.js';
 import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
-import {
-  CommitOutcomeUnknownError,
-  type TransactionClient,
-} from '../platform/pg-transaction.js';
+import type { TransactionClient } from '../platform/pg-transaction.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
 import {
   BackupArtifactError,
@@ -27,8 +24,7 @@ import {
 } from './workspace-backup-snapshot.js';
 
 type Context = JobExecutionContext<BackupPayload>;
-interface StoredBackup {
-  readonly path: string;
+interface Signature {
   readonly url: string;
   readonly expiresAt: Date;
 }
@@ -55,7 +51,7 @@ async function bounded<T>(
 
 @Injectable()
 export class WorkspaceBackupHandler
-  implements RenderingJobHandler<BackupPayload, BackupSnapshot, StoredBackup>
+  implements RenderingJobHandler<BackupPayload, BackupSnapshot, Signature>
 {
   public readonly jobType = JOB_WRITER_TYPES.WORKSPACE_BACKUP;
   public readonly renderBudget = JOB_RENDER_BUDGETS.EXPORT_SERIALIZE;
@@ -110,7 +106,7 @@ export class WorkspaceBackupHandler
     context: Context,
     rendered: unknown,
     timeoutMs: number,
-  ): Promise<StoredBackup> {
+  ): Promise<Signature> {
     if (!Buffer.isBuffer(rendered)) {
       throw new BackupArtifactError('Invalid workspace backup artifact.');
     }
@@ -144,50 +140,45 @@ export class WorkspaceBackupHandler
         ) {
           throw new BackupArtifactError('Invalid workspace backup signature.');
         }
-        return { path, url, expiresAt };
+        return { url, expiresAt };
       });
     } catch (error) {
-      if (uploaded) await this.discardUnpublished(context, path);
+      // No completion transaction follows this throw. Do not make the runner
+      // wait for cleanup before it records the signing failure.
+      if (uploaded) void this.discardUnpublished(context, path);
       throw error;
     }
   }
 
   public async persist(
     context: Context,
-    backup: StoredBackup,
+    signature: Signature,
     client: TransactionClient,
   ): Promise<null> {
-    // The runner marks the job completed and commits only after this returns.
-    // Do not delete a ZIP based on any failure after that handoff.
-    try {
-      const result = await client.query(
-        `update public.workspace_backups b set download_url = $6, expires_at = $7
-           from public.jobs j
-          where b.id = $1::uuid and b.workspace_id = $2::uuid and b.job_id = $3::uuid
-            and b.created_by = $4::uuid and b.download_url is null
-            and (j.workspace_id, j.id, j.created_by) = (b.workspace_id, b.job_id, b.created_by)
-            and j.type = 'workspace_backup' and j.status = 'processing' and j.attempt_count = $5
-          returning b.id`,
-        [
-          context.payload.backupId,
-          context.workspaceId,
-          context.jobId,
-          context.actorId,
-          context.attemptCount,
-          backup.url,
-          backup.expiresAt,
-        ],
+    // Keep completion database-only. Orphans from persistence failures are
+    // left for the retention sweep; storage cannot mask a definitive rejection.
+    const result = await client.query(
+      `update public.workspace_backups b set download_url = $6, expires_at = $7
+         from public.jobs j
+        where b.id = $1::uuid and b.workspace_id = $2::uuid and b.job_id = $3::uuid
+          and b.created_by = $4::uuid and b.download_url is null
+          and (j.workspace_id, j.id, j.created_by) = (b.workspace_id, b.job_id, b.created_by)
+          and j.type = 'workspace_backup' and j.status = 'processing' and j.attempt_count = $5
+        returning b.id`,
+      [
+        context.payload.backupId,
+        context.workspaceId,
+        context.jobId,
+        context.actorId,
+        context.attemptCount,
+        signature.url,
+        signature.expiresAt,
+      ],
+    );
+    if (!result.rowCount) {
+      throw new DeliveryDeadlineExceededError(
+        'Workspace backup attempt no longer owns completion.',
       );
-      if (!result.rowCount) {
-        throw new DeliveryDeadlineExceededError(
-          'Workspace backup attempt no longer owns completion.',
-        );
-      }
-    } catch (error) {
-      if (!(error instanceof CommitOutcomeUnknownError)) {
-        await this.discardUnpublished(context, backup.path);
-      }
-      throw error;
     }
     return null;
   }
