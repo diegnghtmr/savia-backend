@@ -6659,6 +6659,12 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+      x-savia-mcp-tool:
+        name: get_debt_projection
+        riskClass: read
+        requiresApproval: false
+        requiredScopes:
+          - budgets:read
   /v1/debts/{debtId}/payments:
     parameters:
       - {

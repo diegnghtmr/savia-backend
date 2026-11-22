@@ -755,5 +755,106 @@ describe('RecurringService listSubscriptions database boundary and cursor traver
       expect(await read('/v1/recurring-rules')).toEqual(rules);
       expect(await read('/v1/transactions')).toEqual(ledger);
     });
+    it('allows only one cross-writer outcome, replays it, and never mutates on rejection', async () => {
+      const target = randomUUID();
+      const confirmKey = randomUUID();
+      const discardKey = randomUUID();
+      await admin.query(
+        `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+     values ($1, $2, 'editor', 'active')`,
+        [workspace1Id, subjectNonMember],
+      );
+      await admin.query(
+        `insert into public.subscriptions (id, workspace_id, created_by, status,
+       payee_name, current_amount_minor, current_currency, frequency,
+       detection_key, detection_observed_at, detection_observation_id)
+     values ($1, $2, $3, 'detected', 'Race stream', 1399, 'USD', 'monthly', $1::uuid::text, now(), $4)`,
+        [target, workspace1Id, subjectOwner, charge],
+      );
+      const snapshot = async () => {
+        const { rows } = await admin.query<{ digest: string }>(
+          `select encode(sha256(convert_to(jsonb_build_object(
+        'candidate', (select to_jsonb(s) from public.subscriptions s where id = $2),
+        'rules', (select jsonb_agg(r order by r.id) from public.recurring_rules r where workspace_id = $1),
+        'transactions', (select jsonb_agg(t order by t.id) from public.transactions t where workspace_id = $1),
+        'postings', (select jsonb_agg(p order by p.id) from public.ledger_postings p where workspace_id = $1),
+        'keys', (select jsonb_agg(i order by to_jsonb(i)::text) from public.command_idempotency_records i where workspace_id = $1)
+      )::text, 'UTF8')), 'hex') as digest`,
+          [workspace1Id, target],
+        );
+        return rows[0]!.digest;
+      };
+      const confirm = () =>
+        decide('confirm', target, {
+          'idempotency-key': confirmKey,
+          'if-match': '"1"',
+        });
+      const discard = () =>
+        decide('discard', target, {
+          authorization: `Bearer ${subjectNonMember}`,
+          'idempotency-key': discardKey,
+          'if-match': '"1"',
+        });
+      const before = await snapshot();
+      const missing = await app.inject({
+        method: 'POST',
+        url: `/v1/subscriptions/${target}/confirm`,
+        headers,
+      });
+      expect(missing.statusCode).toBe(400);
+      expect(missing.json().title).toBe('Invalid Idempotency-Key header');
+      expect(await snapshot()).toBe(before);
+      expectProblem(
+        await decide('discard', target, { 'if-match': '"9"' }),
+        412,
+        'precondition-failed',
+        'Subscription ETag does not match',
+      );
+      expect(await snapshot()).toBe(before);
+
+      const ledger = await read('/v1/transactions');
+      const rules = (await read('/v1/recurring-rules')).items;
+      const [confirmed, discarded] = await Promise.all([confirm(), discard()]);
+      expect([confirmed.statusCode, discarded.statusCode].sort()).toEqual([
+        200, 409,
+      ]);
+      const won = confirmed.statusCode === 200;
+      const winner = won ? confirmed : discarded;
+      expectProblem(
+        won ? discarded : confirmed,
+        409,
+        'conflict',
+        'Subscription is already resolved',
+      );
+      expect(winner.headers.etag).toBe('"2"');
+      expect(winner.json().status).toBe(won ? 'confirmed' : 'ignored');
+
+      const after = await snapshot();
+      const replay = await (won ? confirm() : discard());
+      expect(replay.statusCode).toBe(200);
+      expect(replay.headers.etag).toBe(winner.headers.etag);
+      expect(replay.json()).toEqual(winner.json());
+      expectProblem(
+        await (won ? discard() : confirm()),
+        409,
+        'conflict',
+        'Subscription is already resolved',
+      );
+      expect(await snapshot()).toBe(after);
+      expect(await read('/v1/transactions')).toEqual(ledger);
+      const added = (await read('/v1/recurring-rules')).items.slice(
+        rules.length,
+      );
+      expect(added).toEqual(
+        won
+          ? [
+              expect.objectContaining({
+                id: winner.json().recurringRuleId,
+                behavior: 'remind',
+              }),
+            ]
+          : [],
+      );
+    });
   });
 });
