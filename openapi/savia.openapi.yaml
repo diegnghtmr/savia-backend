@@ -23,8 +23,8 @@ components:
       description: OAuth 2.1 authorization used by remote MCP clients. The MCP transport itself is not described by this OpenAPI document.
       flows:
         authorizationCode:
-          authorizationUrl: https://api.savia.app/oauth/authorize
-          tokenUrl: https://api.savia.app/oauth/token
+          authorizationUrl: https://project-ref.supabase.co/auth/v1/oauth/authorize
+          tokenUrl: https://project-ref.supabase.co/auth/v1/oauth/token
           scopes:
             accounts:read: Read accounts and balances.
             accounts:write: Create and modify accounts.
@@ -56,7 +56,18 @@ components:
       in: header
       required: false
       schema: { type: string, examples: ['"7"'] }
+    SubscriptionId:
+      name: subscriptionId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
   headers:
+    ETag:
+      description: Current resource version.
+      schema:
+        type: string
+        examples: ['"7"']
     RetryAfter:
       description: Seconds before the client should retry.
       schema:
@@ -474,6 +485,22 @@ components:
         - investment_manual
         - receivable
         - generic
+        - informal_debt
+    InformalDebtDetails:
+      type: object
+      description: Optional details for an informal_debt account. Direction is relative to the workspace, not the signed ledger amount.
+      required: [counterpartyName, direction]
+      properties:
+        counterpartyName:
+          type: string
+          minLength: 1
+          maxLength: 120
+          examples: [Example lender]
+        direction:
+          type: string
+          description: i_owe means the workspace owes the counterparty; owed_to_me means the counterparty owes the workspace.
+          enum: [i_owe, owed_to_me]
+      additionalProperties: false
     AccountStatus:
       type: string
       enum: [active, archived, closed]
@@ -543,6 +570,9 @@ components:
         version:
           type: integer
           minimum: 1
+        informalDebt:
+          $ref: '#/components/schemas/InformalDebtDetails'
+          description: Present only for informal_debt accounts with stored details.
     Date:
       type: string
       format: date
@@ -609,6 +639,14 @@ components:
           $ref: '#/components/schemas/Money'
         availableBalance:
           $ref: '#/components/schemas/Money'
+          description: >-
+            Spendable ledger balance in the account's native currency as of asOf. It equals nativeBalance
+            (confirmed and reconciled postings) minus the sum of the absolute amounts of negative pending
+            postings on the account at or before asOf. Pending inflows do not increase it. Fund contributions
+            already booked as outflows are already reflected in the ledger and are not deducted again.
+            The result may be negative and does not represent a credit limit.
+          examples:
+            - { amountMinor: '8500', currency: USD }
         reconciledBalance:
           $ref: '#/components/schemas/Money'
         baseCurrencyEquivalent:
@@ -648,6 +686,9 @@ components:
         includeInNetWorth:
           type: boolean
           default: true
+        informalDebt:
+          $ref: '#/components/schemas/InformalDebtDetails'
+          description: Accepted only when type is informal_debt.
       additionalProperties: false
     UpdateAccountRequest:
       type: object
@@ -678,6 +719,11 @@ components:
           enum:
             - active
             - archived
+        informalDebt:
+          description: Replace details for an informal_debt account. Omit to keep them; use null to clear them.
+          anyOf:
+            - $ref: '#/components/schemas/InformalDebtDetails'
+            - type: 'null'
       additionalProperties: false
       minProperties: 1
     TransactionStatus:
@@ -1292,6 +1338,14 @@ components:
             - confirmed
             - ignored
             - cancelled
+          description: Candidate discard is represented as ignored. Existing status values remain unchanged.
+        etag:
+          type: string
+          description: Current subscription ETag, usable as If-Match on candidate commands. It may be absent on legacy representations.
+          examples: ['"1"']
+        recurringRuleId:
+          $ref: '#/components/schemas/Uuid'
+          description: Recurring rule created by confirmation. May be absent on older confirmed subscriptions.
     Job:
       type: object
       additionalProperties: false
@@ -1714,6 +1768,71 @@ components:
             - integer
             - 'null'
           minimum: 1
+      additionalProperties: false
+    DebtProjectionStrategy:
+      type: string
+      enum: [minimum_payment, snowball, avalanche, custom_extra]
+    DebtProjection:
+      type: object
+      required:
+        - debtId
+        - strategy
+        - asOf
+        - startingBalance
+        - totalInterest
+        - totalCost
+        - estimatedPayoffDate
+        - schedule
+      properties:
+        debtId:
+          $ref: '#/components/schemas/Uuid'
+        strategy:
+          $ref: '#/components/schemas/DebtProjectionStrategy'
+        asOf:
+          $ref: '#/components/schemas/Date'
+          description: Effective workspace-local calculation date.
+        startingBalance:
+          $ref: '#/components/schemas/Money'
+          description: Outstanding balance at the start of the simulation, in the debt's currency.
+        totalInterest:
+          $ref: '#/components/schemas/Money'
+          description: Projected remaining interest in the debt's currency.
+        totalCost:
+          $ref: '#/components/schemas/Money'
+          description: Projected remaining principal plus interest in the debt's currency; excludes future fees and insurance not modeled in the schedule.
+        estimatedPayoffDate:
+          $ref: '#/components/schemas/Date'
+          description: Date the projected balance reaches zero, or asOf if it is already zero.
+        schedule:
+          type: array
+          description: Projected payments in ascending due-date order; empty if already paid off.
+          items:
+            $ref: '#/components/schemas/DebtProjectionPayment'
+      additionalProperties: false
+    DebtProjectionPayment:
+      type: object
+      description: One projected installment. All amounts are in the debt's currency.
+      required:
+        - dueDate
+        - paymentAmount
+        - principalAmount
+        - interestAmount
+        - remainingBalance
+      properties:
+        dueDate:
+          $ref: '#/components/schemas/Date'
+        paymentAmount:
+          $ref: '#/components/schemas/Money'
+          description: Principal plus interest paid on this date.
+        principalAmount:
+          $ref: '#/components/schemas/Money'
+          description: Principal portion of the projected payment.
+        interestAmount:
+          $ref: '#/components/schemas/Money'
+          description: Interest portion of the projected payment.
+        remainingBalance:
+          $ref: '#/components/schemas/Money'
+          description: Principal still outstanding after the projected payment.
       additionalProperties: false
     CreateDebtPaymentRequest:
       type: object
@@ -5353,6 +5472,114 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /v1/subscriptions/{subscriptionId}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: confirmSubscription
+      security:
+        - bearerAuth: []
+      summary: Confirm a detected subscription
+      description: >-
+        A workspace writer can move a subscription from detected to confirmed. The transition creates and
+        links exactly one recurring rule from the detected account, amount and frequency, with reminder-only
+        behavior for future occurrences. This does not book or rewrite any transactions. A successful replay
+        with the same Idempotency-Key returns the original result without creating another rule. Only detected
+        subscriptions may transition; a new command on a resolved subscription returns 409.
+      tags: [Recurring]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Confirmed subscription with its new ETag and recurring rule ID.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+              examples:
+                confirmed:
+                  value:
+                    id: d8f08356-45ac-47b8-8120-09e513e4be72
+                    payeeName: Stream Service
+                    currentAmount: { amountMinor: '1399', currency: USD }
+                    frequency: monthly
+                    status: confirmed
+                    etag: '"2"'
+                    recurringRuleId: b7b236ed-f742-4d02-b2bc-d1b068c95479
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/subscriptions/{subscriptionId}/discard:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: discardSubscription
+      security:
+        - bearerAuth: []
+      summary: Discard a detected subscription
+      description: >-
+        A workspace writer can move a subscription from detected to discarded, represented by the existing
+        ignored status. No recurring rule is created, and detection does not reopen the discarded candidate.
+        A successful replay with the same Idempotency-Key returns the original result. Only detected
+        subscriptions may transition; a new command on a resolved subscription returns 409.
+      tags: [Recurring]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Discarded subscription with its new ETag.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+              examples:
+                discarded:
+                  value:
+                    id: d8f08356-45ac-47b8-8120-09e513e4be72
+                    payeeName: Stream Service
+                    currentAmount: { amountMinor: '1399', currency: USD }
+                    frequency: monthly
+                    status: ignored
+                    etag: '"2"'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
   /v1/export-jobs:
     post:
       operationId: createExportJob
@@ -6348,6 +6575,90 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
       x-idempotency-required: true
+  /v1/debts/{debtId}/projection:
+    parameters:
+      - name: debtId
+        in: path
+        required: true
+        description: Debt record ID, not the ID of a ledger account.
+        schema:
+          $ref: '#/components/schemas/Uuid'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    get:
+      operationId: getDebtProjection
+      security:
+        - bearerAuth: []
+        - cliTokenAuth: [budgets:read]
+      summary: Get a debt payoff projection by strategy
+      description: >-
+        Simulates payments starting from the selected debt's current outstanding balance and scheduled terms.
+        It uses the recorded payment frequency (monthly if not set) and holds variable rates at their current
+        value. Minimum payment uses only scheduled minimums. Custom extra applies an extra monthly payment
+        to the selected debt. Snowball and avalanche pay scheduled minimums on active debts in the same
+        workspace and currency, then put any extra monthly budget and freed minimum payments toward the
+        smallest remaining balance or highest annual rate respectively. Results include only the selected
+        debt. Compare strategies for that debt to see the difference in cost and payoff date. This operation
+        does not record or schedule actual payments.
+      tags: [Debts]
+      parameters:
+        - name: strategy
+          in: query
+          schema:
+            $ref: '#/components/schemas/DebtProjectionStrategy'
+            default: minimum_payment
+        - name: extraMonthlyPaymentMinor
+          in: query
+          description: >-
+            Additional monthly payment budget in the debt's native minor units. Required and greater than zero
+            for custom_extra. Optional for snowball and avalanche, where it defaults to zero. Omit for minimum_payment.
+          schema:
+            type: string
+            pattern: '^[0-9]+$'
+            examples: ['5000']
+      responses:
+        '200':
+          description: Estimated payoff schedule and totals for the selected debt and strategy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DebtProjection'
+              examples:
+                minimumPayment:
+                  value:
+                    debtId: 4579c927-ca34-4b0b-ba09-472a79b9d75c
+                    strategy: minimum_payment
+                    asOf: '2026-11-21'
+                    startingBalance: { amountMinor: '10000', currency: USD }
+                    totalInterest: { amountMinor: '0', currency: USD }
+                    totalCost: { amountMinor: '10000', currency: USD }
+                    estimatedPayoffDate: '2027-01-01'
+                    schedule:
+                      - dueDate: '2026-12-01'
+                        paymentAmount: { amountMinor: '5000', currency: USD }
+                        principalAmount: { amountMinor: '5000', currency: USD }
+                        interestAmount: { amountMinor: '0', currency: USD }
+                        remainingBalance: { amountMinor: '5000', currency: USD }
+                      - dueDate: '2027-01-01'
+                        paymentAmount: { amountMinor: '5000', currency: USD }
+                        principalAmount: { amountMinor: '5000', currency: USD }
+                        interestAmount: { amountMinor: '0', currency: USD }
+                        remainingBalance: { amountMinor: '0', currency: USD }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: The strategy and extra payment are incompatible, required payment terms are missing, or the selected strategy cannot pay off this debt.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /v1/debts/{debtId}/payments:
     parameters:
       - {

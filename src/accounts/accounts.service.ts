@@ -347,6 +347,13 @@ export class AccountsService implements AccountsPort {
         }
       }
 
+      if (
+        command.informalDebt !== undefined &&
+        existing.type !== 'informal_debt'
+      ) {
+        return { kind: ACCOUNT_UPDATE_OUTCOMES.INFORMAL_DEBT_NOT_ALLOWED };
+      }
+
       const updated = await this.store.updateAccount(
         client,
         workspaceId,

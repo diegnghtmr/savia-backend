@@ -1,6 +1,63 @@
 import type { Cursor, PageInfo } from '../platform/cursor.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 
+export const DEBT_PROJECTION_STRATEGIES = [
+  'minimum_payment',
+  'snowball',
+  'avalanche',
+  'custom_extra',
+] as const;
+
+export interface DebtProjectionInput {
+  readonly workspaceId: string;
+  readonly debtId: string;
+  readonly strategy: (typeof DEBT_PROJECTION_STRATEGIES)[number];
+  readonly extra: bigint;
+}
+
+export type DebtPaymentFrequency =
+  | 'daily'
+  | 'weekly'
+  | 'biweekly'
+  | 'monthly'
+  | 'quarterly'
+  | 'yearly';
+
+export interface DebtProjectionTerms extends Record<string, unknown> {
+  readonly id: string;
+  readonly asOf: string;
+  readonly balance: string;
+  readonly currency: string;
+  readonly annualRate: string;
+  readonly minimum: string | null;
+  readonly frequency: DebtPaymentFrequency | null;
+  readonly nextDue: string | null;
+  readonly startDate: string | null;
+}
+
+export interface ProjectedPayment {
+  readonly dueDate: string;
+  readonly paymentAmount: Money;
+  readonly principalAmount: Money;
+  readonly interestAmount: Money;
+  readonly remainingBalance: Money;
+}
+
+export interface DebtProjection {
+  readonly debtId: string;
+  readonly strategy: DebtProjectionInput['strategy'];
+  readonly asOf: string;
+  readonly startingBalance: Money;
+  readonly totalInterest: Money;
+  readonly totalCost: Money;
+  readonly estimatedPayoffDate: string;
+  readonly schedule: readonly ProjectedPayment[];
+}
+
+export type DebtProjectionOutcome =
+  | { readonly kind: 'ok'; readonly body: DebtProjection }
+  | { readonly kind: 'forbidden' | 'not-found' | 'unprocessable' };
+
 export const DEBTS_PORT = Symbol('DebtsPort');
 
 export const DEBT_STATUS = {
@@ -104,6 +161,10 @@ export interface DebtStore {
     workspaceId: string,
     id: string,
   ): Promise<Debt | undefined>;
+  readProjectionTerms(
+    client: TransactionClient,
+    input: DebtProjectionInput,
+  ): Promise<readonly DebtProjectionTerms[]>;
   listDebts(
     client: TransactionClient,
     query: DebtListQuery,
@@ -189,6 +250,10 @@ export interface DebtsPort {
     key: string,
   ): Promise<DebtCreateOutcome>;
   listDebts(subject: string, query: DebtListQuery): Promise<DebtListOutcome>;
+  getProjection(
+    subject: string,
+    input: DebtProjectionInput,
+  ): Promise<DebtProjectionOutcome>;
   createDebtPayment(
     subject: string,
     workspaceId: string,

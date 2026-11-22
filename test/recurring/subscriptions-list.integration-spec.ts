@@ -1,5 +1,15 @@
-// Migrations under test: 202608290004_subscriptions.sql
+// Migrations under test: 202608290004_subscriptions.sql, 202609170022_l11_subscriptions_debts.sql
+import { randomUUID } from 'node:crypto';
+import {
+  FastifyAdapter,
+  type NestFastifyApplication,
+} from '@nestjs/platform-fastify';
+import { Test } from '@nestjs/testing';
 import { Pool } from 'pg';
+import { AppModule } from '../../src/app.module.js';
+import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -512,6 +522,238 @@ describe('RecurringService listSubscriptions database boundary and cursor traver
           }),
         ).toThrow(SubscriptionQueryValidationError);
       }
+    });
+  });
+
+  describe('subscription decisions over HTTP', () => {
+    let app: NestFastifyApplication;
+    const account = id(2201);
+    const charge = id(2202);
+    const candidate = id(2203);
+    const headers = {
+      authorization: `Bearer ${subjectOwner}`,
+      'x-workspace-id': workspace1Id,
+    };
+
+    beforeAll(async () => {
+      Object.assign(process.env, {
+        JWT_ISSUER: 'https://issuer.example.test',
+        JWT_AUDIENCE: 'savia-api',
+        JWT_JWKS_URI: 'https://issuer.example.test/jwks',
+        JWT_ALGORITHMS: 'RS256',
+      });
+      const moduleRef = await Test.createTestingModule({
+        imports: [AppModule],
+      })
+        .overrideProvider(JoseJwtVerifier)
+        .useValue({
+          verify: async (sub: string) => ({
+            subject: sub,
+            authMethod: 'session',
+          }),
+        })
+        .overrideProvider(CliTokenVerifier)
+        .useValue({
+          verify: async () => ({
+            subject: subjectOwner,
+            authMethod: 'cli_token',
+            scopes: ['transactions:write'],
+          }),
+        })
+        .compile();
+      app = moduleRef.createNestApplication<NestFastifyApplication>(
+        new FastifyAdapter({ exposeHeadRoutes: false }),
+      );
+      registerProblemFilter(app);
+      await app.init();
+      await app.getHttpAdapter().getInstance().ready();
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, created_by)
+         values ($1, $2, 'Decision account', 'checking', 'USD', $3)`,
+        [account, workspace1Id, subjectOwner],
+      );
+      await admin.query(
+        `insert into public.transactions (id, workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
+         values ($1, $2, $3, 'expense', 'confirmed', -1399, 'USD', now(), $4)`,
+        [charge, workspace1Id, account, subjectOwner],
+      );
+      await admin.query(
+        `insert into public.subscriptions (
+           id, workspace_id, payee_name, current_amount_minor, current_currency, frequency,
+           status, created_by, detection_key, detection_observed_at, detection_observation_id, next_expected_at
+         ) values ($1, $2, 'Stream Service', 1399, 'USD', 'monthly', 'detected', $3, 'stream', now(), $4, now() + interval '1 month')`,
+        [candidate, workspace1Id, subjectOwner, charge],
+      );
+    });
+
+    afterAll(async () => {
+      await app?.close();
+    });
+
+    const decide = (
+      decision: 'confirm' | 'discard',
+      subscriptionId: string,
+      overrides: Record<string, string> = {},
+    ) =>
+      app.inject({
+        method: 'POST',
+        url: `/v1/subscriptions/${subscriptionId}/${decision}`,
+        headers: { ...headers, 'idempotency-key': randomUUID(), ...overrides },
+      });
+
+    const read = async (url: string) => {
+      const response = await app.inject({ method: 'GET', url, headers });
+      expect(response.statusCode).toBe(200);
+      return response.json();
+    };
+
+    const expectProblem = (
+      response: Awaited<ReturnType<typeof decide>>,
+      status: number,
+      code: string,
+      title: string,
+    ) => {
+      expect(response.statusCode).toBe(status);
+      expect(response.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      expect(response.json()).toEqual({
+        type: `https://savia.app/problems/${code}`,
+        title,
+        status,
+        code,
+        traceId: expect.any(String),
+        instance: expect.stringMatching(/^\/v1\/subscriptions\//),
+      });
+    };
+
+    it('validates the session, writer, resource and precondition without booking or resolving anything', async () => {
+      const before = await read('/v1/subscriptions?status=detected');
+      expect(before.items).toContainEqual(
+        expect.objectContaining({ id: candidate, etag: '"1"' }),
+      );
+      expectProblem(
+        await decide('confirm', candidate, {
+          authorization: 'Bearer svt_fixture',
+        }),
+        401,
+        'unauthorized',
+        'Authentication is required',
+      );
+      expectProblem(
+        await decide('discard', candidate, {
+          authorization: `Bearer ${subjectViewer}`,
+        }),
+        403,
+        'forbidden',
+        'Workspace access forbidden',
+      );
+      expectProblem(
+        await decide('discard', id(2199)),
+        404,
+        'not-found',
+        'Subscription not found',
+      );
+      expectProblem(
+        await decide('discard', candidate, { 'if-match': '"999"' }),
+        412,
+        'precondition-failed',
+        'Subscription ETag does not match',
+      );
+      expectProblem(
+        await decide('discard', candidate, { 'if-match': 'bogus' }),
+        400,
+        'bad-request',
+        'Malformed If-Match header',
+      );
+      expectProblem(
+        await decide('confirm', id(2102)),
+        422,
+        'unprocessable',
+        'Candidate cannot create a recurring rule',
+      );
+      expect(await read('/v1/subscriptions?status=detected')).toEqual(before);
+      expect((await read('/v1/recurring-rules')).items).toEqual([]);
+      expect((await read('/v1/transactions')).items).toHaveLength(1);
+    });
+
+    it('confirms a detected charge exactly once and replays the original ETag and linked reminder', async () => {
+      const ledger = await read('/v1/transactions');
+      const command = { 'idempotency-key': randomUUID(), 'if-match': '"1"' };
+      const [first, replay] = await Promise.all([
+        decide('confirm', candidate, command),
+        decide('confirm', candidate, command),
+      ]);
+      expect(first.statusCode).toBe(200);
+      expect(replay.statusCode).toBe(200);
+      expect(first.headers.etag).toBe('"2"');
+      expect(replay.headers.etag).toBe(first.headers.etag);
+      expect(first.json()).toEqual({
+        id: candidate,
+        payeeName: 'Stream Service',
+        currentAmount: { amountMinor: '1399', currency: 'USD' },
+        increasePercent: null,
+        nextExpectedAt: expect.any(String),
+        frequency: 'monthly',
+        status: 'confirmed',
+        etag: '"2"',
+        recurringRuleId: expect.any(String),
+      });
+      expect(replay.json()).toEqual(first.json());
+      expectProblem(
+        await decide('confirm', id(2103), command),
+        409,
+        'conflict',
+        'Idempotency key reused with different payload',
+      );
+      expectProblem(
+        await decide('discard', candidate),
+        409,
+        'conflict',
+        'Subscription is already resolved',
+      );
+      expect(
+        (await read('/v1/subscriptions?status=confirmed')).items,
+      ).toContainEqual(first.json());
+      expect((await read('/v1/recurring-rules')).items).toEqual([
+        expect.objectContaining({
+          id: first.json().recurringRuleId,
+          behavior: 'remind',
+          frequency: 'monthly',
+          template: expect.objectContaining({
+            accountId: account,
+            type: 'expense',
+            amount: { amountMinor: '1399', currency: 'USD' },
+          }),
+        }),
+      ]);
+      expect(await read('/v1/transactions')).toEqual(ledger);
+    });
+
+    it('discards a detected candidate as ignored without adding a rule or booking anything', async () => {
+      const rules = await read('/v1/recurring-rules');
+      const ledger = await read('/v1/transactions');
+      const command = { 'idempotency-key': randomUUID() };
+      const first = await decide('discard', id(2103), command);
+      const replay = await decide('discard', id(2103), command);
+      expect(first.statusCode).toBe(200);
+      expect(first.json()).toMatchObject({ id: id(2103), status: 'ignored' });
+      expect(first.json()).not.toHaveProperty('recurringRuleId');
+      expect(first.headers.etag).toBe(first.json().etag);
+      expect(replay.statusCode).toBe(200);
+      expect(replay.headers.etag).toBe(first.headers.etag);
+      expect(replay.json()).toEqual(first.json());
+      expectProblem(
+        await decide('confirm', id(2103)),
+        409,
+        'conflict',
+        'Subscription is already resolved',
+      );
+      expect(
+        (await read('/v1/subscriptions?status=ignored')).items,
+      ).toContainEqual(first.json());
+      expect(await read('/v1/recurring-rules')).toEqual(rules);
+      expect(await read('/v1/transactions')).toEqual(ledger);
     });
   });
 });

@@ -1,4 +1,14 @@
+// Migrations under test: 202609170022_l11_subscriptions_debts.sql
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import {
+  FastifyAdapter,
+  type NestFastifyApplication,
+} from '@nestjs/platform-fastify';
+import { Test } from '@nestjs/testing';
+import { AppModule } from '../../src/app.module.js';
+import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -253,6 +263,32 @@ describe('AccountsService getAccountBalance database boundary', () => {
       '2026-07-20T12:00:00.000Z',
     );
 
+    // A pending debit exactly on the cutoff reduces availability; later debits don't.
+    await seedPosting(
+      id(4012),
+      accountAsOfId,
+      workspace1Id,
+      'pending',
+      '-3500',
+      '2026-07-15T00:00:00.000Z',
+    );
+    await seedPosting(
+      id(4013),
+      accountAsOfId,
+      workspace1Id,
+      'pending',
+      '5000',
+      '2026-07-14T00:00:00.000Z',
+    );
+    await seedPosting(
+      id(4014),
+      accountAsOfId,
+      workspace1Id,
+      'pending',
+      '-2000',
+      '2026-07-16T00:00:00.000Z',
+    );
+
     // Account 4 (Precision): confirmed postings summing past 2^53 (9007199254740992)
     await seedPosting(
       id(4008),
@@ -297,15 +333,32 @@ describe('AccountsService getAccountBalance database boundary', () => {
     await transaction.close();
   });
 
-  it('1. asserts availableBalance key is ABSENT from the response (RULING 31)', async () => {
+  it('computes available balance from confirmed and reconciled postings, less only pending outflows up to asOf', async () => {
     const outcome = await service.readBalance(
       subjectDualMember,
       workspace1Id,
-      accountBucketMathId,
+      accountAsOfId,
+      '2026-07-15T00:00:00.000Z',
     );
     expect(outcome.kind).toBe(ACCOUNT_BALANCE_OUTCOMES.OK);
-    const body = (outcome as AccountBalanceOk).balance;
-    expect('availableBalance' in body).toBe(false);
+    const { availableBalance, ...prior } = (outcome as AccountBalanceOk)
+      .balance;
+    const money = (amountMinor: string) => ({ amountMinor, currency: 'USD' });
+    expect(availableBalance).toEqual(money('-500'));
+    expect(prior).toEqual({
+      accountId: accountAsOfId,
+      nativeBalance: money('3000'),
+      pendingBalance: money('1500'),
+      reconciledBalance: money('0'),
+      baseCurrencyEquivalent: {
+        original: money('3000'),
+        converted: money('3000'),
+        rate: '1',
+        rateDate: '2026-07-15',
+        rateSource: 'identity',
+      },
+      asOf: '2026-07-15T00:00:00.000000Z',
+    });
   });
 
   it('2. calculates bucket math with four distinct amounts (confirmed+reconciled, pending, reconciled, draft excluded)', async () => {
@@ -539,6 +592,208 @@ describe('AccountsService getAccountBalance database boundary', () => {
     expect(balance.baseCurrencyEquivalent.rate).toBe('1.0800');
     expect(balance.baseCurrencyEquivalent.rateDate).toBe('2026-07-01');
     expect(balance.baseCurrencyEquivalent.rateSource).toBe('ecb');
+  });
+  describe('account representations over HTTP', () => {
+    let app: NestFastifyApplication;
+    const headers = {
+      authorization: 'Bearer owner',
+      'x-workspace-id': workspace1Id,
+    };
+    const details = { counterpartyName: 'Example lender', direction: 'i_owe' };
+    const create = (payload: object) =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/accounts',
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+        payload,
+      });
+    const get = (url: string) => app.inject({ method: 'GET', url, headers });
+
+    beforeAll(async () => {
+      Object.assign(process.env, {
+        JWT_ISSUER: 'https://issuer.example.test',
+        JWT_AUDIENCE: 'savia-api',
+        JWT_JWKS_URI: 'https://issuer.example.test/jwks',
+        JWT_ALGORITHMS: 'RS256',
+      });
+      const moduleRef = await Test.createTestingModule({
+        imports: [AppModule],
+      })
+        .overrideProvider(JoseJwtVerifier)
+        .useValue({
+          verify: async () => ({
+            subject: subjectDualMember,
+            authMethod: 'session',
+          }),
+        })
+        .compile();
+      app = moduleRef.createNestApplication<NestFastifyApplication>(
+        new FastifyAdapter({ exposeHeadRoutes: false }),
+      );
+      registerProblemFilter(app);
+      await app.init();
+      await app.getHttpAdapter().getInstance().ready();
+    });
+    afterAll(async () => {
+      await app?.close();
+    });
+
+    const legacy = {
+      id: expect.any(String),
+      currency: 'USD',
+      type: 'checking',
+      status: 'active',
+      institution: null,
+      maskedNumber: null,
+      description: null,
+      colorToken: null,
+      icon: null,
+      includeInNetWorth: true,
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+      version: 1,
+    };
+
+    it('preserves the exact create response for an existing account type', async () => {
+      const res = await create({
+        name: 'Legacy create',
+        type: 'checking',
+        currency: 'USD',
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.headers.etag).toBe('"1"');
+      expect(res.json()).toEqual({ ...legacy, name: 'Legacy create' });
+    });
+
+    it('preserves the exact existing-type item shape on list', async () => {
+      const res = await get('/v1/accounts');
+      expect(res.statusCode).toBe(200);
+      expect(res.json().items).toContainEqual({
+        ...legacy,
+        id: accountBucketMathId,
+        name: 'Bucket Math Account',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:00.000Z',
+      });
+      expect(res.json().pageInfo).toEqual({
+        hasNextPage: false,
+        nextCursor: null,
+      });
+    });
+
+    it('creates and edits optional informal debt terms without changing ledger signs', async () => {
+      const res = await create({
+        name: 'Loan from Alex',
+        type: 'informal_debt',
+        currency: 'USD',
+        informalDebt: details,
+        openingBalance: { amountMinor: '2500', currency: 'USD' },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.json()).toEqual({
+        ...legacy,
+        name: 'Loan from Alex',
+        type: 'informal_debt',
+        informalDebt: details,
+      });
+      const url = `/v1/accounts/${res.json().id}`;
+      const replacement = { ...details, direction: 'owed_to_me' };
+      const patch = (informalDebt: object | null) =>
+        app.inject({
+          method: 'PATCH',
+          url,
+          headers,
+          payload: { informalDebt },
+        });
+      const changed = await patch(replacement);
+      expect(changed.statusCode).toBe(200);
+      expect(changed.headers.etag).toBe('"2"');
+      expect((await get(url)).json().informalDebt).toEqual(replacement);
+      expect((await get('/v1/accounts')).json().items).toContainEqual(
+        changed.json(),
+      );
+      const balance = await get(`${url}/balance`);
+      expect(balance.statusCode).toBe(200);
+      expect(balance.json().nativeBalance).toEqual({
+        amountMinor: '2500',
+        currency: 'USD',
+      });
+      const cleared = await patch(null);
+      expect(cleared.statusCode).toBe(200);
+      expect(cleared.headers.etag).toBe('"3"');
+      expect(cleared.json()).not.toHaveProperty('informalDebt');
+      const noDetails = await create({
+        name: 'Informal',
+        type: 'informal_debt',
+        currency: 'USD',
+      });
+      expect(noDetails.statusCode).toBe(201);
+      expect(noDetails.json()).not.toHaveProperty('informalDebt');
+    });
+
+    it('counts a booked fund contribution once, through its ledger debit', async () => {
+      const amount = (amountMinor: string) => ({
+        amountMinor,
+        currency: 'USD',
+      });
+      const fund = await app.inject({
+        method: 'POST',
+        url: '/v1/funds',
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+        payload: {
+          name: 'Emergency',
+          currency: 'USD',
+          targetAmount: amount('5000'),
+        },
+      });
+      expect(fund.statusCode).toBe(201);
+      const contribution = await app.inject({
+        method: 'POST',
+        url: `/v1/funds/${fund.json().id}/contributions`,
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+        payload: {
+          accountId: accountBucketMathId,
+          amount: amount('1500'),
+          occurredAt: '2026-07-05T00:00:00Z',
+        },
+      });
+      expect(contribution.statusCode).toBe(201);
+      const response = await get(
+        `/v1/accounts/${accountBucketMathId}/balance?asOf=2026-07-06T00:00:00Z`,
+      );
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        nativeBalance: amount('10500'),
+        pendingBalance: amount('2000'),
+        reconciledBalance: amount('8000'),
+        availableBalance: amount('10500'),
+      });
+    });
+
+    it('rejects informal debt details on old account types without changing their list representation', async () => {
+      const before = (await get('/v1/accounts')).json();
+      const created = await create({
+        name: 'Invalid',
+        type: 'checking',
+        currency: 'USD',
+        informalDebt: details,
+      });
+      expect(created.statusCode).toBe(422);
+      expect(created.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: `/v1/accounts/${accountBucketMathId}`,
+        headers,
+        payload: { informalDebt: details },
+      });
+      expect(patched.statusCode).toBe(422);
+      expect(patched.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      expect((await get('/v1/accounts')).json()).toEqual(before);
+    });
   });
 });
 

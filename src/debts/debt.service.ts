@@ -2,6 +2,7 @@ import { encodeCursor } from '../platform/cursor.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import { projectDebt } from './debt-projection.js';
 import {
   DEBT_OUTCOMES,
   type CreateDebtPaymentRequest,
@@ -10,6 +11,8 @@ import {
   type DebtListOutcome,
   type DebtListQuery,
   type DebtPaymentOutcome,
+  type DebtProjectionInput,
+  type DebtProjectionOutcome,
   type DebtsPort,
   type DebtStore,
 } from './debt.port.js';
@@ -187,6 +190,25 @@ export class DebtService implements DebtsPort {
         },
       };
     });
+  }
+
+  public async getProjection(
+    subject: string,
+    input: DebtProjectionInput,
+  ): Promise<DebtProjectionOutcome> {
+    const terms = await this.tx.runRead(subject, async (client) => {
+      const role = await this.store.readActiveRole(client, input.workspaceId);
+      if (
+        !['owner', 'administrator', 'editor', 'viewer'].includes(role ?? '')
+      ) {
+        return undefined;
+      }
+      return this.store.readProjectionTerms(client, input);
+    });
+    if (terms === undefined) return { kind: 'forbidden' };
+    if (terms.length === 0) return { kind: 'not-found' };
+    const body = projectDebt(terms, input);
+    return body ? { kind: 'ok', body } : { kind: 'unprocessable' };
   }
 
   public async createDebtPayment(

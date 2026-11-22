@@ -25,6 +25,10 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     [routeKey('GET', '/v1/budgets/:budgetId'), [SAVIA_SCOPES.BUDGETS_READ]],
     [routeKey('GET', '/v1/categories'), [SAVIA_SCOPES.TRANSACTIONS_READ]],
     [routeKey('GET', '/v1/debts'), [SAVIA_SCOPES.BUDGETS_READ]],
+    [
+      routeKey('GET', '/v1/debts/:debtId/projection'),
+      [SAVIA_SCOPES.BUDGETS_READ],
+    ],
     [routeKey('GET', '/v1/exchange-rates'), [SAVIA_SCOPES.TRANSACTIONS_READ]],
     [
       routeKey('GET', '/v1/export-jobs/:exportJobId'),

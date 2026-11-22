@@ -11,7 +11,9 @@ import {
 } from '../platform/field-validation.js';
 import {
   ACCOUNT_TYPE,
+  INFORMAL_DEBT_DIRECTIONS,
   type AccountType,
+  type InformalDebtDetails,
   type CreateAccountCommand,
   type UpdateAccountCommand,
 } from './accounts.port.js';
@@ -24,6 +26,7 @@ const ALLOWED_FIELDS = [
   'currency',
   'openingBalance',
   'openingBalanceDate',
+  'informalDebt',
   'institution',
   'maskedNumber',
   'description',
@@ -31,6 +34,35 @@ const ALLOWED_FIELDS = [
 ] as const;
 
 const ACCOUNT_TYPES: readonly string[] = Object.values(ACCOUNT_TYPE);
+
+function parseInformalDebt(
+  input: unknown,
+  violations: FieldViolation[],
+): InformalDebtDetails | undefined {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    add(violations, 'informalDebt', 'invalid-type', 'must be an object');
+    return undefined;
+  }
+  const details = input as Record<string, unknown>;
+  for (const key of Object.keys(details)) {
+    if (key !== 'counterpartyName' && key !== 'direction') {
+      add(violations, `informalDebt.${key}`, 'not-allowed', 'is not allowed');
+    }
+  }
+  return Object.freeze({
+    counterpartyName: nameValue(
+      details.counterpartyName,
+      'informalDebt.counterpartyName',
+      violations,
+    ),
+    direction: enumValue(
+      details.direction,
+      'informalDebt.direction',
+      INFORMAL_DEBT_DIRECTIONS,
+      violations,
+    ),
+  });
+}
 
 export class AccountCommandValidationError extends Error {
   public constructor(public readonly violations: readonly FieldViolation[]) {
@@ -61,9 +93,22 @@ export function createAccountCommand(input: unknown): CreateAccountCommand {
     'type',
     ACCOUNT_TYPES,
     violations,
-    'type must be one of cash, savings, checking, digital_wallet, credit_card, loan, investment_manual, receivable, generic',
+    `type must be one of ${ACCOUNT_TYPES.join(', ')}`,
   ) as AccountType;
   const currency = currencyValue(body.currency, 'currency', violations);
+  let informalDebt: InformalDebtDetails | undefined;
+  if ('informalDebt' in body) {
+    if (type !== ACCOUNT_TYPE.INFORMAL_DEBT) {
+      add(
+        violations,
+        'informalDebt',
+        'not-allowed',
+        'requires type informal_debt',
+      );
+    } else {
+      informalDebt = parseInformalDebt(body.informalDebt, violations);
+    }
+  }
 
   let openingBalance: CreateAccountCommand['openingBalance'] = undefined;
   let openingBalanceDate: string | null | undefined = undefined;
@@ -289,6 +334,7 @@ export function createAccountCommand(input: unknown): CreateAccountCommand {
     currency,
     ...(openingBalance !== undefined ? { openingBalance } : {}),
     ...(openingBalanceDate !== undefined ? { openingBalanceDate } : {}),
+    ...(informalDebt !== undefined ? { informalDebt } : {}),
     institution,
     maskedNumber,
     description,
@@ -303,6 +349,7 @@ const UPDATE_ALLOWED_FIELDS = [
   'description',
   'includeInNetWorth',
   'status',
+  'informalDebt',
 ] as const;
 
 const UPDATE_ACCOUNT_STATUSES = ['active', 'archived'] as const;
@@ -346,7 +393,16 @@ export function createUpdateAccountCommand(
     description?: string | null;
     includeInNetWorth?: boolean;
     status?: 'active' | 'archived';
+    informalDebt?: InformalDebtDetails | null;
   } = {};
+
+  if ('informalDebt' in body) {
+    const details =
+      body.informalDebt === null
+        ? null
+        : parseInformalDebt(body.informalDebt, violations);
+    if (details !== undefined) command.informalDebt = details;
+  }
 
   if ('name' in body) {
     command.name = nameValue(body.name, 'name', violations);

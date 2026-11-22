@@ -424,6 +424,21 @@ export class AccountsController {
       return;
     }
 
+    if (outcome.kind === ACCOUNT_UPDATE_OUTCOMES.INFORMAL_DEBT_NOT_ALLOWED) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Account update validation failed',
+        status: 422,
+        errors: [
+          {
+            field: 'informalDebt',
+            code: 'not-allowed',
+            message: 'requires type informal_debt',
+          },
+        ],
+      });
+    }
+
     if (outcome.kind === ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT) {
       sendProblem(reply, {
         type: PROBLEM_TYPES.PRECONDITION_FAILED,
