@@ -19,11 +19,11 @@ import {
   TRANSIENT_NETWORK_CODES,
   TRANSIENT_SQLSTATES,
 } from '../platform/job-retry-policy.js';
-import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { TransactionTimeoutError } from '../platform/pg-transaction.js';
 import { PostgresConfigurationError } from '../platform/postgres-config.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
+import { NotificationSettingsAuthGuard } from './notification-settings-auth.guard.js';
 import { NotificationSettingsService } from './notification-settings.service.js';
 import {
   parseNotificationPreferences,
@@ -37,7 +37,7 @@ const preconditionFailed = {
 };
 
 @Controller('v1/me')
-@UseGuards(JwtAuthGuard)
+@UseGuards(NotificationSettingsAuthGuard)
 export class NotificationSettingsController {
   public constructor(
     @Inject(NotificationSettingsService)

@@ -1,5 +1,6 @@
 // Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql,
-// 202609170014_notification_delivery.sql, 202609170016_notification_settings.sql
+// 202609170014_notification_delivery.sql, 202609170016_notification_settings.sql,
+// 202609170020_notification_mute_at_creation.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -22,6 +23,7 @@ import {
   type NotificationClaim,
 } from '../../src/notifications/notification-delivery-sweep.js';
 import { ExpoPushAdapter } from '../../src/notifications/notification-providers.adapter.js';
+import { PostgresNotificationSettingsAdapter } from '../../src/notifications/postgres-notification-settings.adapter.js';
 import type {
   JobExecutionContext,
   JobHandler,
@@ -1206,6 +1208,134 @@ describe('Notification delivery outbox', () => {
       send.mockRestore();
       vi.mocked(tesseractAdapter.runOcrStartupPreflight).mockRestore();
       await app.close();
+    }
+  });
+
+  // Reviewer regression (verify mwr36929).
+  it('preserves a registration renewed during an actual loopback Expo submission', async () => {
+    const { createServer } = await import('node:http');
+    const renewedToken = 'ExpoPushToken[reviewer-renewed]';
+    const otherToken = 'ExpoPushToken[reviewer-other]';
+    const registration = new PostgresNotificationSettingsAdapter();
+    await worker.run(recipient, (client) =>
+      registration.registerDevice(client, recipient, {
+        expoPushToken: renewedToken,
+        platform: 'ios',
+        appVersion: '1',
+      }),
+    );
+    await worker.run(recipient, (client) =>
+      registration.registerDevice(client, recipient, {
+        expoPushToken: otherToken,
+        platform: 'android',
+        appVersion: '1',
+      }),
+    );
+    const calls: { path: string; to: string; title: string }[] = [];
+    let renewed = false;
+    let serverError: unknown;
+    const server = createServer(async (request, response) => {
+      try {
+        let body = '';
+        for await (const chunk of request) body += chunk;
+        const message = JSON.parse(body);
+        calls.push({
+          path: request.url!,
+          to: message.to,
+          title: message.title,
+        });
+        if (!renewed && message.to === renewedToken) {
+          const result = await worker.run(recipient, (client) =>
+            registration.registerDevice(client, recipient, {
+              expoPushToken: renewedToken,
+              platform: 'ios',
+              appVersion: '2',
+            }),
+          );
+          renewed = result?.created === false;
+          response.end(
+            JSON.stringify({
+              data: {
+                status: 'error',
+                details: { error: 'DeviceNotRegistered' },
+              },
+            }),
+          );
+        } else {
+          response.end(
+            JSON.stringify({ data: { status: 'ok', id: 'loopback-ticket' } }),
+          );
+        }
+      } catch (error) {
+        serverError = error;
+        response.writeHead(500).end();
+      }
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Expected loopback port');
+    vi.stubEnv('SAVIA_EXPO_BASE_URL', `http://127.0.0.1:${address.port}`);
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    try {
+      const app = await NestFactory.createApplicationContext(WorkerModule, {
+        logger: false,
+      });
+      try {
+        const sweep = app.get(NotificationDeliverySweep);
+        const old = await notify('First event');
+        await sweep.runOnce();
+        expect(serverError).toBeUndefined();
+        expect(renewed).toBe(true);
+        const { rows } = await admin.query(
+          `select d.expo_token, d.app_version, d.active, n.status, n.reason
+           from public.notification_deliveries n join public.push_devices d on d.id = n.push_device_id
+           where n.notification_id = $1 order by d.expo_token`,
+          [old],
+        );
+        expect(rows).toEqual([
+          {
+            expo_token: otherToken,
+            app_version: '1',
+            active: true,
+            status: 'accepted',
+            reason: null,
+          },
+          {
+            expo_token: renewedToken,
+            app_version: '2',
+            active: true,
+            status: 'failed',
+            reason: 'device_not_registered',
+          },
+        ]);
+        await notify('Second event');
+        await sweep.runOnce();
+        expect(calls).toHaveLength(4);
+        for (const title of ['First event', 'Second event']) {
+          expect(
+            calls
+              .filter((call) => call.title === title)
+              .map(({ path, to }) => [path, to])
+              .sort(),
+          ).toEqual([
+            ['/--/api/v2/push/send', otherToken],
+            ['/--/api/v2/push/send', renewedToken],
+          ]);
+        }
+      } finally {
+        await app.close();
+      }
+    } finally {
+      preflight.mockRestore();
+      vi.unstubAllEnvs();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
     }
   });
 

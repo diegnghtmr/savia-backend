@@ -1,4 +1,5 @@
-// Migrations under test: 202609060003_notifications.sql, 202609170006_notification_production.sql, 202609170016_notification_settings.sql
+// Migrations under test: 202609060003_notifications.sql, 202609170006_notification_production.sql,
+// 202609170016_notification_settings.sql, 202609170020_notification_mute_at_creation.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -273,8 +274,34 @@ describe('Notifications integration contract and endpoint suite', () => {
       url,
       headers: { authorization: 'Bearer svt_test' },
     });
-    expect(cli.statusCode).toBe(403);
-    expect(cli.json()).toMatchObject({ code: 'forbidden' });
+    expect(cli.statusCode).toBe(401);
+    expect(cli.headers['content-type']).toContain('application/problem+json');
+    expect(cli.json()).toMatchObject({
+      type: 'https://savia.app/problems/unauthorized',
+      code: 'unauthorized',
+      title: 'Authentication is required',
+      status: 401,
+    });
+  });
+
+  it('keeps CLI denial on the existing approval detail route at 403', async () => {
+    const url = `/v1/approvals/${randomUUID()}`;
+    const denied = await application.inject({
+      method: 'GET',
+      url,
+      headers: { authorization: 'Bearer svt_test' },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(denied.json()).toMatchObject({
+      type: 'https://savia.app/problems/forbidden',
+      code: 'forbidden',
+      title: 'Forbidden',
+      status: 403,
+      instance: url,
+    });
   });
 
   describe('push devices', () => {
@@ -377,6 +404,120 @@ describe('Notifications integration contract and endpoint suite', () => {
       expect(response.body).not.toContain('Connection details');
     } finally {
       connect.mockRestore();
+    }
+  });
+
+  // Reviewer regressions (verify mwr36929).
+  it('mutes only notifications produced while the push and email channels are off', async () => {
+    const authorization = `Bearer ${user1Token}`;
+    const preferences = '/v1/me/notification-preferences';
+    const expoPushToken = `ExpoPushToken[${randomUUID()}]`;
+    const put = (on: boolean) =>
+      application.inject({
+        method: 'PUT',
+        url: preferences,
+        headers: { authorization, 'idempotency-key': randomUUID() },
+        payload: {
+          channels: { in_app: true, push: on, email: on },
+          quietHours: null,
+          digestEnabled: false,
+        },
+      });
+    const notify = (title: string) =>
+      admin.query(
+        `insert into public.notifications (subject_id, type, title)
+         values ($1, 'system', $2)`,
+        [user1Id, title],
+      );
+    const claims = async () => {
+      const seen: string[] = [];
+      for (let i = 0; i < 8; i++) {
+        const {
+          rows: [claim],
+        } = await admin.query(
+          'select * from public.claim_notification_delivery(true)',
+        );
+        if (!claim) break;
+        seen.push(`${claim.channel}:${claim.title}`);
+        await admin.query(
+          'select public.finish_notification_delivery($1, $2, $3, $4)',
+          [claim.delivery_id, claim.lease_id, 'accepted', 5],
+        );
+      }
+      return seen.sort();
+    };
+    const device = await application.inject({
+      method: 'POST',
+      url: '/v1/me/push-devices',
+      headers: { authorization },
+      payload: { expoPushToken, platform: 'ios', appVersion: '1' },
+    });
+    expect(device.statusCode).toBe(201);
+    try {
+      await admin.query(
+        'update auth.users set email_confirmed_at = now() where id = $1',
+        [user1Id],
+      );
+      expect((await put(true)).statusCode).toBe(200);
+      await notify('Reviewer before mute');
+      expect((await put(false)).statusCode).toBe(200);
+      const whileMuted = await claims();
+      await notify('Reviewer during mute');
+      expect((await put(true)).statusCode).toBe(200);
+      await notify('Reviewer after mute');
+      expect({ whileMuted, afterUnmute: await claims() }).toEqual({
+        whileMuted: ['email:Reviewer before mute', 'push:Reviewer before mute'],
+        afterUnmute: ['email:Reviewer after mute', 'push:Reviewer after mute'],
+      });
+    } finally {
+      await admin.query(
+        'delete from public.notifications where subject_id = $1',
+        [user1Id],
+      );
+      await admin.query(
+        'update auth.users set email_confirmed_at = null where id = $1',
+        [user1Id],
+      );
+      await application.inject({
+        method: 'DELETE',
+        url: `/v1/me/push-devices/${device.json().deviceId}`,
+        headers: { authorization },
+      });
+      await put(true);
+    }
+  });
+
+  it("never lets the peer query another subject's push token under application RLS", async () => {
+    const expoPushToken = `ExpoPushToken[${randomUUID()}]`;
+    const authorization = `Bearer ${user1Token}`;
+    const url = '/v1/me/push-devices';
+    const added = await application.inject({
+      method: 'POST',
+      url,
+      headers: { authorization },
+      payload: { expoPushToken, platform: 'android', appVersion: '1' },
+    });
+    expect(added.statusCode).toBe(201);
+    const { deviceId } = added.json();
+    const tx = new PgTransaction(application.get(PostgresPool));
+    const read = (subject: string) =>
+      tx.runRead(subject, (client) =>
+        client.query(
+          'select expo_token from public.push_devices where id = $1',
+          [deviceId],
+        ),
+      );
+    try {
+      expect((await read(user1Id)).rows).toEqual([
+        { expo_token: expoPushToken },
+      ]);
+      expect((await read(user2Id)).rows).toEqual([]);
+    } finally {
+      await application.inject({
+        method: 'DELETE',
+        url: `${url}/${deviceId}`,
+        headers: { authorization },
+      });
     }
   });
 
