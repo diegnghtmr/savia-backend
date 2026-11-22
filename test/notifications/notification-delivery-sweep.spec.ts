@@ -7,6 +7,7 @@ import {
 const claim = {
   delivery_id: 'stable-id',
   lease_id: 'lease-1',
+  lease_expires_at: '9999-12-31T00:00:00.000Z',
   attempts: 1,
   recipient: 'recipient@example.test',
   title: 'Savia weekly digest',

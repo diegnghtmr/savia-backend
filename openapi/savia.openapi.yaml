@@ -57,6 +57,12 @@ components:
       required: false
       schema: { type: string, examples: ['"7"'] }
   headers:
+    ETag:
+      description: Current resource version.
+      schema:
+        type: string
+        examples:
+          - '"7"'
     RetryAfter:
       description: Seconds before the client should retry.
       schema:
@@ -2447,6 +2453,102 @@ components:
         transaction:
           $ref: '#/components/schemas/CreateTransactionRequest'
       additionalProperties: false
+    NotificationPreferences:
+      type: object
+      required:
+        - channels
+        - quietHours
+        - digestEnabled
+      properties:
+        channels:
+          type: object
+          required:
+            - in_app
+            - push
+            - email
+          properties:
+            in_app:
+              type: boolean
+              description: Controls new in-app delivery without removing notifications already in the inbox.
+            push:
+              type: boolean
+              description: Controls event push delivery to registered devices.
+            email:
+              type: boolean
+              description: Controls event email delivery independently of the weekly digest.
+          additionalProperties: false
+        quietHours:
+          description: Defers external deliveries, including the digest, without delaying in-app notifications. Use null to disable.
+          anyOf:
+            - $ref: '#/components/schemas/NotificationQuietHours'
+            - type: 'null'
+        digestEnabled:
+          type: boolean
+          description: >-
+            Enables an email digest on Mondays for the previous local calendar week when there are notifications
+            to summarize. The schedule uses the profile timezone (UTC if unavailable); quiet hours may defer delivery.
+      additionalProperties: false
+    NotificationQuietHours:
+      type: object
+      description: Daily interval with an inclusive start and exclusive end. A start later than the end spans midnight. Equal times are invalid.
+      required:
+        - start
+        - end
+        - timezone
+      properties:
+        start:
+          $ref: '#/components/schemas/NotificationLocalTime'
+        end:
+          $ref: '#/components/schemas/NotificationLocalTime'
+        timezone:
+          type: string
+          minLength: 1
+          description: IANA timezone identifier used for both local times. Unknown identifiers and fixed numeric offsets are not accepted.
+          examples:
+            - America/Bogota
+            - UTC
+      additionalProperties: false
+    NotificationLocalTime:
+      type: string
+      description: Local wall-clock time in 24-hour HH:mm notation, with no offset or seconds.
+      pattern: '^(?:[01][0-9]|2[0-3]):[0-5][0-9]$'
+      examples:
+        - '22:00'
+        - '07:30'
+    RegisterPushDeviceRequest:
+      type: object
+      required:
+        - expoPushToken
+        - platform
+        - appVersion
+      properties:
+        expoPushToken:
+          type: string
+          description: Opaque Expo push token. Native APNs and FCM tokens are not accepted.
+          pattern: '^(?:ExpoPushToken|ExponentPushToken)\[[A-Za-z0-9_-]+\]$'
+          maxLength: 255
+          writeOnly: true
+        platform:
+          type: string
+          enum:
+            - ios
+            - android
+        appVersion:
+          type: string
+          description: Version of the installed app reported by the client.
+          minLength: 1
+          maxLength: 64
+          examples:
+            - '1.0.0'
+      additionalProperties: false
+    PushDeviceRegistration:
+      type: object
+      required:
+        - deviceId
+      properties:
+        deviceId:
+          $ref: '#/components/schemas/Uuid'
+      additionalProperties: false
     Notification:
       type: object
       required:
@@ -2771,6 +2873,145 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /v1/me/notification-preferences:
+    get:
+      operationId: getNotificationPreferences
+      security:
+        - bearerAuth: []
+      summary: Get current user's notification preferences
+      description: >-
+        Returns the effective preferences for the authenticated subject across all event types and workspaces.
+        If no preferences have been saved, all channels and the Monday digest are enabled and quiet hours are disabled.
+      tags:
+        - Notifications
+      responses:
+        '200':
+          description: Effective notification preferences, including a version for the defaults if no preferences have been saved.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      operationId: updateNotificationPreferences
+      security:
+        - bearerAuth: []
+      summary: Replace current user's notification preferences
+      description: >-
+        Replaces the authenticated subject's full preferences across all event types and workspaces.
+        When supplied, If-Match must match the current effective preferences, including when they are defaults.
+      tags:
+        - Notifications
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreferences'
+      responses:
+        '200':
+          description: Updated notification preferences.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          description: The timezone is not a recognized IANA identifier or quiet hours start and end at the same time.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /v1/me/push-devices:
+    post:
+      operationId: registerPushDevice
+      security:
+        - bearerAuth: []
+      summary: Register an Expo push device for the current user
+      description: >-
+        Registers the token for the authenticated subject. Registering the same token again for that subject
+        updates the platform and app version in place and returns the same device ID. A token cannot be
+        registered to multiple subjects; remove the existing registration before switching accounts.
+      tags:
+        - Notifications
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterPushDeviceRequest'
+      responses:
+        '200':
+          description: Existing registration for this subject.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushDeviceRegistration'
+        '201':
+          description: Push device registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushDeviceRegistration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The token is already registered to another subject. No registration details are returned.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /v1/me/push-devices/{deviceId}:
+    parameters:
+      - name: deviceId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Uuid'
+    delete:
+      operationId: unregisterPushDevice
+      security:
+        - bearerAuth: []
+      summary: Remove a push device registration for the current user
+      description: Removes only registrations owned by the authenticated subject. Missing and other users' devices both return 404.
+      tags:
+        - Notifications
+      responses:
+        '204':
+          description: Push device registration removed.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '503':

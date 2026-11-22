@@ -14,15 +14,30 @@ const BATCH_SIZE = 10;
 export interface NotificationClaim extends Record<string, unknown> {
   readonly delivery_id: string;
   readonly lease_id: string;
+  readonly lease_expires_at: Date | string;
   readonly attempts: number;
+  readonly channel?: 'email' | 'push' | 'digest';
   readonly recipient: string;
   readonly title: string;
   readonly body: string | null;
 }
 
-export interface NotificationDeliveryStore {
+type Submit = () => Promise<NotificationDeliveryResult | undefined>;
+
+interface NotificationDeliveryReader {
   scheduleDigests(): Promise<void>;
   claim(emailConfigured: boolean): Promise<NotificationClaim | undefined>;
+}
+
+interface FencedNotificationDeliveryStore extends NotificationDeliveryReader {
+  sendIfCurrent(
+    claim: NotificationClaim,
+    submit: Submit,
+    seconds: number,
+  ): Promise<void>;
+}
+
+interface LocalNotificationDeliveryStore extends NotificationDeliveryReader {
   finish(
     claim: NotificationClaim,
     result: NotificationDeliveryResult,
@@ -31,7 +46,7 @@ export interface NotificationDeliveryStore {
 }
 
 export class PostgresNotificationDeliveryStore
-  implements NotificationDeliveryStore
+  implements FencedNotificationDeliveryStore
 {
   public constructor(private readonly transaction: PgTransaction) {}
 
@@ -54,19 +69,26 @@ export class PostgresNotificationDeliveryStore
     }, DB_TIMEOUT_MS);
   }
 
-  public async finish(
+  public async sendIfCurrent(
     claim: NotificationClaim,
-    result: NotificationDeliveryResult,
+    submit: Submit,
     seconds: number,
   ): Promise<void> {
-    await this.transaction.runAsQueueConsumer(
-      (client) =>
-        client.query(
-          'select public.finish_notification_delivery($1, $2, $3, $4)',
-          [claim.delivery_id, claim.lease_id, result, seconds],
-        ),
-      DB_TIMEOUT_MS,
-    );
+    await this.transaction.runAsQueueConsumer(async (client) => {
+      const ids = [claim.delivery_id, claim.lease_id];
+      const { rows } = await client.query<{ locked: boolean }>(
+        'select public.lock_notification_submission($1, $2) as locked',
+        ids,
+      );
+      if (!rows[0].locked) return;
+      const result = await submit();
+      if (result !== undefined) {
+        await client.query(
+          'select public.finish_notification_submission($1, $2, $3, $4)',
+          [...ids, result, seconds],
+        );
+      }
+    }, DB_TIMEOUT_MS);
   }
 }
 
@@ -78,8 +100,11 @@ export class NotificationDeliverySweep {
   private nextDigestPoll = 0;
 
   public constructor(
-    private readonly store: NotificationDeliveryStore,
+    private readonly store:
+      | FencedNotificationDeliveryStore
+      | LocalNotificationDeliveryStore,
     private readonly email?: NotificationDeliveryPort,
+    private readonly push?: NotificationDeliveryPort,
   ) {}
 
   public start(): void {
@@ -119,21 +144,33 @@ export class NotificationDeliverySweep {
     }
     for (let index = 0; index < BATCH_SIZE && !signal?.aborted; index++) {
       const claim = await this.store.claim(this.email !== undefined);
-      // Without a provider the DB still retires tokenless pushes, but does not lease email.
-      if (claim === undefined || this.email === undefined) return;
-      const result = await this.email
-        .deliver({
-          to: claim.recipient,
-          title: claim.title,
-          body: claim.body,
-          idempotencyKey: claim.delivery_id,
-        })
-        .catch(() => 'retryable' as const);
-      await this.store.finish(
-        claim,
-        result,
-        computeBackoffBase(claim.attempts),
-      );
+      if (claim === undefined) return;
+      const provider = claim.channel === 'push' ? this.push : this.email;
+      if (provider === undefined) return;
+      const submit: Submit = async () => {
+        const deadline =
+          typeof claim.lease_expires_at === 'string'
+            ? Date.parse(claim.lease_expires_at)
+            : claim.lease_expires_at.getTime();
+        if (!(Date.now() < deadline) || signal?.aborted) return undefined;
+        try {
+          return await provider.deliver({
+            to: claim.recipient,
+            title: claim.title,
+            body: claim.body,
+            idempotencyKey: claim.delivery_id,
+          });
+        } catch {
+          return 'retryable';
+        }
+      };
+      const delay = computeBackoffBase(claim.attempts);
+      if ('sendIfCurrent' in this.store) {
+        await this.store.sendIfCurrent(claim, submit, delay);
+      } else {
+        const result = await submit();
+        if (result !== undefined) await this.store.finish(claim, result, delay);
+      }
     }
   }
 }

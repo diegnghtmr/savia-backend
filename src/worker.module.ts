@@ -7,7 +7,10 @@ import {
   NotificationDeliverySweep,
   PostgresNotificationDeliveryStore,
 } from './notifications/notification-delivery-sweep.js';
-import { ResendEmailAdapter } from './notifications/notification-providers.adapter.js';
+import {
+  ExpoPushAdapter,
+  ResendEmailAdapter,
+} from './notifications/notification-providers.adapter.js';
 import { JOB_HANDLERS } from './platform/job-handler.port.js';
 import { JobRunner } from './platform/job-runner.js';
 import { JOB_WRITER } from './platform/job-writer.port.js';
@@ -65,6 +68,7 @@ import { ReceiptWorkerModule } from './receipts/receipt-worker.module.js';
         return new NotificationDeliverySweep(
           new PostgresNotificationDeliveryStore(transaction),
           email,
+          new ExpoPushAdapter({ baseUrl: process.env.SAVIA_EXPO_BASE_URL }),
         );
       },
     },

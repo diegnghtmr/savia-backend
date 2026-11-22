@@ -118,9 +118,9 @@ function expoTicket(payload: unknown): NotificationDeliveryResult {
   const ticket = asRecord(asRecord(payload)?.data);
   if (ticket?.status === 'ok' && hasProviderId(ticket.id)) return 'accepted';
   if (ticket?.status === 'error') {
-    return asRecord(ticket.details)?.error === 'MessageRateExceeded'
-      ? 'retryable'
-      : 'rejected';
+    const error = asRecord(ticket.details)?.error;
+    if (error === 'DeviceNotRegistered') return 'device_not_registered';
+    return error === 'MessageRateExceeded' ? 'retryable' : 'rejected';
   }
   return 'retryable';
 }

@@ -1,5 +1,5 @@
 // Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql,
-// 202609170014_notification_delivery.sql
+// 202609170014_notification_delivery.sql, 202609170016_notification_settings.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -16,6 +16,12 @@ import { NestFactory } from '@nestjs/core';
 
 import { WorkerModule } from '../../src/worker.module.js';
 import { PostgresJobsAdapter } from '../../src/jobs/postgres-jobs.adapter.js';
+import {
+  NotificationDeliverySweep,
+  PostgresNotificationDeliveryStore,
+  type NotificationClaim,
+} from '../../src/notifications/notification-delivery-sweep.js';
+import { ExpoPushAdapter } from '../../src/notifications/notification-providers.adapter.js';
 import type {
   JobExecutionContext,
   JobHandler,
@@ -1147,6 +1153,134 @@ describe('Notification delivery outbox', () => {
     ]);
   });
 
+  it('sends one Expo delivery per active subject device and disables an unregistered device', async () => {
+    const accepts = 'ExpoPushToken[active]';
+    const unregisters = 'ExponentPushToken[gone]';
+    await admin.query(
+      `insert into public.push_devices (subject_id, expo_token, platform, app_version)
+       values ($1, $3, 'ios', '1'), ($1, $4, 'android', '1'), ($2, 'ExpoPushToken[peer]', 'ios', '1')`,
+      [recipient, peer, accepts, unregisters],
+    );
+    vi.spyOn(tesseractAdapter, 'runOcrStartupPreflight').mockResolvedValue(
+      undefined,
+    );
+    const send = vi
+      .spyOn(ExpoPushAdapter.prototype, 'deliver')
+      .mockImplementation(async ({ to }) =>
+        to === unregisters ? 'device_not_registered' : 'accepted',
+      );
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    try {
+      const sweep = app.get(NotificationDeliverySweep);
+      const notification = await notify('Two devices');
+      await sweep.runOnce();
+      await sweep.runOnce();
+      expect(send.mock.calls.map(([message]) => message.to).sort()).toEqual(
+        [accepts, unregisters].sort(),
+      );
+      expect(
+        send.mock.calls.every(([message]) => message.title === 'Two devices'),
+      ).toBe(true);
+      expect(
+        new Set(send.mock.calls.map(([message]) => message.idempotencyKey))
+          .size,
+      ).toBe(2);
+      const { rows } = await admin.query(
+        `select status, reason, attempts from public.notification_deliveries
+         where notification_id = $1 and push_device_id is not null order by status`,
+        [notification],
+      );
+      expect(rows).toEqual([
+        { status: 'accepted', reason: null, attempts: 1 },
+        { status: 'failed', reason: 'device_not_registered', attempts: 1 },
+      ]);
+      send.mockClear();
+      await notify('One active device');
+      await sweep.runOnce();
+      expect(send).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ to: accepts, title: 'One active device' }),
+      );
+    } finally {
+      send.mockRestore();
+      vi.mocked(tesseractAdapter.runOcrStartupPreflight).mockRestore();
+      await app.close();
+    }
+  });
+
+  it('does not submit a cached claim superseded in Postgres even if its cached deadline is in the future', async () => {
+    await notify('Fenced send');
+    const formerStore = new PostgresNotificationDeliveryStore(worker);
+    const otherStore = new PostgresNotificationDeliveryStore(worker);
+    const originalClaim = formerStore.claim.bind(formerStore);
+    const acquired = Promise.withResolvers<NotificationClaim>();
+    const release = Promise.withResolvers<void>();
+    vi.spyOn(formerStore, 'claim').mockImplementationOnce(
+      async (emailConfigured) => {
+        try {
+          const original = await originalClaim(emailConfigured);
+          if (original === undefined)
+            throw new Error('Expected an email lease.');
+          acquired.resolve(original);
+          await release.promise;
+          return original;
+        } catch (error) {
+          acquired.reject(error);
+          throw error;
+        }
+      },
+    );
+    const provider = { deliver: vi.fn(async () => 'accepted' as const) };
+    const formerRun = new NotificationDeliverySweep(
+      formerStore,
+      provider,
+    ).runOnce();
+    try {
+      const old = await acquired.promise;
+      await admin.query(
+        `update public.notification_deliveries set available_at = now() - interval '1 second' where id = $1`,
+        [old.delivery_id],
+      );
+      await new NotificationDeliverySweep(otherStore, provider).runOnce();
+    } finally {
+      release.resolve();
+      await formerRun;
+    }
+    expect(provider.deliver).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ to: email, title: 'Fenced send' }),
+    );
+  });
+
+  it('defers overnight quiet hours in their own timezone without using an attempt', async () => {
+    const {
+      rows: [zone],
+    } = await admin.query<{ name: string; ends: Date }>(
+      `select name, (((now() at time zone name)::date +
+                        case when (now() at time zone name)::time >= time '19:00' then 1 else 0 end)
+                     + time '05:00') at time zone name as ends
+         from (values ('Etc/GMT-1'), ('Etc/GMT+1'), ('Etc/GMT+8'), ('Etc/GMT-8')) zones(name)
+        where (now() at time zone name)::time < time '04:30'
+           or (now() at time zone name)::time >= time '19:30'
+        limit 1`,
+    );
+    const notification = await notify('Quiet overnight');
+    await admin.query(
+      `insert into public.notification_delivery_preferences (subject_id, quiet_start, quiet_end, quiet_timezone)
+       values ($1, '19:00', '05:00', $2)`,
+      [recipient, zone.name],
+    );
+    expect(await claim()).toBeUndefined();
+    const { rows } = await admin.query(
+      `select status, attempts, available_at from public.notification_deliveries
+        where notification_id = $1 and channel = 'email'`,
+      [notification],
+    );
+    expect(rows).toEqual([
+      { status: 'pending', attempts: 0, available_at: zone.ends },
+    ]);
+  });
+
   it('defers quiet hours without using an attempt', async () => {
     const notification = await notify('Quiet report');
     await admin.query(
@@ -1254,7 +1388,50 @@ describe('Notification delivery outbox', () => {
     expect(await claim()).toBeUndefined();
   });
 
+  it('uses the 169-hour fall-back week and falls back to UTC for an invalid profile timezone', async () => {
+    await admin.query(
+      `insert into public.profiles (id, email, display_name, locale, country_code, timezone, date_format, week_starts_on, number_format, default_currency)
+       values ($1, 'a@example.test', 'Recipient', 'en', 'US', 'America/New_York', 'YYYY-MM-DD', 1, '1,234.56', 'USD'),
+              ($2, 'b@example.test', 'Peer', 'en', 'US', 'Mars/Olympus', 'YYYY-MM-DD', 1, '1,234.56', 'USD')`,
+      [recipient, peer],
+    );
+    await notify('First New York report', '2026-10-26T04:00:00Z');
+    await notify('Last New York report', '2026-11-02T04:59:59Z');
+    await notify('First UTC report', '2026-10-26T00:00:00Z', peer);
+    await notify('Too late for UTC week', '2026-11-02T00:00:00Z', peer);
+    await admin.query(
+      `select public.prepare_notification_digests('2026-11-02T05:00:00Z')`,
+    );
+    await admin.query(
+      `update public.notification_deliveries set available_at = now() + interval '1 day' where channel <> 'digest'`,
+    );
+    const digests = [await claim(), await claim()];
+    expect(digests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          recipient: email,
+          body: '2 notifications\n- First New York report\n- Last New York report',
+        }),
+        expect.objectContaining({
+          recipient: 'notification-peer@example.test',
+          body: '1 notification\n- First UTC report',
+        }),
+      ]),
+    );
+    expect(await claim()).toBeUndefined();
+  });
+
   it('permits worker function execution but denies worker table access and application claims', async () => {
+    const privateLookup = (client: TransactionClient) =>
+      client.query('select public.notification_verified_email($1)', [
+        recipient,
+      ]);
+    await expect(
+      worker.runAsQueueConsumer(privateLookup),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(worker.run(recipient, privateLookup)).rejects.toMatchObject({
+      code: '42501',
+    });
     await expect(
       worker.runAsQueueConsumer((client) =>
         client.query('select * from public.notification_deliveries'),

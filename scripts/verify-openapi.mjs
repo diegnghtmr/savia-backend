@@ -20,7 +20,7 @@ const provenance = JSON.parse(read('openapi/provenance.json'));
 const readme = read('README.md');
 const digest = createHash('sha256').update(contract).digest('hex');
 const planningSourceSha256 =
-  'c8172a1ec54fc1ee3329cb51e3991ecf60616d748c846cd5446d00b7626fb1d6';
+  'a44b49d2f148bf5352d0651ca23c39529d45b535cd608398429c1a7ee65d3b66';
 const ciLimitation =
   'Backend CI cannot access, authenticate, or independently re-hash this local source; it validates only these committed constants and executable contract identity.';
 const httpMethods = new Set([
@@ -301,11 +301,11 @@ if (
 }
 const source = provenance.planningSource;
 if (
-  source?.revision !== '03a8d8c2aeab711dc1c27d2c13e508c006491563' ||
+  source?.revision !== '2b120f002462052de53d0184896d7800ea0c3c28' ||
   source.path !== 'docs/savia-openapi.yaml' ||
   source.sha256 !== planningSourceSha256 ||
-  source.bytes !== 183089 ||
-  source.operationCount !== 95
+  source.bytes !== 216754 ||
+  source.operationCount !== 107
 ) {
   fail('planning-source constants drifted');
 }

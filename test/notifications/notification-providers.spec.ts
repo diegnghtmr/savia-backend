@@ -199,7 +199,7 @@ describe.each(providers)(
 );
 
 it.each([
-  ['DeviceNotRegistered', 'rejected'],
+  ['DeviceNotRegistered', 'device_not_registered'],
   ['MessageRateExceeded', 'retryable'],
 ])(
   'classifies an Expo ticket error %s even on HTTP 200',

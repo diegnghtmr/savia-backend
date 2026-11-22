@@ -1,5 +1,7 @@
 import { SAVIA_SCOPES, type SaviaScope } from './savia-scopes.js';
 
+// Notification preferences and push-device routes are session-only: leave
+// GET/PUT /v1/me/notification-preferences and POST/DELETE /v1/me/push-devices unmapped.
 export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
   new Map([
     [

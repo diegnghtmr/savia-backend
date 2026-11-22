@@ -9,7 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 
 const root = process.cwd();
 const verifier = resolve(root, 'scripts/verify-openapi.mjs');
@@ -65,6 +65,10 @@ const verify = () =>
 afterEach(() => {
   for (const [path, content] of originals) writeFileSync(path, content);
   rmSync(planningSnapshot, { force: true });
+});
+
+afterAll(() => {
+  rmSync(testRoot, { recursive: true, force: true });
 });
 
 describe('executable OpenAPI authority', () => {
@@ -184,7 +188,7 @@ describe('executable OpenAPI authority', () => {
   });
 
   it.skipIf(!authorityAvailable)(
-    'mirrors budget response schemas and MCP OAuth scopes semantically',
+    'mirrors notification settings, budget response schemas and MCP OAuth scopes semantically',
     () => {
       const bundle = (path: string) => {
         const directory = mkdtempSync(
@@ -228,8 +232,22 @@ describe('executable OpenAPI authority', () => {
           list: responseContent(paths['/v1/budgets']?.get?.responses),
           create: responseContent(paths['/v1/budgets']?.post?.responses),
           get: responseContent(paths['/v1/budgets/{budgetId}']?.get?.responses),
-          oauth: (schemas.securitySchemes?.mcpOAuth as Record<string, unknown>)
-            ?.flows,
+          // B12 owns the authority's new OAuth URLs; this branch mirrors scopes only.
+          oauthScopes: (
+            schemas.securitySchemes?.mcpOAuth as {
+              flows?: { authorizationCode?: { scopes?: unknown } };
+            }
+          )?.flows?.authorizationCode?.scopes,
+          notificationPreferences: paths['/v1/me/notification-preferences'],
+          pushDevices: paths['/v1/me/push-devices'],
+          pushDevice: paths['/v1/me/push-devices/{deviceId}'],
+          notificationSchemas: [
+            'NotificationPreferences',
+            'NotificationQuietHours',
+            'NotificationLocalTime',
+            'RegisterPushDeviceRequest',
+            'PushDeviceRegistration',
+          ].map((name) => schemas.schemas?.[name]),
         };
       };
       expect(pick(mirror)).toEqual(pick(authority));

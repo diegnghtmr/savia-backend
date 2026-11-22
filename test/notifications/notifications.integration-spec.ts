@@ -1,4 +1,4 @@
-// Migrations under test: 202609060003_notifications.sql, 202609170006_notification_production.sql
+// Migrations under test: 202609060003_notifications.sql, 202609170006_notification_production.sql, 202609170016_notification_settings.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -6,10 +6,12 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
+import { SAVIA_SCOPES } from '../../src/platform/savia-scopes.js';
 import {
   PgTransaction,
   type TransactionClient,
@@ -77,6 +79,14 @@ describe('Notifications integration contract and endpoint suite', () => {
           throw new Error('token rejected');
         },
       })
+      .overrideProvider(CliTokenVerifier)
+      .useValue({
+        verify: async () => ({
+          subject: user1Id,
+          authMethod: 'cli_token',
+          scopes: Object.values(SAVIA_SCOPES),
+        }),
+      })
       .compile();
 
     application = moduleRef.createNestApplication<NestFastifyApplication>(
@@ -93,6 +103,280 @@ describe('Notifications integration contract and endpoint suite', () => {
     }
     if (admin) {
       await admin.end();
+    }
+  });
+
+  describe('notification preferences', () => {
+    const url = '/v1/me/notification-preferences';
+    const defaults = {
+      channels: { in_app: true, push: true, email: true },
+      quietHours: null,
+      digestEnabled: true,
+    };
+    const get = (token = user1Token) =>
+      application.inject({
+        method: 'GET',
+        url,
+        headers: { authorization: `Bearer ${token}` },
+      });
+    const put = (payload: object, key?: string, tag?: string) =>
+      application.inject({
+        method: 'PUT',
+        url,
+        headers: {
+          authorization: `Bearer ${user1Token}`,
+          ...(key === undefined ? {} : { 'idempotency-key': key }),
+          ...(tag === undefined ? {} : { 'if-match': tag }),
+        },
+        payload,
+      });
+
+    it('uses subject-scoped defaults, conditionally replaces them and replays the original representation', async () => {
+      const initial = await get();
+      expect(initial.statusCode).toBe(200);
+      expect(initial.json()).toEqual(defaults);
+      const tag = initial.headers.etag as string;
+      expect(tag).toMatch(/^"\d+"$/);
+      const input = {
+        ...defaults,
+        channels: { in_app: false, push: true, email: false },
+        quietHours: {
+          start: '22:00',
+          end: '07:30',
+          timezone: 'America/Bogota',
+        },
+      };
+      const key = randomUUID();
+      const saved = await put(input, key, tag);
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toEqual(input);
+      expect(saved.headers.etag).not.toBe(tag);
+      expect((await put(defaults, key, tag)).statusCode).toBe(409);
+      const next = await put(
+        defaults,
+        randomUUID(),
+        saved.headers.etag as string,
+      );
+      expect(next.statusCode).toBe(200);
+      const replay = await put(input, key, tag);
+      expect(replay.statusCode).toBe(200);
+      expect(replay.headers.etag).toBe(saved.headers.etag);
+      expect(replay.json()).toEqual(input);
+      expect((await put(input, randomUUID(), tag)).statusCode).toBe(412);
+      const current = await get();
+      expect(current.json()).toEqual(defaults);
+      expect(current.headers.etag).toBe(next.headers.etag);
+      const peer = await get(user2Token);
+      expect(peer.json()).toEqual(defaults);
+      expect(peer.headers.etag).toBe(tag);
+    });
+
+    it('rejects malformed input and invalid quiet hours without changing settings or consuming the key', async () => {
+      const before = await get();
+      const tag = before.headers.etag as string;
+      const key = randomUUID();
+      const quiet = { start: '22:00', end: '07:30', timezone: 'UTC' };
+      expect((await put(defaults)).statusCode).toBe(400);
+      expect((await put(defaults, key, 'W/"0"')).statusCode).toBe(412);
+      for (const [patch, status] of [
+        [{ start: '24:00' }, 400],
+        [{ end: '7:30' }, 400],
+        [{ end: '07:30\n' }, 400],
+        [{ timezone: '+01:00' }, 422],
+        [{ timezone: 'Mars/Olympus' }, 422],
+        [{ end: '22:00' }, 422],
+      ] as const) {
+        const response = await put(
+          { ...defaults, quietHours: { ...quiet, ...patch } },
+          key,
+          tag,
+        );
+        expect(response.statusCode).toBe(status);
+        expect(response.headers['content-type']).toContain(
+          'application/problem+json',
+        );
+        expect(response.json()).toMatchObject({ status });
+        const unchanged = await get();
+        expect(unchanged.headers.etag).toBe(tag);
+        expect(unchanged.json()).toEqual(before.json());
+      }
+      const valid = await put({ ...defaults, quietHours: quiet }, key, '*');
+      expect(valid.statusCode).toBe(200);
+      expect(valid.json()).toEqual({ ...defaults, quietHours: quiet });
+      expect((await put(defaults, randomUUID())).statusCode).toBe(200);
+    });
+
+    it('prevents a second conditional update against the same version', async () => {
+      const initial = await get();
+      const tag = initial.headers.etag as string;
+      const results = await Promise.all([
+        put(defaults, randomUUID(), tag),
+        put({ ...defaults, digestEnabled: false }, randomUUID(), tag),
+      ]);
+      expect(results.map(({ statusCode }) => statusCode).sort()).toEqual([
+        200, 412,
+      ]);
+      const winner = results.find(({ statusCode }) => statusCode === 200)!;
+      const current = await get();
+      expect(current.json()).toEqual(winner.json());
+      expect(current.headers.etag).toBe(winner.headers.etag);
+      expect((await put(defaults, randomUUID())).statusCode).toBe(200);
+    });
+
+    it('keeps existing inbox entries and suppresses new in-app delivery while disabled', async () => {
+      const publish = async (title: string) => {
+        await admin.query(
+          `insert into public.notifications (subject_id, type, title) values ($1, 'system', $2)`,
+          [user1Id, title],
+        );
+      };
+      try {
+        await publish('Before disable');
+        const noInbox = {
+          ...defaults,
+          channels: { ...defaults.channels, in_app: false },
+        };
+        expect((await put(noInbox, randomUUID())).statusCode).toBe(200);
+        await publish('While disabled');
+        expect((await put(defaults, randomUUID())).statusCode).toBe(200);
+        await publish('After enabling');
+        const inbox = await application.inject({
+          method: 'GET',
+          url: '/v1/notifications',
+          headers: { authorization: `Bearer ${user1Token}` },
+        });
+        expect(inbox.statusCode).toBe(200);
+        const titles = inbox
+          .json<{ items: { title: string }[] }>()
+          .items.map(({ title }) => title);
+        expect(titles.sort()).toEqual(['After enabling', 'Before disable']);
+      } finally {
+        await admin.query(
+          'delete from public.notifications where subject_id = $1',
+          [user1Id],
+        );
+      }
+    });
+  });
+
+  it.each([
+    ['GET', '/v1/me/notification-preferences'],
+    ['PUT', '/v1/me/notification-preferences'],
+    ['POST', '/v1/me/push-devices'],
+    ['DELETE', `/v1/me/push-devices/${randomUUID()}`],
+  ] as const)('%s %s requires a session JWT', async (method, url) => {
+    const anonymous = await application.inject({ method, url });
+    expect(anonymous.statusCode).toBe(401);
+    expect(anonymous.json()).toMatchObject({ code: 'unauthorized' });
+    const cli = await application.inject({
+      method,
+      url,
+      headers: { authorization: 'Bearer svt_test' },
+    });
+    expect(cli.statusCode).toBe(403);
+    expect(cli.json()).toMatchObject({ code: 'forbidden' });
+  });
+
+  describe('push devices', () => {
+    const url = '/v1/me/push-devices';
+    const post = (payload: object, token = user1Token) =>
+      application.inject({
+        method: 'POST',
+        url,
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+    const remove = (id: string, token = user1Token) =>
+      application.inject({
+        method: 'DELETE',
+        url: `${url}/${id}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+
+    it('deduplicates concurrent registration, never echoes the token and allows only the owner to remove it', async () => {
+      const expoPushToken = `ExponentPushToken[${randomUUID()}]`;
+      const body = { expoPushToken, platform: 'ios', appVersion: '1.0.0' };
+      const responses = await Promise.all([post(body), post(body)]);
+      expect(responses.map(({ statusCode }) => statusCode).sort()).toEqual([
+        200, 201,
+      ]);
+      const { deviceId } = responses[0].json<{ deviceId: string }>();
+      expect(deviceId).toMatch(/^[0-9a-f-]{36}$/);
+      for (const response of responses)
+        expect(response.json()).toEqual({ deviceId });
+      const update = await post({
+        ...body,
+        platform: 'android',
+        appVersion: '2.0.0',
+      });
+      expect(update.statusCode).toBe(200);
+      expect(update.json()).toEqual({ deviceId });
+      const conflict = await post(body, user2Token);
+      expect(conflict.statusCode).toBe(409);
+      expect(conflict.json()).toMatchObject({ code: 'conflict' });
+      expect(conflict.body).not.toContain(expoPushToken);
+      expect(conflict.body).not.toContain(deviceId);
+      expect((await remove(deviceId, user2Token)).statusCode).toBe(404);
+      expect((await post(body)).json()).toEqual({ deviceId });
+      const removed = await remove(deviceId);
+      expect(removed.statusCode).toBe(204);
+      expect(removed.body).toBe('');
+      expect((await remove(deviceId)).statusCode).toBe(404);
+      const transferred = await post(body, user2Token);
+      expect(transferred.statusCode).toBe(201);
+      expect(transferred.json().deviceId).not.toBe(deviceId);
+      expect(
+        (await remove(transferred.json().deviceId, user2Token)).statusCode,
+      ).toBe(204);
+    });
+
+    it('rejects malformed registrations without reserving their token', async () => {
+      const expoPushToken = `ExpoPushToken[${randomUUID()}]`;
+      const body = { expoPushToken, platform: 'android', appVersion: '1.0.0' };
+      for (const patch of [
+        { expoPushToken: 'native-token' },
+        { expoPushToken: `${expoPushToken}\n` },
+        { expoPushToken: `ExpoPushToken[${'x'.repeat(241)}]` },
+        { platform: 'web' },
+        { appVersion: '' },
+        { appVersion: 'x'.repeat(65) },
+        { other: true },
+      ]) {
+        const rejected = await post({ ...body, ...patch });
+        expect(rejected.statusCode).toBe(400);
+        expect(rejected.json()).toMatchObject({ code: 'bad-request' });
+        expect(rejected.body).not.toContain(expoPushToken);
+      }
+      expect((await remove('invalid-id')).statusCode).toBe(400);
+      const created = await post(body);
+      expect(created.statusCode).toBe(201);
+      expect((await remove(created.json().deviceId)).statusCode).toBe(204);
+    });
+  });
+
+  it('reports an unavailable database without exposing its failure details', async () => {
+    const connect = vi.spyOn(application.get(PostgresPool), 'connect');
+    connect.mockRejectedValueOnce(
+      Object.assign(new Error('Connection details must stay private'), {
+        code: 'ECONNREFUSED',
+      }),
+    );
+    try {
+      const response = await application.inject({
+        method: 'GET',
+        url: '/v1/me/notification-preferences',
+        headers: { authorization: `Bearer ${user1Token}` },
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.headers['retry-after']).toBe('5');
+      expect(response.json()).toMatchObject({
+        status: 503,
+        code: 'dependency-unavailable',
+        title: 'Notification settings unavailable',
+      });
+      expect(response.body).not.toContain('Connection details');
+    } finally {
+      connect.mockRestore();
     }
   });
 
