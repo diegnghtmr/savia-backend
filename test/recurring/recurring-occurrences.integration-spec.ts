@@ -893,6 +893,194 @@ describe('Recurring occurrence actions through HTTP and PostgreSQL', () => {
     expect(await balance(item.scheduledAt)).toBe(before);
   });
 
+  // Reviewer regressions (verify mwra06vh, PASS WITH FINDINGS).
+  it('offsets PATCH-demoted bookings at the exact original posting cutoff', async () => {
+    const rule = await createRule('confirm_automatically');
+    const beforeSlot = new Date(
+      Date.parse(rule.nextOccurrenceAt) - 1,
+    ).toISOString();
+    const patchedDate = plusHours(rule.nextOccurrenceAt, 2);
+    const cutoffs = [beforeSlot, rule.nextOccurrenceAt, patchedDate];
+    const balances = () => Promise.all(cutoffs.map(balance));
+    const baseline = await balances();
+    await materialize(rule);
+    const booked = (await list(rule.id)).items[0]!;
+    const postings = async () =>
+      (
+        await db.query<{
+          entry: Record<string, unknown> & { id: string; status: string };
+          terms: Record<string, unknown> & { amount_minor: string };
+        }>(
+          `select to_jsonb(p) as entry,
+                  (to_jsonb(p) - 'id' - 'created_at') ||
+                    jsonb_build_object('amount_minor', p.amount_minor::text) as terms
+             from public.ledger_postings p where transaction_id = $1 order by id`,
+          [booked.transactionId],
+        )
+      ).rows;
+    const originals = await postings();
+    expect(originals).toHaveLength(2);
+    expect(originals.map(({ entry }) => entry.status)).toEqual([
+      'confirmed',
+      'confirmed',
+    ]);
+    expect(await balances()).toEqual(
+      baseline.map((value, index) =>
+        index === 0 ? value : value + BigInt(amount.amountMinor),
+      ),
+    );
+    const patch = await app.inject({
+      method: 'PATCH',
+      url: `/v1/transactions/${booked.transactionId}`,
+      headers: { ...headers(), 'idempotency-key': randomUUID() },
+      payload: { occurredAt: patchedDate, status: 'pending' },
+    });
+    expect(patch.statusCode, patch.payload).toBe(200);
+    expect(patch.json()).toMatchObject({
+      occurredAt: patchedDate,
+      status: 'pending',
+    });
+    const pending = (await list(rule.id)).items[0]!;
+    const skipped = await command(pending, 'skip');
+    expect(skipped.statusCode, skipped.payload).toBe(200);
+    expect(skipped.json()).toMatchObject({
+      status: 'skipped',
+      transactionId: booked.transactionId,
+    });
+    const history = await postings();
+    expect(history).toHaveLength(4);
+    const ids = new Set(originals.map(({ entry }) => entry.id));
+    expect(history.filter(({ entry }) => ids.has(entry.id))).toEqual(originals);
+    expect(
+      history
+        .filter(({ entry }) => !ids.has(entry.id))
+        .map(({ terms }) => terms),
+    ).toEqual(
+      expect.arrayContaining(
+        originals.map(({ terms }) => ({
+          ...terms,
+          amount_minor: String(-BigInt(terms.amount_minor)),
+        })),
+      ),
+    );
+    expect(await balances()).toEqual(baseline);
+  });
+
+  it('distinguishes a forbidden creator lock from a missing rule', async () => {
+    const rule = await createRule('remind');
+    const item = (await list(rule.id)).items[0]!;
+    const payload = {
+      effectiveFrom: item.originalScheduledAt,
+      changes: { description: 'Updated' },
+    };
+    problem(
+      await change(rule, 'edit-series', payload, { actor: editor }),
+      403,
+      'Workspace access forbidden',
+    );
+    problem(
+      await change({ ...rule, id: randomUUID() }, 'edit-series', payload, {
+        actor: editor,
+      }),
+      404,
+      'Recurring resource not found',
+    );
+    problem(
+      await command(item, 'skip', randomUUID(), editor),
+      403,
+      'Workspace access forbidden',
+    );
+    problem(
+      await command(
+        { ...item, ruleId: randomUUID() },
+        'skip',
+        randomUUID(),
+        editor,
+      ),
+      404,
+      'Recurring resource not found',
+    );
+    problem(
+      await command({ ...item, id: randomUUID() }, 'skip'),
+      404,
+      'Recurring resource not found',
+    );
+    expect((await list(rule.id)).items[0]).toEqual(item);
+  });
+
+  it('lets an editor creator advance and edit their own rule, but not after demotion', async () => {
+    const created = await app.inject({
+      method: 'POST',
+      url: root,
+      headers: { ...headers(editor), 'idempotency-key': randomUUID() },
+      payload: {
+        name: 'Editor recurrence',
+        frequency: 'daily',
+        behavior: 'remind',
+        startsAt: start,
+        template: {
+          type: 'expense',
+          accountId: account,
+          amount,
+          occurredAt: start,
+        },
+      },
+    });
+    expect(created.statusCode, created.payload).toBe(201);
+    const rule = created.json<Rule>();
+    const initial = await list(rule.id);
+    const item = initial.items[0]!;
+    const delivery = (scheduledAt: string) =>
+      transaction.run(editor, (client) =>
+        materializer.materialize(client, {
+          workspaceId: workspace,
+          ruleId: rule.id,
+          subject: editor,
+          scheduledAt,
+          asOf: scheduledAt,
+        }),
+      );
+    const next = plusHours(item.originalScheduledAt, 24);
+    const payload = {
+      effectiveFrom: next,
+      changes: { description: 'Editor-created change' },
+    };
+    problem(
+      await change(rule, 'edit-series', payload),
+      403,
+      'Workspace access forbidden',
+    );
+    const allowed = await change(rule, 'edit-series', payload, {
+      actor: editor,
+      match: initial.ruleEtag,
+    });
+    expect(allowed.statusCode, allowed.payload).toBe(200);
+    expect(await delivery(item.originalScheduledAt)).toBe(item.id);
+    const advanced = await list(rule.id);
+    expect(advanced.items[1]).toMatchObject({
+      originalScheduledAt: next,
+      status: 'scheduled',
+      ...payload.changes,
+    });
+    const setRole = (role: 'viewer' | 'editor') =>
+      db.query(
+        `update public.workspace_memberships set role = $3 where workspace_id = $1 and profile_id = $2`,
+        [workspace, editor, role],
+      );
+    try {
+      await setRole('viewer');
+      problem(
+        await change(rule, 'edit-series', payload, { actor: editor }),
+        403,
+        'Workspace access forbidden',
+      );
+      expect(await delivery(next)).toBeNull();
+      expect(await list(rule.id)).toEqual(advanced);
+    } finally {
+      await setRole('editor');
+    }
+  });
+
   it('serializes confirm and skip of the same reminder so exactly one wins', async () => {
     const rule = await createRule('remind');
     await materialize(rule);
