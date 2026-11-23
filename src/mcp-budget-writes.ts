@@ -245,7 +245,7 @@ export function mcpBudgetWrites(
       snapshot: (command, args) => ({
         body: args,
         currency: command.currency,
-        sourceVersion: command.source?.version,
+        ...(command.source ? { sourceVersion: command.source.version } : {}),
         amounts: command.amounts,
       }),
       apply: (client, subject, workspaceId, command, key) =>

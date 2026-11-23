@@ -233,6 +233,7 @@ describe('ApprovalService', () => {
           kind: APPROVAL_OUTCOMES.OK,
           approval: {
             id: approvalId,
+            createdBy: subject,
             toolName: 'execute_sql',
             riskClass: 'destructive',
             argumentsHash: 'hash-abc-123',
@@ -508,7 +509,7 @@ describe('ApprovalService', () => {
         kind: APPROVAL_OUTCOMES.REPLAYED,
         status: 200,
         etag: null,
-        body: previousResponse,
+        body: { ...previousResponse, createdBy: subject },
       });
       expect(store.updateApprovalDecision).not.toHaveBeenCalled();
     });
@@ -648,7 +649,7 @@ describe('ApprovalService', () => {
         kind: APPROVAL_OUTCOMES.REPLAYED,
         status: 200,
         etag: null,
-        body: { id: approvalId, status: 'approved' },
+        body: { id: approvalId, status: 'approved', createdBy: subject },
       });
       expect(tx.state.rolledBack).toBe(true);
       expect(tx.state.committed).toBe(false);
@@ -685,7 +686,7 @@ describe('ApprovalService', () => {
   });
 
   describe('rejectApproval', () => {
-    it('rejects pending approval when argumentsHash matches and user is owner or admin', async () => {
+    it('rejects pending approval when argumentsHash matches and the subject is the creator', async () => {
       const tx = createTxMock();
       const store = createStoreMock();
       const idempotency = createIdempotencyMock();
@@ -715,11 +716,15 @@ describe('ApprovalService', () => {
       expect(tx.state.committed).toBe(true);
     });
 
-    it('returns FORBIDDEN for reject when user is editor or viewer', async () => {
-      for (const role of ['editor', 'viewer']) {
+    it('returns FORBIDDEN without writing when the subject is not the creator', async () => {
+      for (const role of ['owner', 'administrator', 'editor', 'viewer']) {
         const tx = createTxMock();
         const store = createStoreMock();
         vi.mocked(store.readActiveRole).mockResolvedValue(role);
+        vi.mocked(store.findApprovalById).mockResolvedValue({
+          ...samplePendingRecord,
+          createdBy: 'aaaa0000-0000-4000-8000-000000000001',
+        });
         const idempotency = createIdempotencyMock();
         const service = new ApprovalService(tx, store, idempotency, clock);
 
@@ -732,6 +737,8 @@ describe('ApprovalService', () => {
         );
 
         expect(outcome).toEqual({ kind: APPROVAL_OUTCOMES.FORBIDDEN });
+        expect(store.updateApprovalDecision).not.toHaveBeenCalled();
+        expect(idempotency.write).not.toHaveBeenCalled();
       }
     });
 

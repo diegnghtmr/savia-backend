@@ -23,6 +23,7 @@ export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 export interface ApprovalRequestPayload {
   readonly id: string;
+  readonly createdBy: string;
   readonly toolName: string;
   readonly riskClass: RiskClass;
   readonly argumentsHash: string;

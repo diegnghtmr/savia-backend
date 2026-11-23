@@ -224,6 +224,7 @@ describe('Approvals integration contract and endpoint suite', () => {
         );
         return {
           id,
+          createdBy: subject,
           toolName: 'create_transaction',
           riskClass: 'financial_write',
           argumentsHash: 'test-hash',
@@ -876,6 +877,66 @@ describe('Approvals integration contract and endpoint suite', () => {
       categoryId,
       planned: { amountMinor, currency: 'USD' },
       rolloverPolicy: 'none',
+    });
+
+    it('proposes a normal empty budget without a copy source', async () => {
+      const toolName = 'create_budget';
+      const { token } = await grant(
+        [],
+        editorId,
+        '25',
+        [toolName],
+        ['budgets:write'],
+      );
+      const pending = await proposal(token, {
+        toolName,
+        arguments: budgetInput(),
+      });
+
+      const done = await confirm(pending.id, pending.argumentsHash);
+      expect(done.statusCode).toBe(200);
+      expect(done.json()).toEqual({ ...pending, status: 'consumed' });
+    });
+
+    it('replays the original copy proposal after the source grows above the grant cap', async () => {
+      const toolName = 'create_budget';
+      const { token } = await grant(
+        [],
+        editorId,
+        '25',
+        [toolName],
+        ['budgets:write'],
+      );
+      const source = await request('POST', '/v1/budgets', budgetInput());
+      expect(source.statusCode).toBe(201);
+      const { id } = source.json<{ id: string }>();
+      const category = await budgetCategory();
+      const setAmount = (amount: string) =>
+        request('PUT', `/v1/budgets/${id}/allocations`, {
+          allocations: [planned(category, amount)],
+        });
+
+      expect((await setAmount('25')).statusCode).toBe(200);
+      const payload = {
+        toolName,
+        arguments: { ...budgetInput(), copyFromBudgetId: id },
+      };
+      const key = randomUUID();
+      const first = await request('POST', route, payload, token, key);
+      expect(first.statusCode).toBe(201);
+
+      expect((await setAmount('26')).statusCode).toBe(200);
+      const before = await list();
+      const replay = await request('POST', route, payload, token, key);
+      expect.soft(replay.statusCode).toBe(201);
+      expect.soft(replay.json()).toEqual(first.json());
+      expect(await list()).toEqual(before);
+
+      const pending = await get(first.json<{ id: string }>().id);
+      const stale = await confirm(pending.id, pending.argumentsHash);
+      expect(stale.statusCode).toBe(412);
+      expect(stale.json().title).toBe('Precondition failed');
+      expect(await get(pending.id)).toEqual(pending);
     });
 
     it('previews copy-from-budget allocations and rejects a changed source at confirmation', async () => {
@@ -1642,11 +1703,10 @@ describe('Approvals integration contract and endpoint suite', () => {
               headers: { ...headers, authorization: 'Bearer admin-token' },
               payload: { argumentsHash },
             });
-            expect(reject.statusCode).toBe(200);
-            expect(JSON.parse(reject.payload)).toEqual({
-              ...created.approval,
-              status: 'rejected',
-            });
+            expect(reject.statusCode).toBe(403);
+            expect(await port().getApproval(ownerId, workspace1Id, id)).toEqual(
+              stored,
+            );
           }
         } finally {
           if (mode === 'creator lost write access') await changeRole('editor');
@@ -2222,7 +2282,7 @@ describe('Approvals integration contract and endpoint suite', () => {
         method: 'POST',
         url: `/v1/approvals/${approvalId}/reject`,
         headers: {
-          authorization: 'Bearer admin-token',
+          authorization: 'Bearer owner-token',
           'x-workspace-id': workspace1Id,
           'idempotency-key': randomUUID(),
         },
@@ -2449,6 +2509,10 @@ describe('Approvals integration contract and endpoint suite', () => {
           },
         });
         expect(res.statusCode).toBe(200);
+        expect(res.json()).toMatchObject({
+          id: approvalId,
+          createdBy: ownerId,
+        });
       }
     });
 
@@ -2474,8 +2538,7 @@ describe('Approvals integration contract and endpoint suite', () => {
       expect(res.statusCode).toBe(403);
     });
 
-    it('permits confirmApproval and rejectApproval for owner and administrator', async () => {
-      // Test owner confirm
+    it('preserves legacy confirmation by an owner', async () => {
       const approvalId1 = randomUUID();
       await admin.query(
         `insert into public.approvals (
@@ -2496,28 +2559,106 @@ describe('Approvals integration contract and endpoint suite', () => {
         payload: { argumentsHash: 'hash-o' },
       });
       expect(resOwner.statusCode).toBe(200);
+    });
 
-      // Test admin reject
-      const approvalId2 = randomUUID();
-      await admin.query(
-        `insert into public.approvals (
-          id, workspace_id, tool_name, risk_class, arguments_hash, preview, status, expires_at, created_by
-        ) values (
-          $1, $2, 'export_audit', 'low_risk_write', 'hash-a', '{}'::jsonb, 'pending', now() + interval '1 day', $3
-        )`,
-        [approvalId2, workspace1Id, ownerId],
-      );
-      const resAdmin = await application.inject({
-        method: 'POST',
-        url: `/v1/approvals/${approvalId2}/reject`,
-        headers: {
-          authorization: 'Bearer admin-token',
-          'x-workspace-id': workspace1Id,
-          'idempotency-key': randomUUID(),
+    // 202609170030_creator_only_rejection.sql
+    describe('creator-only rejection', () => {
+      const argumentsHash = 'hash-creator-reject';
+      async function seed() {
+        const id = randomUUID();
+        await admin.query(
+          `insert into public.approvals
+             (id, workspace_id, tool_name, risk_class, arguments_hash, status, expires_at, created_by)
+           values ($1, $2, 'export_audit', 'low_risk_write', $3, 'pending', now() + interval '1 day', $4)`,
+          [id, workspace1Id, argumentsHash, editorId],
+        );
+        return id;
+      }
+      const reject = (id: string, token: string, key: string) =>
+        application.inject({
+          method: 'POST',
+          url: `/v1/approvals/${id}/reject`,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-workspace-id': workspace1Id,
+            'idempotency-key': key,
+          },
+          payload: { argumentsHash },
+        });
+      const digest = async (id: string, key: string) => {
+        const { rows } = await admin.query<{ digest: string }>(
+          `select md5(jsonb_build_array(to_jsonb(a), (
+             select jsonb_agg(to_jsonb(i) order by i.subject_id, i.route)
+             from public.command_idempotency_records i
+             where i.workspace_id = a.workspace_id and i.idempotency_key = $2
+           ))::text) as digest
+           from public.approvals a where a.id = $1`,
+          [id, key],
+        );
+        return rows[0]?.digest;
+      };
+
+      it.each(['owner-token', 'admin-token', 'viewer-token'])(
+        'returns 403 with no change or reservation for %s',
+        async (token) => {
+          const id = await seed();
+          const key = randomUUID();
+          const before = await digest(id, key);
+          expect(before).toEqual(expect.any(String));
+          const response = await reject(id, token, key);
+          expect.soft(response.statusCode).toBe(403);
+          expect
+            .soft(response.headers['content-type'])
+            .toContain('application/problem+json');
+          expect.soft(response.json()).toMatchObject({
+            status: 403,
+            title: 'Workspace access forbidden',
+          });
+          expect(await digest(id, key)).toBe(before);
         },
-        payload: { argumentsHash: 'hash-a' },
+      );
+
+      it('lets the creator reject and replay the same response without a second write', async () => {
+        const id = await seed();
+        const key = randomUUID();
+        const first = await reject(id, 'editor-token', key);
+        expect(first.statusCode).toBe(200);
+        expect(first.json()).toMatchObject({
+          id,
+          createdBy: editorId,
+          status: 'rejected',
+        });
+        const after = await digest(id, key);
+        const replay = await reject(id, 'editor-token', key);
+        expect(replay.statusCode).toBe(200);
+        expect(replay.json()).toEqual(first.json());
+        expect(await digest(id, key)).toBe(after);
       });
-      expect(resAdmin.statusCode).toBe(200);
+
+      it.each([ownerId, adminId])(
+        'also denies a direct application-role rejection by %s',
+        async (actor) => {
+          const id = await seed();
+          const client = await admin.connect();
+          try {
+            await client.query('begin');
+            await client.query('set local role savia_application');
+            await client.query(
+              "select set_config('app.subject_id', $1, true)",
+              [actor],
+            );
+            await expect(
+              client.query(
+                "update public.approvals set status = 'rejected', decided_by = $2, decided_at = now() where id = $1",
+                [id, actor],
+              ),
+            ).rejects.toMatchObject({ code: '42501' });
+          } finally {
+            await client.query('rollback');
+            client.release();
+          }
+        },
+      );
     });
 
     it('forbids confirmApproval and rejectApproval for editor with 403 Forbidden', async () => {
@@ -2763,6 +2904,11 @@ describe('Approvals integration contract and endpoint suite', () => {
       });
 
       expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        id: approvalId,
+        createdBy: ownerId,
+        status: 'approved',
+      });
 
       // Verify row state directly in database
       const dbRow = await admin.query<{
@@ -2797,17 +2943,22 @@ describe('Approvals integration contract and endpoint suite', () => {
         method: 'POST',
         url: `/v1/approvals/${approvalId}/reject`,
         headers: {
-          authorization: 'Bearer admin-token',
+          authorization: 'Bearer owner-token',
           'x-workspace-id': workspace1Id,
           'idempotency-key': randomUUID(),
         },
         payload: {
           argumentsHash: hash,
-          reason: 'Rejected by admin',
+          reason: 'Rejected by creator',
         },
       });
 
       expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        id: approvalId,
+        createdBy: ownerId,
+        status: 'rejected',
+      });
 
       const dbRow = await admin.query<{
         status: string;
@@ -2820,9 +2971,9 @@ describe('Approvals integration contract and endpoint suite', () => {
       );
 
       expect(dbRow.rows[0]?.status).toBe('rejected');
-      expect(dbRow.rows[0]?.decided_by).toBe(adminId);
+      expect(dbRow.rows[0]?.decided_by).toBe(ownerId);
       expect(dbRow.rows[0]?.decided_at).toBeDefined();
-      expect(dbRow.rows[0]?.decision_reason).toBe('Rejected by admin');
+      expect(dbRow.rows[0]?.decision_reason).toBe('Rejected by creator');
     });
   });
 
@@ -3016,7 +3167,7 @@ describe('Approvals integration contract and endpoint suite', () => {
         method: 'POST',
         url: `/v1/approvals/${approvalId}/reject`,
         headers: {
-          authorization: 'Bearer admin-token',
+          authorization: 'Bearer owner-token',
           'x-workspace-id': workspace1Id,
           'idempotency-key': idemKey,
         },
@@ -3069,7 +3220,7 @@ describe('Approvals integration contract and endpoint suite', () => {
         method: 'POST',
         url: `/v1/approvals/${approvalId}/reject`,
         headers: {
-          authorization: 'Bearer admin-token',
+          authorization: 'Bearer owner-token',
           'x-workspace-id': workspace1Id,
           'idempotency-key': idemKey,
         },
@@ -3123,11 +3274,11 @@ describe('Approvals integration contract and endpoint suite', () => {
             method: 'POST',
             url: `/v1/approvals/${approvalId}/reject`,
             headers: {
-              authorization: 'Bearer admin-token',
+              authorization: 'Bearer owner-token',
               'x-workspace-id': workspace1Id,
               'idempotency-key': randomUUID(),
             },
-            payload: { argumentsHash: hash, reason: 'Admin rejection' },
+            payload: { argumentsHash: hash, reason: 'Creator rejection' },
           }),
         ]);
 

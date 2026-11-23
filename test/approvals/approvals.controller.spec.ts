@@ -16,6 +16,7 @@ describe('ApprovalsController', () => {
 
   const sampleApprovalPayload: ApprovalRequestPayload = {
     id: approvalId,
+    createdBy: subject,
     toolName: 'execute_sql',
     riskClass: 'destructive',
     argumentsHash: 'hash-abc',

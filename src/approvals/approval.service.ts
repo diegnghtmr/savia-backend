@@ -101,6 +101,7 @@ function toPayload(
 ): ApprovalRequestPayload {
   return {
     id: approval.id,
+    createdBy: approval.createdBy,
     toolName: approval.toolName,
     riskClass: approval.riskClass,
     argumentsHash: approval.argumentsHash,
@@ -215,7 +216,6 @@ export class ApprovalService implements ApprovalsPort {
     });
     try {
       return await this.tx.run(subject, async (client) => {
-        if (!(await authorize(client))) return { kind: 'forbidden' };
         // PgTransaction serializes writers for the same subject, including this key.
         const existing = await this.idempotency.read(
           client,
@@ -229,6 +229,7 @@ export class ApprovalService implements ApprovalsPort {
             ? { kind: 'ok', body: existing.responseBody }
             : { kind: 'conflict' };
         }
+        if (!(await authorize(client))) return { kind: 'forbidden' };
         const kind = await validate(client);
         if (kind !== 'ok') return { kind };
         // A server-resolved snapshot binds mutable inputs to the approval,
@@ -491,7 +492,11 @@ export class ApprovalService implements ApprovalsPort {
         const role = await this.store.readActiveRole(client, workspaceId);
         const administrator = role === 'owner' || role === 'administrator';
         const confirming = targetStatus === 'approved';
-        if (!administrator && !(confirming && role === 'editor')) {
+        if (
+          !administrator &&
+          role !== 'editor' &&
+          (confirming || role !== 'viewer')
+        ) {
           return { kind: APPROVAL_OUTCOMES.FORBIDDEN };
         }
 
@@ -503,9 +508,10 @@ export class ApprovalService implements ApprovalsPort {
         const creatorConfirmation =
           confirming &&
           (approval?.channel === 'agent' || approval?.mcp !== undefined);
+        const creatorOnly = creatorConfirmation || !confirming;
         if (
-          creatorConfirmation
-            ? approval?.createdBy !== subject.toLowerCase()
+          creatorOnly && approval
+            ? approval.createdBy !== subject.toLowerCase()
             : !administrator
         ) {
           return { kind: APPROVAL_OUTCOMES.FORBIDDEN };
@@ -537,7 +543,9 @@ export class ApprovalService implements ApprovalsPort {
               kind: APPROVAL_OUTCOMES.REPLAYED,
               status: existing.responseStatus,
               etag: existing.responseEtag,
-              body: existing.responseBody,
+              body: Object.assign({}, existing.responseBody, {
+                createdBy: approval.createdBy,
+              }),
             };
           }
           return {
@@ -579,7 +587,9 @@ export class ApprovalService implements ApprovalsPort {
             kind: APPROVAL_OUTCOMES.REPLAYED,
             status: existing.responseStatus,
             etag: existing.responseEtag,
-            body: existing.responseBody,
+            body: Object.assign({}, existing.responseBody, {
+              createdBy: approval.createdBy,
+            }),
           };
         }
 
@@ -646,7 +656,9 @@ export class ApprovalService implements ApprovalsPort {
                 'replayed',
                 reread.responseStatus,
                 reread.responseEtag,
-                reread.responseBody,
+                Object.assign({}, reread.responseBody, {
+                  createdBy: responsePayload.createdBy,
+                }),
               );
             }
             throw new ApprovalDecisionRollbackError('conflict');

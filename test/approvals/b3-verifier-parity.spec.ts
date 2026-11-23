@@ -113,27 +113,30 @@ it('allows the original active editor to confirm their own agent approval', asyn
     approval: { status: 'consumed' },
   });
 });
-it.each([
-  ['confirm', 'approved'],
-  ['reject', 'rejected'],
-] as const)(
-  'preserves the MCP administrator %s transition',
-  async (target, status) => {
-    const r = await decide('mcp', target);
-    expect(r.result).toEqual({
-      kind: 'ok',
-      approval: {
-        id,
-        toolName: 'create_transaction',
-        riskClass: 'financial_write',
-        argumentsHash: hash,
-        preview: {},
-        status,
-        createdAt: '2026-01-01T00:00:00.000Z',
-        expiresAt: '2026-01-02T00:00:00.000Z',
-      },
-    });
-    expect(r.executor).not.toHaveBeenCalled();
-    expect(r.query).not.toHaveBeenCalled();
-  },
-);
+it('preserves administrator confirmation for a legacy MCP approval', async () => {
+  const r = await decide('mcp', 'confirm');
+  expect(r.result).toEqual({
+    kind: 'ok',
+    approval: {
+      id,
+      createdBy: creator,
+      toolName: 'create_transaction',
+      riskClass: 'financial_write',
+      argumentsHash: hash,
+      preview: {},
+      status: 'approved',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      expiresAt: '2026-01-02T00:00:00.000Z',
+    },
+  });
+  expect(r.executor).not.toHaveBeenCalled();
+  expect(r.query).not.toHaveBeenCalled();
+});
+
+it('refuses an MCP rejection by a different same-workspace administrator', async () => {
+  const r = await decide('mcp', 'reject');
+  expect(r.result).toEqual({ kind: 'forbidden' });
+  expect(r.update).not.toHaveBeenCalled();
+  expect(r.write).not.toHaveBeenCalled();
+  expect(r.executor).not.toHaveBeenCalled();
+});
