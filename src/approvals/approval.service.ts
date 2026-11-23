@@ -117,7 +117,8 @@ export class ApprovalDecisionRollbackError extends Error {
       | 'replayed'
       | 'conflict'
       | 'forbidden'
-      | 'invalid_action',
+      | 'invalid_action'
+      | 'precondition_failed',
     public readonly status?: number,
     public readonly etag?: string | null,
     public readonly body?: unknown,
@@ -202,6 +203,7 @@ export class ApprovalService implements ApprovalsPort {
     key: string,
     authorize: (client: TransactionClient) => Promise<boolean>,
     validate: (client: TransactionClient) => Promise<McpApprovalValidation>,
+    snapshot?: () => ApprovalAction['arguments'],
   ): Promise<McpApprovalOutcome> {
     const route = 'POST /v1/mcp/proposals';
     const canonical = canonicalArguments(args);
@@ -229,6 +231,9 @@ export class ApprovalService implements ApprovalsPort {
         }
         const kind = await validate(client);
         if (kind !== 'ok') return { kind };
+        // A server-resolved snapshot binds mutable inputs to the approval,
+        // while proposal replay is still keyed to the caller's original input.
+        const bound = snapshot ? canonicalArguments(snapshot()) : canonical;
         const approval = await this.insertPendingApproval(
           client,
           workspaceId,
@@ -238,10 +243,10 @@ export class ApprovalService implements ApprovalsPort {
             expiresAt: new Date(this.clock().getTime() + 15 * 60_000),
             mcp: {
               grantId,
-              arguments: JSON.parse(canonical) as ApprovalAction['arguments'],
+              arguments: JSON.parse(bound) as ApprovalAction['arguments'],
             },
           },
-          hash,
+          snapshot ? hashArguments(bound) : hash,
         );
         if (!approval) return { kind: 'conflict' };
         const { id, preview, expiresAt } = toPayload(approval);

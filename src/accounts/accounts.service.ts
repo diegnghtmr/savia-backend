@@ -69,6 +69,11 @@ export interface AccountsStore {
     accountId: string,
     asOf?: string,
   ): Promise<AccountBalance | undefined>;
+  canCreateAccount?(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateAccountCommand,
+  ): Promise<boolean>;
   createAccount(
     client: TransactionClient,
     workspaceId: string,
@@ -202,16 +207,30 @@ export class AccountsService implements AccountsPort {
     });
   }
 
+  public async canCreateWithin(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateAccountCommand,
+  ): Promise<boolean> {
+    return (
+      (await this.store.canCreateAccount?.(client, workspaceId, command)) ===
+      true
+    );
+  }
+
   public async create(
     subject: string,
     workspaceId: string,
     command: CreateAccountCommand,
     idempotencyKey: string,
+    boundClient?: TransactionClient,
   ): Promise<AccountCreateOutcome> {
     const route = 'POST /v1/accounts';
     const fingerprint = computeRequestFingerprint(command);
 
-    return this.transaction.run(subject, async (client) => {
+    const apply = async (
+      client: TransactionClient,
+    ): Promise<AccountCreateOutcome> => {
       // Check authorization before any write
       const role = await this.store.readActiveRole(client, workspaceId);
       if (
@@ -301,7 +320,10 @@ export class AccountsService implements AccountsPort {
         kind: ACCOUNT_CREATE_OUTCOMES.CREATED,
         account,
       };
-    });
+    };
+    return boundClient
+      ? apply(boundClient)
+      : this.transaction.run(subject, apply);
   }
 
   public async update(

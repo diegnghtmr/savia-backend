@@ -2,6 +2,9 @@ import { Module } from '@nestjs/common';
 
 import { AccountsModule } from './accounts/accounts.module.js';
 import { ACCOUNTS_PORT, type AccountsPort } from './accounts/accounts.port.js';
+import { AccountsService } from './accounts/accounts.service.js';
+import { CurrencyExchangeService } from './ledger/currency-exchange.service.js';
+import { mcpAccountWrites } from './mcp-account-writes.js';
 import { CatalogsModule } from './catalogs/catalogs.module.js';
 import { CurrenciesModule } from './currencies/currencies.module.js';
 import { HealthController } from './health/health.controller.js';
@@ -36,12 +39,17 @@ import { ReconciliationsModule } from './reconciliations/reconciliations.module.
 import { ExportsModule } from './exports/exports.module.js';
 import { ImportsModule } from './imports/imports.module.js';
 import { BudgetsModule } from './budgets/budgets.module.js';
+import { BudgetService } from './budgets/budget.service.js';
+import { mcpBudgetWrites } from './mcp-budget-writes.js';
 import { FundsModule } from './funds/funds.module.js';
+import { FundService } from './funds/fund.service.js';
+import { mcpFundReportWrites } from './mcp-fund-report-writes.js';
 import { DebtsModule } from './debts/debts.module.js';
 import { AnalyticsModule } from './analytics/analytics.module.js';
 import { ScenariosModule } from './scenarios/scenarios.module.js';
 import { ForecastsModule } from './forecasts/forecasts.module.js';
 import { ReportsModule } from './reports/reports.module.js';
+import { ReportService } from './reports/report.service.js';
 import { ApprovalsModule } from './approvals/approvals.module.js';
 import {
   APPROVALS_PORT,
@@ -56,6 +64,12 @@ import { ReceiptsModule } from './receipts/receipts.module.js';
 import { McpGrantsModule } from './mcp/mcp-grants.module.js';
 import { McpProposalsModule } from './mcp/mcp-proposals.module.js';
 import { MCP_TOOL_ANNOTATIONS } from './mcp/mcp-tools.js';
+import {
+  isTransactionMutation,
+  proposeTransactionMutation,
+  transactionMutationExecutor,
+  TRANSACTION_MUTATIONS,
+} from './mcp-transaction-mutations.js';
 import type { McpGrantAuthorizer } from './mcp/mcp-grant.port.js';
 import { PostgresMcpGrantAdapter } from './mcp/postgres-mcp-grant.adapter.js';
 import { AICredentialsModule } from './ai/ai-credentials.module.js';
@@ -173,13 +187,36 @@ function hasUnsupportedTransferFields(args: ToolArguments): boolean {
 }
 
 const approvals = ApprovalsModule.withExecutors(
-  [LedgerModule, McpGrantsModule],
+  [
+    LedgerModule,
+    McpGrantsModule,
+    AccountsModule,
+    BudgetsModule,
+    FundsModule,
+    ReportsModule,
+  ],
   {
-    inject: [LEDGER_WRITER, TransferService, PostgresMcpGrantAdapter],
+    inject: [
+      LEDGER_WRITER,
+      TransferService,
+      PostgresMcpGrantAdapter,
+      TransactionService,
+      AccountsService,
+      CurrencyExchangeService,
+      BudgetService,
+      FundService,
+      ReportService,
+    ],
     useFactory: (
       writer: LedgerWriter,
       transfers: TransferService,
       grants: McpGrantAuthorizer,
+      transactions: TransactionService,
+      accounts: AccountsService,
+      exchanges: CurrencyExchangeService,
+      budgets: BudgetService,
+      funds: FundService,
+      reports: ReportService,
     ) => {
       const create: ApprovalExecutor = async (
         client,
@@ -251,29 +288,80 @@ const approvals = ApprovalsModule.withExecutors(
       return new Map<string, ApprovalExecutor>([
         [CREATE_TRANSACTION_TOOL, create],
         [CREATE_TRANSFER_TOOL, transfer],
+        ...[
+          ...mcpAccountWrites(accounts, exchanges, grants),
+          ...mcpBudgetWrites(budgets, grants),
+          ...mcpFundReportWrites(funds, reports, grants),
+        ].map(({ name, execute }) => [name, execute] as const),
+        ...TRANSACTION_MUTATIONS.map(
+          (tool) =>
+            [
+              tool,
+              transactionMutationExecutor(tool, transactions, grants),
+            ] as const,
+        ),
       ]);
     },
   },
 );
 
-const proposalImports = [approvals, McpGrantsModule, LedgerModule];
+const proposalImports = [
+  approvals,
+  McpGrantsModule,
+  LedgerModule,
+  AccountsModule,
+  BudgetsModule,
+  FundsModule,
+  ReportsModule,
+];
 const mcpProposals = McpProposalsModule.withPort(proposalImports, {
   inject: [
     ApprovalService,
     PostgresMcpGrantAdapter,
     TransactionService,
     TransferService,
+    AccountsService,
+    CurrencyExchangeService,
+    BudgetService,
+    FundService,
+    ReportService,
   ],
   useFactory: (
     requests: ApprovalService,
     grants: McpGrantAuthorizer,
     transactions: TransactionService,
     transfers: TransferService,
+    accounts: AccountsService,
+    exchanges: CurrencyExchangeService,
+    budgets: BudgetService,
+    funds: FundService,
+    reports: ReportService,
   ) => {
+    const writes = new Map(
+      [
+        ...mcpAccountWrites(accounts, exchanges, grants),
+        ...mcpBudgetWrites(budgets, grants),
+        ...mcpFundReportWrites(funds, reports, grants),
+      ].map(({ name, propose }) => [name, propose(requests)]),
+    );
     return async (identity, workspaceId, toolName, args, key) => {
+      const write = writes.get(toolName);
+      if (write) return write(identity, workspaceId, toolName, args, key);
       const tool = MCP_TOOL_ANNOTATIONS.get(toolName);
       if (!tool?.requiresApproval || tool.riskClass === 'read')
         return { kind: 'invalid' };
+      if (isTransactionMutation(toolName)) {
+        return proposeTransactionMutation(
+          requests,
+          transactions,
+          grants,
+          identity,
+          workspaceId,
+          toolName,
+          args,
+          key,
+        );
+      }
       const command = normalizeMcpArguments(toolName, args);
       if (!command) return { kind: 'invalid' };
       return requests.createMcpProposal(

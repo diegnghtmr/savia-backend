@@ -28,6 +28,6 @@ import { PlatformModule } from '../platform/platform.module.js';
     },
     { provide: ACCOUNTS_PORT, useExisting: AccountsService },
   ],
-  exports: [ACCOUNTS_PORT],
+  exports: [ACCOUNTS_PORT, AccountsService],
 })
 export class AccountsModule {}

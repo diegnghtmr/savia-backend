@@ -263,6 +263,14 @@ export class ApprovalsController {
       });
     }
 
+    if (o.kind === 'precondition_failed') {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.PRECONDITION_FAILED,
+        title: 'Precondition failed',
+        status: 412,
+      });
+    }
+
     if (o.kind === 'invalid_action') {
       return sendProblem(reply, {
         type: PROBLEM_TYPES.UNPROCESSABLE,

@@ -328,7 +328,7 @@ describe('Approvals integration contract and endpoint suite', () => {
       endTime: '24:00',
     }));
     const request = (
-      method: 'GET' | 'POST',
+      method: 'GET' | 'POST' | 'PATCH' | 'PUT',
       url: string,
       payload?: Record<string, unknown>,
       token = 'editor-token',
@@ -357,14 +357,25 @@ describe('Approvals integration contract and endpoint suite', () => {
     async function grant(
       accountIds: string[],
       subject = editorId,
-      amount = '25',
+      amount: string | null = '25',
+      extraTools: string[] = [],
+      scopes = ['transactions:write'],
     ) {
       const id = randomUUID();
       const schedule = JSON.stringify(fullWeek);
       await admin.query(
         `insert into public.mcp_grants (id, subject_id, client_name, scopes, workspace_ids, account_ids, tool_allowlist, schedule, max_write_amount_minor, max_write_currency)
-         values ($1, $2, 'MCP test client', '{transactions:write}', array[$3::uuid], $4::uuid[], '{create_transaction,create_transfer}', $5::jsonb, $6, 'USD')`,
-        [id, subject, workspace1Id, accountIds, schedule, amount],
+         values ($1, $2, 'MCP test client', $8::text[], array[$3::uuid], $4::uuid[], $7::text[], $5::jsonb, $6::bigint, case when $6::bigint is not null then 'USD' end)`,
+        [
+          id,
+          subject,
+          workspace1Id,
+          accountIds,
+          schedule,
+          amount,
+          ['create_transaction', 'create_transfer', ...extraTools],
+          scopes,
+        ],
       );
       return { id, token: await signed.sign(editorId, id) };
     }
@@ -412,7 +423,8 @@ describe('Approvals integration contract and endpoint suite', () => {
         expiresAt: string;
       }>();
     };
-    const list = async () => (await request('GET', '/v1/approvals')).json();
+    const list = async (session = 'editor-token') =>
+      (await request('GET', '/v1/approvals', undefined, session)).json();
     async function balance(id: string) {
       const result = await request(
         'GET',
@@ -430,11 +442,12 @@ describe('Approvals integration contract and endpoint suite', () => {
       token: string,
       body: Record<string, unknown>,
       key = randomUUID(),
+      session = 'editor-token',
     ) {
       const result = await request('POST', route, body, token, key);
       expect(result.statusCode).toBe(201);
       const created = result.json<{ id: string }>();
-      const details = await get(created.id);
+      const details = await get(created.id, session);
       expect(result.json()).toEqual({
         id: details.id,
         preview: details.preview,
@@ -442,7 +455,20 @@ describe('Approvals integration contract and endpoint suite', () => {
         status: 'pending',
       });
       expect(details).toMatchObject({
-        riskClass: 'financial_write',
+        riskClass:
+          body.toolName === 'void_transaction'
+            ? 'destructive'
+            : body.toolName === 'create_account'
+              ? 'administrative'
+              : [
+                    'create_budget',
+                    'update_budget',
+                    'update_budget_allocations',
+                    'create_sinking_fund',
+                    'create_report_definition',
+                  ].includes(String(body.toolName))
+                ? 'low_risk_write'
+                : 'financial_write',
         status: 'pending',
         argumentsHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
@@ -570,6 +596,701 @@ describe('Approvals integration contract and endpoint suite', () => {
       expect(await balance(source)).toBe('0');
       expect(await balance(destination)).toBe('0');
       await proposal(original.token, transaction(source), key);
+    });
+
+    it.each(['update_transaction', 'void_transaction'])(
+      '%s binds the current ETag and the stored ledger footprint before reserving an approval',
+      async (toolName) => {
+        const source = await account();
+        const create = await request(
+          'POST',
+          '/v1/transactions',
+          transaction(source, '-25').arguments,
+        );
+        expect(create.statusCode).toBe(201);
+        const { id: transactionId } = create.json<{ id: string }>();
+        const url = `/v1/transactions/${transactionId}`;
+        const body =
+          toolName === 'update_transaction'
+            ? { description: 'Approved edit' }
+            : { reason: 'Approved void' };
+        const { token } = await grant([source], editorId, '25', [toolName]);
+        const denied = await grant([source], editorId, '24', [toolName]);
+        const before = await list();
+        const key = randomUUID();
+        const args = { transactionId, ifMatch: create.headers.etag, body };
+        const invalid = [
+          { transactionId, body },
+          { ...args, ifMatch: '"999"' },
+          ...(toolName === 'update_transaction'
+            ? [{ ...args, body: { categoryId: randomUUID() } }]
+            : []),
+        ];
+        for (const arguments_ of invalid) {
+          const response = await request(
+            'POST',
+            route,
+            { toolName, arguments: arguments_ },
+            token,
+            key,
+          );
+          expect(response.statusCode).toBe(422);
+          expect(response.json()).toMatchObject({
+            status: 422,
+            title: 'Invalid MCP proposal tool or arguments',
+          });
+        }
+        const blocked = await request(
+          'POST',
+          route,
+          { toolName, arguments: args },
+          denied.token,
+          key,
+        );
+        expect(blocked.statusCode).toBe(403);
+        expect(blocked.json()).toMatchObject({
+          status: 403,
+          title: 'MCP grant does not authorize the proposal',
+        });
+        expect(await list()).toEqual(before);
+        expect(await balance(source)).toBe('-25');
+
+        const pending = await proposal(
+          token,
+          { toolName, arguments: args },
+          key,
+        );
+        expect(pending.preview).toMatchObject({
+          transactionId,
+          accountId: source,
+          ifMatch: create.headers.etag,
+          amount: { amountMinor: '-25', currency: 'USD' },
+        });
+        expect((await request('GET', url)).headers.etag).toBe(
+          create.headers.etag,
+        );
+        const changed = await request('PATCH', url, {
+          notes: 'Concurrent change',
+        });
+        expect(changed.statusCode).toBe(200);
+        const confirmKey = randomUUID();
+        const stale = await confirm(
+          pending.id,
+          pending.argumentsHash,
+          confirmKey,
+        );
+        expect(stale.statusCode).toBe(412);
+        expect(stale.json()).toMatchObject({
+          status: 412,
+          title: 'Precondition failed',
+        });
+        expect(await get(pending.id)).toEqual(pending);
+        expect((await request('GET', url)).json()).toEqual(changed.json());
+        expect(await balance(source)).toBe('-25');
+
+        const fresh = await proposal(token, {
+          toolName,
+          arguments: { ...args, ifMatch: changed.headers.etag },
+        });
+        const results = await Promise.all([
+          confirm(fresh.id, fresh.argumentsHash, confirmKey),
+          confirm(fresh.id, fresh.argumentsHash, confirmKey),
+        ]);
+        for (const response of results) {
+          expect(response.statusCode).toBe(200);
+          expect(response.json()).toEqual({ ...fresh, status: 'consumed' });
+        }
+        const final = await request('GET', url);
+        expect(final.json()).toMatchObject(
+          toolName === 'update_transaction' ? body : { status: 'voided' },
+        );
+        expect(await balance(source)).toBe(
+          toolName === 'update_transaction' ? '-25' : '0',
+        );
+      },
+    );
+
+    it('checks the create_account grant and currency before reserving a proposal, then posts the approved opening balance once', async () => {
+      const toolName = 'create_account';
+      const allowed = await grant(
+        [],
+        ownerId,
+        null,
+        [toolName],
+        ['accounts:write'],
+      );
+      const denied = await grant(
+        [],
+        ownerId,
+        '24',
+        [toolName],
+        ['accounts:write'],
+      );
+      const token = await signed.sign(ownerId, allowed.id);
+      const capped = await signed.sign(ownerId, denied.id);
+      const session = 'owner-token';
+      const accounts = async () =>
+        (await request('GET', '/v1/accounts', undefined, session)).json<{
+          items: { id: string; name: string }[];
+        }>();
+      const name = randomUUID();
+      const payload = (currency: string) => ({
+        toolName,
+        arguments: {
+          name,
+          type: 'cash',
+          currency,
+          openingBalance: { amountMinor: '25', currency },
+        },
+      });
+      const before = await list(session);
+      const accountPage = await accounts();
+      const key = randomUUID();
+      const blocked = await request('POST', route, payload('USD'), capped, key);
+      expect(blocked.json()).toMatchObject({
+        status: 403,
+        title: 'MCP grant does not authorize the proposal',
+      });
+      const invalid = await request('POST', route, payload('JPY'), token, key);
+      expect(invalid.json()).toMatchObject({
+        status: 422,
+        title: 'Invalid MCP proposal tool or arguments',
+      });
+      expect(await list(session)).toEqual(before);
+      expect(await accounts()).toEqual(accountPage);
+      const pending = await proposal(token, payload('USD'), key, session);
+      expect(await accounts()).toEqual(accountPage);
+      const confirmKey = randomUUID();
+      const done = await confirm(
+        pending.id,
+        pending.argumentsHash,
+        confirmKey,
+        session,
+      );
+      expect(done.statusCode).toBe(200);
+      expect(done.json()).toEqual({ ...pending, status: 'consumed' });
+      const replay = await confirm(
+        pending.id,
+        pending.argumentsHash,
+        confirmKey,
+        session,
+      );
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toEqual(done.json());
+      const created = (await accounts()).items.filter(
+        (item) => item.name === name,
+      );
+      expect(created).toHaveLength(1);
+      expect(await balance(created[0].id)).toBe('25');
+    });
+
+    it('checks both native legs before creating a currency-exchange proposal and posts both only once', async () => {
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+         values ($1, 'EUR', 'USD', 1.2, now(), 'manual', $2) on conflict do nothing`,
+        [workspace1Id, ownerId],
+      );
+      const source = await account();
+      const eur = await request(
+        'POST',
+        '/v1/accounts',
+        { name: 'FX destination', type: 'cash', currency: 'EUR' },
+        'owner-token',
+      );
+      expect(eur.statusCode).toBe(201);
+      const destination = eur.json<{ id: string }>().id;
+      const toolName = 'create_cross_currency_transfer';
+      const { token } = await grant([source, destination], editorId, null, [
+        toolName,
+      ]);
+      const capped = await grant([source, destination], editorId, '99', [
+        toolName,
+      ]);
+      const onlySource = await grant([source], editorId, null, [toolName]);
+      const args = {
+        sourceAccountId: source,
+        destinationAccountId: destination,
+        sourceAmount: { amountMinor: '25', currency: 'USD' },
+        destinationAmount: { amountMinor: '20', currency: 'EUR' },
+        executedRate: '0.8',
+        occurredAt: '2026-01-02T00:00:00Z',
+      };
+      const body = { toolName, arguments: args };
+      const before = await list();
+      const key = randomUUID();
+      for (const denied of [capped, onlySource]) {
+        const blocked = await request('POST', route, body, denied.token, key);
+        expect(blocked.json()).toMatchObject({
+          status: 403,
+          title: 'MCP grant does not authorize the proposal',
+        });
+      }
+      const invalid = {
+        toolName,
+        arguments: {
+          ...args,
+          destinationAmount: { ...args.destinationAmount, currency: 'USD' },
+        },
+      };
+      const rejected = await request('POST', route, invalid, token, key);
+      expect(rejected.json()).toMatchObject({
+        status: 422,
+        title: 'Invalid MCP proposal tool or arguments',
+      });
+      expect(await list()).toEqual(before);
+      expect(await balance(source)).toBe('0');
+      expect(await balance(destination)).toBe('0');
+      const pending = await proposal(token, body, key);
+      expect(await balance(source)).toBe('0');
+      expect(await balance(destination)).toBe('0');
+      const confirmKey = randomUUID();
+      const done = await confirm(pending.id, pending.argumentsHash, confirmKey);
+      expect(done.statusCode).toBe(200);
+      expect(done.json()).toEqual({ ...pending, status: 'consumed' });
+      const replay = await confirm(
+        pending.id,
+        pending.argumentsHash,
+        confirmKey,
+      );
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toEqual(done.json());
+      expect(await balance(source)).toBe('-25');
+      expect(await balance(destination)).toBe('20');
+    });
+
+    const budgetInput = () => ({
+      name: randomUUID(),
+      method: 'envelope',
+      periodStart: '2030-01-01',
+      periodEnd: '2030-01-31',
+    });
+    async function budgetCategory() {
+      const category = await request('POST', '/v1/categories', {
+        name: randomUUID(),
+        kind: 'expense',
+      });
+      expect(category.statusCode).toBe(201);
+      return category.json<{ id: string }>().id;
+    }
+    const planned = (categoryId: string, amountMinor = '25') => ({
+      categoryId,
+      planned: { amountMinor, currency: 'USD' },
+      rolloverPolicy: 'none',
+    });
+
+    it('previews copy-from-budget allocations and rejects a changed source at confirmation', async () => {
+      const toolName = 'create_budget';
+      const { token } = await grant(
+        [],
+        editorId,
+        '25',
+        [toolName],
+        ['budgets:write'],
+      );
+      const denied = await grant(
+        [],
+        editorId,
+        '24',
+        [toolName],
+        ['budgets:write'],
+      );
+      const created = await request('POST', '/v1/budgets', budgetInput());
+      expect(created.statusCode).toBe(201);
+      const sourceId = created.json<{ id: string }>().id;
+      const source = `/v1/budgets/${sourceId}`;
+      const category = await budgetCategory();
+      const initial = await request('PUT', `${source}/allocations`, {
+        allocations: [planned(category)],
+      });
+      expect(initial.statusCode).toBe(200);
+      const args = { ...budgetInput(), copyFromBudgetId: sourceId };
+      const body = { toolName, arguments: args };
+      const before = await list();
+      const budgets = async () =>
+        (await request('GET', '/v1/budgets')).json<{
+          items: { name: string; allocations: unknown }[];
+        }>();
+      const page = await budgets();
+      const key = randomUUID();
+      expect(
+        (await request('POST', route, body, denied.token, key)).statusCode,
+      ).toBe(403);
+      const invalid = {
+        toolName,
+        arguments: { ...args, copyFromBudgetId: randomUUID() },
+      };
+      expect(
+        (await request('POST', route, invalid, token, key)).statusCode,
+      ).toBe(422);
+      expect(await list()).toEqual(before);
+      expect(await budgets()).toEqual(page);
+      const pending = await proposal(token, body, key);
+      expect(await budgets()).toEqual(page);
+      const changed = await request('PUT', `${source}/allocations`, {
+        allocations: [planned(category, '99')],
+      });
+      expect(changed.statusCode).toBe(200);
+      const confirmKey = randomUUID();
+      expect(
+        (await confirm(pending.id, pending.argumentsHash, confirmKey))
+          .statusCode,
+      ).toBe(412);
+      expect(await get(pending.id)).toEqual(pending);
+      expect(
+        (await budgets()).items.some((item) => item.name === args.name),
+      ).toBe(false);
+      const reduced = await request('PUT', `${source}/allocations`, {
+        allocations: [planned(category, '20')],
+      });
+      expect(reduced.statusCode).toBe(200);
+      const fresh = await proposal(token, body);
+      const done = await confirm(fresh.id, fresh.argumentsHash, confirmKey);
+      expect(done.statusCode).toBe(200);
+      expect(done.json()).toEqual({ ...fresh, status: 'consumed' });
+      expect(
+        (await confirm(fresh.id, fresh.argumentsHash, confirmKey)).json(),
+      ).toEqual(done.json());
+      const copies = (await budgets()).items.filter(
+        (item) => item.name === args.name,
+      );
+      expect(copies).toHaveLength(1);
+      expect(copies[0].allocations).toMatchObject([planned(category, '20')]);
+    });
+
+    it.each(['update_budget', 'update_budget_allocations'])(
+      '%s requires If-Match before reserving and never consumes a stale approval',
+      async (toolName) => {
+        const { token } = await grant(
+          [],
+          editorId,
+          '25',
+          [toolName],
+          ['budgets:write'],
+        );
+        const denied = await grant([], editorId, '24', [], ['budgets:write']);
+        const created = await request('POST', '/v1/budgets', budgetInput());
+        expect(created.statusCode).toBe(201);
+        const { id: budgetId } = created.json<{ id: string }>();
+        const url = `/v1/budgets/${budgetId}`;
+        const read = () => request('GET', url);
+        const category = await budgetCategory();
+        const body =
+          toolName === 'update_budget'
+            ? { name: 'Approved budget edit' }
+            : { allocations: [planned(category)] };
+        const baseline = await read();
+        const args = { budgetId, ifMatch: baseline.headers.etag, body };
+        const before = await list();
+        const key = randomUUID();
+        for (const invalid of [
+          { budgetId, body },
+          { ...args, ifMatch: '"999"' },
+        ]) {
+          expect(
+            (
+              await request(
+                'POST',
+                route,
+                { toolName, arguments: invalid },
+                token,
+                key,
+              )
+            ).statusCode,
+          ).toBe(422);
+        }
+        if (toolName === 'update_budget_allocations') {
+          const invalid = {
+            ...args,
+            body: { allocations: [planned(randomUUID())] },
+          };
+          expect(
+            (
+              await request(
+                'POST',
+                route,
+                { toolName, arguments: invalid },
+                token,
+                key,
+              )
+            ).statusCode,
+          ).toBe(422);
+        }
+        expect(
+          (
+            await request(
+              'POST',
+              route,
+              { toolName, arguments: args },
+              denied.token,
+              key,
+            )
+          ).statusCode,
+        ).toBe(403);
+        expect(await list()).toEqual(before);
+        expect((await read()).json()).toEqual(baseline.json());
+        const pending = await proposal(
+          token,
+          { toolName, arguments: args },
+          key,
+        );
+        expect((await read()).headers.etag).toBe(baseline.headers.etag);
+        const changed =
+          toolName === 'update_budget'
+            ? await request('PATCH', url, { name: 'Other budget edit' })
+            : await request('PUT', `${url}/allocations`, {
+                allocations: [planned(category, '99')],
+              });
+        expect(changed.statusCode).toBe(200);
+        const confirmKey = randomUUID();
+        expect(
+          (await confirm(pending.id, pending.argumentsHash, confirmKey))
+            .statusCode,
+        ).toBe(412);
+        expect(await get(pending.id)).toEqual(pending);
+        expect((await read()).json()).toEqual(changed.json());
+        if (toolName === 'update_budget_allocations') {
+          const reset = await request('PUT', `${url}/allocations`, {
+            allocations: [],
+          });
+          expect(reset.statusCode).toBe(200);
+        }
+        const current = await read();
+        const fresh = await proposal(token, {
+          toolName,
+          arguments: { ...args, ifMatch: current.headers.etag },
+        });
+        const done = await confirm(fresh.id, fresh.argumentsHash, confirmKey);
+        expect(done.statusCode).toBe(200);
+        expect(done.json()).toEqual({ ...fresh, status: 'consumed' });
+        expect(
+          (await confirm(fresh.id, fresh.argumentsHash, confirmKey)).json(),
+        ).toEqual(done.json());
+        expect((await read()).json()).toMatchObject(body);
+      },
+    );
+
+    it.each([
+      {
+        toolName: 'create_sinking_fund',
+        path: '/v1/funds',
+        scope: 'budgets:write',
+      },
+      {
+        toolName: 'create_report_definition',
+        path: '/v1/report-definitions',
+        scope: 'reports:write',
+      },
+    ])(
+      'validates $toolName before reservation and inserts only on confirmation',
+      async ({ toolName, path, scope }) => {
+        const isFund = toolName === 'create_sinking_fund';
+        const linkedAccountId = isFund ? await account() : undefined;
+        const accounts = linkedAccountId ? [linkedAccountId] : [];
+        const { token } = await grant(
+          accounts,
+          editorId,
+          null,
+          [toolName],
+          [scope],
+        );
+        const denied = await grant(accounts, editorId, null, [], [scope]);
+        const name = randomUUID();
+        const body = isFund
+          ? {
+              name,
+              currency: 'USD',
+              targetAmount: { amountMinor: '25', currency: 'USD' },
+              linkedAccountId,
+            }
+          : {
+              name,
+              dimensions: ['category'],
+              measures: ['sum'],
+              visualization: 'table',
+            };
+        const payload = { toolName, arguments: body };
+        const invalid = {
+          toolName,
+          arguments: isFund
+            ? { ...body, targetDate: '0000-01-01' }
+            : { ...body, filters: { label: '\u0000' } },
+        };
+        const before = await list();
+        const resources = async () =>
+          (await request('GET', path)).json<{ items: { name: string }[] }>();
+        const page = await resources();
+        const key = randomUUID();
+        const blocked = await request(
+          'POST',
+          route,
+          invalid,
+          denied.token,
+          key,
+        );
+        expect(blocked.json()).toMatchObject({
+          status: 403,
+          title: 'MCP grant does not authorize the proposal',
+        });
+        const rejected = await request('POST', route, invalid, token, key);
+        expect(rejected.json()).toMatchObject({
+          status: 422,
+          title: 'Invalid MCP proposal tool or arguments',
+        });
+        expect(await list()).toEqual(before);
+        expect(await resources()).toEqual(page);
+        const pending = await proposal(token, payload, key);
+        expect(await resources()).toEqual(page);
+        const confirmKey = randomUUID();
+        const result = await confirm(
+          pending.id,
+          pending.argumentsHash,
+          confirmKey,
+        );
+        expect(result.statusCode).toBe(200);
+        expect(result.json()).toEqual({ ...pending, status: 'consumed' });
+        expect(
+          (await confirm(pending.id, pending.argumentsHash, confirmKey)).json(),
+        ).toEqual(result.json());
+        expect(
+          (await resources()).items.filter((item) => item.name === name),
+        ).toMatchObject([body]);
+        if (linkedAccountId) expect(await balance(linkedAccountId)).toBe('0');
+      },
+    );
+
+    it('rechecks the fund contribution account at confirmation and posts the approved debit once', async () => {
+      const toolName = 'contribute_to_fund';
+      const source = await account();
+      const other = await account();
+      const created = await request('POST', '/v1/funds', {
+        name: randomUUID(),
+        currency: 'USD',
+        targetAmount: { amountMinor: '25', currency: 'USD' },
+      });
+      expect(created.statusCode).toBe(201);
+      const { id: fundId } = created.json<{ id: string }>();
+      const scopes = ['transactions:write', 'budgets:write'];
+      const { token } = await grant(
+        [source, other],
+        editorId,
+        '25',
+        [toolName],
+        scopes,
+      );
+      const denied = await grant([other], editorId, '25', [toolName], scopes);
+      const data = (accountId: string, currency = 'USD') => ({
+        toolName,
+        arguments: {
+          fundId,
+          body: {
+            accountId,
+            amount: { amountMinor: '25', currency },
+            occurredAt: '2026-01-02T00:00:00Z',
+          },
+        },
+      });
+      const fund = async () =>
+        (await request('GET', '/v1/funds'))
+          .json<{
+            items: { id: string; currentAmount: { amountMinor: string } }[];
+          }>()
+          .items.find(({ id }) => id === fundId);
+      const before = await list();
+      const key = randomUUID();
+      const blocked = await request(
+        'POST',
+        route,
+        data(source),
+        denied.token,
+        key,
+      );
+      expect(blocked.json()).toMatchObject({
+        status: 403,
+        title: 'MCP grant does not authorize the proposal',
+      });
+      const invalid = await request(
+        'POST',
+        route,
+        {
+          toolName,
+          arguments: { ...data(source).arguments, fundId: randomUUID() },
+        },
+        token,
+        key,
+      );
+      expect(invalid.json()).toMatchObject({
+        status: 422,
+        title: 'Invalid MCP proposal tool or arguments',
+      });
+      expect(await list()).toEqual(before);
+      expect(await balance(source)).toBe('0');
+      expect((await fund())?.currentAmount.amountMinor).toBe('0');
+      const pending = await proposal(token, data(source), key);
+      expect((await fund())?.currentAmount.amountMinor).toBe('0');
+      expect(
+        (
+          await request(
+            'POST',
+            `/v1/accounts/${source}/close`,
+            {},
+            'owner-token',
+          )
+        ).statusCode,
+      ).toBe(200);
+      const confirmKey = randomUUID();
+      expect(
+        (await confirm(pending.id, pending.argumentsHash, confirmKey))
+          .statusCode,
+      ).toBe(422);
+      expect(await get(pending.id)).toEqual(pending);
+      expect(await balance(source)).toBe('0');
+      expect((await fund())?.currentAmount.amountMinor).toBe('0');
+      const fresh = await proposal(token, data(other));
+      const done = await confirm(fresh.id, fresh.argumentsHash, confirmKey);
+      expect(done.statusCode).toBe(200);
+      expect(done.json()).toEqual({ ...fresh, status: 'consumed' });
+      expect(
+        (await confirm(fresh.id, fresh.argumentsHash, confirmKey)).json(),
+      ).toEqual(done.json());
+      expect(await balance(other)).toBe('-25');
+      expect((await fund())?.currentAmount.amountMinor).toBe('25');
+    });
+
+    it('checks the grant before disclosing workspace-dependent proposal validation', async () => {
+      const source = await account();
+      const closed = await account();
+      const open = await account();
+      const denied = await grant([source, closed], editorId, '24');
+      const allowed = await grant([source, closed, open]);
+
+      const closure = await request(
+        'POST',
+        `/v1/accounts/${closed}/close`,
+        {},
+        'owner-token',
+      );
+      expect(closure.statusCode).toBe(200);
+
+      const before = await list();
+      const invalid = transfer(source, closed);
+      const key = randomUUID();
+
+      const blocked = await request('POST', route, invalid, denied.token, key);
+      expect(blocked.statusCode).toBe(403);
+      expect(blocked.json().title).toBe(
+        'MCP grant does not authorize the proposal',
+      );
+
+      const checked = await request('POST', route, invalid, allowed.token, key);
+      expect(checked.statusCode).toBe(422);
+      expect(checked.json().title).toBe(
+        'Invalid MCP proposal tool or arguments',
+      );
+
+      expect(await list()).toEqual(before);
+      expect(await balance(source)).toBe('0');
+      expect(await balance(closed)).toBe('0');
+      await proposal(allowed.token, transfer(source, open), key);
     });
 
     it('rejects a USD-to-EUR plain transfer without creating an approval or reserving the key', async () => {

@@ -67,7 +67,9 @@ export type ApprovalExecutor = (
   approvalId: string,
   args: ApprovalAction['arguments'],
   mcpGrantId?: string,
-) => Promise<'ok' | 'forbidden' | 'conflict' | 'invalid_action'>;
+) => Promise<
+  'ok' | 'forbidden' | 'conflict' | 'invalid_action' | 'precondition_failed'
+>;
 export type ApprovalExecutors = ReadonlyMap<string, ApprovalExecutor>;
 
 export interface CreateApprovalCommand extends ApprovalAction {
@@ -143,7 +145,8 @@ export type ApprovalDecisionOutcome =
     }
   | { readonly kind: typeof APPROVAL_OUTCOMES.FORBIDDEN }
   | { readonly kind: typeof APPROVAL_OUTCOMES.NOT_FOUND }
-  | { readonly kind: 'invalid_action' };
+  | { readonly kind: 'invalid_action' }
+  | { readonly kind: 'precondition_failed' };
 
 export type ApprovalExecutionOutcome<T> =
   | { readonly kind: typeof APPROVAL_OUTCOMES.OK; readonly result: T }

@@ -4,6 +4,7 @@ import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
   BUDGET_OUTCOMES,
+  type Budget,
   type BudgetCreateOutcome,
   type BudgetGetOutcome,
   type BudgetListOutcome,
@@ -59,22 +60,83 @@ export class BudgetUpdateRollbackError extends Error {
     this.name = 'BudgetUpdateRollbackError';
   }
 }
+export interface BudgetCreateSnapshot {
+  readonly currency: string;
+  readonly sourceVersion?: number;
+}
+
 export class BudgetService implements BudgetsPort {
   public constructor(
     private readonly tx: BudgetTransaction,
     private readonly store: BudgetStore,
     private readonly idempotency: IdempotencyStore,
   ) {}
+  public findWithin(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ) {
+    return this.store.findBudget(client, workspaceId, id);
+  }
+
+  public readCurrencyWithin(client: TransactionClient, workspaceId: string) {
+    return this.store.readWorkspaceCurrency(client, workspaceId);
+  }
+
+  public async canCreateWithin(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateBudgetRequest,
+    currency: string | undefined,
+    source: Budget | undefined,
+  ): Promise<boolean> {
+    if (
+      !currency ||
+      (command.copyFromBudgetId &&
+        (!source || source.allocations.length > MAX_BUDGET_ALLOCATION_COUNT))
+    )
+      return false;
+    const allowed = await this.store.canCreateBudget?.(
+      client,
+      workspaceId,
+      command,
+      currency,
+    );
+    return allowed === true;
+  }
+
+  public async validateAllocationsWithin(
+    client: TransactionClient,
+    workspaceId: string,
+    command: UpdateBudgetAllocationsRequest,
+    currency: string,
+  ): Promise<boolean> {
+    if (
+      command.allocations.some(({ planned }) => planned.currency !== currency)
+    )
+      return false;
+    const missing = await this.store.findMissingAllocationReferences(
+      client,
+      workspaceId,
+      command.allocations,
+    );
+    return missing.length === 0;
+  }
+
   public async createBudget(
     subject: string,
     workspaceId: string,
     command: CreateBudgetRequest,
     key: string,
+    boundClient?: TransactionClient,
+    snapshot?: BudgetCreateSnapshot,
   ): Promise<BudgetCreateOutcome> {
     const route = 'POST /v1/budgets';
     const fingerprint = computeRequestFingerprint(command);
     try {
-      return await this.tx.run(subject, async (client) => {
+      const apply = async (
+        client: TransactionClient,
+      ): Promise<BudgetCreateOutcome> => {
         const role = await this.store.readActiveRole(client, workspaceId);
         if (!['owner', 'administrator', 'editor'].includes(role ?? ''))
           return { kind: BUDGET_OUTCOMES.FORBIDDEN };
@@ -99,20 +161,26 @@ export class BudgetService implements BudgetsPort {
           workspaceId,
         );
         if (!currency) return { kind: BUDGET_OUTCOMES.INVALID_SOURCE };
+        if (snapshot && currency !== snapshot.currency)
+          return { kind: BUDGET_OUTCOMES.PRECONDITION_FAILED };
         let source =
           [] as readonly import('./budget.port.js').BudgetAllocation[];
         if (command.copyFromBudgetId) {
-          source = await this.store.findSourceAllocations(
-            client,
-            workspaceId,
-            command.copyFromBudgetId,
-          );
-          const sourceBudget = await this.store.findBudget(
-            client,
-            workspaceId,
-            command.copyFromBudgetId,
-          );
+          const sourceId = command.copyFromBudgetId;
+          if (!snapshot) {
+            source = await this.store.findSourceAllocations(
+              client,
+              workspaceId,
+              sourceId,
+            );
+          }
+          const sourceBudget = snapshot
+            ? await this.store.findBudget(client, workspaceId, sourceId, true)
+            : await this.store.findBudget(client, workspaceId, sourceId);
+          if (snapshot && sourceBudget?.version !== snapshot.sourceVersion)
+            return { kind: BUDGET_OUTCOMES.PRECONDITION_FAILED };
           if (!sourceBudget) return { kind: BUDGET_OUTCOMES.INVALID_SOURCE };
+          if (snapshot) source = sourceBudget.allocations;
           if (source.length > MAX_BUDGET_ALLOCATION_COUNT)
             return { kind: BUDGET_OUTCOMES.TOO_MANY_ALLOCATIONS };
         }
@@ -168,7 +236,10 @@ export class BudgetService implements BudgetsPort {
           kind: BUDGET_OUTCOMES.CREATED,
           budget: materialized,
         };
-      });
+      };
+      return boundClient
+        ? await apply(boundClient)
+        : await this.tx.run(subject, apply);
     } catch (error) {
       if (error instanceof BudgetCreateRollbackError) {
         return error.outcome === 'replayed'
@@ -208,6 +279,7 @@ export class BudgetService implements BudgetsPort {
     command: UpdateBudgetRequest,
     key: string,
     ifMatch: IfMatchParse,
+    boundClient?: TransactionClient,
   ): Promise<BudgetUpdateOutcome> {
     const route = 'PATCH /v1/budgets/{budgetId}';
     const fingerprint = computeRequestFingerprint({
@@ -216,7 +288,9 @@ export class BudgetService implements BudgetsPort {
       ifMatch: canonicalIfMatch(ifMatch),
     });
     try {
-      return await this.tx.run(subject, async (client) => {
+      const apply = async (
+        client: TransactionClient,
+      ): Promise<BudgetUpdateOutcome> => {
         const role = await this.store.readActiveRole(client, workspaceId);
         if (!['owner', 'administrator', 'editor'].includes(role ?? ''))
           return { kind: BUDGET_OUTCOMES.FORBIDDEN };
@@ -303,7 +377,10 @@ export class BudgetService implements BudgetsPort {
           kind: BUDGET_OUTCOMES.UPDATED,
           budget: updated,
         };
-      });
+      };
+      return boundClient
+        ? await apply(boundClient)
+        : await this.tx.run(subject, apply);
     } catch (error) {
       if (error instanceof BudgetUpdateRollbackError) {
         return error.outcome === 'replayed'
@@ -325,6 +402,7 @@ export class BudgetService implements BudgetsPort {
     command: UpdateBudgetAllocationsRequest,
     key: string,
     ifMatch: IfMatchParse,
+    boundClient?: TransactionClient,
   ): Promise<BudgetAllocationsOutcome> {
     const route = 'PUT /v1/budgets/{budgetId}/allocations';
     const fingerprint = computeRequestFingerprint({
@@ -333,7 +411,9 @@ export class BudgetService implements BudgetsPort {
       ifMatch: canonicalIfMatch(ifMatch),
     });
     try {
-      return await this.tx.run(subject, async (client) => {
+      const apply = async (
+        client: TransactionClient,
+      ): Promise<BudgetAllocationsOutcome> => {
         const role = await this.store.readActiveRole(client, workspaceId);
         if (!['owner', 'administrator', 'editor'].includes(role ?? ''))
           return { kind: BUDGET_OUTCOMES.FORBIDDEN };
@@ -360,17 +440,13 @@ export class BudgetService implements BudgetsPort {
           !ifMatch.versions.includes(budget.version)
         )
           return { kind: BUDGET_OUTCOMES.PRECONDITION_FAILED };
-        for (const allocation of command.allocations)
-          if (allocation.planned.currency !== budget.currency)
-            return { kind: BUDGET_OUTCOMES.INVALID_ALLOCATIONS };
         if (
-          (
-            await this.store.findMissingAllocationReferences(
-              client,
-              workspaceId,
-              command.allocations,
-            )
-          ).length > 0
+          !(await this.validateAllocationsWithin(
+            client,
+            workspaceId,
+            command,
+            budget.currency,
+          ))
         )
           return { kind: BUDGET_OUTCOMES.INVALID_ALLOCATIONS };
         const updated = await this.store.replaceBudgetAllocations(
@@ -410,7 +486,10 @@ export class BudgetService implements BudgetsPort {
           throw new BudgetUpdateRollbackError('conflict');
         }
         return { kind: BUDGET_OUTCOMES.UPDATED, budget: updated };
-      });
+      };
+      return boundClient
+        ? await apply(boundClient)
+        : await this.tx.run(subject, apply);
     } catch (error) {
       if (error instanceof BudgetUpdateRollbackError)
         return error.outcome === 'replayed'

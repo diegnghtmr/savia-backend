@@ -85,7 +85,7 @@ export interface LedgerStore {
   readCreateFieldValidity?(
     client: TransactionClient,
     workspaceId: string,
-    command: CreateTransactionCommand,
+    command: TransactionWriteFields,
   ): Promise<CreateFieldValidity>;
   createTransaction(
     client: TransactionClient,
@@ -139,6 +139,13 @@ export interface LedgerStore {
     commands: readonly ImportedTransactionCommand[],
   ): Promise<void>;
 }
+
+export type TransactionWriteFields = Partial<
+  Pick<
+    CreateTransactionCommand,
+    'occurredAt' | 'categoryId' | 'payeeId' | 'receiptId'
+  >
+>;
 
 export interface CreateFieldValidity {
   readonly validDate: boolean;
@@ -417,7 +424,7 @@ export class TransactionService implements LedgerPort, LedgerWriter {
       if (role === undefined) {
         return { kind: TRANSACTION_READ_OUTCOMES.FORBIDDEN };
       }
-      const transaction = await this.store.readTransaction(
+      const transaction = await this.readWithin(
         client,
         workspaceId,
         transactionId,
@@ -430,6 +437,29 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         transaction,
       };
     });
+  }
+
+  public readWithin(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+  ): Promise<Transaction | undefined> {
+    return this.store.readTransaction(client, workspaceId, transactionId);
+  }
+
+  public async preflightUpdateFields(
+    client: TransactionClient,
+    workspaceId: string,
+    command: UpdateTransactionCommand,
+  ): Promise<boolean> {
+    const fields = await this.store.readCreateFieldValidity?.(
+      client,
+      workspaceId,
+      command,
+    );
+    return (
+      fields?.validDate === true && fields.validCategory && fields.validPayee
+    );
   }
 
   public list(
@@ -486,6 +516,7 @@ export class TransactionService implements LedgerPort, LedgerWriter {
     command: UpdateTransactionCommand,
     idempotencyKey: string,
     expectedVersions?: number | readonly number[],
+    boundClient?: TransactionClient,
   ): Promise<TransactionUpdateOutcome> {
     const route = 'PATCH /v1/transactions/{transactionId}';
     const fingerprint = computeRequestFingerprint({
@@ -493,7 +524,9 @@ export class TransactionService implements LedgerPort, LedgerWriter {
       ...command,
     });
 
-    return this.transaction.run(subject, async (client) => {
+    const apply = async (
+      client: TransactionClient,
+    ): Promise<TransactionUpdateOutcome> => {
       // 1. Role check: only owner, administrator, editor may update transactions
       const role = await this.store.readActiveRole(client, workspaceId);
       if (
@@ -631,7 +664,10 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         kind: TRANSACTION_UPDATE_OUTCOMES.OK,
         transaction: updated,
       };
-    });
+    };
+    return boundClient
+      ? apply(boundClient)
+      : this.transaction.run(subject, apply);
   }
 
   public async void(
@@ -641,6 +677,7 @@ export class TransactionService implements LedgerPort, LedgerWriter {
     command: VoidTransactionCommand,
     idempotencyKey: string,
     expectedVersions?: number | readonly number[],
+    boundClient?: TransactionClient,
   ): Promise<TransactionVoidOutcome> {
     const route = 'POST /v1/transactions/{transactionId}/void';
     const fingerprint = computeRequestFingerprint({
@@ -648,7 +685,9 @@ export class TransactionService implements LedgerPort, LedgerWriter {
       ...command,
     });
 
-    return this.transaction.run(subject, async (client) => {
+    const apply = async (
+      client: TransactionClient,
+    ): Promise<TransactionVoidOutcome> => {
       // 1. Role check: only owner, administrator, editor may void transactions
       const role = await this.store.readActiveRole(client, workspaceId);
       if (
@@ -779,7 +818,10 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         kind: TRANSACTION_VOID_OUTCOMES.OK,
         transaction: voided,
       };
-    });
+    };
+    return boundClient
+      ? apply(boundClient)
+      : this.transaction.run(subject, apply);
   }
 }
 
