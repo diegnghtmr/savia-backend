@@ -467,6 +467,77 @@ describe('TransferService createTransfer database boundary', () => {
     expect(transferRows.rows[0].transaction_id).toBe(created.transactionId);
   });
 
+  // Reviewer regression (verify mwstka7i). Add inside the existing describe in test/ledger/transfers-create.integration-spec.ts.
+  it('books one fee when identical transfer requests overlap', async () => {
+    const command: CreateTransferCommand = {
+      sourceAccountId: accountActiveUSD1Id,
+      destinationAccountId: accountActiveUSD2Id,
+      amount: usd('130'),
+      fee: usd('11'),
+      occurredAt: '2026-10-06T14:00:00.000Z',
+    };
+    const key = '00000000-0000-4000-8000-000000002021';
+    const sourceBalance = async () => {
+      const response = await getBalance(
+        accountActiveUSD1Id,
+        command.occurredAt,
+      );
+      expect(response.statusCode, response.payload).toBe(200);
+      return BigInt(
+        response.json<{ nativeBalance: { amountMinor: string } }>()
+          .nativeBalance.amountMinor,
+      );
+    };
+    const before = await sourceBalance();
+    const holder = await admin.connect();
+    let pending:
+      | Promise<Awaited<ReturnType<typeof postTransfer>>[]>
+      | undefined;
+    try {
+      await holder.query('begin');
+      await holder.query(
+        'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [accountActiveUSD1Id],
+      );
+      const {
+        rows: [{ pid }],
+      } = await holder.query<{ pid: number }>('select pg_backend_pid() as pid');
+      pending = Promise.all([
+        postTransfer(command, key),
+        postTransfer(command, key),
+      ]);
+      const deadline = Date.now() + 400;
+      do {
+        const {
+          rows: [{ waiting }],
+        } = await admin.query<{ waiting: boolean }>(
+          `select exists (
+             select 1 from pg_locks x join pg_locks h
+               using (locktype, database, classid, objid, objsubid)
+              where h.pid = $1 and h.granted and not x.granted
+           ) as waiting`,
+          [pid],
+        );
+        if (waiting) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } while (Date.now() < deadline);
+    } finally {
+      await holder.query('rollback');
+      holder.release();
+    }
+
+    const [first, second] = await pending!;
+    expect([first.statusCode, second.statusCode]).toEqual([201, 201]);
+    expect(second.json()).toEqual(first.json());
+    const { rows } = await admin.query(
+      `select count(*)::int as transfers, count(transaction_id)::int as fees
+         from public.transfers where workspace_id = $1 and occurred_at = $2`,
+      [workspace1Id, command.occurredAt],
+    );
+    expect(rows).toEqual([{ transfers: 1, fees: 1 }]);
+    expect(before - (await sourceBalance())).toBe(141n);
+  });
+
   it.each([undefined, usd('25')])(
     'rolls back transfer, postings and any fee after a transfer-leg failure (%j)',
     async (fee) => {
