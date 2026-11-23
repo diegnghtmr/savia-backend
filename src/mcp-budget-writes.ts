@@ -138,19 +138,16 @@ function budgetParser<T>(
   };
 }
 
-function monetaryFootprint(
+// Budget metadata and planning values do not move funds in accounts.
+function budgetAmounts(
   currency: string | undefined,
   amounts: readonly Money[] = [],
-) {
-  return {
-    // Budget metadata and planning values do not move funds in accounts.
-    accountIds: [],
-    amounts: amounts.length
-      ? amounts
-      : currency
-        ? [{ amountMinor: '0', currency }]
-        : [],
-  };
+): readonly Money[] {
+  return amounts.length
+    ? amounts
+    : currency
+      ? [{ amountMinor: '0', currency }]
+      : [];
 }
 
 function mutationPreview<T>({
@@ -174,11 +171,10 @@ export function mcpBudgetWrites(
   return [
     defineMcpWrite<BudgetCreation>('create_budget', grants, {
       parse: budgetParser(parseCreation),
-      footprint: async (command, client, workspaceId) => {
-        // Reauthorize exactly what was approved. The writer separately checks
-        // the workspace currency and copy-source version before copying.
-        if (command.amounts)
-          return monetaryFootprint(undefined, command.amounts);
+      amounts: async (command, client, workspaceId) => {
+        // Confirmation reauthorizes the approved amounts. The writer separately
+        // checks the workspace currency and copy-source version before copying.
+        if (command.amounts) return command.amounts;
         command.currency = await budgets.readCurrencyWithin(
           client,
           workspaceId,
@@ -190,15 +186,14 @@ export function mcpBudgetWrites(
               command.body.copyFromBudgetId,
             )
           : undefined;
-        const footprint = monetaryFootprint(
+        command.amounts = budgetAmounts(
           command.currency,
           command.source?.allocations.map(({ planned }) => ({
             ...planned,
             currency: command.currency ?? planned.currency,
           })),
         );
-        command.amounts = footprint.amounts;
-        return footprint;
+        return command.amounts;
       },
       validate: async (client, workspaceId, command) => {
         const currency = await budgets.readCurrencyWithin(client, workspaceId);
@@ -263,13 +258,13 @@ export function mcpBudgetWrites(
       grants,
       {
         parse: budgetParser((args) => parseMutation(args, updateBudgetCommand)),
-        footprint: async (command, client, workspaceId) => {
+        amounts: async (command, client, workspaceId) => {
           command.current = await budgets.findWithin(
             client,
             workspaceId,
             command.budgetId,
           );
-          return monetaryFootprint(command.current?.currency);
+          return budgetAmounts(command.current?.currency);
         },
         preview: mutationPreview,
         validate: async (_client, _workspaceId, { current, match }) =>
@@ -291,15 +286,14 @@ export function mcpBudgetWrites(
       grants,
       {
         parse: budgetParser(parseAllocations),
-        footprint: async (command, client, workspaceId) => {
-          if (command.amounts)
-            return monetaryFootprint(undefined, command.amounts);
+        amounts: async (command, client, workspaceId) => {
+          if (command.amounts) return command.amounts;
           command.current = await budgets.findWithin(
             client,
             workspaceId,
             command.budgetId,
           );
-          if (!command.current) return monetaryFootprint(undefined);
+          if (!command.current) return [];
           const { currency, allocations } = command.current;
           const previous = new Map(
             allocations.map(({ categoryId, planned }) => [
@@ -318,9 +312,8 @@ export function mcpBudgetWrites(
           for (const amount of previous.values()) {
             amounts.push({ currency, amountMinor: (-amount).toString() });
           }
-          const footprint = monetaryFootprint(currency, amounts);
-          command.amounts = footprint.amounts;
-          return footprint;
+          command.amounts = budgetAmounts(currency, amounts);
+          return command.amounts;
         },
         preview: mutationPreview,
         snapshot: ({ amounts }, input) => ({ input, amounts }),

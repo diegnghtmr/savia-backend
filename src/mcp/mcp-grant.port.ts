@@ -70,7 +70,7 @@ export type McpGrantOutcome =
   | { readonly kind: typeof MCP_GRANT_OUTCOMES.FORBIDDEN }
   | { readonly kind: typeof MCP_GRANT_OUTCOMES.CONFLICT }
   | { readonly kind: typeof MCP_GRANT_OUTCOMES.INVALID };
-export interface McpGrantCall {
+export interface McpGrantToolAccess {
   readonly subject: string;
   readonly grantId: string;
   readonly workspaceId: string;
@@ -78,6 +78,9 @@ export interface McpGrantCall {
   // Resolve the complete footprint on the server, including accounts read by a
   // tool and both sides of transfers. Never fill these from caller metadata.
   readonly accountIds: readonly string[];
+}
+
+export interface McpGrantCall extends McpGrantToolAccess {
   // Supply each distinct monetary effect once (a same-currency transfer is one
   // amount). Use [] only for a tool with no resolved monetary effects.
   readonly amounts: readonly Money[];
@@ -90,6 +93,12 @@ export interface McpGrantAuthorizer {
   authorizeMcpGrant(
     client: TransactionClient,
     call: McpGrantCall,
+  ): Promise<boolean>;
+  // For a fingerprint-matched, already-authorized proposal only. Use its
+  // original account IDs, and never resolve or recheck live monetary effects.
+  authorizeMcpProposalReplay(
+    client: TransactionClient,
+    access: McpGrantToolAccess,
   ): Promise<boolean>;
 }
 

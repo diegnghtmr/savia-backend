@@ -674,6 +674,9 @@ describe('Approvals integration contract and endpoint suite', () => {
           notes: 'Concurrent change',
         });
         expect(changed.statusCode).toBe(200);
+        expect(
+          await proposal(token, { toolName, arguments: args }, key),
+        ).toEqual(pending);
         const confirmKey = randomUUID();
         const stale = await confirm(
           pending.id,
@@ -842,6 +845,7 @@ describe('Approvals integration contract and endpoint suite', () => {
       expect(await balance(source)).toBe('0');
       expect(await balance(destination)).toBe('0');
       const pending = await proposal(token, body, key);
+      expect(await proposal(token, body, key)).toEqual(pending);
       expect(await balance(source)).toBe('0');
       expect(await balance(destination)).toBe('0');
       const confirmKey = randomUUID();
@@ -937,6 +941,60 @@ describe('Approvals integration contract and endpoint suite', () => {
       expect(stale.statusCode).toBe(412);
       expect(stale.json().title).toBe('Precondition failed');
       expect(await get(pending.id)).toEqual(pending);
+    });
+
+    it('does not replay a budget proposal preview after its grant is revoked', async () => {
+      const toolName = 'create_budget';
+      const { id: grantId, token } = await grant(
+        [],
+        editorId,
+        '25',
+        [toolName],
+        ['budgets:write'],
+      );
+      const source = await request('POST', '/v1/budgets', budgetInput());
+      expect(source.statusCode).toBe(201);
+      const { id } = source.json<{ id: string }>();
+      const category = await budgetCategory();
+      const allocations = await request(
+        'PUT',
+        `/v1/budgets/${id}/allocations`,
+        {
+          allocations: [planned(category)],
+        },
+      );
+      expect(allocations.statusCode).toBe(200);
+
+      const payload = {
+        toolName,
+        arguments: { ...budgetInput(), copyFromBudgetId: id },
+      };
+      const key = randomUUID();
+      const first = await request('POST', route, payload, token, key);
+      expect(first.statusCode).toBe(201);
+      expect(first.json().preview.allocations).toMatchObject([
+        planned(category),
+      ]);
+
+      const revoked = await application.inject({
+        method: 'DELETE',
+        url: `/v1/mcp/grants/${grantId}`,
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+      });
+      expect(revoked.statusCode).toBe(204);
+
+      const before = await list();
+      expect((await request('POST', route, payload, token)).statusCode).toBe(
+        403,
+      );
+      const replay = await request('POST', route, payload, token, key);
+      expect.soft(replay.statusCode).toBe(403);
+      expect.soft(replay.json()).toMatchObject({
+        status: 403,
+        title: 'MCP grant does not authorize the proposal',
+      });
+      expect.soft(replay.json()).not.toHaveProperty('preview');
+      expect(await list()).toEqual(before);
     });
 
     it('previews copy-from-budget allocations and rejects a changed source at confirmation', async () => {

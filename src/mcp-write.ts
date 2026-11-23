@@ -3,12 +3,11 @@ import type {
   McpApprovalValidation,
 } from './approvals/approval.port.js';
 import type { ApprovalService } from './approvals/approval.service.js';
-import type { McpGrantAuthorizer, McpGrantCall } from './mcp/mcp-grant.port.js';
+import type { McpGrantAuthorizer, Money } from './mcp/mcp-grant.port.js';
 import type { McpProposalsPort } from './mcp/mcp-proposals.controller.js';
 import { MCP_TOOL_ANNOTATIONS } from './mcp/mcp-tools.js';
 import type { TransactionClient } from './platform/pg-transaction.js';
 
-type Footprint = Pick<McpGrantCall, 'accountIds' | 'amounts'>;
 type Validate<Command> = (
   client: TransactionClient,
   workspaceId: string,
@@ -26,11 +25,13 @@ export function defineMcpWrite<Command extends object>(
   grants: McpGrantAuthorizer,
   operations: {
     parse(args: Record<string, unknown>, stored: boolean): Command | undefined;
-    footprint(
+    // These IDs are fixed by the fingerprinted input, not live ledger state.
+    accountIds?(command: Command): readonly string[];
+    amounts(
       command: Command,
       client: TransactionClient,
       workspaceId: string,
-    ): Footprint | Promise<Footprint>;
+    ): readonly Money[] | Promise<readonly Money[]>;
     preview?(command: Command): Record<string, unknown>;
     snapshot?(
       command: Command,
@@ -62,7 +63,8 @@ export function defineMcpWrite<Command extends object>(
       grantId,
       workspaceId,
       toolName: name,
-      ...(await operations.footprint(command, client, workspaceId)),
+      accountIds: operations.accountIds?.(command) ?? [],
+      amounts: await operations.amounts(command, client, workspaceId),
     });
   const riskClass = tool.riskClass;
   return {
@@ -82,6 +84,13 @@ export function defineMcpWrite<Command extends object>(
           preview,
         },
         key,
+        (client) =>
+          grants.authorizeMcpProposalReplay(client, {
+            ...identity,
+            workspaceId,
+            toolName: name,
+            accountIds: operations.accountIds?.(command) ?? [],
+          }),
         (client) =>
           authorize(
             client,

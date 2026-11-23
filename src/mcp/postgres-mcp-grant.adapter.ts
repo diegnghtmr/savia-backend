@@ -8,6 +8,7 @@ import type {
   McpGrantAuthorizer,
   McpGrantCall,
   McpGrantStore,
+  McpGrantToolAccess,
   McpWeeklyWindow,
   Money,
 } from './mcp-grant.port.js';
@@ -136,16 +137,30 @@ export class PostgresMcpGrantAdapter
     client: TransactionClient,
     call: McpGrantCall,
   ): Promise<boolean> {
-    const { subject, grantId, workspaceId, toolName, accountIds, amounts } =
-      call;
+    if (!Array.isArray(call.amounts)) return false;
+    return this.authorize(client, call, call.amounts);
+  }
+
+  public authorizeMcpProposalReplay(
+    client: TransactionClient,
+    access: McpGrantToolAccess,
+  ): Promise<boolean> {
+    return this.authorize(client, access, undefined);
+  }
+
+  private async authorize(
+    client: TransactionClient,
+    { subject, grantId, workspaceId, toolName, accountIds }: McpGrantToolAccess,
+    amounts: readonly Money[] | undefined,
+  ): Promise<boolean> {
     const tool = MCP_TOOL_ANNOTATIONS.get(toolName);
     if (
       !tool ||
+      (amounts === undefined && !tool.requiresApproval) ||
       ![subject, grantId, workspaceId].every(
         (id) => typeof id === 'string' && UUID_PATTERN.test(id),
       ) ||
-      !Array.isArray(accountIds) ||
-      !Array.isArray(amounts)
+      !Array.isArray(accountIds)
     )
       return false;
     const accounts = Array.from(accountIds, (id: string) =>
@@ -153,12 +168,13 @@ export class PostgresMcpGrantAdapter
         ? id.toLowerCase()
         : undefined,
     );
-    const money = Array.from(amounts as readonly Money[]);
+    const money = amounts && Array.from(amounts);
     if (
       accounts.includes(undefined) ||
       new Set(accounts).size !== accounts.length ||
-      !money.every(validMoney) ||
-      !hasLedgerFootprint(toolName, accounts.length, money.length)
+      (money &&
+        (!money.every(validMoney) ||
+          !hasLedgerFootprint(toolName, accounts.length, money.length)))
     )
       return false;
 
@@ -195,7 +211,7 @@ export class PostgresMcpGrantAdapter
       )
     )
       return false;
-    return isRead || withinWriteLimit(money, policy);
+    return isRead || money === undefined || withinWriteLimit(money, policy);
   }
 
   public createId(): string {

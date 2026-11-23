@@ -34,10 +34,10 @@ export function mcpAccountWrites(
           throw error;
         }
       },
-      footprint: ({ openingBalance, currency }) => ({
-        accountIds: [], // The account does not exist yet; an account-restricted grant cannot create it.
-        amounts: [openingBalance ?? { amountMinor: '0', currency }],
-      }),
+      // The account does not exist yet; an account-restricted grant cannot create it.
+      amounts: ({ openingBalance, currency }) => [
+        openingBalance ?? { amountMinor: '0', currency },
+      ],
       validate: async (client, workspaceId, command) =>
         (await accounts.canCreateWithin(client, workspaceId, command))
           ? 'ok'
@@ -66,10 +66,14 @@ export function mcpAccountWrites(
           throw error;
         }
       },
-      footprint: (command) => ({
-        accountIds: [command.sourceAccountId, command.destinationAccountId],
-        amounts: [command.sourceAmount, command.destinationAmount],
-      }),
+      accountIds: ({ sourceAccountId, destinationAccountId }) => [
+        sourceAccountId,
+        destinationAccountId,
+      ],
+      amounts: ({ sourceAmount, destinationAmount }) => [
+        sourceAmount,
+        destinationAmount,
+      ],
       validate: async (client, workspaceId, command) =>
         (await exchanges.checkCreateAccounts(client, workspaceId, command))
           ? 'invalid'

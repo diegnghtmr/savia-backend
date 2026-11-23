@@ -202,6 +202,10 @@ export class ApprovalService implements ApprovalsPort {
     workspaceId: string,
     { arguments: args, grantId, ...command }: McpApprovalCommand,
     key: string,
+    authorizeReplay: (
+      client: TransactionClient,
+      body: unknown,
+    ) => Promise<boolean>,
     authorize: (client: TransactionClient) => Promise<boolean>,
     validate: (client: TransactionClient) => Promise<McpApprovalValidation>,
     snapshot?: () => ApprovalAction['arguments'],
@@ -225,9 +229,11 @@ export class ApprovalService implements ApprovalsPort {
           workspaceId,
         );
         if (existing) {
-          return existing.requestFingerprint === fingerprint
-            ? { kind: 'ok', body: existing.responseBody }
-            : { kind: 'conflict' };
+          if (existing.requestFingerprint !== fingerprint)
+            return { kind: 'conflict' };
+          if (!(await authorizeReplay(client, existing.responseBody)))
+            return { kind: 'forbidden' };
+          return { kind: 'ok', body: existing.responseBody };
         }
         if (!(await authorize(client))) return { kind: 'forbidden' };
         const kind = await validate(client);

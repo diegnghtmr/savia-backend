@@ -58,10 +58,9 @@ export function mcpFundReportWrites(
             targetAmount: normalizeMoney(command.targetAmount),
           };
         }),
-      footprint: ({ linkedAccountId, targetAmount }) => ({
-        accountIds: linkedAccountId ? [linkedAccountId] : [],
-        amounts: [targetAmount],
-      }),
+      accountIds: ({ linkedAccountId }) =>
+        linkedAccountId ? [linkedAccountId] : [],
+      amounts: ({ targetAmount }) => [targetAmount],
       validate: async (
         client,
         workspaceId,
@@ -98,11 +97,9 @@ export function mcpFundReportWrites(
             body: { ...command, amount: normalizeMoney(command.amount) },
           };
         }),
-      footprint: ({ body }) => ({
-        // Contributions post to the source account and an external leg, not to a linked account.
-        accountIds: [body.accountId],
-        amounts: [body.amount],
-      }),
+      // Contributions post to the source account and an external leg, not to a linked account.
+      accountIds: ({ body }) => [body.accountId],
+      amounts: ({ body }) => [body.amount],
       validate: async (client, workspaceId, { fundId, body }) => {
         const target = await funds.checkContributionWithin(
           client,
@@ -124,7 +121,7 @@ export function mcpFundReportWrites(
     }),
     defineMcpWrite('create_report_definition', grants, {
       parse: (args) => parse(() => createReportDefinitionCommand(args)),
-      footprint: () => ({ accountIds: [], amounts: [] }),
+      amounts: () => [],
       validate: async (client, _workspaceId, command) => {
         if (command.name.includes('\0')) return 'invalid';
         return (await validInput(

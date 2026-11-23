@@ -123,6 +123,14 @@ function approvalOutcome(
   }
 }
 
+function ledgerToolAccountIds(
+  command: CreateTransactionCommand | CreateTransferCommand,
+): readonly string[] {
+  return 'accountId' in command
+    ? [command.accountId]
+    : [command.sourceAccountId, command.destinationAccountId];
+}
+
 function authorizeLedgerTool(
   grants: McpGrantAuthorizer,
   client: TransactionClient,
@@ -135,10 +143,7 @@ function authorizeLedgerTool(
     ...identity,
     workspaceId,
     toolName,
-    accountIds:
-      'accountId' in command
-        ? [command.accountId]
-        : [command.sourceAccountId, command.destinationAccountId],
+    accountIds: ledgerToolAccountIds(command),
     // A same-currency transfer is one monetary effect, not two.
     amounts: [command.amount],
   });
@@ -375,6 +380,13 @@ const mcpProposals = McpProposalsModule.withPort(proposalImports, {
           preview: { ...command, action: toolName, workspaceId },
         },
         key,
+        (client) =>
+          grants.authorizeMcpProposalReplay(client, {
+            ...identity,
+            workspaceId,
+            toolName,
+            accountIds: ledgerToolAccountIds(command),
+          }),
         (client) =>
           authorizeLedgerTool(
             grants,

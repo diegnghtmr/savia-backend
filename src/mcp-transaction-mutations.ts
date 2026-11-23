@@ -115,6 +115,27 @@ export async function proposeTransactionMutation(
       preview,
     },
     key,
+    async (client, stored) => {
+      // Mutations resolved the account from a live row at creation; replay
+      // uses the account in that stored preview, not the current transaction.
+      const preview =
+        stored && typeof stored === 'object' && 'preview' in stored
+          ? stored.preview
+          : undefined;
+      if (
+        !preview ||
+        typeof preview !== 'object' ||
+        !('accountId' in preview) ||
+        typeof preview.accountId !== 'string'
+      )
+        return false;
+      return grants.authorizeMcpProposalReplay(client, {
+        ...identity,
+        workspaceId,
+        toolName: tool,
+        accountIds: [preview.accountId],
+      });
+    },
     async (client) => {
       current = await transactions.readWithin(
         client,
