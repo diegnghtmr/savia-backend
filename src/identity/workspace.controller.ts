@@ -10,6 +10,7 @@ import {
   Query,
   Req,
   Res,
+  UseFilters,
   UseGuards,
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
@@ -65,6 +66,7 @@ import {
   type WorkspacePort,
 } from './workspace.port.js';
 import { IDENTITY_PROBLEM_TYPES } from './identity-problem-types.js';
+import { SessionOnlyProblemFilter } from './session-only-problem.filter.js';
 
 @Controller('v1/workspaces')
 @UseGuards(JwtAuthGuard)
@@ -78,6 +80,7 @@ export class WorkspaceController {
   ) {}
 
   @Post()
+  @UseFilters(SessionOnlyProblemFilter)
   public async createWorkspace(
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,
