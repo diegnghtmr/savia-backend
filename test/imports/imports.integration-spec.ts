@@ -362,13 +362,112 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
     expect(good.statusCode).toBe(202);
     expect(good.json()).toMatchObject({
       detectedFormat: 'qif',
-      status: 'awaiting_mapping',
+      status: 'awaiting_confirmation',
       totalRows: 3,
       validRows: 2,
       duplicateRows: 1,
       errorRows: 0,
     });
   });
+  it.each([
+    {
+      format: 'qif',
+      statement:
+        '!Type:Bank\nD2026-04-01\nU-90,071,992,547,409.93\nPStatement debit\nN1\n^\n' +
+        'D4/2/2026\nT+1.25\nMStatement credit\nN2\n^\n' +
+        "D4/ 1'26\nT-90071992547409.930\nPStatement debit\nN1\n^\n",
+      month: '04',
+      key: '1',
+    },
+    {
+      format: 'ofx',
+      statement:
+        'OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\n\n<OFX><STMTRS><CURDEF>USD<BANKTRANLIST>' +
+        '<STMTTRN><DTPOSTED>20260501<TRNAMT>-90071992547409.93<NAME>Statement debit<FITID>1</STMTTRN>' +
+        '<STMTTRN><DTPOSTED>20260502<TRNAMT>+1.25<MEMO>Statement credit<FITID>2</STMTTRN>' +
+        '<STMTTRN><DTPOSTED>20260503<TRNAMT>-14.00<NAME>Changed description<FITID>1</STMTTRN>' +
+        '</BANKTRANLIST></STMTRS></OFX>',
+      month: '05',
+      key: '2',
+    },
+  ])(
+    'uploads, previews and commits $format using fixed fields',
+    async ({ format, statement, month, key }) => {
+      const headers = {
+        authorization: 'Bearer accepted-token',
+        'x-workspace-id': workspace,
+      };
+      const uploadKey = `00000000-0000-4000-8000-00000000556${key}`;
+      const commitKey = `00000000-0000-4000-8000-00000000557${key}`;
+      const fileName = `fixed.${format}`;
+      const uploaded = await upload(
+        app,
+        Buffer.from(statement),
+        fileName,
+        uploadKey,
+      );
+      expect(uploaded.statusCode).toBe(202);
+      const { id, createdAt } = uploaded.json();
+      const route = `/v1/import-jobs/${id}`;
+      const preview = {
+        id,
+        fileName,
+        createdAt,
+        accountId: null,
+        detectedFormat: format,
+        status: 'awaiting_confirmation',
+        totalRows: 3,
+        validRows: 2,
+        duplicateRows: 1,
+        errorRows: 0,
+      };
+      expect(uploaded.json()).toMatchObject(preview);
+      const analyzed = await app.inject({ method: 'GET', url: route, headers });
+      expect(analyzed.statusCode).toBe(200);
+      expect(analyzed.json()).toMatchObject(preview);
+      const committed = await app.inject({
+        method: 'POST',
+        url: `${route}/commit`,
+        headers: { ...headers, 'idempotency-key': commitKey },
+        payload: { accountId, columnMapping: {} },
+      });
+      expect(committed.statusCode).toBe(202);
+      expect(committed.json()).toMatchObject({
+        type: 'import_commit',
+        status: 'completed',
+      });
+      const completed = await app.inject({
+        method: 'GET',
+        url: route,
+        headers,
+      });
+      expect(completed.statusCode).toBe(200);
+      expect(completed.json()).toMatchObject({
+        ...preview,
+        accountId,
+        status: 'completed',
+      });
+      const transactions = await admin.query(
+        `select amount_minor::text, currency, description, occurred_at
+       from public.transactions where import_job_id=$1 order by occurred_at`,
+        [id],
+      );
+      expect(transactions.rows).toEqual([
+        {
+          amount_minor: '-9007199254740993',
+          currency: 'USD',
+          description: 'Statement debit',
+          occurred_at: new Date(`2026-${month}-01T00:00:00.000Z`),
+        },
+        {
+          amount_minor: '125',
+          currency: 'USD',
+          description: 'Statement credit',
+          occurred_at: new Date(`2026-${month}-02T00:00:00.000Z`),
+        },
+      ]);
+    },
+  );
   it.each(['USD', 'JPY'])(
     'analyzes QFX FITIDs and checks %s at commit',
     async (currency) => {
@@ -428,7 +527,7 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
             'Statement currency must match the selected account currency.',
         });
         expect(status.json()).toMatchObject({
-          status: 'awaiting_mapping',
+          status: 'awaiting_confirmation',
           validRows: 2,
           duplicateRows: 1,
           errorRows: 0,

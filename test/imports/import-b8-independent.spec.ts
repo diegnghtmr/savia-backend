@@ -37,7 +37,7 @@ async function fixture(format: 'csv' | 'xlsx'): Promise<Buffer> {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-function harness() {
+function harness(currency = 'USD') {
   let job: ImportJob | undefined;
   let rows: readonly ImportCommitRow[] = [];
   const booked: ImportedTransactionCommand[] = [];
@@ -76,7 +76,12 @@ function harness() {
         fileName,
         detectedFormat,
         sourceColumns,
-        status: 'awaiting_mapping',
+        status:
+          detectedFormat === 'qif' ||
+          detectedFormat === 'ofx' ||
+          detectedFormat === 'qfx'
+            ? 'awaiting_confirmation'
+            : 'awaiting_mapping',
         accountId: null,
         totalRows: counts.total,
         validRows: counts.valid,
@@ -86,7 +91,7 @@ function harness() {
       };
       return job;
     },
-    lockAccount: async () => ({ status: 'active', currency: 'USD' }),
+    lockAccount: async () => ({ status: 'active', currency }),
     lockWorkspace: async () => {},
     findRows: async () => rows,
     findExisting: async () => false,
@@ -183,6 +188,46 @@ describe('QIF commit date mapping', () => {
         importJobId: job.id,
       },
     ]);
+  });
+});
+
+describe('fixed statement commit', () => {
+  it('uses account currency precision when committing QIF with the default mapping', async () => {
+    const imports = harness('KWD');
+    const job = await imports.upload(
+      'bank.qif',
+      Buffer.from('!Type:Bank\nD2/9/2026\nU1.234\nPMemo\n^\n'),
+    );
+    expect(job).toMatchObject({ validRows: 1, errorRows: 0 });
+    expect(await imports.commit(job.id, { columnMapping: {} })).toEqual({
+      kind: 'ok',
+      job: { status: 'completed' },
+    });
+    expect(imports.booked).toEqual([
+      {
+        accountId: 'account',
+        amountMinor: '1234',
+        currency: 'KWD',
+        occurredAt: '2026-02-09T00:00:00.000Z',
+        description: 'Memo',
+        importJobId: job.id,
+      },
+    ]);
+  });
+
+  it('rejects QIF precision incompatible with the selected account without writing', async () => {
+    const imports = harness('JPY');
+    const job = await imports.upload(
+      'bank.qif',
+      Buffer.from('!Type:Bank\nD2/9/2026\nT1.21\nPMemo\n^\n'),
+    );
+    expect(job).toMatchObject({ validRows: 1, errorRows: 0 });
+    expect(await imports.commit(job.id)).toEqual({
+      kind: 'invalid',
+      detail:
+        'Statement amount exceeds the selected account currency precision or ledger range.',
+    });
+    expect(imports.booked).toEqual([]);
   });
 });
 

@@ -14,7 +14,7 @@ const debit =
 
 function normalized(
   date: string,
-  amount: number,
+  amount: string,
   name: string,
   reference: string,
   currency: string,
@@ -48,14 +48,16 @@ describe('OFX and QFX statements', () => {
       Buffer.from(`${header}${bank('<CURDEF>JPY', record)}`, 'latin1'),
     );
     expect(rows).toEqual([
-      normalized('2026-02-09', -500, 'Café & tea', '0007', 'JPY', '0007'),
+      normalized('2026-02-09', '-500', 'Café & tea', '0007', 'JPY', '0007'),
     ]);
   });
 
   it('reads OFX 2.x XML, preserving the statement day and signed minor units', async () => {
     expect(
       await parseImport('ofx', xml(bank('<CURDEF>USD</CURDEF>', debit))),
-    ).toEqual([normalized('2026-02-09', -1234, 'A & B', '001', 'USD', '001')]);
+    ).toEqual([
+      normalized('2026-02-09', '-1234', 'A & B', '001', 'USD', '001'),
+    ]);
   });
 
   it('reads QFX credit-card XML with three-decimal currency and a reference fallback', async () => {
@@ -63,9 +65,47 @@ describe('OFX and QFX statements', () => {
       '<OFX><CREDITCARDMSGSRSV1><CCSTMTTRNRS><CCSTMTRS><CURDEF>KWD</CURDEF><BANKTRANLIST><STMTTRN><DTPOSTED>20260210</DTPOSTED><TRNAMT>+1.2340</TRNAMT><REFNUM>0002</REFNUM><MEMO>Credit &#x26; refund</MEMO></STMTTRN></BANKTRANLIST></CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1></OFX>',
     );
     expect(await parseImport('qfx', bytes)).toEqual([
-      normalized('2026-02-10', 1234, 'Credit & refund', '0002', 'KWD', ''),
+      normalized('2026-02-10', '1234', 'Credit & refund', '0002', 'KWD', ''),
     ]);
   });
+
+  it('preserves a signed amount above 2^53 through normalization', async () => {
+    const bytes = xml(
+      bank(
+        '<CURDEF>USD</CURDEF>',
+        debit.replace('-12.34', '-90071992547409.93'),
+      ),
+    );
+    expect(await parseImport('ofx', bytes)).toMatchObject([
+      {
+        parsedAmountMinor: '-9007199254740993',
+        classification: 'valid',
+        error: null,
+      },
+    ]);
+  });
+
+  it('reads an omitted empty SGML NAME tag and falls back to MEMO', async () => {
+    const records =
+      '<STMTTRN><DTPOSTED>20260209<TRNAMT>+2.00<NAME>\n<MEMO>Refund</STMTTRN>';
+    const bytes = Buffer.from(header + bank('<CURDEF>USD', records));
+    expect(await parseImport('ofx', bytes)).toMatchObject([
+      {
+        parsedAmountMinor: '200',
+        parsedDescription: 'Refund',
+        classification: 'valid',
+      },
+    ]);
+  });
+
+  it.each(['', bank('<CURDEF>USD</CURDEF>', '')])(
+    'rejects an empty statement (%j)',
+    async (text) => {
+      await expect(parseImport('ofx', Buffer.from(text))).rejects.toThrow(
+        'OFX statement is invalid or unsupported.',
+      );
+    },
+  );
 
   it('marks invalid datetime, precision and missing description as row errors', async () => {
     const [row] = await parseImport(
@@ -86,7 +126,7 @@ describe('OFX and QFX statements', () => {
         status: 422,
         code: 'import-row-invalid',
         detail:
-          'date must be YYYY-MM-DD; amount must be a safe integer minor-unit amount; description is required',
+          'date must be YYYY-MM-DD; amount must be valid for the statement format and ledger range; description is required',
       },
     });
   });

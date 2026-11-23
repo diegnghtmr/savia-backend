@@ -6,7 +6,9 @@ import { parseQif, previewQifDate } from './qif-parser.js';
 import {
   MAX_IMPORT_ROWS,
   OFX_COLUMNS,
+  QIF_PREVIEW_CURRENCY_DIGITS,
   STATEMENT_COLUMNS,
+  statementAmount,
 } from './statement-fields.js';
 
 export { MAX_IMPORT_FILE_BYTES, MAX_IMPORT_ROWS } from './statement-fields.js';
@@ -27,8 +29,7 @@ function fieldIndex(
 }
 function parseRows(
   values: readonly (readonly unknown[])[],
-  normalizedStatement = false,
-  normalizeDate?: (value: string) => string,
+  statement?: 'qif' | 'ofx',
 ): readonly ParsedImportRow[] {
   const headers = (values[0] ?? []).map((v) => String(v ?? ''));
   const dateAt = fieldIndex(headers, ['date', 'fecha', 'occurred_at']);
@@ -47,26 +48,34 @@ function parseRows(
   return values.slice(1).map((raw, index) => {
     const widthError = raw.length !== headers.length;
     const dateText = dateAt < 0 ? '' : String(raw[dateAt] ?? '').trim();
-    const date = normalizeDate ? normalizeDate(dateText) : dateText;
-    const amountText =
-      amountAt < 0
-        ? ''
-        : String(raw[amountAt] ?? '')
-            .trim()
-            .replace(',', '.');
+    const date = statement === 'qif' ? previewQifDate(dateText) : dateText;
+    const rawAmount = raw[amountAt];
+    const statementValue = typeof rawAmount === 'string' ? rawAmount : null;
+    const amount =
+      statement === 'qif'
+        ? statementValue === null
+          ? null
+          : statementAmount(statementValue, QIF_PREVIEW_CURRENCY_DIGITS)
+        : statement === 'ofx'
+          ? statementValue
+          : Number(
+              String(rawAmount ?? '')
+                .trim()
+                .replace(',', '.'),
+            );
     const description =
       descriptionAt < 0 ? '' : String(raw[descriptionAt] ?? '').trim();
-    const amount = Number(amountText);
     const errors: string[] = [];
     if (
       !/^\d{4}-\d{2}-\d{2}$/u.test(date) ||
       Number.isNaN(new Date(`${date}T00:00:00Z`).getTime())
     )
       errors.push('date must be YYYY-MM-DD');
-    if (
-      (normalizedStatement && raw[amountAt] === null) ||
-      !Number.isSafeInteger(amount)
-    )
+    if (statement && statementValue === null)
+      errors.push(
+        'amount must be valid for the statement format and ledger range',
+      );
+    else if (!statement && !Number.isSafeInteger(amount))
       errors.push('amount must be a safe integer minor-unit amount');
     if (!description) errors.push('description is required');
     if (widthError)
@@ -316,10 +325,6 @@ export async function parseImport(
   if (format === 'csv') return parseCsv(bytes);
   if (format === 'xlsx') return parseXlsx(bytes);
   if (format === 'qif')
-    return parseRows(
-      [STATEMENT_COLUMNS, ...parseQif(bytes)],
-      true,
-      previewQifDate,
-    );
-  return parseRows([OFX_COLUMNS, ...parseOfx(bytes)], true);
+    return parseRows([STATEMENT_COLUMNS, ...parseQif(bytes)], 'qif');
+  return parseRows([OFX_COLUMNS, ...parseOfx(bytes)], 'ofx');
 }

@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
+import { negateAmountMinor } from '../platform/amount-minor.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
   IMPORT_FORMATS,
   IMPORT_OUTCOMES,
+  isFixedStatementFormat,
   type ImportFormat,
   type ImportCreateOutcome,
   type ImportGetOutcome,
@@ -20,7 +22,8 @@ import {
 } from './import-parsers.js';
 import { parseQifDate, previewQifDate } from './qif-parser.js';
 import {
-  QIF_CURRENCY_DIGITS,
+  QIF_PREVIEW_CURRENCY_DIGITS,
+  statementAmount,
   statementCurrencyDigits,
 } from './statement-fields.js';
 import type { JobWriter } from '../platform/job-writer.port.js';
@@ -71,11 +74,18 @@ function isOfx(format: ImportFormat | null): boolean {
   return format === 'ofx' || format === 'qfx';
 }
 
+const FIXED_STATEMENT_MAPPING = {
+  date: 'date',
+  amount: 'amount',
+  description: 'description',
+};
+
 function importRowIdentity(format: ImportFormat, row: ParsedImportRow): string {
-  const identity = `${row.parsedDate}|${row.parsedAmountMinor}|${normalizeImportDescription(row.parsedDescription!)}`;
-  if (format === 'csv' || format === 'xlsx') return identity;
   const field = (name: string) =>
     row.rawValues[row.sourceColumns.indexOf(name)];
+  const amount = format === 'qif' ? field('amount') : row.parsedAmountMinor;
+  const identity = `${row.parsedDate}|${amount}|${normalizeImportDescription(row.parsedDescription!)}`;
+  if (format === 'csv' || format === 'xlsx') return identity;
   const fitid = field('fitid');
   return fitid
     ? JSON.stringify(['fitid', fitid])
@@ -278,12 +288,37 @@ export class ImportService implements ImportsPort {
             kind: IMPORT_MUTATION_OUTCOMES.CONFLICT,
             detail: 'Import job has already been completed.',
           };
-        if (importJob.status !== 'awaiting_mapping')
+        const fixed =
+          importJob.status === 'awaiting_confirmation' &&
+          isFixedStatementFormat(importJob.detectedFormat);
+        if (!fixed && importJob.status !== 'awaiting_mapping')
           return {
             kind: IMPORT_MUTATION_OUTCOMES.INVALID,
             detail: 'Import job is not awaiting_mapping.',
           };
-        const targets = new Set(Object.values(command.columnMapping));
+        const suppliedMapping = Object.entries(command.columnMapping);
+        // OpenAPI requires the object, but fixed formats need no user mapping.
+        // Accept an explicit identity mapping too, for existing clients.
+        if (
+          fixed &&
+          suppliedMapping.length > 0 &&
+          (suppliedMapping.length !==
+            Object.keys(FIXED_STATEMENT_MAPPING).length ||
+            suppliedMapping.some(
+              ([name, target]) =>
+                !Object.hasOwn(FIXED_STATEMENT_MAPPING, name) ||
+                name !== target,
+            ))
+        )
+          return {
+            kind: IMPORT_MUTATION_OUTCOMES.INVALID,
+            detail:
+              'Statement columnMapping must use the fixed date, amount, and description fields.',
+          };
+        const columnMapping = fixed
+          ? FIXED_STATEMENT_MAPPING
+          : command.columnMapping;
+        const targets = new Set(Object.values(columnMapping));
         for (const required of ['date', 'amount', 'description'])
           if (!targets.has(required))
             return {
@@ -310,11 +345,11 @@ export class ImportService implements ImportsPort {
             detail: 'debitCreditIndicator is required for separate_column.',
           };
         const source = (target: string): string | undefined =>
-          Object.entries(command.columnMapping).find(
+          Object.entries(columnMapping).find(
             ([, value]) => value === target,
           )?.[0];
         if (
-          Object.keys(command.columnMapping).some(
+          Object.keys(columnMapping).some(
             (name) => !importJob.sourceColumns.includes(name),
           )
         )
@@ -335,18 +370,29 @@ export class ImportService implements ImportsPort {
             kind: IMPORT_MUTATION_OUTCOMES.INVALID,
             detail: 'dateFormat is not supported.',
           };
-        if (
-          importJob.detectedFormat === 'qif' &&
-          statementCurrencyDigits(account.currency) !== QIF_CURRENCY_DIGITS
-        )
-          return {
-            kind: IMPORT_MUTATION_OUTCOMES.INVALID,
-            detail: 'QIF requires a two-decimal account currency.',
-          };
+        const qifDigits =
+          importJob.detectedFormat === 'qif'
+            ? statementCurrencyDigits(account.currency)
+            : undefined;
+        if (importJob.detectedFormat === 'qif') {
+          if (qifDigits === undefined)
+            return {
+              kind: IMPORT_MUTATION_OUTCOMES.INVALID,
+              detail: 'The selected account currency is unsupported for QIF.',
+            };
+          if (!fixed && qifDigits !== QIF_PREVIEW_CURRENCY_DIGITS)
+            return {
+              kind: IMPORT_MUTATION_OUTCOMES.INVALID,
+              detail: 'QIF requires a two-decimal account currency.',
+            };
+        }
         const currencyIndex = isOfx(importJob.detectedFormat)
           ? importJob.sourceColumns.indexOf('currency')
           : null;
         const dateColumn = index('date');
+        const amountColumn = index('amount');
+        const descriptionColumn = index('description');
+        const sign = command.debitSign ?? DEBIT_SIGNS.NEGATIVE;
         const isQifDate =
           importJob.detectedFormat === 'qif' &&
           importJob.sourceColumns[dateColumn] === 'date';
@@ -358,18 +404,18 @@ export class ImportService implements ImportsPort {
           description: string;
         }> = [];
         for (const row of rows) {
-          if (
+          const skipped =
             row.classification === 'error' ||
-            (skipDuplicates && row.classification === 'duplicate')
-          )
-            continue;
+            (skipDuplicates && row.classification === 'duplicate');
           if (
             currencyIndex !== null &&
+            (fixed || !skipped) &&
             row.rawValues[currencyIndex] !== account.currency
           )
             throw new ImportValidationError(
               'Statement currency must match the selected account currency.',
             );
+          if (skipped) continue;
           const rawDate = String(row.rawValues[dateColumn] ?? '').trim();
           const date =
             isQifDate && command.dateFormat !== 'YYYY-MM-DD'
@@ -380,26 +426,39 @@ export class ImportService implements ImportsPort {
                   'YYYY-MM-DD',
                 )
               : parseImportDate(rawDate, dateFormat);
-          let amount = Number(row.rawValues[index('amount')]);
-          if (!Number.isSafeInteger(amount))
-            throw new ImportValidationError(
-              'Computed amount cannot be stored.',
-            );
-          const sign = command.debitSign ?? DEBIT_SIGNS.NEGATIVE;
-          if (sign === DEBIT_SIGNS.POSITIVE) amount = -amount;
-          if (sign === DEBIT_SIGNS.SEPARATE_COLUMN)
-            amount = separateColumnAmount(
-              row.rawValues[index('debitCreditIndicator')],
-              amount,
-            );
-          if (!Number.isSafeInteger(amount))
-            throw new ImportValidationError(
-              'Computed amount cannot be stored.',
-            );
+          const rawAmount = row.rawValues[amountColumn];
+          let amountMinor: string;
+          if (fixed) {
+            const amount =
+              typeof rawAmount === 'string'
+                ? statementAmount(rawAmount, qifDigits ?? 0)
+                : null;
+            if (amount === null)
+              throw new ImportValidationError(
+                'Statement amount exceeds the selected account currency precision or ledger range.',
+              );
+            amountMinor =
+              sign === DEBIT_SIGNS.POSITIVE
+                ? negateAmountMinor(amount)
+                : amount;
+          } else {
+            let amount = Number(rawAmount);
+            if (!Number.isSafeInteger(amount))
+              throw new ImportValidationError(
+                'Computed amount cannot be stored.',
+              );
+            if (sign === DEBIT_SIGNS.POSITIVE) amount = -amount;
+            if (sign === DEBIT_SIGNS.SEPARATE_COLUMN)
+              amount = separateColumnAmount(
+                row.rawValues[index('debitCreditIndicator')],
+                amount,
+              );
+            amountMinor = String(amount);
+          }
           const description = String(
-            row.rawValues[index('description')] ?? '',
+            row.rawValues[descriptionColumn] ?? '',
           ).trim();
-          prepared.push({ date, amountMinor: String(amount), description });
+          prepared.push({ date, amountMinor, description });
         }
         // FITID is only used within a statement. Cross-import matching still
         // compares date, amount and description within the selected account.

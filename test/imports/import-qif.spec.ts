@@ -15,9 +15,9 @@ describe('QIF statements', () => {
     expect(await parseImport('qif', bytes)).toEqual([
       {
         rowNumber: 2,
-        rawValues: ["2/ 9'26", -123456, 'Coffee Shop', '0102'],
+        rawValues: ["2/ 9'26", '-1234.56', 'Coffee Shop', '0102'],
         parsedDate: '2026-02-09',
-        parsedAmountMinor: -123456,
+        parsedAmountMinor: '-123456',
         parsedDescription: 'Coffee Shop',
         classification: 'valid',
         error: null,
@@ -25,9 +25,9 @@ describe('QIF statements', () => {
       },
       {
         rowNumber: 3,
-        rawValues: ['2/10/2026', 10, 'Refund', ''],
+        rawValues: ['2/10/2026', '0.1', 'Refund', ''],
         parsedDate: '2026-02-10',
-        parsedAmountMinor: 10,
+        parsedAmountMinor: '10',
         parsedDescription: 'Refund',
         classification: 'valid',
         error: null,
@@ -36,7 +36,42 @@ describe('QIF statements', () => {
     ]);
   });
 
-  it.each(['', 'T0.001\n', 'T1e3\n', 'T90071992547409.92\n'])(
+  it('accepts U amounts, prefers T when both are present, and preserves exact large amounts', async () => {
+    const rows = await parseImport(
+      'qif',
+      statement(
+        'D2026-02-09\nU-90,071,992,547,409.93\nMMemo only\nN0001\n^\n' +
+          'D2-10-26\nU99.99\nT+0.10\nPRefund\n^\n',
+      ),
+    );
+    expect(rows).toMatchObject([
+      {
+        parsedDate: '2026-02-09',
+        parsedAmountMinor: '-9007199254740993',
+        parsedDescription: 'Memo only',
+        classification: 'valid',
+        error: null,
+      },
+      {
+        parsedDate: '2026-02-10',
+        parsedAmountMinor: '10',
+        parsedDescription: 'Refund',
+        classification: 'valid',
+        error: null,
+      },
+    ]);
+  });
+
+  it.each(['', '!Type:Bank\n'])(
+    'rejects an empty statement (%j)',
+    async (text) => {
+      await expect(parseImport('qif', Buffer.from(text))).rejects.toThrow(
+        'QIF statement is invalid or unsupported.',
+      );
+    },
+  );
+
+  it.each(['', 'T0.00001\n', 'T1e3\n', 'T9223372036854775808.00\n'])(
     'reports invalid calendar dates, amounts (%j) and missing descriptions as row errors',
     async (amount) => {
       const [row] = await parseImport(
@@ -52,7 +87,7 @@ describe('QIF statements', () => {
           status: 422,
           code: 'import-row-invalid',
           detail:
-            'date must be YYYY-MM-DD; amount must be a safe integer minor-unit amount; description is required',
+            'date must be YYYY-MM-DD; amount must be valid for the statement format and ledger range; description is required',
         },
       });
     },

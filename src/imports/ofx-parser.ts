@@ -165,7 +165,13 @@ export function parseOfx(bytes: Buffer): StatementRow[] {
     }
     const name = sgml ? tag.toUpperCase() : tag;
     // SGML permits omitted scalar end tags, never omitted aggregate end tags.
-    if (sgml && top?.value && !(closing && top.name === name)) {
+    if (
+      sgml &&
+      top &&
+      (top.value ||
+        (stack.at(-2)?.fields && TRANSACTION_FIELDS.has(top.name))) &&
+      !(closing && top.name === name)
+    ) {
       close();
       top = stack.at(-1);
     }
@@ -196,6 +202,6 @@ export function parseOfx(bytes: Buffer): StatementRow[] {
     });
     if (selfClosing) close();
   }
-  if (stack.length || !hasList) invalid();
+  if (stack.length || !hasList || !rows.length) invalid();
   return rows;
 }

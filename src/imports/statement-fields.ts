@@ -4,7 +4,11 @@ const MAX_STATEMENT_LINE_LENGTH = 100_000;
 
 export const STATEMENT_COLUMNS = ['date', 'amount', 'description', 'reference'];
 export const OFX_COLUMNS = [...STATEMENT_COLUMNS, 'currency', 'fitid'];
-export const QIF_CURRENCY_DIGITS = 2;
+export const QIF_PREVIEW_CURRENCY_DIGITS = 2;
+const MAX_CURRENCY_DIGITS = 4;
+// Both the amount and its negated counter-posting must fit PostgreSQL bigint.
+const MAX_LEDGER_AMOUNT = '9223372036854775807';
+const DECIMAL_AMOUNT = /^([+-]?)(\d+)(?:\.(\d+))?$/u;
 const CURRENCIES = new Set(Intl.supportedValuesOf('currency'));
 
 export function statementCurrencyDigits(currency: string): number | undefined {
@@ -17,7 +21,7 @@ export function statementCurrencyDigits(currency: string): number | undefined {
 
 export type StatementRow = readonly [
   date: string,
-  amount: number | null,
+  amount: string | null,
   description: string,
   reference: string,
   currency?: string,
@@ -84,13 +88,35 @@ export function statementDate(
   return date;
 }
 
-export function statementAmount(value: string, digits: number): number | null {
-  const match = /^([+-]?)(\d+)(?:\.(\d+))?$/u.exec(value);
+function withoutLeadingZeros(value: string): string {
+  return value.replace(/^0+/u, '') || '0';
+}
+
+export function statementAmount(value: string, digits: number): string | null {
+  const match = DECIMAL_AMOUNT.exec(value);
   if (!match) return null;
-  const fraction = match[3] ?? '';
+  const [, sign, integer, fraction = ''] = match;
   if (/[^0]/u.test(fraction.slice(digits))) return null;
-  const minor = Number(
-    `${match[1]}${match[2]}${fraction.slice(0, digits).padEnd(digits, '0')}`,
+  const minor = withoutLeadingZeros(
+    integer + fraction.slice(0, digits).padEnd(digits, '0'),
   );
-  return Number.isSafeInteger(minor) ? minor || 0 : null;
+  if (
+    minor.length > MAX_LEDGER_AMOUNT.length ||
+    (minor.length === MAX_LEDGER_AMOUNT.length && minor > MAX_LEDGER_AMOUNT)
+  )
+    return null;
+  return sign === '-' && minor !== '0' ? `-${minor}` : minor;
+}
+
+// QIF has no currency. Keep the canonical major-unit value until commit.
+export function qifDecimalAmount(value: string): string | null {
+  const match = DECIMAL_AMOUNT.exec(value);
+  if (!match) return null;
+  const [, sign, integer, fraction = ''] = match;
+  const whole = withoutLeadingZeros(integer);
+  if (/[^0]/u.test(fraction.slice(MAX_CURRENCY_DIGITS))) return null;
+  const decimals = fraction.slice(0, MAX_CURRENCY_DIGITS).replace(/0+$/u, '');
+  const prefix = sign === '-' && (whole !== '0' || decimals) ? '-' : '';
+  const decimal = prefix + whole + (decimals ? `.${decimals}` : '');
+  return statementAmount(decimal, decimals.length) === null ? null : decimal;
 }
