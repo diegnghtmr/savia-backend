@@ -14,6 +14,7 @@ import type { FastifyReply } from 'fastify';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { BootstrapCommandValidationError } from './bootstrap-command.js';
 import { CommitOutcomeUnknownError } from '../platform/pg-transaction.js';
+import { SessionStatusUnavailableError } from '../platform/postgres-session.store.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 
 const RETRY_AFTER_SECONDS = 5;
@@ -42,6 +43,12 @@ export class OnboardingProblemFilter implements ExceptionFilter {
         type: PROBLEM_TYPES.FORBIDDEN,
         title: 'Forbidden',
         status: 403,
+      });
+    if (exception instanceof SessionStatusUnavailableError)
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.DEPENDENCY_UNAVAILABLE,
+        title: 'Session status could not be verified',
+        status: 503,
       });
     if (exception instanceof CommitOutcomeUnknownError) {
       // The write may or may not have landed. Retrying is safe only for

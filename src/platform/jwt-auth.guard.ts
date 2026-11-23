@@ -11,6 +11,7 @@ import type { RequestIdentity } from './request-identity.js';
 import { JoseJwtVerifier } from './jose-jwt-verifier.js';
 import { CliTokenVerifier } from './cli-token-verifier.js';
 import { CLI_SCOPE_POLICY, routeKey } from './cli-scope-policy.js';
+import { SessionStatusUnavailableError } from './postgres-session.store.js';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -24,12 +25,21 @@ export class JwtAuthGuard implements CanActivate {
     const token = extractBearerToken(request.headers.authorization);
     if (token === undefined) throw new UnauthorizedException();
 
+    // The session verifier does not establish identity until its signed
+    // session_id has been checked against Supabase's current session state.
     let identity: RequestIdentity;
     try {
       identity = await (token.startsWith('svt_')
         ? this.cliTokenVerifier.verify(token)
         : this.verifier.verify(token));
-    } catch {
+    } catch (error) {
+      const route = request.routeOptions.url;
+      if (
+        error instanceof SessionStatusUnavailableError &&
+        (route === '/v1/me/sessions' ||
+          route === '/v1/me/sessions/revoke-others')
+      )
+        throw error;
       throw new UnauthorizedException();
     }
     request.identity = identity;
