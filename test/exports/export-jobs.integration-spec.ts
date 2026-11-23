@@ -1205,6 +1205,74 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
         }
       });
 
+      // Reviewer draft (verify mwtpt0ri).
+      it('keeps one checkout and the advisory lock after the LIST budget expires', async () => {
+        const pool = new Pool({
+          connectionString: url,
+          max: 2,
+          connectionTimeoutMillis: 1_000,
+        });
+        const tx = new PgTransaction(
+          { connect: () => pool.connect(), end: () => pool.end() },
+          { idleTransactionTimeoutMs: 250 },
+        );
+        const storage = new InMemoryArtifactStorage();
+        const key = orphanKey(randomUUID());
+        await put(storage, key);
+        const page =
+          Promise.withResolvers<Array<{ path: string; createdAt: Date }>>();
+        const list = vi
+          .spyOn(storage, 'list')
+          .mockReturnValueOnce(page.promise);
+        const first = new BackupRetentionTask(tx, storage, {});
+        const contender = new BackupRetentionTask(tx, storage, {});
+        const active = first.runOnce();
+
+        try {
+          await vi.waitFor(() => expect(list).toHaveBeenCalledOnce(), {
+            timeout: 2_000,
+          });
+          for (let i = 0; i < 20; i++) {
+            expect(first.runOnce()).toBe(active);
+          }
+
+          await vi.waitFor(
+            () => expect(list.mock.calls[0][1].signal.aborted).toBe(true),
+            { timeout: 12_000 },
+          );
+
+          // An ordinary transaction can still get a connection, but not the lock.
+          await expect(
+            tx.runAsQueueConsumer((client) =>
+              client.query(
+                'select pg_try_advisory_xact_lock(1935767145, 1) as acquired',
+              ),
+            ),
+          ).resolves.toMatchObject({ rows: [{ acquired: false }] });
+          await contender.runOnce();
+          expect(list).toHaveBeenCalledOnce();
+          expect(storage.uploaded.get(key)?.content).toEqual(
+            Buffer.from('ZIP'),
+          );
+
+          page.resolve([{ path: key, createdAt: old }]);
+          await active;
+          expect(storage.removeCallCount).toBe(0);
+          expect(storage.uploaded.get(key)?.content).toEqual(
+            Buffer.from('ZIP'),
+          );
+
+          await contender.runOnce();
+          expect(list).toHaveBeenCalledTimes(2);
+          expect(storage.removeCallCount).toBe(1);
+          expect(storage.uploaded.has(key)).toBe(false);
+        } finally {
+          page.resolve([]);
+          await active;
+          await tx.close();
+        }
+      }, 17_000);
+
       // Reviewer regressions (verify mwtl2dsf).
       it('grants the worker only a boolean retention decision, not backup columns', async () => {
         const signature =

@@ -755,7 +755,7 @@ function isDatabaseTimeout(error: unknown): boolean {
   if (
     error instanceof Error &&
     'code' in error &&
-    ['55P03', '57014', '25P03'].includes(String(error.code))
+    ['55P03', '57014', '25P03', '25P04'].includes(String(error.code))
   ) {
     return true;
   }
@@ -763,11 +763,7 @@ function isDatabaseTimeout(error: unknown): boolean {
 }
 function databaseTimeout(error: unknown): Error {
   if (error instanceof TransactionTimeoutError) return error;
-  if (
-    error instanceof Error &&
-    'code' in error &&
-    ['55P03', '57014', '25P03'].includes(String(error.code))
-  ) {
+  if (isDatabaseTimeout(error)) {
     return new TransactionTimeoutError(
       'PostgreSQL transaction timed out.',
       error,
