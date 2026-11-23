@@ -762,8 +762,15 @@ returning
       if (compensated.rowCount !== 2)
         throw new Error('Occurrence posting pair was not compensated.');
     } else {
-      // Standalone void keeps its existing status and void-instant cutoff.
+      // Keep the void instant for past postings, but never reverse future
+      // postings before they take effect. Linked headers can have a different
+      // date from their legs, so use the actual posting cutoff.
       const postingsSql = `
+with reversal_cutoff as (
+  select greatest($7::timestamptz, max(p.occurred_at)) as occurred_at
+    from public.ledger_postings p
+   where p.workspace_id = $1::uuid and p.transaction_id = $2::uuid
+)
 insert into public.ledger_postings (
   workspace_id,
   transaction_id,
@@ -774,9 +781,10 @@ insert into public.ledger_postings (
   status,
   occurred_at
 )
-values
-  ($1::uuid, $2::uuid, $3::uuid, 'account', $4, $5, $6, $7),
-  ($1::uuid, $2::uuid, null, 'external', $8, $5, $6, $7)`;
+select $1::uuid, $2::uuid, leg.account_id, leg.kind, leg.amount, $5, $6, cutoff.occurred_at
+  from (values ($3::uuid, 'account', $4::bigint), (null, 'external', $8::bigint))
+    as leg(account_id, kind, amount)
+ cross join reversal_cutoff cutoff`;
 
       const postingsValues = [
         workspaceId,

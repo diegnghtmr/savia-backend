@@ -33,6 +33,10 @@ begin
             select 1 from public.recurring_occurrences o
             where o.workspace_id = t.workspace_id and o.transaction_id = t.id
           )
+          and not exists (
+            select 1 from public.transfers transfer
+            where transfer.workspace_id = t.workspace_id and transfer.transaction_id = t.id
+          )
       )
     )
   ) then
@@ -50,9 +54,14 @@ as $$
 declare
   aligned bigint;
 begin
+  -- Keep recurring and transfer-owned postings outside standalone alignment.
+  -- A transfer fee PATCH remains header-only, as it was in b143f90.
   if exists (
     select 1 from public.recurring_occurrences o
     where o.workspace_id = new.workspace_id and o.transaction_id = new.id
+  ) or exists (
+    select 1 from public.transfers transfer
+    where transfer.workspace_id = new.workspace_id and transfer.transaction_id = new.id
   ) then
     return null;
   end if;

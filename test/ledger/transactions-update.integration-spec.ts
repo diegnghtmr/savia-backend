@@ -469,6 +469,115 @@ describe('TransactionService updateTransaction database boundary', () => {
     await expectBalance(booking.accountId, past, '0');
   });
 
+  // Reviewer regressions (verify mwtkuu0g). Add inside the existing describe in test/ledger/transactions-update.integration-spec.ts.
+  it('does not book an early reversal after moving a transaction into the future', async () => {
+    const booking = await createBookedIncome();
+    const moved = await patchBooking(booking, { occurredAt: future });
+    expect(moved.statusCode, moved.payload).toBe(200);
+    const current = moved.json<Transaction>();
+
+    const voided = await app.inject({
+      method: 'POST',
+      url: `/v1/transactions/${current.id}/void`,
+      headers: {
+        ...balanceHeaders,
+        'idempotency-key': randomUUID(),
+        'if-match': `"${current.version}"`,
+      },
+      payload: { reason: 'Cancel the future income' },
+    });
+    expect(voided.statusCode, voided.payload).toBe(200);
+
+    const balance = await app.inject({
+      method: 'GET',
+      url: `/v1/accounts/${booking.accountId}/balance`,
+      headers: balanceHeaders,
+    });
+    expect(balance.statusCode, balance.payload).toBe(200);
+    expect(balance.json().nativeBalance).toEqual(usd('0'));
+  });
+
+  it('does not move or demote a transfer fee through standalone PATCH', async () => {
+    const account = await app.inject({
+      method: 'POST',
+      url: '/v1/accounts',
+      headers: { ...balanceHeaders, 'idempotency-key': randomUUID() },
+      payload: { name: 'Fee source', type: 'checking', currency: 'USD' },
+    });
+    expect(account.statusCode, account.payload).toBe(201);
+    const source = account.json<{ id: string }>().id;
+
+    const transfer = await app.inject({
+      method: 'POST',
+      url: '/v1/transfers',
+      headers: { ...balanceHeaders, 'idempotency-key': randomUUID() },
+      payload: {
+        sourceAccountId: source,
+        destinationAccountId: accountWorkspace2Id,
+        amount: usd('130'),
+        fee: usd('11'),
+        occurredAt: past,
+      },
+    });
+    expect(transfer.statusCode, transfer.payload).toBe(201);
+    const { transactionId } = transfer.json<{ transactionId: string }>();
+    const postings = async () =>
+      (
+        await admin.query(
+          `select account_id, leg_kind, status, amount_minor, occurred_at
+             from public.ledger_postings
+            where transaction_id = $1 order by leg_kind`,
+          [transactionId],
+        )
+      ).rows;
+
+    const before = await postings();
+    expect(before).toHaveLength(2);
+    await app.inject({
+      method: 'PATCH',
+      url: `/v1/transactions/${transactionId}`,
+      headers: { ...balanceHeaders, 'idempotency-key': randomUUID() },
+      payload: { occurredAt: future, status: 'pending' },
+    });
+
+    expect(await postings()).toEqual(before);
+    await expectBalance(source, past, '-141');
+  });
+
+  it('preserves the past void response, replay, and exact balance cutoff', async () => {
+    const booking = await createBookedIncome();
+    await expectBalance(booking.accountId, past, '1234');
+    const key = randomUUID();
+    const send = () =>
+      app.inject({
+        method: 'POST',
+        url: `/v1/transactions/${booking.id}/void`,
+        headers: {
+          ...balanceHeaders,
+          'idempotency-key': key,
+          'if-match': `"${booking.version}"`,
+        },
+        payload: { reason: 'Cancel the past income' },
+      });
+    const response = await send();
+    expect(response.statusCode, response.payload).toBe(200);
+    expect(response.headers.etag).toBeUndefined();
+    const { updatedAt } = response.json<Transaction>();
+    expect(response.json()).toEqual({
+      ...booking,
+      status: 'voided',
+      version: 2,
+      updatedAt,
+    });
+    const replay = await send();
+    expect(replay.statusCode, replay.payload).toBe(200);
+    expect(replay.headers.etag).toBeUndefined();
+    expect(replay.json()).toEqual(response.json());
+    const justBeforeVoid = new Date(Date.parse(updatedAt) - 1).toISOString();
+    await expectBalance(booking.accountId, justBeforeVoid, '1234');
+    await expectBalance(booking.accountId, updatedAt, '0');
+  });
+
   it('keeps direct standalone posting-date writes forbidden, even at the header date', async () => {
     // Simulate a pre-migration header/posting mismatch by inserting a pair
     // dated independently of its header in the existing seed workspace.
@@ -479,6 +588,14 @@ describe('TransactionService updateTransaction database boundary', () => {
               ($1, $2, null, 'external', -14000, 'USD', 'confirmed', $4)`,
       [workspace2Id, txnWorkspace2Target, accountWorkspace2Id, future],
     );
+    const readBalance = () =>
+      app.inject({
+        method: 'GET',
+        url: `/v1/accounts/${accountWorkspace2Id}/balance?asOf=2026-08-20T10:00:00.000Z`,
+        headers: balanceHeaders,
+      });
+    const before = await readBalance();
+    expect(before.statusCode, before.payload).toBe(200);
     await expect(
       transaction.run(subjectOwner, (client) =>
         client.query(
@@ -491,7 +608,9 @@ describe('TransactionService updateTransaction database boundary', () => {
       code: '42501',
       message: 'Ledger posting date is immutable',
     });
-    await expectBalance(accountWorkspace2Id, '2026-08-20T10:00:00.000Z', '0');
+    const after = await readBalance();
+    expect(after.statusCode, after.payload).toBe(200);
+    expect(after.payload).toBe(before.payload);
   });
 
   it('200 happy path: a partial update changes only named fields, bumps version, refreshes updated_at, and preserves untouched fields', async () => {
