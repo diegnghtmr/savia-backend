@@ -1,8 +1,18 @@
+// Migration under test: 202609170028_standalone_transaction_posting_updates.sql.
+import { randomUUID } from 'node:crypto';
+import {
+  FastifyAdapter,
+  type NestFastifyApplication,
+} from '@nestjs/platform-fastify';
+import { Test } from '@nestjs/testing';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { AppModule } from '../../src/app.module.js';
+import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import {
   TRANSACTION_UPDATE_OUTCOMES,
+  type Transaction,
   type UpdateTransactionCommand,
   type TransactionUpdateOk,
 } from '../../src/ledger/ledger.port.js';
@@ -16,6 +26,7 @@ import {
 } from '../../src/platform/pg-transaction.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -31,6 +42,7 @@ describe('TransactionService updateTransaction database boundary', () => {
   let transaction: PgTransaction;
   let service: TransactionService;
   let idempotencyAdapter: PostgresIdempotencyAdapter;
+  let app: NestFastifyApplication;
 
   const subjectOwner = subject(901);
   const subjectAdmin = subject(902);
@@ -279,9 +291,29 @@ describe('TransactionService updateTransaction database boundary', () => {
         ],
       );
     }
+
+    Object.assign(process.env, {
+      JWT_ISSUER: 'https://issuer.example.test',
+      JWT_AUDIENCE: 'savia-api',
+      JWT_JWKS_URI: 'https://issuer.example.test/jwks',
+      JWT_ALGORITHMS: 'RS256',
+    });
+    const module = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(JoseJwtVerifier)
+      .useValue({
+        verify: () =>
+          Promise.resolve({ subject: subjectOwner, authMethod: 'session' }),
+      })
+      .compile();
+    app = module.createNestApplication<NestFastifyApplication>(
+      new FastifyAdapter({ exposeHeadRoutes: false }),
+    );
+    registerProblemFilter(app);
+    await app.init();
   });
 
   afterAll(async () => {
+    await app?.close();
     await admin.query(`delete from public.workspaces where id in ($1, $2)`, [
       workspace1Id,
       workspace2Id,
@@ -299,6 +331,167 @@ describe('TransactionService updateTransaction database boundary', () => {
     );
     await pool.end();
     await admin.end();
+  });
+
+  const past = '2020-01-01T00:00:00.000Z';
+  const future = '2099-01-01T00:00:00.000Z';
+  const balanceHeaders = {
+    authorization: 'Bearer session-owner',
+    'x-workspace-id': workspace2Id,
+  };
+  const usd = (amountMinor: string) => ({ amountMinor, currency: 'USD' });
+
+  async function createBookedIncome() {
+    const account = await app.inject({
+      method: 'POST',
+      url: '/v1/accounts',
+      headers: { ...balanceHeaders, 'idempotency-key': randomUUID() },
+      payload: {
+        name: `PATCH balance ${randomUUID()}`,
+        type: 'checking',
+        currency: 'USD',
+      },
+    });
+    expect(account.statusCode, account.payload).toBe(201);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/transactions',
+      headers: { ...balanceHeaders, 'idempotency-key': randomUUID() },
+      payload: {
+        accountId: account.json<{ id: string }>().id,
+        type: 'income',
+        amount: usd('1234'),
+        occurredAt: past,
+        status: 'confirmed',
+      },
+    });
+    expect(response.statusCode, response.payload).toBe(201);
+    expect(response.headers.etag).toBe('"1"');
+    return response.json<Transaction>();
+  }
+
+  async function expectBalance(
+    accountId: string,
+    asOf: string,
+    native: string,
+    pending = '0',
+  ) {
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/accounts/${accountId}/balance?asOf=${encodeURIComponent(asOf)}`,
+      headers: balanceHeaders,
+    });
+    expect(response.statusCode, response.payload).toBe(200);
+    expect(response.json()).toMatchObject({
+      nativeBalance: usd(native),
+      pendingBalance: usd(pending),
+      reconciledBalance: usd('0'),
+    });
+    expect(response.json()).not.toHaveProperty('availableBalance');
+  }
+
+  function patchBooking(
+    booking: Transaction,
+    payload: UpdateTransactionCommand,
+    key = randomUUID(),
+  ) {
+    return app.inject({
+      method: 'PATCH',
+      url: `/v1/transactions/${booking.id}`,
+      headers: {
+        ...balanceHeaders,
+        'idempotency-key': key,
+        'if-match': `"${booking.version}"`,
+      },
+      payload,
+    });
+  }
+
+  it('moves standalone confirmed income out of and back into its exact past balance cutoff', async () => {
+    const booking = await createBookedIncome();
+    await expectBalance(booking.accountId, past, '1234');
+    const moved = await patchBooking(booking, { occurredAt: future });
+    expect(moved.statusCode, moved.payload).toBe(200);
+    expect(moved.headers.etag).toBe('"2"');
+    const movedBooking = moved.json<Transaction>();
+    expect(movedBooking).toMatchObject({
+      id: booking.id,
+      status: 'confirmed',
+      occurredAt: future,
+      amount: usd('1234'),
+    });
+    await expectBalance(booking.accountId, past, '0');
+    await expectBalance(booking.accountId, future, '1234');
+
+    const stale = await patchBooking(booking, { occurredAt: past });
+    expect(stale.statusCode, stale.payload).toBe(412);
+    expect(stale.json()).toMatchObject({
+      title: 'Resource version mismatch',
+      status: 412,
+    });
+    await expectBalance(booking.accountId, past, '0');
+
+    const restored = await patchBooking(movedBooking, { occurredAt: past });
+    expect(restored.statusCode, restored.payload).toBe(200);
+    expect(restored.headers.etag).toBe('"3"');
+    expect(restored.json()).toMatchObject({
+      occurredAt: past,
+      status: 'confirmed',
+    });
+    await expectBalance(booking.accountId, past, '1234');
+    await expectBalance(booking.accountId, future, '1234');
+  });
+
+  it('moves standalone postings across balance buckets on status-only PATCH without counting a replay twice', async () => {
+    const booking = await createBookedIncome();
+    await expectBalance(booking.accountId, past, '1234');
+    const key = randomUUID();
+    const pending = await patchBooking(booking, { status: 'pending' }, key);
+    expect(pending.statusCode, pending.payload).toBe(200);
+    expect(pending.headers.etag).toBe('"2"');
+    expect(pending.json()).toMatchObject({
+      status: 'pending',
+      occurredAt: past,
+    });
+    await expectBalance(booking.accountId, past, '0', '1234');
+    const replay = await patchBooking(booking, { status: 'pending' }, key);
+    expect(replay.statusCode, replay.payload).toBe(200);
+    expect(replay.headers.etag).toBe('"2"');
+    expect(replay.json()).toEqual(pending.json());
+    await expectBalance(booking.accountId, past, '0', '1234');
+
+    const draft = await patchBooking(pending.json<Transaction>(), {
+      status: 'draft',
+    });
+    expect(draft.statusCode, draft.payload).toBe(200);
+    expect(draft.headers.etag).toBe('"3"');
+    expect(draft.json()).toMatchObject({ status: 'draft', occurredAt: past });
+    await expectBalance(booking.accountId, past, '0');
+  });
+
+  it('keeps direct standalone posting-date writes forbidden, even at the header date', async () => {
+    // Simulate a pre-migration header/posting mismatch by inserting a pair
+    // dated independently of its header in the existing seed workspace.
+    await admin.query(
+      `insert into public.ledger_postings
+         (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+       values ($1, $2, $3, 'account', 14000, 'USD', 'confirmed', $4),
+              ($1, $2, null, 'external', -14000, 'USD', 'confirmed', $4)`,
+      [workspace2Id, txnWorkspace2Target, accountWorkspace2Id, future],
+    );
+    await expect(
+      transaction.run(subjectOwner, (client) =>
+        client.query(
+          `update public.ledger_postings set occurred_at = '2026-08-20T10:00:00.000Z'
+            where workspace_id = $1 and transaction_id = $2`,
+          [workspace2Id, txnWorkspace2Target],
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: '42501',
+      message: 'Ledger posting date is immutable',
+    });
+    await expectBalance(accountWorkspace2Id, '2026-08-20T10:00:00.000Z', '0');
   });
 
   it('200 happy path: a partial update changes only named fields, bumps version, refreshes updated_at, and preserves untouched fields', async () => {
