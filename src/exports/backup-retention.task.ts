@@ -14,7 +14,6 @@ export const BACKUP_RETENTION_BATCH_SIZE = 50;
 const HOUR_SECONDS = 3_600;
 const DAY_SECONDS = 24 * HOUR_SECONDS;
 const STORAGE_BUDGET_MS = 10_000;
-const TRANSACTION_BUDGET_MS = 12_000;
 const SHUTDOWN_WAIT_MS = 1_000;
 const PREFIX = 'backups/';
 const UUID = '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}';
@@ -71,6 +70,7 @@ export class BackupRetentionTask
     clearTimeout(this.timer);
     this.shutdown.abort();
     if (!this.pending) return;
+    // Stop waiting after the grace period, not the transaction that owns the lock.
     const wait = new AbortController();
     try {
       await Promise.race([
@@ -110,6 +110,7 @@ export class BackupRetentionTask
       AbortSignal.timeout(STORAGE_BUDGET_MS),
     ]);
     const before = new Date(Date.now() - this.safetyWindowMs);
+    const transaction = { holdUntilCallbackSettles: true } as const;
     this.after = await this.tx.runAsQueueConsumer(async (client) => {
       signal.throwIfAborted();
       // Released automatically by commit, rollback, or connection loss. Separate
@@ -119,14 +120,16 @@ export class BackupRetentionTask
       );
       if (!lock[0]?.acquired) return this.after;
 
-      const objects = await abortable(signal, () =>
-        list(PREFIX, {
-          after: this.after,
-          before,
-          limit: BACKUP_RETENTION_BATCH_SIZE,
-          signal,
-        }),
-      );
+      // Abort requests cancellation but does not prove the operation settled.
+      // Keep awaiting each issued operation while the transaction owns the lock.
+      signal.throwIfAborted();
+      const objects = await list(PREFIX, {
+        after: this.after,
+        before,
+        limit: BACKUP_RETENTION_BATCH_SIZE,
+        signal,
+      });
+      signal.throwIfAborted();
       const page = objects.slice(0, BACKUP_RETENTION_BATCH_SIZE);
       for (const { path, createdAt } of page) {
         const match = BACKUP_PATH.exec(path);
@@ -139,9 +142,10 @@ export class BackupRetentionTask
           'select public.can_remove_workspace_backup_object($1, $2, $3) as allowed',
           [workspaceId, backupId, attemptId],
         );
+        signal.throwIfAborted();
         if (!rows[0]?.allowed) continue;
         try {
-          await abortable(signal, () => this.storage.remove(path, signal));
+          await this.storage.remove(path, signal);
         } catch (error) {
           signal.throwIfAborted();
           if (
@@ -155,11 +159,12 @@ export class BackupRetentionTask
             );
           }
         }
+        signal.throwIfAborted();
       }
       return page.length < BACKUP_RETENTION_BATCH_SIZE
         ? undefined
         : page.at(-1)?.path;
-    }, TRANSACTION_BUDGET_MS);
+    }, transaction);
   }
 }
 
@@ -182,21 +187,4 @@ function seconds(
     throw new Error(`${key} must be an integer between ${min} and ${max}.`);
   }
   return parsed;
-}
-
-async function abortable<T>(
-  signal: AbortSignal,
-  work: () => Promise<T>,
-): Promise<T> {
-  signal.throwIfAborted();
-  let abort!: () => void;
-  const cancelled = new Promise<never>((_, reject) => {
-    abort = () => reject(signal.reason);
-    signal.addEventListener('abort', abort, { once: true });
-  });
-  try {
-    return await Promise.race([cancelled, work()]);
-  } finally {
-    signal.removeEventListener('abort', abort);
-  }
 }

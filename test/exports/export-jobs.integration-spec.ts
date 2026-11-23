@@ -1170,7 +1170,7 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
         expect(storage.removeCallCount).toBe(1);
       });
 
-      it('stops scheduling, aborts an active pass and releases the lock on shutdown', async () => {
+      it('stops scheduling on shutdown and releases the lock once listing settles', async () => {
         const storage = new InMemoryArtifactStorage();
         const pending = Promise.withResolvers<[]>();
         const list = vi
@@ -1192,6 +1192,9 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
           await sweep.runOnce();
           expect(list).toHaveBeenCalledOnce();
           const replacement = task(storage);
+          await replacement.runOnce();
+          expect(list).toHaveBeenCalledOnce();
+          pending.resolve([]);
           await vi.waitFor(async () => {
             await replacement.runOnce();
             expect(list).toHaveBeenCalledTimes(2);
@@ -1199,6 +1202,141 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
         } finally {
           pending.resolve([]);
           await sweep.beforeApplicationShutdown();
+        }
+      });
+
+      // Reviewer regressions (verify mwtl2dsf).
+      it('grants the worker only a boolean retention decision, not backup columns', async () => {
+        const signature =
+          'public.can_remove_workspace_backup_object(uuid,uuid,uuid)';
+        const { rows } = await admin.query(
+          `select r.role,
+                  has_function_privilege(r.role, $1, 'EXECUTE') as execute,
+                  has_column_privilege(
+                    r.role, 'public.workspace_backups', 'download_url', 'SELECT'
+                  ) as can_read_url
+             from unnest(array['anon','authenticated','savia_application','savia_worker']) as r(role)
+             order by r.role`,
+          [signature],
+        );
+        expect(rows.map(({ role, execute }) => ({ role, execute }))).toEqual([
+          { role: 'anon', execute: false },
+          { role: 'authenticated', execute: false },
+          { role: 'savia_application', execute: false },
+          { role: 'savia_worker', execute: true },
+        ]);
+        expect(
+          rows.find(({ role }) => role === 'savia_worker')?.can_read_url,
+        ).toBe(false);
+
+        const { rows: type } = await admin.query(
+          'select pg_get_function_result($1::regprocedure) as type',
+          [signature],
+        );
+        expect(type).toEqual([{ type: 'boolean' }]);
+
+        const { id, key } = await complete();
+        const check = (client: TransactionClient) =>
+          client.query(
+            'select public.can_remove_workspace_backup_object($1, $2, $3) as allowed',
+            [workspace1Id, id, key.split('/').at(-1)!.slice(0, -4)],
+          );
+        const tx = workerModule.get(PgTransaction);
+        expect((await tx.runAsQueueConsumer(check)).rows).toEqual([
+          { allowed: false },
+        ]);
+        await expect(tx.run(ownerId, check)).rejects.toMatchObject({
+          code: '42501',
+        });
+      });
+
+      it('protects a ZIP which completes after listing while an earlier DELETE is pending', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const sweep = task(storage);
+        const { id } = (await create()).json<Job>();
+        const reachedSign = Promise.withResolvers<string>();
+        const finishSign = Promise.withResolvers<void>();
+        inMemoryStorage.beforeSign = async () => {
+          reachedSign.resolve(
+            [...inMemoryStorage.uploaded.keys()].find((key) =>
+              key.startsWith(`backups/${workspace1Id}/${id}/`),
+            )!,
+          );
+          await finishSign.promise;
+        };
+        const finishing = runner.drainOnce();
+
+        try {
+          const winner = await reachedSign.promise;
+          expect((await poll(id)).json()).toMatchObject({
+            status: 'processing',
+            ...noLink,
+          });
+          const earlier = orphanKey('00000000-0000-4000-8000-000000000000');
+          await put(storage, earlier);
+          await put(storage, winner);
+
+          const realRemove = storage.remove.bind(storage);
+          const remove = vi
+            .spyOn(storage, 'remove')
+            .mockImplementationOnce(async (key, signal) => {
+              expect(key).toBe(earlier);
+              finishSign.resolve();
+              await finishing;
+              expect((await poll(id)).json()).toMatchObject({
+                status: 'completed',
+                downloadUrl: expect.stringContaining(winner),
+              });
+              return realRemove(key, signal);
+            });
+          await sweep.runOnce();
+          expect(remove.mock.calls.map(([key]) => key)).toEqual([earlier]);
+          expect([...storage.uploaded.keys()]).toEqual([winner]);
+        } finally {
+          finishSign.resolve();
+          await finishing;
+          await sweep.beforeApplicationShutdown();
+        }
+      });
+
+      it('keeps the sweep lock until an in-progress DELETE settles after shutdown', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const first = task(storage);
+        const second = task(storage);
+        const path = orphanKey(randomUUID());
+        await put(storage, path);
+
+        const entered = Promise.withResolvers<AbortSignal>();
+        const finishDelete = Promise.withResolvers<void>();
+        const realRemove = storage.remove.bind(storage);
+        const remove = vi
+          .spyOn(storage, 'remove')
+          .mockImplementationOnce(async (key, signal) => {
+            expect(key).toBe(path);
+            entered.resolve(signal!);
+            // An already-issued DELETE can still be pending when abort is signalled.
+            await finishDelete.promise;
+            await realRemove(key);
+          });
+        const active = first.runOnce();
+
+        try {
+          const signal = await entered.promise;
+          await second.runOnce();
+          expect(remove).toHaveBeenCalledTimes(1);
+
+          const start = performance.now();
+          await first.beforeApplicationShutdown();
+          expect(performance.now() - start).toBeLessThan(1_500);
+          expect(signal.aborted).toBe(true);
+
+          await second.runOnce();
+          expect(remove).toHaveBeenCalledTimes(1);
+          expect(storage.uploaded.has(path)).toBe(true);
+        } finally {
+          finishDelete.resolve();
+          await active;
+          await remove.mock.results[0]?.value;
         }
       });
 
