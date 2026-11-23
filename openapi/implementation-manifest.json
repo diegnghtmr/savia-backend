@@ -506,6 +506,31 @@
       "operationId": "setDefaultAIModel",
       "method": "PUT",
       "path": "/v1/ai/default-model"
+    },
+    {
+      "operationId": "listMySessions",
+      "method": "GET",
+      "path": "/v1/me/sessions"
+    },
+    {
+      "operationId": "revokeOtherSessions",
+      "method": "POST",
+      "path": "/v1/me/sessions/revoke-others"
+    },
+    {
+      "operationId": "getDashboardPreferences",
+      "method": "GET",
+      "path": "/v1/me/dashboard-preferences"
+    },
+    {
+      "operationId": "updateDashboardPreferences",
+      "method": "PUT",
+      "path": "/v1/me/dashboard-preferences"
+    },
+    {
+      "operationId": "bulkUpdateTransactions",
+      "method": "POST",
+      "path": "/v1/transactions/bulk"
     }
   ]
 }
