@@ -209,11 +209,14 @@ describe('executable OpenAPI authority', () => {
       };
       const authority = bundle(authorityPath);
       const mirror = bundle(resolve(root, 'openapi/savia.openapi.yaml'));
-      const pick = (document: Record<string, unknown>) => {
-        const paths = document.paths as Record<
+      const pathsOf = (document: Record<string, unknown>) =>
+        document.paths as Record<
           string,
           Record<string, Record<string, unknown>>
         >;
+      const pick = (document: Record<string, unknown>) => {
+        const paths = pathsOf(document);
+        const confirm = paths['/v1/approvals/{approvalId}/confirm']?.post;
         const schemas = document.components as Record<
           string,
           Record<string, unknown>
@@ -231,8 +234,10 @@ describe('executable OpenAPI authority', () => {
           create: responseContent(paths['/v1/budgets']?.post?.responses),
           get: responseContent(paths['/v1/budgets/{budgetId}']?.get?.responses),
           proposal: paths['/v1/mcp/proposals']?.post,
-          confirmDescription:
-            paths['/v1/approvals/{approvalId}/confirm']?.post?.description,
+          confirmDescription: confirm?.description,
+          confirmationPrecondition: (
+            confirm?.responses as Record<string, unknown>
+          )?.['412'],
           mcpOAuth: schemas.securitySchemes?.mcpOAuth,
           grantSchemas: Object.fromEntries(
             [
@@ -250,17 +255,25 @@ describe('executable OpenAPI authority', () => {
         };
       };
       expect(pick(mirror)).toEqual(pick(authority));
-      const paths = authority.paths as Record<
-        string,
-        Record<string, { 'x-savia-mcp-tool'?: { name: string } }>
-      >;
-      const annotations = Object.values(paths)
-        .flatMap((item) => Object.values(item))
-        .flatMap((operation) => {
-          if (!operation?.['x-savia-mcp-tool']) return [];
-          const { name, ...annotation } = operation['x-savia-mcp-tool'];
-          return [[name, annotation] as const];
-        });
+      const authorityPaths = pathsOf(authority);
+      const annotations: [string, Record<string, unknown>][] = [];
+      for (const [path, item] of Object.entries(pathsOf(mirror))) {
+        for (const [method, operation] of Object.entries(item)) {
+          if (typeof operation?.operationId !== 'string') continue;
+          const source = authorityPaths[path]?.[method];
+          expect(source?.operationId).toBe(operation.operationId);
+          const tool = source?.['x-savia-mcp-tool'] as
+            | ({ name: string } & Record<string, unknown>)
+            | undefined;
+          if (operation['x-savia-mcp-tool'] !== undefined) {
+            expect(operation['x-savia-mcp-tool']).toEqual(tool);
+          }
+          if (tool) {
+            const { name, ...annotation } = tool;
+            annotations.push([name, annotation]);
+          }
+        }
+      }
       expect(annotations).toHaveLength(MCP_TOOL_ANNOTATIONS.size);
       expect(Object.fromEntries(MCP_TOOL_ANNOTATIONS)).toEqual(
         Object.fromEntries(annotations),

@@ -8053,6 +8053,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
         '422':
           description: The request is structurally valid but violates a business rule.
           content:
