@@ -27,6 +27,7 @@ import {
   ARTIFACT_STORAGE,
   ArtifactStorageClientError,
   type ArtifactStorage,
+  type ArtifactStorageListOptions,
 } from '../../src/platform/artifact-storage.port.js';
 import {
   JOB_HANDLERS,
@@ -34,10 +35,18 @@ import {
   type JobHandler,
   type RenderingJobHandler,
 } from '../../src/platform/job-handler.port.js';
-import type { TransactionClient } from '../../src/platform/pg-transaction.js';
+import {
+  PgTransaction,
+  type TransactionClient,
+} from '../../src/platform/pg-transaction.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { WorkerConfig } from '../../src/platform/worker-config.js';
 import { WorkerModule } from '../../src/worker.module.js';
+import {
+  BACKUP_RETENTION_BATCH_SIZE,
+  BackupRetentionTask,
+} from '../../src/exports/backup-retention.task.js';
+import { SupabaseStorageAdapter } from '../../src/platform/supabase-storage.adapter.js';
 import {
   ExportJobHandler,
   type ExportJobComputed,
@@ -80,7 +89,7 @@ function readStoredZip(zip: Buffer): Map<string, Buffer> {
 class InMemoryArtifactStorage implements ArtifactStorage {
   public readonly uploaded = new Map<
     string,
-    { content: Buffer; contentType: string }
+    { content: Buffer; contentType: string; createdAt: Date }
   >();
   public uploadCallCount = 0;
   public signCallCount = 0;
@@ -94,7 +103,7 @@ class InMemoryArtifactStorage implements ArtifactStorage {
     contentType: string,
   ): Promise<void> {
     this.uploadCallCount++;
-    this.uploaded.set(path, { content, contentType });
+    this.uploaded.set(path, { content, contentType, createdAt: new Date() });
   }
 
   public async sign(
@@ -121,9 +130,22 @@ class InMemoryArtifactStorage implements ArtifactStorage {
     return item.content;
   }
 
-  public async remove(path: string): Promise<void> {
+  public async remove(path: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     this.removeCallCount++;
     this.uploaded.delete(path);
+  }
+
+  public async list(prefix: string, options: ArtifactStorageListOptions) {
+    options.signal.throwIfAborted();
+    return [...this.uploaded]
+      .map(([path, { createdAt }]) => ({ path, createdAt }))
+      .filter(
+        ({ path }) => path.startsWith(prefix) && path > (options.after ?? ''),
+      )
+      .sort((left, right) => (left.path < right.path ? -1 : 1))
+      .filter(({ createdAt }) => createdAt < options.before)
+      .slice(0, options.limit);
   }
 }
 
@@ -976,6 +998,258 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
         remove.mockRestore();
         upload.mockRestore();
       }
+    });
+
+    describe('Backup object retention (202609170029_backup_retention.sql)', () => {
+      const old = new Date(Date.now() - 25 * 60 * 60_000);
+      const recent = new Date(Date.now() - 23 * 60 * 60_000);
+      const orphanKey = (id: string) =>
+        `backups/${workspace1Id}/${id}/${randomUUID()}.zip`;
+      const publishedKey = (link: SignedLink) =>
+        new URL(link.downloadUrl).pathname.slice(1);
+
+      function task(storage: ArtifactStorage, env: NodeJS.ProcessEnv = {}) {
+        return new BackupRetentionTask(
+          workerModule.get(PgTransaction),
+          storage,
+          env,
+        );
+      }
+
+      async function put(
+        storage: InMemoryArtifactStorage,
+        key: string,
+        createdAt = old,
+      ) {
+        await storage.upload(key, Buffer.from('ZIP'), 'application/zip');
+        storage.uploaded.get(key)!.createdAt = createdAt;
+      }
+
+      async function complete() {
+        const { id } = (await create()).json<Job>();
+        expect(await runner.drainOnce()).toBe(1);
+        const response = await poll(id);
+        expect(response.json()).toMatchObject({ status: 'completed' });
+        return { id, key: publishedKey(response.json<SignedLink>()) };
+      }
+
+      it('removes aged failed, superseded and expired ZIPs but never recent, live or in-flight ZIPs', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const sweep = task(storage);
+        const failed = (await create()).json<Job>();
+        inMemoryStorage.failSigning = true;
+        const remove = vi.spyOn(inMemoryStorage, 'remove');
+        remove.mockResolvedValueOnce(undefined);
+        try {
+          expect(await runner.drainOnce()).toBe(1);
+          expect((await poll(failed.id)).json()).toEqual({
+            ...failed,
+            status: 'failed',
+            ...noLink,
+          });
+          expect(remove).toHaveBeenCalledOnce();
+          await put(storage, remove.mock.calls[0][0]);
+        } finally {
+          remove.mockRestore();
+          inMemoryStorage.failSigning = false;
+        }
+
+        const live = await complete();
+        await put(storage, orphanKey(live.id));
+        await put(storage, live.key);
+        const young = orphanKey(failed.id);
+        await put(storage, young, recent);
+        const expired = await complete();
+        await put(storage, expired.key);
+        await admin.query(
+          "update public.workspace_backups set expires_at = now() - interval '1 minute' where id = $1",
+          [expired.id],
+        );
+        const queued = (await create()).json<Job>();
+        const inFlight = orphanKey(queued.id);
+        await put(storage, inFlight);
+        const legacy = `${workspace1Id}/leave-this-export.zip`;
+        await put(storage, legacy);
+
+        await sweep.runOnce();
+        expect([...storage.uploaded.keys()]).toEqual([
+          live.key,
+          young,
+          inFlight,
+          legacy,
+        ]);
+        expect(storage.removeCallCount).toBe(3);
+        expect((await poll(live.id)).json()).toMatchObject({
+          status: 'completed',
+          downloadUrl: expect.stringContaining(live.key),
+        });
+        expect((await poll(expired.id)).json()).toMatchObject({
+          status: 'completed',
+          ...noLink,
+        });
+        await sweep.runOnce();
+        expect(storage.removeCallCount).toBe(3);
+      });
+
+      it('bounds each pass and advances past preserved objects', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const sweep = task(storage);
+        const { id, key } = await complete();
+        const paths = Array.from(
+          { length: BACKUP_RETENTION_BATCH_SIZE + 2 },
+          () => orphanKey(id),
+        ).sort();
+        const protectedPath = `backups/${workspace1Id}/${id}/00000000-0000-4000-8000-000000000000.zip`;
+        await put(storage, protectedPath);
+        await admin.query(
+          'update public.workspace_backups set download_url = replace(download_url, $2, $3) where id = $1',
+          [id, key, protectedPath],
+        );
+        for (const path of paths) await put(storage, path);
+        const list = vi.spyOn(storage, 'list');
+
+        await sweep.runOnce();
+        expect(list).toHaveBeenCalledExactlyOnceWith('backups/', {
+          after: undefined,
+          before: expect.any(Date),
+          limit: BACKUP_RETENTION_BATCH_SIZE,
+          signal: expect.any(AbortSignal),
+        });
+        expect(storage.removeCallCount).toBe(BACKUP_RETENTION_BATCH_SIZE - 1);
+        expect([...storage.uploaded.keys()]).toEqual([
+          protectedPath,
+          ...paths.slice(BACKUP_RETENTION_BATCH_SIZE - 1),
+        ]);
+
+        await sweep.runOnce();
+        expect([...storage.uploaded.keys()]).toEqual([protectedPath]);
+        expect(storage.removeCallCount).toBe(paths.length);
+      });
+
+      it('excludes a concurrent sweep and checks publication after listing', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const first = task(storage);
+        const second = task(storage);
+        const { id } = (await create()).json<Job>();
+        const entered = Promise.withResolvers<void>();
+        const proceed = Promise.withResolvers<void>();
+        const listObjects = storage.list.bind(storage);
+        const list = vi
+          .spyOn(storage, 'list')
+          .mockImplementationOnce(async (prefix, options) => {
+            entered.resolve();
+            await proceed.promise;
+            expect(await runner.drainOnce()).toBe(1);
+            await put(
+              storage,
+              publishedKey((await poll(id)).json<SignedLink>()),
+            );
+            return listObjects(prefix, options);
+          });
+        const orphan = orphanKey(id);
+        await put(storage, orphan);
+
+        const running = first.runOnce();
+        try {
+          await vi.waitFor(() => expect(list).toHaveBeenCalledOnce(), {
+            timeout: 1_000,
+          });
+          await entered.promise;
+          await second.runOnce();
+          expect(list).toHaveBeenCalledOnce();
+          expect([...storage.uploaded.keys()]).toEqual([orphan]);
+        } finally {
+          proceed.resolve();
+          await running;
+        }
+        const winner = publishedKey((await poll(id)).json<SignedLink>());
+        expect([...storage.uploaded.keys()]).toEqual([winner]);
+        await second.runOnce();
+        expect(list).toHaveBeenCalledTimes(2);
+        expect([...storage.uploaded.keys()]).toEqual([winner]);
+        expect(storage.removeCallCount).toBe(1);
+      });
+
+      it('stops scheduling, aborts an active pass and releases the lock on shutdown', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const pending = Promise.withResolvers<[]>();
+        const list = vi
+          .spyOn(storage, 'list')
+          .mockReturnValueOnce(pending.promise);
+        const sweep = task(storage, {
+          SAVIA_BACKUP_RETENTION_INTERVAL_SECONDS: '1',
+        });
+        sweep.onApplicationBootstrap();
+        try {
+          await vi.waitFor(() => expect(list).toHaveBeenCalledOnce(), {
+            timeout: 2_000,
+          });
+          const signal = list.mock.calls[0][1].signal;
+          const started = performance.now();
+          await sweep.beforeApplicationShutdown();
+          expect(performance.now() - started).toBeLessThan(1_500);
+          expect(signal.aborted).toBe(true);
+          await sweep.runOnce();
+          expect(list).toHaveBeenCalledOnce();
+          const replacement = task(storage);
+          await vi.waitFor(async () => {
+            await replacement.runOnce();
+            expect(list).toHaveBeenCalledTimes(2);
+          });
+        } finally {
+          pending.resolve([]);
+          await sweep.beforeApplicationShutdown();
+        }
+      });
+
+      it('keeps removal failures retryable and logs only the backup ID', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const sweep = task(storage);
+        const { id, key } = await complete();
+        const orphan = orphanKey(id);
+        await put(storage, orphan);
+        await put(storage, key);
+        vi.spyOn(storage, 'remove').mockRejectedValueOnce(
+          new Error('private storage data must not appear in logs'),
+        );
+        const warn = vi
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => undefined);
+        try {
+          await sweep.runOnce();
+          expect(warn.mock.calls).toEqual([
+            [`Workspace backup retention removal failed for backup ${id}.`],
+          ]);
+          expect([...storage.uploaded.keys()]).toEqual([orphan, key]);
+          await sweep.runOnce();
+          expect([...storage.uploaded.keys()]).toEqual([key]);
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('validates retention environment and stays inactive without listing', async () => {
+        const storage = new InMemoryArtifactStorage();
+        expect(() =>
+          task(storage, { SAVIA_BACKUP_RETENTION_INTERVAL_SECONDS: '0' }),
+        ).toThrow(/SAVIA_BACKUP_RETENTION_INTERVAL_SECONDS/);
+        expect(() =>
+          task(storage, {
+            SAVIA_BACKUP_RETENTION_SAFETY_WINDOW_SECONDS: '3599',
+          }),
+        ).toThrow(/SAVIA_BACKUP_RETENTION_SAFETY_WINDOW_SECONDS/);
+        const tx = workerModule.get(PgTransaction);
+        const run = vi.spyOn(tx, 'runAsQueueConsumer');
+        const disabled = task(new SupabaseStorageAdapter({}));
+        disabled.onApplicationBootstrap();
+        try {
+          await disabled.runOnce();
+          expect(run).not.toHaveBeenCalled();
+        } finally {
+          await disabled.beforeApplicationShutdown();
+          run.mockRestore();
+        }
+      });
     });
 
     // Reviewer regressions (verify mwr85oza, PASS WITH FINDINGS).

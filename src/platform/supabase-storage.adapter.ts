@@ -9,6 +9,8 @@ interface StorageConfig {
 }
 export class SupabaseStorageConfigurationError extends Error {}
 export class SupabaseStorageAdapter implements ArtifactStorage {
+  // Signature only: no hosted listing, so the worker does not schedule sweeps.
+  declare public readonly list?: ArtifactStorage['list'];
   private config: StorageConfig | undefined;
   public constructor(
     private readonly environment: NodeJS.ProcessEnv = process.env,
@@ -172,13 +174,17 @@ export class SupabaseStorageAdapter implements ArtifactStorage {
       );
     }
   }
-  public async remove(path: string): Promise<void> {
+  public async remove(path: string, signal?: AbortSignal): Promise<void> {
     const c = this.getConfig();
     let response: Response;
     try {
       response = await fetch(
         `${c.url}/storage/v1/object/exports/${path.split('/').map(encodeURIComponent).join('/')}`,
-        { method: 'DELETE', headers: this.headers() },
+        {
+          method: 'DELETE',
+          headers: this.headers(),
+          ...(signal && { signal }),
+        },
       );
     } catch (error) {
       throw new ArtifactStorageUnavailableError(
