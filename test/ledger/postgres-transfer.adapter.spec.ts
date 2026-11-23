@@ -9,11 +9,17 @@ const WORKSPACE_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
 const ACCOUNT_A = '00000000-0000-4000-8000-00000000000a';
 const ACCOUNT_B = '00000000-0000-4000-8000-00000000000b';
 const TRANSFER_ID = '00000000-0000-4000-8000-000000000099';
+const FEE_TRANSACTION_ID = '00000000-0000-4000-8000-000000000098';
+const unexpectedFee = {
+  createTransaction: () => {
+    throw new Error('No fee transaction expected');
+  },
+};
 
 describe('PostgresTransferAdapter', () => {
   describe('lockAndReadAccounts sorted advisory lock order', () => {
     it('always acquires advisory locks in lexicographically sorted order even when arguments are reversed', async () => {
-      const adapter = new PostgresTransferAdapter();
+      const adapter = new PostgresTransferAdapter(unexpectedFee);
       const queries: { sql: string; values?: readonly unknown[] }[] = [];
 
       const client: TransactionClient = {
@@ -52,7 +58,7 @@ describe('PostgresTransferAdapter', () => {
     });
 
     it('returns undefined for accounts not found in the workspace', async () => {
-      const adapter = new PostgresTransferAdapter();
+      const adapter = new PostgresTransferAdapter(unexpectedFee);
       const client: TransactionClient = {
         query: vi.fn(async (sql: string) => {
           if (sql.includes('select a.id::text')) {
@@ -74,8 +80,8 @@ describe('PostgresTransferAdapter', () => {
   });
 
   describe('createTransfer SQL and posting generation', () => {
-    it('inserts transfer row into public.transfers (never public.transactions) and balanced postings into public.ledger_postings', async () => {
-      const adapter = new PostgresTransferAdapter();
+    it('inserts a no-fee transfer and balanced postings without a transaction row', async () => {
+      const adapter = new PostgresTransferAdapter(unexpectedFee);
       const queries: { sql: string; values?: readonly unknown[] }[] = [];
 
       const client: TransactionClient = {
@@ -175,8 +181,11 @@ describe('PostgresTransferAdapter', () => {
       expect(deferredCheck).toBeDefined();
     });
 
-    it('emits fee in Transfer body when fee is present and omits transactionId when no fee is present', async () => {
-      const adapter = new PostgresTransferAdapter();
+    it('returns the linked transaction ID only when a fee is booked', async () => {
+      const createTransaction = vi.fn().mockResolvedValue({
+        id: FEE_TRANSACTION_ID,
+      });
+      const adapter = new PostgresTransferAdapter({ createTransaction });
 
       const clientNoFee: TransactionClient = {
         query: vi.fn(async (sql: string) => {
@@ -223,9 +232,10 @@ describe('PostgresTransferAdapter', () => {
       expect(transferNoFee.fee).toBeUndefined();
       expect(transferNoFee.transactionId).toBeUndefined();
       expect('transactionId' in transferNoFee).toBe(false);
+      expect(createTransaction).not.toHaveBeenCalled();
 
       const clientWithFee: TransactionClient = {
-        query: vi.fn(async (sql: string) => {
+        query: vi.fn(async (sql: string, values?: readonly unknown[]) => {
           if (sql.includes('insert into public.transfers')) {
             return {
               rows: [
@@ -243,7 +253,7 @@ describe('PostgresTransferAdapter', () => {
                   referenceRate: null,
                   occurredAt: new Date('2026-08-25T10:00:00.000Z'),
                   status: 'confirmed',
-                  transactionId: null,
+                  transactionId: values?.[13],
                   createdAt: new Date('2026-08-25T10:00:00.000Z'),
                   updatedAt: new Date('2026-08-25T10:00:00.000Z'),
                   version: 1,
@@ -267,6 +277,20 @@ describe('PostgresTransferAdapter', () => {
           fee: { amountMinor: '100', currency: 'USD' },
         },
       );
+      expect(createTransaction).toHaveBeenCalledExactlyOnceWith(
+        clientWithFee,
+        WORKSPACE_ID,
+        SUBJECT,
+        {
+          accountId: ACCOUNT_A,
+          type: 'expense',
+          status: 'confirmed',
+          amount: { amountMinor: '-100', currency: 'USD' },
+          occurredAt: '2026-08-25T10:00:00.000Z',
+          description: null,
+        },
+      );
+      expect(transferWithFee.transactionId).toBe(FEE_TRANSACTION_ID);
       expect(transferWithFee.fee).toEqual({
         amountMinor: '100',
         currency: 'USD',

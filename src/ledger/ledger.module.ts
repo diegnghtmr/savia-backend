@@ -30,7 +30,12 @@ import {
   ],
   providers: [
     PostgresTransactionAdapter,
-    PostgresTransferAdapter,
+    {
+      provide: PostgresTransferAdapter,
+      inject: [PostgresTransactionAdapter],
+      useFactory: (transactions: PostgresTransactionAdapter) =>
+        new PostgresTransferAdapter(transactions),
+    },
     PostgresCurrencyExchangeAdapter,
     {
       provide: TransactionService,
