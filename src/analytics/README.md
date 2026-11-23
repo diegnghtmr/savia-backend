@@ -11,10 +11,13 @@ IDs; on a booking they select its creator. Account valuations take account
 filters, not transaction classifications. Where a schedule has no booking or
 other metadata to match, it is not selected by filters on that metadata.
 
-Booked analytics use exchange rates effective at the relevant instant. A
-cash-flow request with a missing pair returns a problem; advanced metrics report
-missing inputs and omit affected points where the response cannot express a
-null amount. Historic net worth uses recorded balances at UTC month ends or the
+Summary and cash flow prefer the latest eligible exchange rate at or before the
+valuation instant and fall back to the earliest eligible later rate. A missing
+pair returns a problem. Advanced metrics use rates effective at or before the
+valuation instant, disclose missing inputs, and omit affected points where the
+response cannot express a null amount. Quarterly comparisons use only the
+immediately preceding calendar quarter; the delta is null if it is absent.
+Historic net worth uses recorded balances at UTC month ends or the
 requested cut (no later than the current instant); FX movement revalues the
 previous cut's native positions without counting intervening transactions as
 valuation changes.

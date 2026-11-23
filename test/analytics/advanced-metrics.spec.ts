@@ -349,6 +349,29 @@ describe('buildQuarterlyAverageComparison', () => {
     expect(result[2].savingsCapacityDeltaPercentVsPreviousQuarter).toBe(300);
   });
 
+  it('compares Q1 with the immediately preceding Q4 across a year boundary', () => {
+    const result = buildQuarterlyAverageComparison([
+      {
+        month: '2025-12-01',
+        incomeMinor: 100n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 100n,
+      },
+      {
+        month: '2026-01-01',
+        incomeMinor: 125n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 125n,
+      },
+    ]);
+
+    expect(result.map((point) => point.quarter)).toEqual([
+      '2025-Q4',
+      '2026-Q1',
+    ]);
+    expect(result[1].savingsCapacityDeltaPercentVsPreviousQuarter).toBe(25);
+  });
+
   it('returns null delta when previous quarter average savings capacity is exactly 0', () => {
     const series: readonly MonthlyCapacityPoint[] = [
       {

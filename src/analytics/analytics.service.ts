@@ -66,8 +66,6 @@ export class AnalyticsService implements AnalyticsPort {
       if (!currency) return { kind: ANALYTICS_OUTCOMES.FORBIDDEN };
 
       const usage = new FxUsage();
-      // Summary retains its existing FX policy. Cash flow and advanced analytics
-      // use only rates effective at or before their respective valuation instants.
       const convert = async (
         amount: string,
         from: string,
@@ -229,7 +227,6 @@ export class AnalyticsService implements AnalyticsPort {
             row.currency,
             currency,
             row.occurredAt,
-            true,
           );
           if (!rate)
             return {

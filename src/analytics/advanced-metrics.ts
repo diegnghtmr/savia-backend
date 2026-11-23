@@ -283,8 +283,7 @@ function computeQuarterlyDeltaPercent(
  * - Averages: integer, half-away-from-zero, divided by monthsCounted.
  * - savingsCapacityDeltaPercentVsPreviousQuarter:
  *   ((current - previous) / |previous|) * 100, 2 decimals, half-away-from-zero.
- *   - null for first quarter in series
- *   - null when previous quarter average is 0
+ *   - null when the immediately preceding calendar quarter is absent or its average is 0
  *   - uses |previous| in denominator
  * - Order: ascending by quarter. Deterministic.
  */
@@ -295,13 +294,12 @@ export function buildQuarterlyAverageComparison(
     return [];
   }
 
-  // Group monthly points by calendar quarter (YYYY-Qn)
-  const quarterGroups = new Map<string, MonthlyCapacityPoint[]>();
+  // Use a calendar quarter ordinal so adjacency also works across years.
+  const quarterGroups = new Map<number, MonthlyCapacityPoint[]>();
   for (const point of monthlySeries) {
-    const year = point.month.slice(0, 4);
-    const monthNum = parseInt(point.month.slice(5, 7), 10);
-    const quarterNum = Math.floor((monthNum - 1) / 3) + 1;
-    const quarterKey = `${year}-Q${quarterNum}`;
+    const year = Number(point.month.slice(0, 4));
+    const monthNum = Number(point.month.slice(5, 7));
+    const quarterKey = year * 4 + Math.floor((monthNum - 1) / 3);
 
     let group = quarterGroups.get(quarterKey);
     if (!group) {
@@ -311,16 +309,13 @@ export function buildQuarterlyAverageComparison(
     group.push(point);
   }
 
-  // Deterministic ascending quarter ordering
-  const sortedQuarters = [...quarterGroups.keys()].sort((a, b) =>
-    a.localeCompare(b),
-  );
-
+  const sortedQuarters = [...quarterGroups.keys()].sort((a, b) => a - b);
   const results: QuarterlyAveragePoint[] = [];
 
-  for (let i = 0; i < sortedQuarters.length; i += 1) {
-    const quarter = sortedQuarters[i];
-    const points = quarterGroups.get(quarter)!;
+  for (const [i, quarterKey] of sortedQuarters.entries()) {
+    const year = String(Math.floor(quarterKey / 4)).padStart(4, '0');
+    const quarter = `${year}-Q${(quarterKey % 4) + 1}`;
+    const points = quarterGroups.get(quarterKey)!;
     const monthsCounted = points.length;
     const monthsCountedBigInt = BigInt(monthsCounted);
 
@@ -348,7 +343,7 @@ export function buildQuarterlyAverageComparison(
     );
 
     let savingsCapacityDeltaPercentVsPreviousQuarter: number | null = null;
-    if (i > 0) {
+    if (sortedQuarters[i - 1] === quarterKey - 1) {
       const previousQuarterSavings =
         results[i - 1].averageMonthlySavingsCapacityMinor;
       savingsCapacityDeltaPercentVsPreviousQuarter =

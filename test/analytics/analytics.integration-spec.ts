@@ -1923,4 +1923,106 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
     });
     expect(viewerCashFlow.statusCode).toBe(200);
   });
+
+  it('preserves legacy cash flow when only a later quote is available', async () => {
+    await admin.query(
+      `insert into public.exchange_rates (
+         workspace_id, base_currency, quote_currency, rate,
+         effective_at, source, created_by
+       ) values ($1, 'EUR', 'USD', 1.08, '2023-10-08T00:00:00Z', 'manual', $2)`,
+      [ws1Id, ownerId],
+    );
+
+    await seedTransaction({
+      type: 'expense',
+      amountMinor: 123,
+      currency: 'EUR',
+      occurredAt: '2023-10-07T05:00:00Z',
+      accountId: acctEurId,
+      categoryId: catGroceriesId,
+      includeInAccountBalance: true,
+    });
+
+    const response = await application.inject({
+      method: 'GET',
+      url: '/v1/analytics/cash-flow?from=2023-10-07&to=2023-10-07&granularity=day',
+      headers: {
+        authorization: 'Bearer viewer-token',
+        'x-workspace-id': ws1Id,
+      },
+    });
+
+    expect(response.statusCode, response.payload).toBe(200);
+    expect(response.json()).toEqual({
+      series: [
+        {
+          period: '2023-10-07',
+          value: { amountMinor: '-133', currency: 'USD' },
+          secondaryValue: { amountMinor: '-133', currency: 'USD' },
+        },
+      ],
+      categories: [
+        {
+          categoryId: catGroceriesId,
+          categoryName: 'Groceries',
+          amount: { amountMinor: '133', currency: 'USD' },
+          percentage: 100,
+        },
+      ],
+      fxRatesUsed: [
+        {
+          baseCurrency: 'EUR',
+          quoteCurrency: 'USD',
+          rate: '1.08',
+          rateDate: '2023-10-08',
+          source: 'manual',
+          freshness: 'fresh',
+        },
+      ],
+    });
+  });
+
+  it('does not compare against a nonadjacent quarter when the previous quarter has no historical FX', async () => {
+    await seedTransaction({
+      type: 'expense',
+      amountMinor: 100,
+      occurredAt: '2023-02-15T00:00:00Z',
+    });
+
+    for (const month of ['04', '05', '06']) {
+      await seedTransaction({
+        type: 'expense',
+        amountMinor: 55,
+        currency: 'EUR',
+        accountId: acctEurId,
+        occurredAt: `2023-${month}-15T00:00:00Z`,
+        includeInAccountBalance: true,
+      });
+    }
+
+    await seedTransaction({
+      type: 'expense',
+      amountMinor: 200,
+      occurredAt: '2023-08-15T00:00:00Z',
+    });
+
+    const response = await application.inject({
+      method: 'GET',
+      url: '/v1/analytics/advanced?metric=quarterly_average_comparison&from=2023-01-01&to=2023-09-30',
+      headers: {
+        authorization: 'Bearer viewer-token',
+        'x-workspace-id': ws1Id,
+      },
+    });
+
+    expect(response.statusCode, response.payload).toBe(200);
+    const body = response.json();
+    expect(body.missingData.join(' ')).toContain('EUR → USD');
+    expect(
+      body.data.series.map((point: { quarter: string }) => point.quarter),
+    ).toEqual(['2023-Q1', '2023-Q3']);
+    expect(
+      body.data.series[1].savingsCapacityDeltaPercentVsPreviousQuarter,
+    ).toBeNull();
+  });
 });
