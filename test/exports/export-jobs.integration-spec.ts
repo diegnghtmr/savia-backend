@@ -865,6 +865,119 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       }
     });
 
+    // Reviewer regressions (verify mwreiolm, PASS).
+    it('preserves a readable ZIP when PostgreSQL commits but the acknowledgement is lost', async () => {
+      const { id } = (await create()).json<Job>();
+      const remove = vi.spyOn(inMemoryStorage, 'remove');
+      const connect = PostgresPool.prototype.connect;
+      let lostAcks = 0;
+      const fault = vi
+        .spyOn(PostgresPool.prototype, 'connect')
+        .mockImplementation(async function (this: PostgresPool) {
+          const client = await connect.call(this);
+          let completingBackup = false;
+          return {
+            release: client.release.bind(client),
+            async query<Row extends Record<string, unknown>>(
+              sql: string,
+              args?: readonly unknown[],
+            ) {
+              const result = await client.query<Row>(sql, args);
+              if (
+                sql.includes(
+                  'update public.workspace_backups b set download_url',
+                ) &&
+                args?.[0] === id
+              ) {
+                completingBackup = true;
+              }
+              if (sql === 'COMMIT' && completingBackup) {
+                lostAcks++;
+                throw Object.assign(
+                  new Error('simulated lost COMMIT acknowledgement'),
+                  { code: 'ECONNRESET' },
+                );
+              }
+              return result;
+            },
+          };
+        });
+
+      try {
+        await runner.drainOnce();
+        expect(lostAcks).toBe(1);
+        const response = await poll(id);
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({ status: 'completed' });
+        const key = new URL(
+          response.json<SignedLink>().downloadUrl,
+        ).pathname.slice(1);
+        expect(
+          readStoredZip(await inMemoryStorage.download(key)).has(
+            'manifest.json',
+          ),
+        ).toBe(true);
+        expect(remove).not.toHaveBeenCalled();
+      } finally {
+        fault.mockRestore();
+        remove.mockRestore();
+      }
+    });
+
+    it('publishes the terminal signing failure before stalled cleanup times out', async () => {
+      inMemoryStorage.failSigning = true;
+      const pending = Promise.withResolvers<void>();
+      const upload = vi.spyOn(inMemoryStorage, 'upload');
+      const remove = vi
+        .spyOn(inMemoryStorage, 'remove')
+        .mockReturnValue(pending.promise);
+      const warn = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+
+      try {
+        const response = await create();
+        expect(response.statusCode).toBe(202);
+        const { id, createdAt } = response.json<Job>();
+        const { rows } = await admin.query<{ job_id: string }>(
+          'select job_id from public.workspace_backups where id = $1',
+          [id],
+        );
+
+        await runner.drainOnce();
+        const before = await poll(id);
+        expect(before.statusCode).toBe(200);
+        expect(before.json()).toEqual({
+          id,
+          createdAt,
+          status: 'failed',
+          ...noLink,
+        });
+        expect(warn).not.toHaveBeenCalled();
+
+        const [key] = upload.mock.calls[0];
+        expect(key.startsWith(`backups/${workspace1Id}/${id}/`)).toBe(true);
+        expect(remove.mock.calls).toEqual([[key]]);
+        await vi.waitFor(
+          () => {
+            expect(warn.mock.calls).toEqual([
+              [`Workspace backup cleanup failed for job ${rows[0].job_id}.`],
+            ]);
+          },
+          { timeout: 2_000 },
+        );
+
+        const after = await poll(id);
+        expect(after.statusCode).toBe(200);
+        expect(after.json()).toEqual(before.json());
+      } finally {
+        pending.resolve();
+        warn.mockRestore();
+        remove.mockRestore();
+        upload.mockRestore();
+      }
+    });
+
     // Reviewer regressions (verify mwr85oza, PASS WITH FINDINGS).
     it('denies administrators and nonmembers without changing queued data', async () => {
       const created = await create();
