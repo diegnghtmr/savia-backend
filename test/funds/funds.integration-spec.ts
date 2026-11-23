@@ -1866,5 +1866,70 @@ describe('Funds integration suite against disposable PostgreSQL', () => {
         version: 1,
       });
     });
+    it('rolls back an overdraw void and permits retry with the same key after funding', async () => {
+      const { id } = (await create()).json();
+      const funding = await contribute(id, '100');
+      expect(funding.statusCode).toBe(201);
+      const withdrawal = await withdraw(id, {
+        accountId: account2Id,
+        amount: money('100'),
+        reason: 'Spent reserved savings',
+      });
+      expect(withdrawal.statusCode).toBe(201);
+
+      const transactionId = funding.json().id;
+      const key = randomUUID();
+      const voidWithKey = () =>
+        application.inject({
+          method: 'POST',
+          url: `/v1/transactions/${transactionId}/void`,
+          headers: { ...headers(), 'idempotency-key': key },
+          payload: { reason: 'Wrong contribution' },
+        });
+      const snapshot = async () =>
+        (
+          await admin.query<{ digest: string }>(
+            `select md5(jsonb_build_array(
+          (select to_jsonb(t) from public.transactions t where id = $1),
+          (select jsonb_agg(to_jsonb(p) order by id)
+             from public.ledger_postings p where transaction_id = $1),
+          (select jsonb_agg(to_jsonb(r) order by id)
+             from public.command_idempotency_records r where idempotency_key = $2)
+        )::text) as digest`,
+            [transactionId, key],
+          )
+        ).rows[0].digest;
+
+      const before = await snapshot();
+      const titles: string[] = [];
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const blocked = await voidWithKey();
+        expect(blocked.statusCode).toBe(409);
+        expect(blocked.json()).toMatchObject({ status: 409, code: 'conflict' });
+        titles.push(blocked.json().title);
+        expect(await snapshot()).toBe(before);
+        expect((await detail(id)).json().currentAmount).toEqual(money('0'));
+      }
+
+      expect((await contribute(id, '100')).statusCode).toBe(201);
+      const accepted = await voidWithKey();
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.json()).toMatchObject({
+        id: transactionId,
+        status: 'voided',
+      });
+      const committed = await snapshot();
+      expect(committed).not.toBe(before);
+
+      const replay = await voidWithKey();
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toEqual(accepted.json());
+      expect(await snapshot()).toBe(committed);
+      expect((await detail(id)).json().currentAmount).toEqual(money('0'));
+      expect(titles).toEqual([
+        'Voiding this contribution would overdraw the fund.',
+        'Voiding this contribution would overdraw the fund.',
+      ]);
+    });
   });
 });

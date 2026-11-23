@@ -662,7 +662,7 @@ export class TransactionController {
     if (outcome.kind === TRANSACTION_VOID_OUTCOMES.FUND_OVERDRAW) {
       return sendProblem(reply, {
         type: PROBLEM_TYPES.CONFLICT,
-        title: 'Voiding this contribution would overdraw the fund',
+        title: 'Voiding this contribution would overdraw the fund.',
         status: 409,
       });
     }
