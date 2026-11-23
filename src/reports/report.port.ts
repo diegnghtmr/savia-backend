@@ -1,3 +1,4 @@
+import type { FxRateUsed } from '../platform/currency-conversion.js';
 import type { Cursor, PageInfo } from '../platform/cursor.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 export interface ReportSourceRow {
@@ -14,6 +15,7 @@ export interface ReportSourceRow {
   readonly amountMinor: bigint;
   readonly currency: string;
   readonly convertedMinor: bigint;
+  readonly fxRate?: FxRateUsed;
   readonly accountId: string;
   readonly accountType: string;
   readonly categoryId: string | null;
@@ -133,6 +135,7 @@ export interface ReportRun {
   readonly downloadUrl: string | null;
   readonly expiresAt: string | null;
   readonly createdAt: string;
+  readonly fxRatesUsed?: readonly FxRateUsed[];
 }
 
 export interface CreateReportDefinitionRequest {
@@ -266,6 +269,7 @@ export interface CompleteProcessingReportRunRecord {
   readonly downloadUrl: string;
   readonly expiresAt: Date;
   readonly completedAt: Date;
+  readonly fxRatesUsed?: readonly FxRateUsed[];
 }
 
 /**

@@ -5,22 +5,7 @@ import {
   createAdvancedAnalyticsQuery,
   AnalyticsQueryValidationError,
 } from '../../src/analytics/analytics-query.js';
-import {
-  ADVANCED_METRIC,
-  type CashFlowAnalyticsQuery,
-} from '../../src/analytics/analytics.port.js';
-
-const cashFlowQueryWithForbiddenYear = {
-  workspaceId: '00000000-0000-4000-8000-000000000001',
-  from: '2026-01-01',
-  to: '2026-01-31',
-  granularity: 'year',
-} as const;
-
-// @ts-expect-error Cash-flow queries must not accept the platform-only year granularity.
-const invalidCashFlowQuery: CashFlowAnalyticsQuery =
-  cashFlowQueryWithForbiddenYear;
-void invalidCashFlowQuery;
+import { ADVANCED_METRIC } from '../../src/analytics/analytics.port.js';
 
 describe('analytics-query', () => {
   const validWorkspaceId = '00000000-0000-4000-8000-000000000001';
@@ -108,8 +93,8 @@ describe('analytics-query', () => {
       expect(q.granularity).toBe('month');
     });
 
-    it('accepts supported granularities: day, week, month, quarter', () => {
-      for (const g of ['day', 'week', 'month', 'quarter'] as const) {
+    it('accepts supported granularities: day, week, month, quarter, year', () => {
+      for (const g of ['day', 'week', 'month', 'quarter', 'year'] as const) {
         const q = createCashFlowAnalyticsQuery({
           workspaceId: validWorkspaceId,
           fromParam: '2026-01-01',
@@ -126,7 +111,7 @@ describe('analytics-query', () => {
           workspaceId: validWorkspaceId,
           fromParam: '2026-01-01',
           toParam: '2026-01-31',
-          granularityParam: 'year',
+          granularityParam: 'yearly',
         }),
       ).toThrow(AnalyticsQueryValidationError);
     });
