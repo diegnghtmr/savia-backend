@@ -1,6 +1,8 @@
 import { Global, Module } from '@nestjs/common';
 
 import { TransactionController } from './transaction.controller.js';
+import { BulkTransactionController } from './bulk-transaction.controller.js';
+import { BulkTransactionService } from './bulk-transaction.service.js';
 import { TransferController } from './transfer.controller.js';
 import { CurrencyExchangeController } from './currency-exchange.controller.js';
 import { LEDGER_PORT } from './ledger.port.js';
@@ -25,10 +27,12 @@ import {
   imports: [PlatformModule],
   controllers: [
     TransactionController,
+    BulkTransactionController,
     TransferController,
     CurrencyExchangeController,
   ],
   providers: [
+    BulkTransactionService,
     PostgresTransactionAdapter,
     {
       provide: PostgresTransferAdapter,

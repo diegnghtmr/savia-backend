@@ -37,6 +37,9 @@ interface TransactionRow extends Record<string, unknown> {
   readonly receiptId: string | null;
   readonly reconciliationId: string | null;
   readonly tagIds: string[] | null;
+  readonly archived?: boolean;
+  readonly excludedFromReports?: boolean;
+  readonly extraordinary?: boolean;
   readonly createdAt: Date;
   readonly updatedAt: Date;
   readonly version: number;
@@ -53,6 +56,16 @@ export function toIso(value: unknown): string {
   throw new TypeError(
     `Expected Date instance from database timestamp column, got ${typeof value}`,
   );
+}
+
+function classification(row: TransactionRow): Partial<Transaction> {
+  // OpenAPI defaults absent flags to false; preserve existing payloads for
+  // transactions that have not opted into a classification.
+  return {
+    ...(row.archived === true ? { archived: true } : {}),
+    ...(row.excludedFromReports === true ? { excludedFromReports: true } : {}),
+    ...(row.extraordinary === true ? { extraordinary: true } : {}),
+  };
 }
 
 export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
@@ -369,6 +382,9 @@ select t.id::text,
        t.receipt_id::text as "receiptId",
        t.reconciliation_id::text as "reconciliationId",
        t.tag_ids as "tagIds",
+       t.archived,
+       t.excluded_from_reports as "excludedFromReports",
+       t.extraordinary,
        t.created_at as "createdAt",
        t.updated_at as "updatedAt",
        t.version
@@ -384,6 +400,7 @@ select t.id::text,
       return undefined;
     }
     return {
+      ...classification(row),
       id: row.id,
       accountId: row.accountId,
       type: row.type,
@@ -473,6 +490,9 @@ select t.id::text,
        t.receipt_id::text as "receiptId",
        t.reconciliation_id::text as "reconciliationId",
        t.tag_ids as "tagIds",
+       t.archived,
+       t.excluded_from_reports as "excludedFromReports",
+       t.extraordinary,
        t.created_at as "createdAt",
        t.updated_at as "updatedAt",
        t.version,
@@ -485,6 +505,7 @@ select t.id::text,
     const result = await client.query<TransactionListRow>(sql, values);
     return result.rows.map((row) => ({
       transaction: {
+        ...classification(row),
         id: row.id,
         accountId: row.accountId,
         type: row.type,
@@ -558,6 +579,10 @@ select t.id::text,
       values.push(command.status);
       assignments.push(`status = $${values.length}`);
     }
+    if (command.extraordinary !== undefined) {
+      values.push(command.extraordinary);
+      assignments.push(`extraordinary = $${values.length}`);
+    }
 
     const versionParam =
       expectedVersions === undefined
@@ -589,6 +614,9 @@ returning
    receipt_id::text as "receiptId",
    reconciliation_id::text as "reconciliationId",
    tag_ids as "tagIds",
+   archived,
+   excluded_from_reports as "excludedFromReports",
+   extraordinary,
    created_at as "createdAt",
    updated_at as "updatedAt",
    version`;
@@ -639,6 +667,10 @@ returning
       createdAt: toIso(row.createdAt),
       updatedAt: toIso(row.updatedAt),
       version: row.version,
+      ...classification(row),
+      ...(command.extraordinary === undefined
+        ? {}
+        : { extraordinary: command.extraordinary }),
     };
   }
 
@@ -724,6 +756,9 @@ returning
    receipt_id::text as "receiptId",
    reconciliation_id::text as "reconciliationId",
    tag_ids as "tagIds",
+   archived,
+   excluded_from_reports as "excludedFromReports",
+   extraordinary,
    voided_at as "voidedAt",
    created_at as "createdAt",
    updated_at as "updatedAt",
@@ -823,6 +858,7 @@ select $1::uuid, $2::uuid, leg.account_id, leg.kind, leg.amount, $5, $6, cutoff.
       createdAt: toIso(row.createdAt),
       updatedAt: toIso(row.updatedAt),
       version: row.version,
+      ...classification(row),
     };
   }
 }

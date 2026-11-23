@@ -96,6 +96,10 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     ],
     [routeKey('POST', '/v1/accounts'), [SAVIA_SCOPES.ACCOUNTS_WRITE]],
     [
+      routeKey('POST', '/v1/transactions/bulk'),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
       routeKey('POST', '/v1/accounts/:accountId/close'),
       [SAVIA_SCOPES.ACCOUNTS_WRITE],
     ],

@@ -31,6 +31,7 @@ export interface Category {
   readonly kind: CategoryKind;
   readonly icon: string | null;
   readonly colorToken: string | null;
+  readonly essential?: boolean;
 }
 
 export interface CreateNamedResourceCommand {
@@ -45,6 +46,7 @@ export interface CreateCategoryCommand {
   readonly parentId: string | null;
   readonly icon: string | null;
   readonly colorToken: string | null;
+  readonly essential?: boolean;
 }
 
 export const CATALOG_CREATE_OUTCOMES = {

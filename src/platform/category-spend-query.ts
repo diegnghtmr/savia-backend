@@ -12,8 +12,8 @@ export const CATEGORY_SPEND_FROM_WHERE_CLAUSE = `
     and posting.status in ('confirmed', 'reconciled')
 `;
 
-export function buildCategorySpendSql(): string {
+export function buildCategorySpendSql(reportOnly = false): string {
   return `select
   ${CATEGORY_SPEND_EXPRESSION}
-  ${CATEGORY_SPEND_FROM_WHERE_CLAUSE}`;
+  ${CATEGORY_SPEND_FROM_WHERE_CLAUSE}${reportOnly ? '    and not transaction.excluded_from_reports\n' : ''}`;
 }

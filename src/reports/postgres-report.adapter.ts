@@ -201,6 +201,7 @@ left join lateral (
    limit 1
 ) rates on t.currency <> w.base_currency
 where t.workspace_id = $1::uuid
+  and not t.excluded_from_reports
   and t.status in ('confirmed', 'reconciled')
   and exists (
     select 1 from public.ledger_postings p1

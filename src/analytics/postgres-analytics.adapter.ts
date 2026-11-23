@@ -1,6 +1,6 @@
 import { buildCategorySpendSql } from '../platform/category-spend-query.js';
 import { CURRENCY_RATE_SELECTION_SQL } from '../platform/currency-conversion.js';
-import { DEBT_OUTSTANDING_BALANCE_EXPRESSION } from '../platform/debt-balance-query.js';
+import { buildDebtOutstandingBalanceSql } from '../platform/debt-balance-query.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   AccountNativeBalanceRow,
@@ -61,6 +61,11 @@ select
     sum(posting.amount_minor) filter (
       where posting.currency = acct.currency
         and posting.status in ('confirmed', 'reconciled')
+        and not exists (
+          select 1 from public.transactions t
+          where t.workspace_id = posting.workspace_id and t.id = posting.transaction_id
+            and t.excluded_from_reports
+        )
     ),
     0
   )::text as "nativeBalanceMinor"
@@ -92,7 +97,7 @@ group by acct.id, acct.currency`;
 select
   d.id::text as id,
   d.currency,
-  ${DEBT_OUTSTANDING_BALANCE_EXPRESSION}::text as "outstandingBalanceMinor"
+  ${buildDebtOutstandingBalanceSql('d', true)}::text as "outstandingBalanceMinor"
 from public.debts d
 where d.workspace_id = $1::uuid
   and d.status <> 'archived'`;
@@ -136,6 +141,7 @@ left join public.categories c
   on c.workspace_id = t.workspace_id
  and c.id = t.category_id
 where t.workspace_id = $1::uuid
+  and not t.excluded_from_reports
   and t.status in ('confirmed', 'reconciled')
   and exists (
     select 1
@@ -247,6 +253,7 @@ join public.debts d
 join public.transactions t
   on t.workspace_id = dp.workspace_id and t.id = dp.transaction_id
 where dp.workspace_id = $1::uuid
+  and not t.excluded_from_reports
   and t.status in ('confirmed', 'reconciled')
   and exists (
     select 1 from public.ledger_postings p
@@ -321,7 +328,7 @@ from public.budget_allocations allocation
 join public.budgets budget
   on budget.workspace_id = allocation.workspace_id
  and budget.id = allocation.budget_id
-join lateral (${buildCategorySpendSql()}) spend on true
+join lateral (${buildCategorySpendSql(true)}) spend on true
 where allocation.workspace_id = $1::uuid
   and budget.period_start <= $3::date
   and budget.period_end >= $2::date

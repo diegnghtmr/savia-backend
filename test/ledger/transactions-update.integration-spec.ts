@@ -1,4 +1,5 @@
-// Migration under test: 202609170028_standalone_transaction_posting_updates.sql.
+// Migrations under test: 202609170028_standalone_transaction_posting_updates.sql,
+// 202609170031_l16_classification_bulk.sql.
 import { randomUUID } from 'node:crypto';
 import {
   FastifyAdapter,
@@ -301,8 +302,14 @@ describe('TransactionService updateTransaction database boundary', () => {
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(JoseJwtVerifier)
       .useValue({
-        verify: () =>
-          Promise.resolve({ subject: subjectOwner, authMethod: 'session' }),
+        verify: (token: string) =>
+          Promise.resolve({
+            subject:
+              token === 'session-other-writer'
+                ? subjectWorkspace2Owner
+                : subjectOwner,
+            authMethod: 'session',
+          }),
       })
       .compile();
     app = module.createNestApplication<NestFastifyApplication>(
@@ -341,7 +348,7 @@ describe('TransactionService updateTransaction database boundary', () => {
   };
   const usd = (amountMinor: string) => ({ amountMinor, currency: 'USD' });
 
-  async function createBookedIncome() {
+  async function createBookedIncome(occurredAt = past) {
     const account = await app.inject({
       method: 'POST',
       url: '/v1/accounts',
@@ -361,7 +368,7 @@ describe('TransactionService updateTransaction database boundary', () => {
         accountId: account.json<{ id: string }>().id,
         type: 'income',
         amount: usd('1234'),
-        occurredAt: past,
+        occurredAt,
         status: 'confirmed',
       },
     });
@@ -389,6 +396,350 @@ describe('TransactionService updateTransaction database boundary', () => {
     });
     expect(response.json()).not.toHaveProperty('availableBalance');
   }
+
+  describe('atomic bulk transaction actions', () => {
+    const postBulk = (
+      payload: object,
+      key = randomUUID(),
+      requestHeaders = balanceHeaders,
+    ) =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/transactions/bulk',
+        headers: { ...requestHeaders, 'idempotency-key': key },
+        payload,
+      });
+    const read = (id: string) =>
+      app.inject({
+        method: 'GET',
+        url: `/v1/transactions/${id}`,
+        headers: balanceHeaders,
+      });
+
+    it('writes in target order, leaves postings unchanged, and replays before version checks', async () => {
+      const a = await createBookedIncome();
+      const b = await createBookedIncome();
+      const targets = [a, b]
+        .map(({ id, version }) => ({ id, expectedVersion: version }))
+        .sort((x, y) => y.id.localeCompare(x.id));
+      const key = randomUUID();
+      const payload = { targets, action: { type: 'excludeFromReports' } };
+      const response = await postBulk(payload, key);
+      expect(response.statusCode, response.payload).toBe(200);
+      expect(response.json()).toEqual({
+        updated: targets.map(({ id }) => ({ id, version: 2 })),
+      });
+      await expectBalance(a.accountId, future, '1234');
+      for (const target of targets) {
+        expect((await read(target.id)).json()).toMatchObject({
+          excludedFromReports: true,
+          version: 2,
+        });
+      }
+      const replay = await postBulk(payload, key);
+      expect(replay.statusCode).toBe(200);
+      expect(replay.payload).toBe(response.payload);
+      const conflict = await postBulk(
+        { ...payload, action: { type: 'archive' } },
+        key,
+      );
+      expect(conflict.statusCode).toBe(409);
+      expect((await read(a.id)).json()).toMatchObject({
+        version: 2,
+        excludedFromReports: true,
+      });
+    });
+
+    it('rejects an entire batch on a stale or invisible target and never burns its key', async () => {
+      const txn = await createBookedIncome();
+      const other = await createBookedIncome();
+      const target = { id: txn.id, expectedVersion: 1 };
+      const key = randomUUID();
+      const before = await read(txn.id);
+      const action = { type: 'archive' };
+      for (const [id, expectedVersion, status] of [
+        [other.id, 2, 412],
+        [txnOwnerTarget, 1, 404],
+      ] as const) {
+        const response = await postBulk(
+          { targets: [target, { id, expectedVersion }], action },
+          key,
+        );
+        expect(response.statusCode, response.payload).toBe(status);
+        expect((await read(txn.id)).payload).toBe(before.payload);
+      }
+      expect(
+        (await postBulk({ targets: [target], action }, key)).statusCode,
+      ).toBe(200);
+      expect((await read(txn.id)).json()).toMatchObject({
+        archived: true,
+        version: 2,
+      });
+      for (const id of [txnVoidedTarget, txnReconciledTarget]) {
+        const headers = { ...balanceHeaders, 'x-workspace-id': workspace1Id };
+        const get = () =>
+          app.inject({ method: 'GET', url: `/v1/transactions/${id}`, headers });
+        const old = await get();
+        expect(old.statusCode).toBe(200);
+        const result = await app.inject({
+          method: 'POST',
+          url: '/v1/transactions/bulk',
+          headers: { ...headers, 'idempotency-key': randomUUID() },
+          payload: { targets: [{ id, expectedVersion: 1 }], action },
+        });
+        expect(result.statusCode, result.payload).toBe(422);
+        expect((await get()).payload).toBe(old.payload);
+      }
+    });
+
+    it('rejects empty, duplicate (case insensitive), oversized and unsupported requests without mutation', async () => {
+      const txn = await createBookedIncome();
+      const target = { id: txn.id, expectedVersion: 1 };
+      const before = await read(txn.id);
+      const action = { type: 'archive' };
+      for (const payload of [
+        { targets: [], action },
+        {
+          targets: [target, { id: txn.id.toUpperCase(), expectedVersion: 2 }],
+          action,
+        },
+        {
+          targets: Array.from({ length: 101 }, () => ({
+            id: randomUUID(),
+            expectedVersion: 1,
+          })),
+          action,
+        },
+        { targets: [target], action: { type: 'convertImported' } },
+        {
+          targets: [target],
+          action: { type: 'convertImported', targetType: 'income' },
+        },
+        { targets: [target], action: { type: 'tag', tagIds: [] } },
+      ]) {
+        const response = await postBulk(payload);
+        expect(response.statusCode, response.payload).toBe(422);
+        expect((await read(txn.id)).payload).toBe(before.payload);
+      }
+    });
+
+    it('serializes opposing target orders from different actors without a partial write', async () => {
+      const a = await createBookedIncome();
+      const b = await createBookedIncome();
+      const c = await createBookedIncome();
+      const targets = [a, b, c].map(({ id }) => ({ id, expectedVersion: 1 }));
+      const outcomes = await Promise.all([
+        postBulk({ targets, action: { type: 'archive' } }),
+        postBulk(
+          {
+            targets: [...targets].reverse(),
+            action: { type: 'setExtraordinary', extraordinary: true },
+          },
+          randomUUID(),
+          {
+            ...balanceHeaders,
+            authorization: 'Bearer session-other-writer',
+          },
+        ),
+      ]);
+      expect(outcomes.map((response) => response.statusCode).sort()).toEqual([
+        200, 412,
+      ]);
+      const archiveWon = outcomes[0].statusCode === 200;
+      const winnerOrder = archiveWon ? targets : [...targets].reverse();
+      const winner = outcomes.find((response) => response.statusCode === 200);
+      expect(winner?.json()).toEqual({
+        updated: winnerOrder.map(({ id }) => ({ id, version: 2 })),
+      });
+      for (const { id } of targets) {
+        const response = await read(id);
+        expect(response.statusCode).toBe(200);
+        const { archived, extraordinary, version } =
+          response.json<Transaction>();
+        expect({
+          archived: archived ?? false,
+          extraordinary: extraordinary ?? false,
+          version,
+        }).toEqual({
+          archived: archiveWon,
+          extraordinary: !archiveWon,
+          version: 2,
+        });
+      }
+    });
+
+    it('converts only sign-compatible imported adjustments without changing a balance or losing rollback provenance', async () => {
+      const account = await app.inject({
+        method: 'POST',
+        url: '/v1/accounts',
+        headers: { ...balanceHeaders, 'idempotency-key': randomUUID() },
+        payload: {
+          name: `Imported ${randomUUID()}`,
+          type: 'checking',
+          currency: 'USD',
+        },
+      });
+      expect(account.statusCode, account.payload).toBe(201);
+      const accountId = account.json<{ id: string }>().id;
+      const jobId = randomUUID();
+      await admin.query(
+        `insert into public.import_jobs(id,workspace_id,file_name,status,account_id,detected_format,created_by)
+        values ($1,$2,'fixture.csv','completed',$3,'csv',$4)`,
+        [jobId, workspace2Id, accountId, subjectOwner],
+      );
+      await transaction.run(subjectOwner, (client) =>
+        service.createImportedTransactions(
+          client,
+          workspace2Id,
+          subjectOwner,
+          ['500', '-900', '0'].map((amountMinor) => ({
+            accountId,
+            amountMinor,
+            currency: 'USD',
+            occurredAt: past,
+            description: `Imported ${amountMinor}`,
+            importJobId: jobId,
+          })),
+        ),
+      );
+      const listing = await app.inject({
+        method: 'GET',
+        url: `/v1/transactions?accountId=${accountId}`,
+        headers: balanceHeaders,
+      });
+      expect(listing.statusCode).toBe(200);
+      const rows = listing.json<{ items: Transaction[] }>().items;
+      expect(rows).toHaveLength(3);
+      function atAmount(amountMinor: string): Transaction {
+        const row = rows.find((txn) => txn.amount.amountMinor === amountMinor);
+        if (!row)
+          throw new Error(`Missing imported transaction ${amountMinor}`);
+        return row;
+      }
+      const positive = atAmount('500');
+      const negative = atAmount('-900');
+      const zero = atAmount('0');
+      const target = (row: Transaction) => ({
+        id: row.id,
+        expectedVersion: row.version,
+      });
+      const convert = (
+        targetType: 'income' | 'expense',
+        targets: Transaction[],
+        key = randomUUID(),
+      ) =>
+        postBulk(
+          {
+            targets: targets.map(target),
+            action: { type: 'convertImported', targetType },
+          },
+          key,
+        );
+      const unchanged = await Promise.all(rows.map(({ id }) => read(id)));
+      const key = randomUUID();
+      for (const [type, batch] of [
+        ['income', [positive, negative]],
+        ['income', [positive, zero]],
+        ['expense', [negative, positive]],
+        ['expense', [negative, zero]],
+      ] as const) {
+        const rejected = await convert(type, [...batch], key);
+        expect(rejected.statusCode, rejected.payload).toBe(422);
+        expect(
+          (await Promise.all(rows.map(({ id }) => read(id)))).map(
+            ({ payload }) => payload,
+          ),
+        ).toEqual(unchanged.map(({ payload }) => payload));
+        await expectBalance(accountId, future, '-400');
+      }
+      for (const [type, txn] of [
+        ['income', positive],
+        ['expense', negative],
+      ] as const) {
+        const response = await convert(
+          type,
+          [txn],
+          type === 'income' ? key : randomUUID(),
+        );
+        expect(response.statusCode, response.payload).toBe(200);
+        expect(response.json()).toEqual({
+          updated: [{ id: txn.id, version: 2 }],
+        });
+        expect((await read(txn.id)).json()).toMatchObject({
+          type,
+          amount: txn.amount,
+          description: txn.description,
+          version: 2,
+        });
+      }
+      await expectBalance(accountId, future, '-400');
+      const rollback = await app.inject({
+        method: 'POST',
+        url: `/v1/import-jobs/${jobId}/rollback`,
+        headers: { ...balanceHeaders, 'idempotency-key': randomUUID() },
+      });
+      expect(rollback.statusCode, rollback.payload).toBe(202);
+      for (const { id } of rows)
+        expect((await read(id)).json()).toMatchObject({ status: 'voided' });
+      await expectBalance(accountId, future, '0');
+    });
+
+    it('excludes an income from analytics while keeping its ledger balance, then restores report inclusion', async () => {
+      const txn = await createBookedIncome('2026-02-11T00:01:00Z');
+      const summary = () =>
+        app.inject({
+          method: 'GET',
+          url: '/v1/analytics/summary?from=2026-02-11&to=2026-02-11',
+          headers: balanceHeaders,
+        });
+      const before = await summary();
+      expect(before.statusCode, before.payload).toBe(200);
+      expect(before.json()).toMatchObject({ income: usd('1234') });
+      for (const [type, version, income] of [
+        ['excludeFromReports', 1, '0'],
+        ['includeInReports', 2, '1234'],
+      ] as const) {
+        const response = await postBulk({
+          targets: [{ id: txn.id, expectedVersion: version }],
+          action: { type },
+        });
+        expect(response.statusCode, response.payload).toBe(200);
+        expect(response.json()).toEqual({
+          updated: [{ id: txn.id, version: version + 1 }],
+        });
+        const reported = await summary();
+        expect(reported.statusCode, reported.payload).toBe(200);
+        expect(reported.json()).toMatchObject({ income: usd(income) });
+        await expectBalance(txn.accountId, future, '1234');
+      }
+    });
+
+    it('sets and clears extraordinary through PATCH without changing balance', async () => {
+      const txn = await createBookedIncome();
+      for (const [extraordinary, version] of [
+        [true, 1],
+        [false, 2],
+      ] as const) {
+        const response = await app.inject({
+          method: 'PATCH',
+          url: `/v1/transactions/${txn.id}`,
+          headers: {
+            ...balanceHeaders,
+            'if-match': `"${version}"`,
+            'idempotency-key': randomUUID(),
+          },
+          payload: { extraordinary },
+        });
+        expect(response.statusCode, response.payload).toBe(200);
+        expect(response.headers.etag).toBe(`"${version + 1}"`);
+        expect(response.json()).toMatchObject({
+          extraordinary,
+          version: version + 1,
+        });
+      }
+      await expectBalance(txn.accountId, future, '1234');
+    });
+  });
 
   function patchBooking(
     booking: Transaction,
