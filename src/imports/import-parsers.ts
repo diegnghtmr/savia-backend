@@ -9,6 +9,7 @@ import {
   QIF_PREVIEW_CURRENCY_DIGITS,
   STATEMENT_COLUMNS,
   statementAmount,
+  statementDate,
 } from './statement-fields.js';
 
 export { MAX_IMPORT_FILE_BYTES, MAX_IMPORT_ROWS } from './statement-fields.js';
@@ -66,10 +67,8 @@ function parseRows(
     const description =
       descriptionAt < 0 ? '' : String(raw[descriptionAt] ?? '').trim();
     const errors: string[] = [];
-    if (
-      !/^\d{4}-\d{2}-\d{2}$/u.test(date) ||
-      Number.isNaN(new Date(`${date}T00:00:00Z`).getTime())
-    )
+    const iso = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(date);
+    if (!iso || !statementDate(iso[1], iso[2], iso[3]))
       errors.push('date must be YYYY-MM-DD');
     if (statement && statementValue === null)
       errors.push(

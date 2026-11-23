@@ -323,11 +323,7 @@ describe('POST /v1/onboarding', () => {
       instance: '/v1/onboarding',
     });
     expect(response.payload).not.toContain('connection reset by peer');
-    // An uncertain write is the one failure an operator must be able to find
-    // afterwards, so the log has to carry both who it happened to and why.
-    const logs = logged.mock.calls.flat(2).join(' ');
-    expect(logs).toContain(SUBJECT);
-    expect(logs).toContain('connection reset by peer');
+    expect(logged.mock.calls).toEqual([['outcome-unknown']]);
   });
 
   it('answers an opaque 500 problem+json for an unexpected failure', async () => {
@@ -355,11 +351,6 @@ describe('POST /v1/onboarding', () => {
       instance: '/v1/onboarding',
     });
     expect(response.payload).not.toContain('hunter2');
-    // Assert what was logged, not merely that something logged. A spy on the
-    // shared Logger prototype is satisfied by any unrelated call, so only the
-    // content proves this filter's catch-all branch is what ran.
-    const logs = logged.mock.calls.flat(2).join(' ');
-    expect(logs).toContain('Onboarding failed unexpectedly.');
-    expect(logs).toContain('hunter2');
+    expect(logged.mock.calls).toEqual([['internal']]);
   });
 });

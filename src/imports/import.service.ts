@@ -25,6 +25,7 @@ import {
   QIF_PREVIEW_CURRENCY_DIGITS,
   statementAmount,
   statementCurrencyDigits,
+  statementDate,
 } from './statement-fields.js';
 import type { JobWriter } from '../platform/job-writer.port.js';
 import type { LedgerWriter } from '../platform/ledger-writer.port.js';
@@ -80,16 +81,36 @@ const FIXED_STATEMENT_MAPPING = {
   description: 'description',
 };
 
-function importRowIdentity(format: ImportFormat, row: ParsedImportRow): string {
-  const field = (name: string) =>
-    row.rawValues[row.sourceColumns.indexOf(name)];
-  const amount = format === 'qif' ? field('amount') : row.parsedAmountMinor;
-  const identity = `${row.parsedDate}|${amount}|${normalizeImportDescription(row.parsedDescription!)}`;
-  if (format === 'csv' || format === 'xlsx') return identity;
-  const fitid = field('fitid');
+function statementRowIdentity(
+  date: string,
+  amount: unknown,
+  description: string,
+  reference: unknown,
+  fitid: unknown,
+): string {
   return fitid
     ? JSON.stringify(['fitid', fitid])
-    : JSON.stringify(['row', identity, field('reference')]);
+    : JSON.stringify([
+        'row',
+        date,
+        amount,
+        normalizeImportDescription(description),
+        reference,
+      ]);
+}
+
+function importRowIdentity(format: ImportFormat, row: ParsedImportRow): string {
+  if (!isFixedStatementFormat(format))
+    return `${row.parsedDate}|${row.parsedAmountMinor}|${normalizeImportDescription(row.parsedDescription!)}`;
+  const field = (name: string) =>
+    row.rawValues[row.sourceColumns.indexOf(name)];
+  return statementRowIdentity(
+    row.parsedDate!,
+    format === 'qif' ? field('amount') : row.parsedAmountMinor,
+    row.parsedDescription!,
+    field('reference'),
+    field('fitid'),
+  );
 }
 
 const DEBIT_INDICATORS = new Set(['debit', 'd', 'dr', 'db', 'debito', 'cargo']);
@@ -127,14 +148,9 @@ function parseImportDate(value: string, format: string): string {
       : format === 'MM/DD/YYYY'
         ? match[2]
         : match[1];
-  const result = `${year}-${month}-${day}`;
-  const date = new Date(`${result}T00:00:00Z`);
-  if (
-    Number.isNaN(date.getTime()) ||
-    date.toISOString().slice(0, 10) !== result
-  )
-    throw new ImportValidationError('Date is invalid.');
-  return result;
+  const date = statementDate(year, month, day);
+  if (!date) throw new ImportValidationError('Date is invalid.');
+  return date;
 }
 export class ImportService implements ImportsPort {
   public constructor(
@@ -288,10 +304,11 @@ export class ImportService implements ImportsPort {
             kind: IMPORT_MUTATION_OUTCOMES.CONFLICT,
             detail: 'Import job has already been completed.',
           };
-        const fixed =
-          importJob.status === 'awaiting_confirmation' &&
-          isFixedStatementFormat(importJob.detectedFormat);
-        if (!fixed && importJob.status !== 'awaiting_mapping')
+        const fixed = isFixedStatementFormat(importJob.detectedFormat);
+        if (
+          importJob.status !== 'awaiting_mapping' &&
+          !(fixed && importJob.status === 'awaiting_confirmation')
+        )
           return {
             kind: IMPORT_MUTATION_OUTCOMES.INVALID,
             detail: 'Import job is not awaiting_mapping.',
@@ -380,11 +397,6 @@ export class ImportService implements ImportsPort {
               kind: IMPORT_MUTATION_OUTCOMES.INVALID,
               detail: 'The selected account currency is unsupported for QIF.',
             };
-          if (!fixed && qifDigits !== QIF_PREVIEW_CURRENCY_DIGITS)
-            return {
-              kind: IMPORT_MUTATION_OUTCOMES.INVALID,
-              detail: 'QIF requires a two-decimal account currency.',
-            };
         }
         const currencyIndex = isOfx(importJob.detectedFormat)
           ? importJob.sourceColumns.indexOf('currency')
@@ -398,6 +410,9 @@ export class ImportService implements ImportsPort {
           importJob.sourceColumns[dateColumn] === 'date';
         const skipDuplicates = command.skipDuplicateCandidates !== false;
         const rows = await this.store.findRows(client, workspaceId, id);
+        const seen = new Set<string>();
+        const referenceColumn = importJob.sourceColumns.indexOf('reference');
+        const fitidColumn = importJob.sourceColumns.indexOf('fitid');
         const prepared: Array<{
           date: string;
           amountMinor: string;
@@ -406,10 +421,9 @@ export class ImportService implements ImportsPort {
         for (const row of rows) {
           const skipped =
             row.classification === 'error' ||
-            (skipDuplicates && row.classification === 'duplicate');
+            (!fixed && skipDuplicates && row.classification === 'duplicate');
           if (
             currencyIndex !== null &&
-            (fixed || !skipped) &&
             row.rawValues[currencyIndex] !== account.currency
           )
             throw new ImportValidationError(
@@ -429,8 +443,20 @@ export class ImportService implements ImportsPort {
           const rawAmount = row.rawValues[amountColumn];
           let amountMinor: string;
           if (fixed) {
-            const amount =
-              typeof rawAmount === 'string'
+            // Pre-upgrade jobs stored the minor-unit integer as a JSON number.
+            const legacyAmount =
+              typeof rawAmount === 'number' && Number.isSafeInteger(rawAmount);
+            if (
+              legacyAmount &&
+              qifDigits !== undefined &&
+              qifDigits !== QIF_PREVIEW_CURRENCY_DIGITS
+            )
+              throw new ImportValidationError(
+                'QIF requires a two-decimal account currency.',
+              );
+            const amount = legacyAmount
+              ? String(rawAmount)
+              : typeof rawAmount === 'string'
                 ? statementAmount(rawAmount, qifDigits ?? 0)
                 : null;
             if (amount === null)
@@ -458,6 +484,17 @@ export class ImportService implements ImportsPort {
           const description = String(
             row.rawValues[descriptionColumn] ?? '',
           ).trim();
+          if (fixed && skipDuplicates) {
+            const identity = statementRowIdentity(
+              date,
+              amountMinor,
+              description,
+              row.rawValues[referenceColumn],
+              row.rawValues[fitidColumn],
+            );
+            if (seen.has(identity)) continue;
+            seen.add(identity);
+          }
           prepared.push({ date, amountMinor, description });
         }
         // FITID is only used within a statement. Cross-import matching still
