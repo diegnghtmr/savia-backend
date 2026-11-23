@@ -1,6 +1,7 @@
 import type { Cursor } from '../platform/cursor.js';
 import { ACTIVE_CURRENCIES } from '../platform/field-validation.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import type { McpProposalIdentity } from '../platform/request-identity.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
 import type {
   CreateMcpGrantCommand,
@@ -75,6 +76,33 @@ interface LockedPolicy extends Record<string, unknown> {
   readonly maxWriteCurrency: string | null;
   readonly localDay: number;
   readonly localTime: string;
+}
+
+function allowsCall(
+  policy: Pick<
+    LockedPolicy,
+    'toolAllowlist' | 'schedule' | 'localDay' | 'localTime'
+  >,
+  toolName: string,
+  isRead: boolean,
+): boolean {
+  if (!MCP_LOCAL_TIME.test(policy.localTime)) return false;
+  const allowlist = parseToolAllowlist(policy.toolAllowlist);
+  if (
+    !('value' in allowlist) ||
+    !(allowlist.value.length ? allowlist.value.includes(toolName) : isRead)
+  )
+    return false;
+  const schedule = parseGrantSchedule(policy.schedule);
+  return (
+    'value' in schedule &&
+    schedule.value.some(
+      ({ dayOfWeek, startTime, endTime }) =>
+        dayOfWeek === policy.localDay &&
+        startTime <= policy.localTime &&
+        policy.localTime < endTime,
+    )
+  );
 }
 
 function validMoney(amount: Money): boolean {
@@ -186,7 +214,7 @@ export class PostgresMcpGrantAdapter
          from public.locked_mcp_grant_policy($1::uuid, $2::uuid, $3::uuid, $4::text[], $5::uuid[])`,
       [subject, grantId, workspaceId, tool.requiredScopes, accounts],
     );
-    if (!policy || !MCP_LOCAL_TIME.test(policy.localTime)) return false;
+    if (!policy) return false;
     if (
       tool.riskClass === 'administrative' &&
       policy.role !== 'owner' &&
@@ -194,24 +222,43 @@ export class PostgresMcpGrantAdapter
     )
       return false;
     const isRead = tool.riskClass === 'read' && !tool.requiresApproval;
-    const allowlist = parseToolAllowlist(policy.toolAllowlist);
+    return (
+      allowsCall(policy, toolName, isRead) &&
+      (isRead || money === undefined || withinWriteLimit(money, policy))
+    );
+  }
+
+  public async readDiscoveryWorkspaces(
+    client: TransactionClient,
+    { subject, grantId }: McpProposalIdentity,
+    toolName: string,
+  ): Promise<readonly string[]> {
+    const tool = MCP_TOOL_ANNOTATIONS.get(toolName);
     if (
-      !('value' in allowlist) ||
-      !(allowlist.value.length ? allowlist.value.includes(toolName) : isRead)
+      tool?.riskClass !== 'read' ||
+      tool.requiresApproval ||
+      tool.requiredScopes.length
     )
-      return false;
-    const schedule = parseGrantSchedule(policy.schedule);
-    if (
-      !('value' in schedule) ||
-      !schedule.value.some(
-        ({ dayOfWeek, startTime, endTime }) =>
-          dayOfWeek === policy.localDay &&
-          startTime <= policy.localTime &&
-          policy.localTime < endTime,
-      )
-    )
-      return false;
-    return isRead || money === undefined || withinWriteLimit(money, policy);
+      return [];
+    // Workspace discovery exposes membership metadata, not account data. Unlike
+    // workspace-wide financial reads it can ignore the account allowlist.
+    const { rows } = await client.query<LockedPolicy & { workspaceId: string }>(
+      `select w.id as "workspaceId", g.tool_allowlist as "toolAllowlist", g.schedule,
+              extract(isodow from local.wall_time)::integer as "localDay", to_char(local.wall_time, 'HH24:MI') as "localTime"
+         from public.mcp_grants g
+         join public.workspaces w on w.id = any(g.workspace_ids)
+         join pg_timezone_names tz on tz.name = w.timezone
+         cross join lateral (select timezone(tz.name, statement_timestamp()) as wall_time) local
+        where g.subject_id = $1::uuid and g.id = $2::uuid and g.status = 'active'
+          and (g.expires_at is null or g.expires_at > statement_timestamp())
+          and public.workspace_actor_active_role(w.id) is not null
+          and tz.name not in ('localtime', 'posixrules')
+          and tz.name not like 'posix/%' and tz.name not like 'right/%'`,
+      [subject, grantId],
+    );
+    return rows
+      .filter((row) => allowsCall(row, toolName, true))
+      .map(({ workspaceId }) => workspaceId);
   }
 
   public createId(): string {

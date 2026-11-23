@@ -11,6 +11,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { McpRead } from '../platform/mcp-read-auth.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
@@ -36,6 +37,7 @@ export class ForecastsController {
   ) {}
 
   @Post('balance')
+  @McpRead('create_forecast', ['reports:read'])
   public async createBalance(
     @Req() req: AuthenticatedRequest,
     @Res() reply: FastifyReply,
@@ -127,6 +129,7 @@ export class ForecastsController {
   }
 
   @Get(':forecastId')
+  @McpRead('get_forecast', ['reports:read'])
   public async get(
     @Param('forecastId') forecastId: string,
     @Req() req: AuthenticatedRequest,

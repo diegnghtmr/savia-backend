@@ -21,6 +21,7 @@ import { registerProblemFilter } from '../../src/identity/onboarding-problem.fil
 import { PostgresMcpGrantAdapter } from '../../src/mcp/postgres-mcp-grant.adapter.js';
 import type { McpGrant, McpGrantCall } from '../../src/mcp/mcp-grant.port.js';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
+import { mcpTokens } from '../helpers/mcp-jwt.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -51,6 +52,7 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
   let foreignWorkspace: string;
   let account: string;
   let outsideAccount: string;
+  let signed: Awaited<ReturnType<typeof mcpTokens>>;
   const auth = (token = 'owner', key = randomUUID()) => ({
     authorization: `Bearer ${token}`,
     'idempotency-key': key,
@@ -98,9 +100,12 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
       `insert into public.profiles (id,email,display_name,locale,country_code,timezone,date_format,week_starts_on,number_format,default_currency) values ($1,'mcp-owner@test','MCP Owner','en','US','UTC','YYYY-MM-DD',1,'1,234.56','USD'),($2,'mcp-other@test','MCP Other','en','US','UTC','YYYY-MM-DD',1,'1,234.56','USD') on conflict (id) do nothing`,
       [owner, other],
     );
+    signed = await mcpTokens();
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(JoseJwtVerifier)
       .useValue({
+        verifyProposal: (token: string) =>
+          signed.verifier.verifyProposal(token),
         verify: async (token: string) =>
           token === 'owner'
             ? { subject: owner }
@@ -180,6 +185,123 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
   });
   const authorize = (client: PoolClient, call: McpGrantCall) =>
     adapter.authorizeMcpGrant(client as unknown as TransactionClient, call);
+
+  describe('same-resource MCP reads (L17)', () => {
+    const expires = new Date(Date.now() + 60 * 60_000).toISOString();
+    const read = (path: string, token: string, workspaceId = workspace) =>
+      app.inject({
+        method: 'GET',
+        url: path,
+        headers: { ...auth(token), 'x-workspace-id': workspaceId },
+      });
+    const grantForRead = async (extra: Record<string, unknown> = {}) =>
+      (
+        await created(
+          body([workspace], {
+            schedule: fullWeek,
+            expiresAt: expires,
+            ...extra,
+          }),
+        )
+      ).id;
+    const assertDenied = (
+      response: { statusCode: number; json(): unknown },
+      status: 401 | 403,
+    ) => {
+      expect(response.statusCode).toBe(status);
+      expect(response.json()).toMatchObject({
+        status,
+        title: status === 401 ? 'Authentication is required' : 'Forbidden',
+      });
+      expect(response.json()).not.toHaveProperty('items');
+    };
+
+    it('admits the bound grant in its workspace and rechecks revocation on the same token', async () => {
+      const id = await grantForRead({ toolAllowlist: ['list_accounts'] });
+      const token = await signed.sign(owner, id);
+      const path = '/v1/accounts';
+      const result = await read(path, token);
+      expect(result.statusCode).toBe(200);
+      expect(result.json()).toEqual((await read(path, 'owner')).json());
+      assertDenied(await read(path, token, foreignWorkspace), 403);
+      assertDenied(await read('/v1/accounts/' + account, token), 401);
+      assertDenied(await read('/v1/approvals', token), 401);
+      expect((await request('DELETE', `/v1/mcp/grants/${id}`)).statusCode).toBe(
+        204,
+      );
+      assertDenied(await read(path, token), 403);
+    });
+
+    it('distinguishes invalid authentication from a valid token with insufficient grants', async () => {
+      const path = '/v1/accounts';
+      const id = await grantForRead();
+      const missingScope = await grantForRead({
+        scopes: ['transactions:read'],
+      });
+      const wrongTool = await grantForRead({
+        toolAllowlist: ['get_account_balance'],
+      });
+      const unscheduled = await grantForRead({ schedule: [] });
+      const expired = await grantForRead();
+      await admin.query(
+        'update public.mcp_grants set expires_at = now() where id = $1',
+        [expired],
+      );
+      for (const token of [
+        await signed.sign(owner),
+        await signed.sign(owner, 'not-a-uuid'),
+        await signed.sign(owner, id, { aud: 'different-api' }),
+        await signed.sign(owner, id, {
+          aud: ['savia-api', 'https://api.example.test/mcp-proposals'],
+        }),
+        await signed.sign(owner, id, { exp: 1 }),
+      ])
+        assertDenied(await read(path, token), 401);
+      for (const token of [
+        await signed.sign(other, id),
+        await signed.sign(owner, randomUUID()),
+        await signed.sign(owner, missingScope),
+        await signed.sign(owner, wrongTool),
+        await signed.sign(owner, unscheduled),
+        await signed.sign(owner, expired),
+      ])
+        assertDenied(await read(path, token), 403);
+    });
+
+    it('filters workspace discovery before pagination and never widens account grants', async () => {
+      const id = await grantForRead({ accountIds: [account] });
+      const token = await signed.sign(owner, id);
+      await admin.query(
+        `insert into public.workspace_memberships (workspace_id,profile_id,role,status) values ($1,$2,'owner','active')`,
+        [foreignWorkspace, owner],
+      );
+      await admin.query(
+        `update public.workspaces set created_at = now() - interval '1 day' where id = $1`,
+        [foreignWorkspace],
+      );
+      const result = await read('/v1/workspaces?limit=1', token);
+      expect(result.statusCode).toBe(200);
+      expect(result.json()).toMatchObject({
+        items: [{ id: workspace }],
+        pageInfo: { hasNextPage: false, nextCursor: null },
+      });
+      const balanceUrl = `/v1/accounts/${account}/balance?asOf=2026-01-02T00:00:00Z`;
+      const balance = await read(balanceUrl, token);
+      expect(balance.statusCode).toBe(200);
+      expect(balance.json()).toEqual((await read(balanceUrl, 'owner')).json());
+      const deniedAccount = randomUUID();
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, status, created_by)
+         values ($1, $2, 'Unlisted account', 'checking', 'USD', 'active', $3)`,
+        [deniedAccount, workspace, owner],
+      );
+      assertDenied(
+        await read(`/v1/accounts/${deniedAccount}/balance`, token),
+        403,
+      );
+      assertDenied(await read('/v1/accounts', token), 403);
+    });
+  });
 
   it('round-trips grant fields on create, replay and list; omitted restrictions are empty', async () => {
     const defaultGrant = await create();

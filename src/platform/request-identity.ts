@@ -11,7 +11,15 @@ export interface CliTokenIdentity {
   readonly scopes: readonly SaviaScope[];
 }
 
-export type RequestIdentity = SessionIdentity | CliTokenIdentity;
+export interface McpReadIdentity extends McpProposalIdentity {
+  readonly authMethod: 'mcp_read';
+  readonly workspaceIds: readonly string[];
+}
+
+export type RequestIdentity =
+  | SessionIdentity
+  | CliTokenIdentity
+  | McpReadIdentity;
 
 // A proposal credential has no general API identity.
 export interface McpProposalIdentity {
