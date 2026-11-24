@@ -161,6 +161,7 @@ function fakeStore(
     listTransactions: vi.fn().mockResolvedValue(items),
     updateTransaction: vi.fn().mockResolvedValue(updatedTransaction),
     voidTransaction: vi.fn().mockResolvedValue(voidedTransaction),
+    voidFundContribution: vi.fn().mockResolvedValue(voidedTransaction),
   };
 }
 
@@ -219,6 +220,7 @@ describe('TransactionService.create', () => {
       readTransaction: vi.fn(),
       updateTransaction: vi.fn(),
       voidTransaction: vi.fn(),
+      voidFundContribution: vi.fn(),
     };
 
     const command = sampleCommand();
@@ -269,6 +271,7 @@ describe('TransactionService.create', () => {
       readTransaction: vi.fn(),
       updateTransaction: vi.fn(),
       voidTransaction: vi.fn(),
+      voidFundContribution: vi.fn(),
     };
 
     const command = sampleCommand();
@@ -573,6 +576,7 @@ describe('TransactionService.create', () => {
       listTransactions: vi.fn(),
       updateTransaction: vi.fn(),
       voidTransaction: vi.fn(),
+      voidFundContribution: vi.fn(),
     };
     const fakeIdempotency = fakeIdempotencyStore();
     const service = new TransactionService(
@@ -606,6 +610,7 @@ describe('TransactionService.create', () => {
       listTransactions: vi.fn(),
       updateTransaction: vi.fn(),
       voidTransaction: vi.fn(),
+      voidFundContribution: vi.fn(),
     };
     const fakeIdempotency = fakeIdempotencyStore();
     const service = new TransactionService(

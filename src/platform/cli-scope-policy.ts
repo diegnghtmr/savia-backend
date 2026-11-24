@@ -33,6 +33,7 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     ],
     [routeKey('GET', '/v1/forecasts/:forecastId'), [SAVIA_SCOPES.REPORTS_READ]],
     [routeKey('GET', '/v1/funds'), [SAVIA_SCOPES.BUDGETS_READ]],
+    [routeKey('GET', '/v1/funds/:fundId'), [SAVIA_SCOPES.BUDGETS_READ]],
     [
       routeKey('GET', '/v1/import-jobs/:importJobId'),
       [SAVIA_SCOPES.TRANSACTIONS_READ],
@@ -79,6 +80,7 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
       [SAVIA_SCOPES.ACCOUNTS_WRITE],
     ],
     [routeKey('PATCH', '/v1/budgets/:budgetId'), [SAVIA_SCOPES.BUDGETS_WRITE]],
+    [routeKey('PATCH', '/v1/funds/:fundId'), [SAVIA_SCOPES.BUDGETS_WRITE]],
     [
       routeKey('PATCH', '/v1/transactions/:transactionId'),
       [SAVIA_SCOPES.TRANSACTIONS_WRITE],
@@ -118,6 +120,10 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     [routeKey('POST', '/v1/funds'), [SAVIA_SCOPES.BUDGETS_WRITE]],
     [
       routeKey('POST', '/v1/funds/:fundId/contributions'),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE, SAVIA_SCOPES.BUDGETS_WRITE],
+    ],
+    [
+      routeKey('POST', '/v1/funds/:fundId/withdrawals'),
       [SAVIA_SCOPES.TRANSACTIONS_WRITE, SAVIA_SCOPES.BUDGETS_WRITE],
     ],
     [routeKey('POST', '/v1/import-jobs'), [SAVIA_SCOPES.TRANSACTIONS_WRITE]],

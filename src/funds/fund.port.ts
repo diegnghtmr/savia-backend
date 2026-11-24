@@ -31,6 +31,27 @@ export interface Fund {
   readonly updatedAt: string;
 }
 
+export type FundDetail = Omit<Fund, 'version' | 'createdAt' | 'updatedAt'> & {
+  readonly objective: string | null;
+  readonly responsibleMemberIds: readonly string[];
+  readonly etag: string;
+};
+
+export interface UpdateFundRequest {
+  readonly name?: string;
+  readonly objective?: string | null;
+  readonly targetAmount?: Money;
+  readonly targetDate?: string | null;
+  readonly linkedAccountId?: string | null;
+  readonly responsibleMemberIds?: readonly string[];
+}
+
+export interface CreateFundWithdrawalRequest {
+  readonly accountId: string;
+  readonly amount: Money;
+  readonly reason: string;
+}
+
 export interface FundTransaction {
   readonly id: string;
   readonly type: string;
@@ -96,6 +117,28 @@ export interface FundStore {
     workspaceId: string,
     id: string,
   ): Promise<Fund | undefined>;
+  lockFund(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ): Promise<void>;
+  readFundDetail(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ): Promise<{ fund: FundDetail; version: number } | undefined>;
+  updateFund(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    command: UpdateFundRequest,
+    version: number,
+  ): Promise<boolean>;
+  hasActiveMembers(
+    client: TransactionClient,
+    workspaceId: string,
+    ids: readonly string[],
+  ): Promise<boolean>;
   listFunds(
     client: TransactionClient,
     query: FundListQuery,
@@ -113,6 +156,13 @@ export interface FundStore {
     fund: Fund,
     command: CreateFundContributionRequest,
   ): Promise<FundTransaction>;
+  withdrawFromFund(
+    client: TransactionClient,
+    workspaceId: string,
+    subject: string,
+    fund: Fund,
+    command: CreateFundWithdrawalRequest,
+  ): Promise<FundTransaction | undefined>;
 }
 
 export const FUND_OUTCOMES = {
@@ -126,7 +176,24 @@ export const FUND_OUTCOMES = {
   CURRENCY_MISMATCH: 'currency-mismatch',
   ACCOUNT_CURRENCY_MISMATCH: 'account-currency-mismatch',
   LINKED_ACCOUNT_NOT_FOUND: 'linked-account-not-found',
+  INSUFFICIENT_SAVED: 'insufficient-saved',
 } as const;
+
+export type FundDetailOutcome =
+  | { readonly kind: 'ok'; readonly fund: FundDetail }
+  | { readonly kind: 'forbidden' | 'not-found' };
+
+export type FundUpdateOutcome =
+  | FundDetailOutcome
+  | Extract<FundCreateOutcome, { kind: 'replayed' }>
+  | {
+      readonly kind:
+        | 'stale'
+        | 'conflict'
+        | 'currency-mismatch'
+        | 'linked-account-not-found'
+        | 'inactive-members';
+    };
 
 export type FundCreateOutcome =
   | { readonly kind: typeof FUND_OUTCOMES.CREATED; readonly fund: Fund }
@@ -153,7 +220,7 @@ export type FundListOutcome =
     }
   | { readonly kind: typeof FUND_OUTCOMES.FORBIDDEN };
 
-export type FundContributeOutcome =
+export type FundMovementOutcome =
   | {
       readonly kind: typeof FUND_OUTCOMES.CREATED;
       readonly transaction: FundTransaction;
@@ -172,10 +239,31 @@ export type FundContributeOutcome =
         | typeof FUND_OUTCOMES.ACCOUNT_NOT_FOUND
         | typeof FUND_OUTCOMES.ACCOUNT_CLOSED
         | typeof FUND_OUTCOMES.CURRENCY_MISMATCH
-        | typeof FUND_OUTCOMES.ACCOUNT_CURRENCY_MISMATCH;
+        | typeof FUND_OUTCOMES.ACCOUNT_CURRENCY_MISMATCH
+        | typeof FUND_OUTCOMES.INSUFFICIENT_SAVED;
     };
 
 export interface FundsPort {
+  getFund(
+    subject: string,
+    workspaceId: string,
+    id: string,
+  ): Promise<FundDetailOutcome>;
+  updateFund(
+    subject: string,
+    workspaceId: string,
+    fundId: string,
+    command: UpdateFundRequest,
+    ifMatch: string,
+    key: string,
+  ): Promise<FundUpdateOutcome>;
+  withdrawFromFund(
+    subject: string,
+    workspaceId: string,
+    fundId: string,
+    command: CreateFundWithdrawalRequest,
+    key: string,
+  ): Promise<FundMovementOutcome>;
   createFund(
     subject: string,
     workspaceId: string,
@@ -189,5 +277,5 @@ export interface FundsPort {
     fundId: string,
     command: CreateFundContributionRequest,
     key: string,
-  ): Promise<FundContributeOutcome>;
+  ): Promise<FundMovementOutcome>;
 }

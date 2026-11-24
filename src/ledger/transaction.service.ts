@@ -53,6 +53,8 @@ export class TransactionPayeeNotFoundError extends Error {
   }
 }
 
+export class FundContributionVoidConflict extends Error {}
+
 export interface LedgerAccountRecord {
   readonly status: string;
   readonly currency: string;
@@ -115,6 +117,7 @@ export interface LedgerStore {
     postingStatus: string,
     expectedVersions?: number | readonly number[],
   ): Promise<Transaction | undefined>;
+  voidFundContribution: LedgerStore['voidTransaction'];
   createAdjustmentTransaction?(
     client: TransactionClient,
     workspaceId: string,
@@ -606,7 +609,9 @@ export class TransactionService implements LedgerPort, LedgerWriter {
       ...command,
     });
 
-    return this.transaction.run(subject, async (client) => {
+    const execute = async (
+      client: TransactionClient,
+    ): Promise<TransactionVoidOutcome> => {
       // 1. Role check: only owner, administrator, editor may void transactions
       const role = await this.store.readActiveRole(client, workspaceId);
       if (
@@ -664,8 +669,12 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         }
       }
 
-      // 4. Void transaction in store (advisory lock, status flip, reversal postings, enforceDeferredConstraints)
-      const voided = await this.store.voidTransaction(
+      // Fund-linked contributions also serialize on the fund before the account.
+      const voidMethod =
+        existingTxn.type === 'fund_contribution'
+          ? 'voidFundContribution'
+          : 'voidTransaction';
+      const voided = await this.store[voidMethod](
         client,
         workspaceId,
         transactionId,
@@ -737,7 +746,15 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         kind: TRANSACTION_VOID_OUTCOMES.OK,
         transaction: voided,
       };
-    });
+    };
+    try {
+      return await this.transaction.run(subject, execute);
+    } catch (error) {
+      if (error instanceof FundContributionVoidConflict) {
+        return { kind: TRANSACTION_VOID_OUTCOMES.FUND_OVERDRAW };
+      }
+      throw error;
+    }
   }
 }
 

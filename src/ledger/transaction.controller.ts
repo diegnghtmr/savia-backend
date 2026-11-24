@@ -659,6 +659,14 @@ export class TransactionController {
       return;
     }
 
+    if (outcome.kind === TRANSACTION_VOID_OUTCOMES.FUND_OVERDRAW) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.CONFLICT,
+        title: 'Voiding this contribution would overdraw the fund.',
+        status: 409,
+      });
+    }
+
     if (outcome.kind === TRANSACTION_VOID_OUTCOMES.REPLAYED) {
       let r = reply.status(outcome.status);
       if (outcome.etag) {

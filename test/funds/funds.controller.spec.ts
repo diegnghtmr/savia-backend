@@ -56,6 +56,9 @@ describe('FundsController', () => {
 
   function createMockPort(): FundsPort {
     return {
+      getFund: vi.fn(),
+      updateFund: vi.fn(),
+      withdrawFromFund: vi.fn(),
       createFund: vi.fn(async () => ({
         kind: FUND_OUTCOMES.CREATED,
         fund: dummyFund,

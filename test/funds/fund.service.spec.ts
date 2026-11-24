@@ -60,6 +60,11 @@ describe('FundService', () => {
       readActiveRole: vi.fn(async () => 'owner'),
       createFund: vi.fn(async () => dummyFund),
       findFund: vi.fn(async () => dummyFund),
+      lockFund: vi.fn(),
+      readFundDetail: vi.fn(),
+      updateFund: vi.fn(),
+      hasActiveMembers: vi.fn(),
+      withdrawFromFund: vi.fn(),
       listFunds: vi.fn(async () => [{ fund: dummyFund, cursorAt: 'cursor1' }]),
       lockAndReadAccount: vi.fn(async () => ({
         status: 'active',
