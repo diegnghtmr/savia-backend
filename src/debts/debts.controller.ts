@@ -15,7 +15,13 @@ import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
-import { DEBTS_PORT, DEBT_OUTCOMES, type DebtsPort } from './debt.port.js';
+import {
+  DEBTS_PORT,
+  DEBT_OUTCOMES,
+  DEBT_PROJECTION_STRATEGIES,
+  type DebtProjectionInput,
+  type DebtsPort,
+} from './debt.port.js';
 import {
   createDebtCommand,
   createDebtPaymentCommand,
@@ -144,6 +150,90 @@ export class DebtsController {
     }
     if (o.kind !== DEBT_OUTCOMES.CREATED) return;
     void reply.status(201).send(o.debt);
+  }
+
+  @Get(':debtId/projection')
+  public async getProjection(
+    @Param('debtId') rawDebtId: string,
+    @Req() req: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Query('strategy') rawStrategy: unknown,
+    @Query('extraMonthlyPaymentMinor') rawExtra: unknown,
+  ): Promise<void> {
+    const h = parseWorkspaceHeader(req.headers['x-workspace-id']);
+    if (h.kind !== 'ok') {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid X-Workspace-Id header',
+        status: 400,
+      });
+    }
+    let debtId: string;
+    try {
+      debtId = validateDebtId(rawDebtId).toLowerCase();
+    } catch (error) {
+      if (!(error instanceof DebtQueryValidationError)) throw error;
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid debt identifier',
+        status: 400,
+        errors: error.violations,
+      });
+    }
+    const strategy = (
+      rawStrategy === undefined ? 'minimum_payment' : rawStrategy
+    ) as DebtProjectionInput['strategy'];
+    const validExtra =
+      rawExtra === undefined ||
+      (typeof rawExtra === 'string' && /^\d+$/.test(rawExtra));
+    if (!DEBT_PROJECTION_STRATEGIES.includes(strategy) || !validExtra) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.BAD_REQUEST,
+        title: 'Invalid debt projection query',
+        status: 400,
+      });
+    }
+    const extra = typeof rawExtra === 'string' ? BigInt(rawExtra) : 0n;
+    const invalid = (title: string) =>
+      sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title,
+        status: 422,
+      });
+    if (
+      (strategy === 'minimum_payment' && rawExtra !== undefined) ||
+      (strategy === 'custom_extra' && extra <= 0n)
+    ) {
+      const title = 'Extra monthly payment is incompatible with the strategy';
+      return invalid(title);
+    }
+    const outcome = await this.port.getProjection(req.identity.subject, {
+      workspaceId: h.workspaceId,
+      debtId,
+      strategy,
+      extra,
+    });
+    if (outcome.kind === 'forbidden') {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.FORBIDDEN,
+        title: 'Workspace access forbidden',
+        status: 403,
+      });
+    }
+    if (outcome.kind === 'not-found') {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.NOT_FOUND,
+        title: 'Debt not found',
+        status: 404,
+      });
+    }
+    if (outcome.kind === 'ok') {
+      void reply.status(200).send(outcome.body);
+    } else {
+      invalid(
+        'The selected strategy cannot project a payoff with the recorded terms',
+      );
+    }
   }
 
   @Post(':debtId/payments')

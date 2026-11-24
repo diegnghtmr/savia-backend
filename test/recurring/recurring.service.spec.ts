@@ -98,6 +98,9 @@ function createService(
   };
 
   const mockStore: RecurringStore = {
+    lockSubscriptionWriter: vi.fn(),
+    lockSubscriptionCandidate: vi.fn(),
+    resolveSubscriptionCandidate: vi.fn(),
     readActiveRole: vi.fn().mockResolvedValue(role === null ? undefined : role),
     categoryBelongsToWorkspace: vi.fn().mockResolvedValue(categoryBelongs),
     payeeBelongsToWorkspace: vi.fn().mockResolvedValue(payeeBelongs),

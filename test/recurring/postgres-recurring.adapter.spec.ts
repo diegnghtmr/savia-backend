@@ -288,6 +288,7 @@ describe('PostgresRecurringAdapter', () => {
               frequency: 'monthly',
               nextExpectedAt: '2026-09-29T12:00:00.000Z',
               status: 'confirmed',
+              version: 2,
               cursorAt: '2026-08-29T12:00:00.000000Z',
             },
             {
@@ -300,6 +301,7 @@ describe('PostgresRecurringAdapter', () => {
               frequency: 'monthly',
               nextExpectedAt: null,
               status: 'detected',
+              version: 1,
               cursorAt: '2026-08-29T13:00:00.000000Z',
             },
           ],
@@ -324,6 +326,7 @@ describe('PostgresRecurringAdapter', () => {
         frequency: 'monthly',
         nextExpectedAt: '2026-09-29T12:00:00.000Z',
         status: 'confirmed',
+        etag: '"2"',
       });
       expect(result[0]!.cursorAt).toBe('2026-08-29T12:00:00.000000Z');
 
@@ -335,12 +338,13 @@ describe('PostgresRecurringAdapter', () => {
         frequency: 'monthly',
         nextExpectedAt: null,
         status: 'detected',
+        etag: '"1"',
       });
       expect(result[1]!.subscription.previousAmount).toBeUndefined();
 
       const [sql, values] = (client.query as ReturnType<typeof vi.fn>).mock
         .calls[0] as [string, unknown[]];
-      expect(sql).toContain('select id::text');
+      expect(sql).toContain('select s.id::text');
       expect(sql).toContain('from public.subscriptions');
       expect(sql).toContain('order by created_at, id');
       expect(values).toEqual([workspaceId, 'confirmed', null, null, 50]);

@@ -1,4 +1,4 @@
-// Migrations under test: 202608240002_account_tables.sql
+// Migrations under test: 202608240002_account_tables.sql, 202609170022_l11_subscriptions_debts.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -212,7 +212,7 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
       expect(rlsRes.rows[0].relforcerowsecurity).toBe(true);
     });
 
-    it('3. savia_application holds SELECT on every column, INSERT on exactly (created_by, currency, description, include_in_net_worth, institution, masked_number, name, type, workspace_id), UPDATE on exactly (closed_at, description, include_in_net_worth, institution, masked_number, name, status, updated_at, version)', async () => {
+    it('3. savia_application holds SELECT on every column and only the explicitly allowed column-level INSERT and UPDATE grants', async () => {
       const result = await admin.query<{
         column_name: string;
         readable: boolean;
@@ -241,6 +241,8 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
         'icon',
         'id',
         'include_in_net_worth',
+        'informal_counterparty_name',
+        'informal_direction',
         'institution',
         'masked_number',
         'name',
@@ -259,6 +261,8 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
         'currency',
         'description',
         'include_in_net_worth',
+        'informal_counterparty_name',
+        'informal_direction',
         'institution',
         'masked_number',
         'name',
@@ -278,6 +282,8 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
         'closed_at',
         'description',
         'include_in_net_worth',
+        'informal_counterparty_name',
+        'informal_direction',
         'institution',
         'masked_number',
         'name',
@@ -315,6 +321,8 @@ describe('Workspace accounts schema, constraints, RLS, and grants (202608240002_
         'icon',
         'id',
         'include_in_net_worth',
+        'informal_counterparty_name',
+        'informal_direction',
         'institution',
         'masked_number',
         'name',

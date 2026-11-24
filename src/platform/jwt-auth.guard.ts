@@ -48,7 +48,7 @@ export class JwtAuthGuard implements CanActivate {
   }
 }
 
-function extractBearerToken(
+export function extractBearerToken(
   authorization: string | undefined,
 ): string | undefined {
   const match = /^Bearer ([^\s]+)$/.exec(authorization ?? '');

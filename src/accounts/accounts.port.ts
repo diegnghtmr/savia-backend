@@ -12,6 +12,7 @@ export const ACCOUNT_TYPE = {
   INVESTMENT_MANUAL: 'investment_manual',
   RECEIVABLE: 'receivable',
   GENERIC: 'generic',
+  INFORMAL_DEBT: 'informal_debt',
 } as const;
 export type AccountType = (typeof ACCOUNT_TYPE)[keyof typeof ACCOUNT_TYPE];
 
@@ -42,10 +43,18 @@ export interface ConvertedMoney {
   readonly rateSource: string;
 }
 
+export const INFORMAL_DEBT_DIRECTIONS = ['i_owe', 'owed_to_me'] as const;
+
+export interface InformalDebtDetails {
+  readonly counterpartyName: string;
+  readonly direction: (typeof INFORMAL_DEBT_DIRECTIONS)[number];
+}
+
 export interface AccountBalance {
   readonly accountId: string;
   readonly nativeBalance: Money;
   readonly pendingBalance: Money;
+  readonly availableBalance?: Money;
   readonly reconciledBalance: Money;
   readonly baseCurrencyEquivalent: ConvertedMoney;
   readonly asOf: string;
@@ -61,6 +70,7 @@ export interface CreateAccountCommand {
   readonly maskedNumber?: string | null;
   readonly description?: string | null;
   readonly includeInNetWorth: boolean;
+  readonly informalDebt?: InformalDebtDetails;
 }
 
 export interface UpdateAccountCommand {
@@ -70,6 +80,7 @@ export interface UpdateAccountCommand {
   readonly description?: string | null;
   readonly includeInNetWorth?: boolean;
   readonly status?: 'active' | 'archived';
+  readonly informalDebt?: InformalDebtDetails | null;
 }
 
 export interface Account {
@@ -87,6 +98,7 @@ export interface Account {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly version: number;
+  readonly informalDebt?: InformalDebtDetails;
 }
 
 export type { PageInfo };
@@ -215,6 +227,7 @@ export const ACCOUNT_UPDATE_OUTCOMES = {
   NOT_FOUND: 'not_found',
   VERSION_CONFLICT: 'version_conflict',
   CLOSED: 'closed',
+  INFORMAL_DEBT_NOT_ALLOWED: 'informal_debt_not_allowed',
 } as const;
 export type AccountUpdateOutcomeKind =
   (typeof ACCOUNT_UPDATE_OUTCOMES)[keyof typeof ACCOUNT_UPDATE_OUTCOMES];
@@ -240,7 +253,8 @@ export type AccountUpdateOutcome =
   | AccountUpdateForbidden
   | AccountUpdateNotFound
   | AccountUpdateVersionConflict
-  | AccountUpdateClosed;
+  | AccountUpdateClosed
+  | { readonly kind: typeof ACCOUNT_UPDATE_OUTCOMES.INFORMAL_DEBT_NOT_ALLOWED };
 
 export const ACCOUNT_CLOSE_OUTCOMES = {
   OK: 'ok',

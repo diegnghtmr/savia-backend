@@ -308,4 +308,19 @@ describe('executable OpenAPI authority', () => {
       );
     },
   );
+
+  it('mirrors the read-only debt projection MCP tool from the pinned authority', () => {
+    const section = (path: string) =>
+      readFileSync(path, 'utf8').match(
+        /^ {2}\/v1\/debts\/\{debtId\}\/projection:\n([\s\S]*?)(?=^ {2}\/|^components:)/m,
+      )?.[1];
+    const annotation = (path: string) =>
+      section(path)
+        ?.match(/^ {6}x-savia-mcp-tool:\n((?:^ {8}[^\n]+\n)+)/m)?.[1]
+        .replaceAll(/^\s+/gm, '');
+    const expected =
+      'name: get_debt_projection\nriskClass: read\nrequiresApproval: false\nrequiredScopes:\n- budgets:read\n';
+    if (authorityAvailable) expect(annotation(authorityPath)).toBe(expected);
+    expect(annotation(contract)).toBe(expected);
+  });
 });
