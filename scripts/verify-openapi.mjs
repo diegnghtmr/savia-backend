@@ -20,7 +20,7 @@ const provenance = JSON.parse(read('openapi/provenance.json'));
 const readme = read('README.md');
 const digest = createHash('sha256').update(contract).digest('hex');
 const planningSourceSha256 =
-  'e6a531611b579f4031c2bbcabc90d3d1878e643be43a371f14c7bf97b06165f3';
+  '481b0d85b38e9677d5c6689f46027f22fc2941423fbaa0703283ed55dd61c574';
 const ciLimitation =
   'Backend CI cannot access, authenticate, or independently re-hash this local source; it validates only these committed constants and executable contract identity.';
 const httpMethods = new Set([
@@ -144,16 +144,26 @@ const sharedParameterTargets = [
   { name: 'X-Workspace-Id', in: 'header' },
 ];
 
+const resolveParameter = (parameter) => {
+  const reference = parameter?.$ref;
+  if (typeof reference !== 'string') return parameter;
+  const name = /^#\/components\/parameters\/([^/]+)$/.exec(reference)?.[1];
+  return name === undefined
+    ? parameter
+    : document.components?.parameters?.[name];
+};
+
 for (const target of sharedParameterTargets) {
   const occurrences = [];
   for (const [path, item] of Object.entries(document.paths ?? {})) {
     for (const [method, operation] of Object.entries(item ?? {})) {
       if (!httpMethods.has(method.toLowerCase())) continue;
       const effective = new Map();
-      for (const p of item.parameters ?? []) {
-        if (p?.name && p?.in) effective.set(`${p.name}:${p.in}`, p);
-      }
-      for (const p of operation?.parameters ?? []) {
+      for (const parameter of [
+        ...(item.parameters ?? []),
+        ...(operation?.parameters ?? []),
+      ]) {
+        const p = resolveParameter(parameter);
         if (p?.name && p?.in) effective.set(`${p.name}:${p.in}`, p);
       }
       const matched = effective.get(`${target.name}:${target.in}`);
@@ -301,11 +311,11 @@ if (
 }
 const source = provenance.planningSource;
 if (
-  source?.revision !== '63042899fb9ef7c5e342b50eebae22ff463dd314' ||
+  source?.revision !== '9785033f2005ac36dd1f362b14c519ac3360b305' ||
   source.path !== 'docs/savia-openapi.yaml' ||
   source.sha256 !== planningSourceSha256 ||
-  source.bytes !== 199030 ||
-  source.operationCount !== 101
+  source.bytes !== 287691 ||
+  source.operationCount !== 120
 ) {
   fail('planning-source constants drifted');
 }

@@ -190,7 +190,14 @@ class ScheduledWorkerRunner extends JobRunner {
         workspaceBackup: WorkspaceBackupHandler,
         receiptOcr: ReceiptOcrJobHandler,
         recurring: RecurringJobHandler,
-      ) => [forecast, report, exportJob, workspaceBackup, receiptOcr, recurring],
+      ) => [
+        forecast,
+        report,
+        exportJob,
+        workspaceBackup,
+        receiptOcr,
+        recurring,
+      ],
     },
     {
       provide: FrankfurterRateJob,

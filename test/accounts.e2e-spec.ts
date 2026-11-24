@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
@@ -21,6 +19,7 @@ import { AccountsModule } from '../src/accounts/accounts.module.js';
 import { JoseJwtVerifier } from '../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../src/identity/onboarding-problem.filter.js';
 import { PROBLEM_TYPES } from '../src/platform/problem-details.js';
+import { bundleOpenApi, openapiMirror } from './helpers/openapi-bundle.js';
 
 const SUBJECT = '3f1d9d0a-2b4c-4a1e-9c7d-5e8f0a1b2c3d';
 const WORKSPACE_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
@@ -881,19 +880,14 @@ describe('POST /v1/accounts', () => {
   });
 
   it('ensures createAccount 422 description in OpenAPI mirror covers both validation failures and currency mismatch', () => {
-    const contract = readFileSync(
-      resolve(process.cwd(), 'openapi/savia.openapi.yaml'),
-      'utf8',
-    );
-    const createAccountSection = contract.slice(
-      contract.indexOf('operationId: createAccount'),
-      contract.indexOf('operationId: getAccount'),
-    );
-    const match422 = createAccountSection.match(
-      /'422':\s*\n\s*description:\s*([^\n]+)/,
-    );
-    expect(match422).not.toBeNull();
-    const description = match422?.[1]?.toLowerCase() ?? '';
+    const { paths } = bundleOpenApi(openapiMirror) as {
+      paths: Record<
+        string,
+        { post: { responses: Record<string, { description?: string }> } }
+      >;
+    };
+    const description = paths['/v1/accounts'].post.responses['422'].description;
+    expect(typeof description).toBe('string');
     expect(description).toMatch(/validation/i);
     expect(description).toMatch(/currency/i);
   });

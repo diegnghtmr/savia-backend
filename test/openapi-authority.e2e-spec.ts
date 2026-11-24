@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { MCP_TOOL_ANNOTATIONS } from '../src/mcp/mcp-tools.js';
+import { bundleOpenApi, openapiMirror } from './helpers/openapi-bundle.js';
 
 const root = process.cwd();
 const verifier = resolve(root, 'scripts/verify-openapi.mjs');
@@ -63,6 +64,45 @@ const verify = () =>
     env: { ...process.env, OPENAPI_AUTHORITY_ROOT: testRoot },
   }).toString();
 
+type SharedParameter = {
+  required?: boolean;
+  schema: { default?: number };
+};
+
+type Operation = {
+  responses: Record<string, unknown>;
+  parameters: (SharedParameter | { $ref: string })[];
+};
+
+type BundledMirror = {
+  paths: Record<string, Record<string, Operation>>;
+  components: { parameters: Record<string, SharedParameter> };
+};
+
+let bundledMirror: BundledMirror | undefined;
+function mirrorDocument(): BundledMirror {
+  bundledMirror ??= bundleOpenApi(openapiMirror) as BundledMirror;
+  return structuredClone(bundledMirror);
+}
+
+function mutateParameter(
+  path: string,
+  component: 'Cursor' | 'Limit',
+  change: (parameter: SharedParameter) => void,
+): void {
+  const document = mirrorDocument();
+  const parameters = document.paths[path].get.parameters;
+  const reference = `#/components/parameters/${component}`;
+  const index = parameters.findIndex(
+    (p) => '$ref' in p && p.$ref === reference,
+  );
+  expect(index).toBeGreaterThanOrEqual(0);
+  const override = structuredClone(document.components.parameters[component]);
+  change(override);
+  parameters.splice(index, 1, override);
+  writeFileSync(contract, JSON.stringify(document));
+}
+
 afterEach(() => {
   for (const [path, content] of originals) writeFileSync(path, content);
   rmSync(planningSnapshot, { force: true });
@@ -70,30 +110,18 @@ afterEach(() => {
 afterAll(() => rmSync(testRoot, { force: true, recursive: true }));
 
 describe('executable OpenAPI authority', () => {
-  it(
-    'verifies the sole published health operation',
-    { timeout: 30_000 },
-    () => {
-      expect(existsSync(resolve(root, 'openapi/savia.openapi.yaml'))).toBe(
-        true,
-      );
-      expect(existsSync(verifier)).toBe(true);
-      expect(verify()).toContain('OpenAPI authority verified.');
-    },
-  );
+  it('verifies the published executable contract', { timeout: 30_000 }, () => {
+    expect(existsSync(openapiMirror)).toBe(true);
+    expect(existsSync(verifier)).toBe(true);
+    expect(verify()).toContain('OpenAPI authority verified.');
+  });
 
   it('rejects a declared bare 500 response', { timeout: 30_000 }, () => {
-    const source = readFileSync(contract, 'utf8');
-    const healthStart = source.indexOf('      operationId: getHealth');
-    const health = source.slice(healthStart);
-    writeFileSync(
-      contract,
-      source.slice(0, healthStart) +
-        health.replace(
-          "        '503':\n          $ref: '#/components/responses/ServiceUnavailable'",
-          "        '500':\n          description: Injected bare 500.\n        '503':\n          $ref: '#/components/responses/ServiceUnavailable'",
-        ),
-    );
+    const document = mirrorDocument();
+    document.paths['/health'].get.responses['500'] = {
+      description: 'Injected bare 500.',
+    };
+    writeFileSync(contract, JSON.stringify(document));
 
     expect(verify).toThrow(/bare 500/);
   });
@@ -162,17 +190,10 @@ describe('executable OpenAPI authority', () => {
   );
 
   it('publishes the complete reconciliation transport response set', () => {
-    const source = readFileSync(contract, 'utf8');
-    const operation = source.slice(
-      source.indexOf('operationId: completeReconciliation'),
-      source.indexOf(
-        '  /v1/reconciliations/{reconciliationId}:',
-        source.indexOf('operationId: completeReconciliation'),
-      ),
-    );
-    const codes = [...operation.matchAll(/^( {8})'(\d{3})':/gm)].map(
-      (match) => match[2],
-    );
+    const { paths } = mirrorDocument();
+    const codes = Object.keys(
+      paths['/v1/reconciliations/{reconciliationId}/complete'].post.responses,
+    ).sort();
     expect(codes).toEqual([
       '200',
       '400',
@@ -318,13 +339,9 @@ describe('executable OpenAPI authority', () => {
     'rejects shared parameter schema drift across operations',
     { timeout: 30_000 },
     () => {
-      writeFileSync(
-        contract,
-        readFileSync(contract, 'utf8').replace(
-          'schema: { type: integer, minimum: 1, maximum: 200, default: 50 }',
-          'schema: { type: integer, minimum: 1, maximum: 200 }',
-        ),
-      );
+      mutateParameter('/v1/budgets', 'Limit', (parameter) => {
+        delete parameter.schema.default;
+      });
 
       expect(verify).toThrow(
         /shared parameter "limit" in query has schema mismatch in operation "listBudgets": differing field "default"/,
@@ -336,13 +353,9 @@ describe('executable OpenAPI authority', () => {
     'rejects shared parameter required drift across operations',
     { timeout: 30_000 },
     () => {
-      writeFileSync(
-        contract,
-        readFileSync(contract, 'utf8').replace(
-          '        - name: cursor\n          in: query\n          required: false\n          schema:',
-          '        - name: cursor\n          in: query\n          schema:',
-        ),
-      );
+      mutateParameter('/v1/workspaces', 'Cursor', (parameter) => {
+        delete parameter.required;
+      });
 
       expect(verify).toThrow(
         /shared parameter "cursor" in query has required mismatch in operation "listWorkspaces": differing field "required"/,

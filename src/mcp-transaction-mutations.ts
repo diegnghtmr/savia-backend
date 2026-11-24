@@ -222,7 +222,10 @@ export function transactionMutationExecutor(
             );
       if (outcome.kind === 'ok') return 'ok';
       if (outcome.kind === 'forbidden') return 'forbidden';
-      if (outcome.kind === 'idempotency_conflict' || outcome.kind === 'replayed')
+      if (
+        outcome.kind === 'idempotency_conflict' ||
+        outcome.kind === 'replayed'
+      )
         return 'conflict';
     } catch (error) {
       // ApprovalService rolls back the decision and provisional void together.

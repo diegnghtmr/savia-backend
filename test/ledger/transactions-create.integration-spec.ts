@@ -289,8 +289,7 @@ describe('TransactionService createTransaction database boundary', () => {
         st: string,
         exp?: Parameters<PostgresTransactionAdapter['voidTransaction']>[5],
       ) => realAdapter.voidTransaction(client, ws, id, acc, st, exp),
-      voidFundContribution: (...args) =>
-        realAdapter.voidFundContribution(...args),
+      voidFundContribution: realAdapter.voidFundContribution.bind(realAdapter),
       createTransaction: async (
         client: TransactionClient,
         ws: string,

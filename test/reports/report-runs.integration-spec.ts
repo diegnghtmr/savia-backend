@@ -24,7 +24,6 @@ import {
   type RenderingJobHandler,
 } from '../../src/platform/job-handler.port.js';
 import { JobRunner } from '../../src/platform/job-runner.js';
-import { ReceiptWorkerModule } from '../../src/receipts/receipt-worker.module.js';
 import {
   ARTIFACT_STORAGE,
   ArtifactStorageClientError,
@@ -46,16 +45,6 @@ import {
   setReportMaxCellStringLength,
   setReportSourceRowCap,
 } from '../../src/reports/report.port.js';
-
-// This suite runs the report worker but never executes OCR. Leave the real
-// language-pack preflight to the OCR suites so a report DB run needs no OCR data.
-vi.mock(
-  import('../../src/platform/system-tesseract.adapter.js'),
-  async (load) => ({
-    ...(await load()),
-    runOcrStartupPreflight: () => Promise.resolve(),
-  }),
-);
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');

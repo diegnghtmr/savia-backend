@@ -3,6 +3,46 @@
   "clientGenerationInput": "openapi/savia.openapi.yaml",
   "implementedOperations": [
     {
+      "operationId": "getHealth",
+      "method": "GET",
+      "path": "/health"
+    },
+    {
+      "operationId": "createOnboarding",
+      "method": "POST",
+      "path": "/v1/onboarding"
+    },
+    {
+      "operationId": "getCurrentUser",
+      "method": "GET",
+      "path": "/v1/me"
+    },
+    {
+      "operationId": "updateCurrentUser",
+      "method": "PATCH",
+      "path": "/v1/me"
+    },
+    {
+      "operationId": "listMySessions",
+      "method": "GET",
+      "path": "/v1/me/sessions"
+    },
+    {
+      "operationId": "revokeOtherSessions",
+      "method": "POST",
+      "path": "/v1/me/sessions/revoke-others"
+    },
+    {
+      "operationId": "getDashboardPreferences",
+      "method": "GET",
+      "path": "/v1/me/dashboard-preferences"
+    },
+    {
+      "operationId": "updateDashboardPreferences",
+      "method": "PUT",
+      "path": "/v1/me/dashboard-preferences"
+    },
+    {
       "operationId": "getNotificationPreferences",
       "method": "GET",
       "path": "/v1/me/notification-preferences"
@@ -23,19 +63,229 @@
       "path": "/v1/me/push-devices/{deviceId}"
     },
     {
-      "operationId": "startCliDeviceAuthorization",
-      "method": "POST",
-      "path": "/v1/cli/device/authorize"
+      "operationId": "listWorkspaces",
+      "method": "GET",
+      "path": "/v1/workspaces"
     },
     {
-      "operationId": "pollCliDeviceToken",
+      "operationId": "createWorkspace",
       "method": "POST",
-      "path": "/v1/cli/device/token"
+      "path": "/v1/workspaces"
     },
     {
-      "operationId": "approveCliDeviceAuthorization",
+      "operationId": "getWorkspace",
+      "method": "GET",
+      "path": "/v1/workspaces/{workspaceId}"
+    },
+    {
+      "operationId": "updateWorkspace",
+      "method": "PATCH",
+      "path": "/v1/workspaces/{workspaceId}"
+    },
+    {
+      "operationId": "deleteWorkspace",
+      "method": "DELETE",
+      "path": "/v1/workspaces/{workspaceId}"
+    },
+    {
+      "operationId": "listWorkspaceMembers",
+      "method": "GET",
+      "path": "/v1/workspaces/{workspaceId}/members"
+    },
+    {
+      "operationId": "updateWorkspaceMember",
+      "method": "PATCH",
+      "path": "/v1/workspaces/{workspaceId}/members/{memberId}"
+    },
+    {
+      "operationId": "removeWorkspaceMember",
+      "method": "DELETE",
+      "path": "/v1/workspaces/{workspaceId}/members/{memberId}"
+    },
+    {
+      "operationId": "listWorkspaceInvitations",
+      "method": "GET",
+      "path": "/v1/workspaces/{workspaceId}/invitations"
+    },
+    {
+      "operationId": "createWorkspaceInvitation",
       "method": "POST",
-      "path": "/v1/cli/device/approve"
+      "path": "/v1/workspaces/{workspaceId}/invitations"
+    },
+    {
+      "operationId": "revokeWorkspaceInvitation",
+      "method": "POST",
+      "path": "/v1/workspaces/{workspaceId}/invitations/{invitationId}/revoke"
+    },
+    {
+      "operationId": "listAccounts",
+      "method": "GET",
+      "path": "/v1/accounts"
+    },
+    {
+      "operationId": "createAccount",
+      "method": "POST",
+      "path": "/v1/accounts"
+    },
+    {
+      "operationId": "getAccount",
+      "method": "GET",
+      "path": "/v1/accounts/{accountId}"
+    },
+    {
+      "operationId": "updateAccount",
+      "method": "PATCH",
+      "path": "/v1/accounts/{accountId}"
+    },
+    {
+      "operationId": "getAccountBalance",
+      "method": "GET",
+      "path": "/v1/accounts/{accountId}/balance"
+    },
+    {
+      "operationId": "closeAccount",
+      "method": "POST",
+      "path": "/v1/accounts/{accountId}/close"
+    },
+    {
+      "operationId": "listTransactions",
+      "method": "GET",
+      "path": "/v1/transactions"
+    },
+    {
+      "operationId": "createTransaction",
+      "method": "POST",
+      "path": "/v1/transactions"
+    },
+    {
+      "operationId": "bulkUpdateTransactions",
+      "method": "POST",
+      "path": "/v1/transactions/bulk"
+    },
+    {
+      "operationId": "getTransaction",
+      "method": "GET",
+      "path": "/v1/transactions/{transactionId}"
+    },
+    {
+      "operationId": "updateTransaction",
+      "method": "PATCH",
+      "path": "/v1/transactions/{transactionId}"
+    },
+    {
+      "operationId": "voidTransaction",
+      "method": "POST",
+      "path": "/v1/transactions/{transactionId}/void"
+    },
+    {
+      "operationId": "createTransfer",
+      "method": "POST",
+      "path": "/v1/transfers"
+    },
+    {
+      "operationId": "createCurrencyExchange",
+      "method": "POST",
+      "path": "/v1/currency-exchanges"
+    },
+    {
+      "operationId": "listCategorys",
+      "method": "GET",
+      "path": "/v1/categories"
+    },
+    {
+      "operationId": "createCategory",
+      "method": "POST",
+      "path": "/v1/categories"
+    },
+    {
+      "operationId": "listPayees",
+      "method": "GET",
+      "path": "/v1/payees"
+    },
+    {
+      "operationId": "createPayee",
+      "method": "POST",
+      "path": "/v1/payees"
+    },
+    {
+      "operationId": "listTags",
+      "method": "GET",
+      "path": "/v1/tags"
+    },
+    {
+      "operationId": "createTag",
+      "method": "POST",
+      "path": "/v1/tags"
+    },
+    {
+      "operationId": "listRecurringRules",
+      "method": "GET",
+      "path": "/v1/recurring-rules"
+    },
+    {
+      "operationId": "createRecurringRule",
+      "method": "POST",
+      "path": "/v1/recurring-rules"
+    },
+    {
+      "operationId": "listRecurringOccurrences",
+      "method": "GET",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences"
+    },
+    {
+      "operationId": "confirmRecurringOccurrence",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/confirm"
+    },
+    {
+      "operationId": "skipRecurringOccurrence",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/skip"
+    },
+    {
+      "operationId": "rescheduleRecurringOccurrence",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/reschedule"
+    },
+    {
+      "operationId": "editRecurringOccurrence",
+      "method": "PATCH",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}"
+    },
+    {
+      "operationId": "editRecurringSeries",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/edit-series"
+    },
+    {
+      "operationId": "listSubscriptions",
+      "method": "GET",
+      "path": "/v1/subscriptions"
+    },
+    {
+      "operationId": "confirmSubscription",
+      "method": "POST",
+      "path": "/v1/subscriptions/{subscriptionId}/confirm"
+    },
+    {
+      "operationId": "discardSubscription",
+      "method": "POST",
+      "path": "/v1/subscriptions/{subscriptionId}/discard"
+    },
+    {
+      "operationId": "createReconciliation",
+      "method": "POST",
+      "path": "/v1/reconciliations"
+    },
+    {
+      "operationId": "getReconciliation",
+      "method": "GET",
+      "path": "/v1/reconciliations/{reconciliationId}"
+    },
+    {
+      "operationId": "completeReconciliation",
+      "method": "POST",
+      "path": "/v1/reconciliations/{reconciliationId}/complete"
     },
     {
       "operationId": "listBudgets",
@@ -113,139 +363,9 @@
       "path": "/v1/debts/{debtId}/payments"
     },
     {
-      "operationId": "getHealth",
+      "operationId": "listExchangeRates",
       "method": "GET",
-      "path": "/health"
-    },
-    {
-      "operationId": "createOnboarding",
-      "method": "POST",
-      "path": "/v1/onboarding"
-    },
-    {
-      "operationId": "getCurrentUser",
-      "method": "GET",
-      "path": "/v1/me"
-    },
-    {
-      "operationId": "updateCurrentUser",
-      "method": "PATCH",
-      "path": "/v1/me"
-    },
-    {
-      "operationId": "getWorkspace",
-      "method": "GET",
-      "path": "/v1/workspaces/{workspaceId}"
-    },
-    {
-      "operationId": "updateWorkspace",
-      "method": "PATCH",
-      "path": "/v1/workspaces/{workspaceId}"
-    },
-    {
-      "operationId": "createWorkspace",
-      "method": "POST",
-      "path": "/v1/workspaces"
-    },
-    {
-      "operationId": "listWorkspaces",
-      "method": "GET",
-      "path": "/v1/workspaces"
-    },
-    {
-      "operationId": "deleteWorkspace",
-      "method": "DELETE",
-      "path": "/v1/workspaces/{workspaceId}"
-    },
-    {
-      "operationId": "listWorkspaceMembers",
-      "method": "GET",
-      "path": "/v1/workspaces/{workspaceId}/members"
-    },
-    {
-      "operationId": "updateWorkspaceMember",
-      "method": "PATCH",
-      "path": "/v1/workspaces/{workspaceId}/members/{memberId}"
-    },
-    {
-      "operationId": "removeWorkspaceMember",
-      "method": "DELETE",
-      "path": "/v1/workspaces/{workspaceId}/members/{memberId}"
-    },
-    {
-      "operationId": "listWorkspaceInvitations",
-      "method": "GET",
-      "path": "/v1/workspaces/{workspaceId}/invitations"
-    },
-    {
-      "operationId": "createWorkspaceInvitation",
-      "method": "POST",
-      "path": "/v1/workspaces/{workspaceId}/invitations"
-    },
-    {
-      "operationId": "revokeWorkspaceInvitation",
-      "method": "POST",
-      "path": "/v1/workspaces/{workspaceId}/invitations/{invitationId}/revoke"
-    },
-    {
-      "operationId": "listAccounts",
-      "method": "GET",
-      "path": "/v1/accounts"
-    },
-    {
-      "operationId": "createAccount",
-      "method": "POST",
-      "path": "/v1/accounts"
-    },
-    {
-      "operationId": "getAccount",
-      "method": "GET",
-      "path": "/v1/accounts/{accountId}"
-    },
-    {
-      "operationId": "updateAccount",
-      "method": "PATCH",
-      "path": "/v1/accounts/{accountId}"
-    },
-    {
-      "operationId": "getAccountBalance",
-      "method": "GET",
-      "path": "/v1/accounts/{accountId}/balance"
-    },
-    {
-      "operationId": "closeAccount",
-      "method": "POST",
-      "path": "/v1/accounts/{accountId}/close"
-    },
-    {
-      "operationId": "createTransaction",
-      "method": "POST",
-      "path": "/v1/transactions"
-    },
-    {
-      "operationId": "getTransaction",
-      "method": "GET",
-      "path": "/v1/transactions/{transactionId}"
-    },
-    {
-      "operationId": "listTransactions",
-      "method": "GET",
-      "path": "/v1/transactions"
-    },
-    {
-      "operationId": "updateTransaction",
-      "method": "PATCH",
-      "path": "/v1/transactions/{transactionId}"
-    },
-    {
-      "operationId": "voidTransaction",
-      "method": "POST",
-      "path": "/v1/transactions/{transactionId}/void"
-    },
-    {
-      "operationId": "createTransfer",
-      "method": "POST",
-      "path": "/v1/transfers"
+      "path": "/v1/exchange-rates"
     },
     {
       "operationId": "createManualExchangeRate",
@@ -253,124 +373,39 @@
       "path": "/v1/exchange-rates"
     },
     {
-      "operationId": "listExchangeRates",
+      "operationId": "getAnalyticsSummary",
       "method": "GET",
-      "path": "/v1/exchange-rates"
+      "path": "/v1/analytics/summary"
     },
     {
-      "operationId": "createCurrencyExchange",
-      "method": "POST",
-      "path": "/v1/currency-exchanges"
-    },
-    {
-      "operationId": "listTags",
+      "operationId": "getCashFlowAnalytics",
       "method": "GET",
-      "path": "/v1/tags"
+      "path": "/v1/analytics/cash-flow"
     },
     {
-      "operationId": "createTag",
-      "method": "POST",
-      "path": "/v1/tags"
-    },
-    {
-      "operationId": "listPayees",
+      "operationId": "getAdvancedAnalytics",
       "method": "GET",
-      "path": "/v1/payees"
+      "path": "/v1/analytics/advanced"
     },
     {
-      "operationId": "createPayee",
+      "operationId": "createBalanceForecast",
       "method": "POST",
-      "path": "/v1/payees"
+      "path": "/v1/forecasts/balance"
     },
     {
-      "operationId": "listCategorys",
+      "operationId": "listScenarios",
       "method": "GET",
-      "path": "/v1/categories"
+      "path": "/v1/scenarios"
     },
     {
-      "operationId": "createCategory",
+      "operationId": "createScenario",
       "method": "POST",
-      "path": "/v1/categories"
+      "path": "/v1/scenarios"
     },
     {
-      "operationId": "listRecurringRules",
-      "method": "GET",
-      "path": "/v1/recurring-rules"
-    },
-    {
-      "operationId": "createRecurringRule",
+      "operationId": "runScenario",
       "method": "POST",
-      "path": "/v1/recurring-rules"
-    },
-    {
-      "operationId": "listRecurringOccurrences",
-      "method": "GET",
-      "path": "/v1/recurring-rules/{ruleId}/occurrences"
-    },
-    {
-      "operationId": "confirmRecurringOccurrence",
-      "method": "POST",
-      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/confirm"
-    },
-    {
-      "operationId": "skipRecurringOccurrence",
-      "method": "POST",
-      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/skip"
-    },
-    {
-      "operationId": "rescheduleRecurringOccurrence",
-      "method": "POST",
-      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/reschedule"
-    },
-    {
-      "operationId": "editRecurringOccurrence",
-      "method": "PATCH",
-      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}"
-    },
-    {
-      "operationId": "editRecurringSeries",
-      "method": "POST",
-      "path": "/v1/recurring-rules/{ruleId}/edit-series"
-    },
-    {
-      "operationId": "listSubscriptions",
-      "method": "GET",
-      "path": "/v1/subscriptions"
-    },
-    {
-      "operationId": "confirmSubscription",
-      "method": "POST",
-      "path": "/v1/subscriptions/{subscriptionId}/confirm"
-    },
-    {
-      "operationId": "discardSubscription",
-      "method": "POST",
-      "path": "/v1/subscriptions/{subscriptionId}/discard"
-    },
-    {
-      "operationId": "getJob",
-      "method": "GET",
-      "path": "/v1/jobs/{jobId}"
-    },
-    {
-      "operationId": "createExportJob",
-      "method": "POST",
-      "path": "/v1/export-jobs"
-    },
-    {
-      "operationId": "getExportJob",
-      "method": "GET",
-      "path": "/v1/export-jobs/{exportJobId}"
-    },
-    {
-      "operationId": "createWorkspaceBackupJob",
-      "method": "POST",
-      "path": "/v1/backup-jobs"
-    },
-    {
-      "operationId": "getWorkspaceBackupJob",
-      "method": "GET",
-      "path": "/v1/backup-jobs/{backupJobId}"
+      "path": "/v1/scenarios/{scenarioId}/runs"
     },
     {
       "operationId": "createImportJob",
@@ -393,59 +428,34 @@
       "path": "/v1/import-jobs/{importJobId}/rollback"
     },
     {
-      "operationId": "createReconciliation",
+      "operationId": "createExportJob",
       "method": "POST",
-      "path": "/v1/reconciliations"
+      "path": "/v1/export-jobs"
     },
     {
-      "operationId": "getReconciliation",
-      "method": "GET",
-      "path": "/v1/reconciliations/{reconciliationId}"
-    },
-    {
-      "operationId": "completeReconciliation",
+      "operationId": "createWorkspaceBackupJob",
       "method": "POST",
-      "path": "/v1/reconciliations/{reconciliationId}/complete"
+      "path": "/v1/backup-jobs"
     },
     {
-      "operationId": "getAnalyticsSummary",
+      "operationId": "getWorkspaceBackupJob",
       "method": "GET",
-      "path": "/v1/analytics/summary"
+      "path": "/v1/backup-jobs/{backupJobId}"
     },
     {
-      "operationId": "getCashFlowAnalytics",
-      "method": "GET",
-      "path": "/v1/analytics/cash-flow"
-    },
-    {
-      "operationId": "getAdvancedAnalytics",
-      "method": "GET",
-      "path": "/v1/analytics/advanced"
-    },
-    {
-      "operationId": "listScenarios",
-      "method": "GET",
-      "path": "/v1/scenarios"
-    },
-    {
-      "operationId": "createScenario",
+      "operationId": "createReceipt",
       "method": "POST",
-      "path": "/v1/scenarios"
+      "path": "/v1/receipts"
     },
     {
-      "operationId": "runScenario",
-      "method": "POST",
-      "path": "/v1/scenarios/{scenarioId}/runs"
-    },
-    {
-      "operationId": "createBalanceForecast",
-      "method": "POST",
-      "path": "/v1/forecasts/balance"
-    },
-    {
-      "operationId": "getForecast",
+      "operationId": "getReceipt",
       "method": "GET",
-      "path": "/v1/forecasts/{forecastId}"
+      "path": "/v1/receipts/{receiptId}"
+    },
+    {
+      "operationId": "confirmReceipt",
+      "method": "POST",
+      "path": "/v1/receipts/{receiptId}/confirm"
     },
     {
       "operationId": "listReportDefinitions",
@@ -466,71 +476,6 @@
       "operationId": "getReportRun",
       "method": "GET",
       "path": "/v1/report-runs/{reportRunId}"
-    },
-    {
-      "operationId": "listApprovals",
-      "method": "GET",
-      "path": "/v1/approvals"
-    },
-    {
-      "operationId": "getApproval",
-      "method": "GET",
-      "path": "/v1/approvals/{approvalId}"
-    },
-    {
-      "operationId": "confirmApproval",
-      "method": "POST",
-      "path": "/v1/approvals/{approvalId}/confirm"
-    },
-    {
-      "operationId": "rejectApproval",
-      "method": "POST",
-      "path": "/v1/approvals/{approvalId}/reject"
-    },
-    {
-      "operationId": "listNotifications",
-      "method": "GET",
-      "path": "/v1/notifications"
-    },
-    {
-      "operationId": "markNotificationRead",
-      "method": "POST",
-      "path": "/v1/notifications/{notificationId}/read"
-    },
-    {
-      "operationId": "createReceipt",
-      "method": "POST",
-      "path": "/v1/receipts"
-    },
-    {
-      "operationId": "getReceipt",
-      "method": "GET",
-      "path": "/v1/receipts/{receiptId}"
-    },
-    {
-      "operationId": "confirmReceipt",
-      "method": "POST",
-      "path": "/v1/receipts/{receiptId}/confirm"
-    },
-    {
-      "operationId": "listMcpGrants",
-      "method": "GET",
-      "path": "/v1/mcp/grants"
-    },
-    {
-      "operationId": "createMcpGrant",
-      "method": "POST",
-      "path": "/v1/mcp/grants"
-    },
-    {
-      "operationId": "revokeMcpGrant",
-      "method": "DELETE",
-      "path": "/v1/mcp/grants/{grantId}"
-    },
-    {
-      "operationId": "createMcpProposal",
-      "method": "POST",
-      "path": "/v1/mcp/proposals"
     },
     {
       "operationId": "listAIProviders",
@@ -558,6 +503,11 @@
       "path": "/v1/ai/credentials/{credentialId}"
     },
     {
+      "operationId": "setDefaultAIModel",
+      "method": "PUT",
+      "path": "/v1/ai/default-model"
+    },
+    {
       "operationId": "listAgentConversations",
       "method": "GET",
       "path": "/v1/agent/conversations"
@@ -573,34 +523,84 @@
       "path": "/v1/agent/conversations/{conversationId}/messages"
     },
     {
-      "operationId": "setDefaultAIModel",
-      "method": "PUT",
-      "path": "/v1/ai/default-model"
-    },
-    {
-      "operationId": "listMySessions",
+      "operationId": "listApprovals",
       "method": "GET",
-      "path": "/v1/me/sessions"
+      "path": "/v1/approvals"
     },
     {
-      "operationId": "revokeOtherSessions",
-      "method": "POST",
-      "path": "/v1/me/sessions/revoke-others"
-    },
-    {
-      "operationId": "getDashboardPreferences",
+      "operationId": "getApproval",
       "method": "GET",
-      "path": "/v1/me/dashboard-preferences"
+      "path": "/v1/approvals/{approvalId}"
     },
     {
-      "operationId": "updateDashboardPreferences",
-      "method": "PUT",
-      "path": "/v1/me/dashboard-preferences"
-    },
-    {
-      "operationId": "bulkUpdateTransactions",
+      "operationId": "confirmApproval",
       "method": "POST",
-      "path": "/v1/transactions/bulk"
+      "path": "/v1/approvals/{approvalId}/confirm"
+    },
+    {
+      "operationId": "rejectApproval",
+      "method": "POST",
+      "path": "/v1/approvals/{approvalId}/reject"
+    },
+    {
+      "operationId": "startCliDeviceAuthorization",
+      "method": "POST",
+      "path": "/v1/cli/device/authorize"
+    },
+    {
+      "operationId": "pollCliDeviceToken",
+      "method": "POST",
+      "path": "/v1/cli/device/token"
+    },
+    {
+      "operationId": "approveCliDeviceAuthorization",
+      "method": "POST",
+      "path": "/v1/cli/device/approve"
+    },
+    {
+      "operationId": "createMcpProposal",
+      "method": "POST",
+      "path": "/v1/mcp/proposals"
+    },
+    {
+      "operationId": "listMcpGrants",
+      "method": "GET",
+      "path": "/v1/mcp/grants"
+    },
+    {
+      "operationId": "createMcpGrant",
+      "method": "POST",
+      "path": "/v1/mcp/grants"
+    },
+    {
+      "operationId": "revokeMcpGrant",
+      "method": "DELETE",
+      "path": "/v1/mcp/grants/{grantId}"
+    },
+    {
+      "operationId": "getJob",
+      "method": "GET",
+      "path": "/v1/jobs/{jobId}"
+    },
+    {
+      "operationId": "listNotifications",
+      "method": "GET",
+      "path": "/v1/notifications"
+    },
+    {
+      "operationId": "markNotificationRead",
+      "method": "POST",
+      "path": "/v1/notifications/{notificationId}/read"
+    },
+    {
+      "operationId": "getForecast",
+      "method": "GET",
+      "path": "/v1/forecasts/{forecastId}"
+    },
+    {
+      "operationId": "getExportJob",
+      "method": "GET",
+      "path": "/v1/export-jobs/{exportJobId}"
     }
   ]
 }
