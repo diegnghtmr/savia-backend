@@ -3076,6 +3076,11 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: list_workspaces
+        riskClass: read
+        requiresApproval: false
+        requiredScopes: []
   /v1/workspaces/{workspaceId}/members:
     get:
       operationId: listWorkspaceMembers
@@ -7251,6 +7256,11 @@ paths:
                   type: [object, 'null']
                   additionalProperties: true
               additionalProperties: false
+      x-savia-mcp-tool:
+        name: scan_receipt
+        riskClass: low_risk_write
+        requiresApproval: true
+        requiredScopes: [transactions:write]
   /v1/receipts/{receiptId}:
     parameters:
       - name: receiptId
@@ -7566,6 +7576,11 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+      x-savia-mcp-tool:
+        name: export_report_pdf
+        riskClass: read
+        requiresApproval: false
+        requiredScopes: [reports:read]
   /v1/ai/providers:
     get:
       operationId: listAIProviders
