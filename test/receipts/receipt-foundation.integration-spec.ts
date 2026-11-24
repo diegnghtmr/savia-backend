@@ -1,4 +1,5 @@
-// Migrations under test: 202609170003_receipt_ocr.sql, 202609170008_recurring_job_type.sql
+// Migrations under test: 202609170003_receipt_ocr.sql, 202609170008_recurring_job_type.sql,
+// 202609170036_integration_check_constraints.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -147,6 +148,7 @@ describe('Receipt OCR foundation schema, constraints, grants, and trigger (20260
         'receipt_ocr',
         'recurring_materialization',
         'report_run',
+        'workspace_backup',
       ]);
     });
 
