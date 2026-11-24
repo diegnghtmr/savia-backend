@@ -22,6 +22,7 @@ const WORKSPACE_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
 const TOKEN = 'accepted-token';
 const IDEMPOTENCY_KEY = 'a0000000-0000-0000-0000-000000000001';
 const EXCHANGE_RATE_ID = '00000000-0000-0000-0000-000000008001';
+const RESPONSE_TIME = '2026-09-01T00:30:00.000Z';
 
 const EXCHANGE_RATE: ExchangeRate = {
   id: EXCHANGE_RATE_ID,
@@ -31,6 +32,12 @@ const EXCHANGE_RATE: ExchangeRate = {
   effectiveAt: '2026-08-28T12:00:00.000Z',
   source: 'manual',
   manual: true,
+};
+
+const MANUAL_RATE_RESPONSE = {
+  ...EXCHANGE_RATE,
+  isStale: false,
+  ageHours: 84.5,
 };
 
 const VALID_CREATE_BODY = {
@@ -64,9 +71,12 @@ beforeEach(() => {
     authEnvironmentKeys.map((key) => [key, process.env[key]]),
   );
   Object.assign(process.env, authEnvironment);
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(RESPONSE_TIME));
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   for (const key of authEnvironmentKeys) {
     const value = originalEnvironment[key];
     if (value === undefined) delete process.env[key];
@@ -202,7 +212,7 @@ describe('POST /v1/exchange-rates', () => {
     expect(response.statusCode).toBe(201);
     expect(response.headers['content-type']).toContain('application/json');
     expect(response.headers.etag).toBeUndefined();
-    expect(JSON.parse(response.payload)).toEqual(EXCHANGE_RATE);
+    expect(JSON.parse(response.payload)).toEqual(MANUAL_RATE_RESPONSE);
     expect(createManual).toHaveBeenCalledWith(
       SUBJECT,
       WORKSPACE_ID,
@@ -217,7 +227,7 @@ describe('POST /v1/exchange-rates', () => {
     );
   });
 
-  it('answers 201 replayed with stored status and body when idempotency replay matches', async () => {
+  it('answers 201 on idempotent replay with the stored rate and age recomputed for each response', async () => {
     const createManual = vi
       .fn<ExchangeRatePort['createManual']>()
       .mockResolvedValue({
@@ -228,15 +238,32 @@ describe('POST /v1/exchange-rates', () => {
       } satisfies ExchangeRateCreateOutcome);
     const { application } = await createApplication(createManual);
 
-    const response = await postExchangeRate(application, VALID_CREATE_BODY, {
+    const options = {
       token: TOKEN,
       workspaceHeader: WORKSPACE_ID,
       idempotencyKey: IDEMPOTENCY_KEY,
-    });
+    };
+    const first = await postExchangeRate(
+      application,
+      VALID_CREATE_BODY,
+      options,
+    );
+    vi.setSystemTime(new Date('2026-09-01T01:30:00.000Z'));
+    const second = await postExchangeRate(
+      application,
+      VALID_CREATE_BODY,
+      options,
+    );
 
-    expect(response.statusCode).toBe(201);
-    expect(response.headers.etag).toBeUndefined();
-    expect(JSON.parse(response.payload)).toEqual(EXCHANGE_RATE);
+    expect(first.statusCode).toBe(201);
+    expect(first.headers.etag).toBeUndefined();
+    expect(JSON.parse(first.payload)).toEqual(MANUAL_RATE_RESPONSE);
+    expect(second.statusCode).toBe(201);
+    expect(second.headers.etag).toBeUndefined();
+    expect(JSON.parse(second.payload)).toEqual({
+      ...MANUAL_RATE_RESPONSE,
+      ageHours: 85.5,
+    });
   });
 
   it('answers 400 when X-Workspace-Id header is missing', async () => {
@@ -444,7 +471,7 @@ describe('GET /v1/exchange-rates', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('application/json');
     expect(response.headers.etag).toBeUndefined();
-    expect(JSON.parse(response.payload)).toEqual([EXCHANGE_RATE]);
+    expect(JSON.parse(response.payload)).toEqual([MANUAL_RATE_RESPONSE]);
     expect(list).toHaveBeenCalledWith(SUBJECT, {
       workspaceId: WORKSPACE_ID,
       baseCurrency: 'USD',
@@ -452,6 +479,53 @@ describe('GET /v1/exchange-rates', () => {
       from: '2026-08-01',
       to: '2026-08-28',
     });
+  });
+
+  it('evaluates the whole list at response time, including the 72-hour cutoff', async () => {
+    const fresh = {
+      ...EXCHANGE_RATE,
+      id: '00000000-0000-0000-0000-000000008002',
+      effectiveAt: '2026-08-29T01:00:00.000Z',
+      source: 'frankfurter',
+      manual: false,
+    };
+    const cutoff = {
+      ...fresh,
+      id: '00000000-0000-0000-0000-000000008003',
+      effectiveAt: '2026-08-29T00:30:00.000Z',
+    };
+    const stale = {
+      ...fresh,
+      id: '00000000-0000-0000-0000-000000008004',
+      effectiveAt: '2026-08-29T00:00:00.000Z',
+    };
+    vi.setSystemTime(new Date('2026-09-01T00:00:00.000Z'));
+    const list: ExchangeRatePort['list'] = () => {
+      vi.setSystemTime(new Date(RESPONSE_TIME));
+      return Promise.resolve({
+        kind: 'ok',
+        exchangeRates: [fresh, cutoff, stale, EXCHANGE_RATE],
+      });
+    };
+    const { application } = await createApplication({ list });
+
+    const response = await getExchangeRates(
+      application,
+      {},
+      {
+        token: TOKEN,
+        workspaceHeader: WORKSPACE_ID,
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers.etag).toBeUndefined();
+    expect(JSON.parse(response.payload)).toEqual([
+      { ...fresh, isStale: false, ageHours: 71.5 },
+      { ...cutoff, isStale: true, ageHours: 72 },
+      { ...stale, isStale: true, ageHours: 72.5 },
+      MANUAL_RATE_RESPONSE,
+    ]);
   });
 
   it('answers 200 with empty array when no exchange rates match (not an error)', async () => {

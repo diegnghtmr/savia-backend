@@ -313,7 +313,7 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
       ]);
     });
 
-    it('Policies on public.exchange_rates are pinned: application reads and inserts, elevated reads, NO update or delete policy', async () => {
+    it('Policies on public.exchange_rates are pinned: application and elevated reads and inserts, NO update or delete policy', async () => {
       const policiesRes = await admin.query<{
         polname: string;
         polcmd: string;
@@ -338,25 +338,33 @@ describe('Workspace exchange rates schema, append-only history, RLS, and grants 
           'savia_application',
         ],
         ['application_reads_workspace_exchange_rate', 'r', 'savia_application'],
-        // Added by 202608290001_relax_account_currency_invariant.sql: the
-        // security-definer trigger that requires a rate before allowing a
-        // foreign-currency account runs as savia_elevated, which FORCEs RLS here
-        // and therefore needs its own read policy. It is read-only by design.
+        ['elevated_inserts_frankfurter_rates', 'a', 'savia_elevated'],
+        // The foreign-currency account invariant also uses this read policy.
         ['elevated_reads_exchange_rates', 'r', 'savia_elevated'],
       ]);
       expect(policiesRes.rows.some((r) => r.polcmd === 'w')).toBe(false);
       expect(policiesRes.rows.some((r) => r.polcmd === 'd')).toBe(false);
     });
 
-    it('exchange_rates table carries unique (workspace_id, base_currency, quote_currency, effective_at) constraint and lookup index', async () => {
-      const uqRes = await admin.query<{ conname: string }>(
-        `select conname
-           from pg_constraint
-          where conrelid = 'public.exchange_rates'::regclass
-            and contype = 'u'
-            and conname = 'exchange_rates_workspace_pair_effective_at_key'`,
+    it('exchange_rates has separate unique keys for Frankfurter and prior sources, and a lookup index', async () => {
+      const uqRes = await admin.query<{ name: string; predicate: string }>(
+        `select idx.relname as name, pg_get_expr(i.indpred, i.indrelid) as predicate
+           from pg_index i
+           join pg_class idx on idx.oid = i.indexrelid
+          where i.indrelid = 'public.exchange_rates'::regclass
+            and i.indisunique and i.indpred is not null
+          order by idx.relname`,
       );
-      expect(uqRes.rows).toHaveLength(1);
+      expect(uqRes.rows).toEqual([
+        {
+          name: 'exchange_rates_frankfurter_workspace_pair_date_key',
+          predicate: "(source = 'frankfurter'::text)",
+        },
+        {
+          name: 'exchange_rates_workspace_pair_effective_at_key',
+          predicate: "(source <> 'frankfurter'::text)",
+        },
+      ]);
 
       const keysetRes = await admin.query<{ colnames: string[] }>(
         `select array_agg(a.attname::text order by k.ord) as colnames
