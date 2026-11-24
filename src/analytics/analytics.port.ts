@@ -1,4 +1,8 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import type {
+  FxRateUsed,
+  SelectedFxRate,
+} from '../platform/currency-conversion.js';
 
 export const ANALYTICS_PORT = Symbol('AnalyticsPort');
 
@@ -18,19 +22,14 @@ export {
 
 /**
  * The `granularity` query parameter of GET /v1/analytics/cash-flow, as the contract
- * authority declares it: day | week | month | quarter.
- *
- * This is deliberately NOT the platform `GRANULARITY`. That enum is an implementation
- * detail shared by analytics, forecasts and reports, and it grows whenever one of them
- * needs a new bucket. Validating a public query parameter against it means any such
- * addition silently widens this endpoint's accepted values beyond the contract — which
- * is exactly what happened when `year` was added for the report engine.
+ * authority declares it. Keep this separate from the shared implementation enum.
  */
 export const CASH_FLOW_GRANULARITY = {
   DAY: 'day',
   WEEK: 'week',
   MONTH: 'month',
   QUARTER: 'quarter',
+  YEAR: 'year',
 } as const;
 
 export type CashFlowGranularity =
@@ -46,6 +45,9 @@ export const ADVANCED_METRIC = {
   INCOME_STABILITY: 'income_stability',
   MONTHLY_SAVINGS_CAPACITY: 'monthly_savings_capacity',
   DEBT_COST_EVOLUTION: 'debt_cost_evolution',
+  NET_WORTH_HISTORY: 'net_worth_history',
+  SPENDING_HEATMAP: 'spending_heatmap',
+  SUBSCRIPTION_ANNUAL_COST: 'subscription_annual_cost',
 } as const;
 export type AdvancedMetric =
   (typeof ADVANCED_METRIC)[keyof typeof ADVANCED_METRIC];
@@ -75,6 +77,7 @@ export interface AnalyticsSummary {
   readonly expenses: Money;
   readonly savingsCapacity: Money;
   readonly budgetUtilizationPercent?: number;
+  readonly fxRatesUsed?: readonly FxRateUsed[];
 }
 
 export interface TimeSeriesPoint {
@@ -93,6 +96,7 @@ export interface CategoryBreakdownItem {
 export interface CashFlowAnalytics {
   readonly series: readonly TimeSeriesPoint[];
   readonly categories: readonly CategoryBreakdownItem[];
+  readonly fxRatesUsed?: readonly FxRateUsed[];
 }
 
 export interface IncomeStability {
@@ -101,6 +105,75 @@ export interface IncomeStability {
   readonly minMonthlyIncomeMinor: bigint;
   readonly maxMonthlyIncomeMinor: bigint;
   readonly coefficientOfVariationPercent: number | null;
+  readonly medianMonthlyIncomeMinor: bigint;
+  readonly trendPercent: number | null;
+  readonly regularityPercent: number | null;
+  readonly sourceConcentration: readonly IncomeSourceShare[];
+}
+
+export interface AnalyticsFlowRow extends ConvertedFlowRow {
+  readonly payeeId?: string | null;
+  readonly essential?: boolean;
+  readonly extraordinary?: boolean;
+  readonly recurrent?: boolean;
+}
+
+export interface SavingsComponents extends MonthlyCapacityPoint {
+  readonly recurringIncomeMinor: bigint;
+  readonly essentialExpensesMinor: bigint;
+  readonly discretionaryExpensesMinor: bigint;
+  readonly obligationsMinor: bigint;
+  readonly currentSavingsMinor: bigint;
+}
+
+export interface BookedMoneyRow {
+  readonly type: string;
+  readonly amountMinor: bigint;
+  readonly occurredAt: Date;
+}
+
+export interface HistoricPositionRow extends Record<string, unknown> {
+  readonly date: string;
+  readonly currency: string;
+  readonly kind: 'account' | 'debt';
+  readonly amountMinor: string;
+}
+
+export interface NetWorthPoint {
+  readonly date: string;
+  readonly assets: Money;
+  readonly debts: Money;
+  readonly netWorth: Money;
+  readonly fxValuationChange: Money | null;
+}
+
+export interface IncomeSourceShare {
+  readonly payeeId: string | null;
+  readonly amount: Money;
+  readonly sharePercent: number;
+}
+
+export interface SpendingHeatmapCell {
+  readonly weekday: number;
+  readonly dayOfMonth: number;
+  readonly amount: Money;
+  readonly count: number;
+}
+
+export interface AnnualSubscriptionItem {
+  readonly subscriptionId: string;
+  readonly payeeName: string;
+  readonly currentAmount: Money;
+  readonly previousAmount?: Money;
+  readonly increasePercent?: number | null;
+  readonly frequency: string;
+  readonly nextExpectedDate?: string;
+  readonly annualCost: Money | null;
+}
+
+export interface SubscriptionAnnualCost {
+  readonly items: readonly AnnualSubscriptionItem[];
+  readonly totalAnnualCost: Money;
 }
 
 export interface QuarterlyAveragePoint {
@@ -151,6 +224,7 @@ export interface RecurringVsVariable {
 }
 
 export interface ConvertedDebtCostRow {
+  readonly principalPaidMinor?: bigint;
   readonly interestMinor: bigint;
   readonly feeMinor: bigint;
   readonly occurredAt: Date;
@@ -158,6 +232,8 @@ export interface ConvertedDebtCostRow {
 
 export interface DebtCostEvolutionPoint {
   readonly month: string;
+  readonly principalPaidMinor: bigint;
+  readonly paymentsMinor: bigint;
   readonly interestMinor: bigint;
   readonly feeMinor: bigint;
   readonly totalCostMinor: bigint;
@@ -168,18 +244,46 @@ export interface DebtCostEvolution {
   readonly totalInterestMinor: bigint;
   readonly totalFeeMinor: bigint;
   readonly totalCostMinor: bigint;
+  readonly debtOutlook: readonly DebtOutlook[];
+}
+
+export interface DebtOutlook {
+  readonly debtId: string;
+  readonly estimatedFutureCost: Money | null;
+  readonly estimatedRemainingMonths: number | null;
+}
+
+export interface DebtTermsRow extends Record<string, unknown> {
+  readonly id: string;
+  readonly currency: string;
+  readonly outstandingBalanceMinor: string;
+  readonly minimumPaymentMinor: string | null;
+  readonly annualRate: string;
+  readonly rateType: string;
+  readonly frequency: string | null;
 }
 
 export interface ScheduledOutflowItem {
-  readonly kind: 'subscription' | 'debt_payment' | 'recurring_rule';
+  readonly kind:
+    | 'subscription'
+    | 'debt_payment'
+    | 'recurring_rule'
+    | 'transaction'
+    | 'income'
+    | 'installment'
+    | 'fund_contribution'
+    | 'reminder';
   readonly refId: string;
   readonly label: string;
-  readonly amountMinor: bigint;
+  readonly state: 'actual' | 'scheduled';
+  readonly direction: 'inflow' | 'outflow' | 'none';
+  readonly amountMinor: bigint | null;
 }
 
 export interface FinancialCalendarDay {
   readonly date: string;
   readonly expectedOutflowMinor: bigint;
+  readonly expectedInflowMinor: bigint;
   readonly items: readonly ScheduledOutflowItem[];
 }
 
@@ -188,6 +292,7 @@ export interface FinancialCalendar {
   readonly periodEnd: string;
   readonly days: readonly FinancialCalendarDay[];
   readonly totalExpectedOutflowMinor: bigint;
+  readonly totalExpectedInflowMinor: bigint;
   readonly debtsWithoutScheduledAmount: number;
   readonly recurringRulesWithUnreadableTemplate: number;
 }
@@ -214,14 +319,32 @@ export interface AnalyticsSummaryQuery {
   readonly presentationCurrency?: string;
 }
 
-export interface CashFlowAnalyticsQuery {
+export const ANALYTICS_FILTERS = [
+  'accountIds',
+  'categoryIds',
+  'tagIds',
+  'payeeIds',
+  'memberIds',
+] as const;
+
+export type AnalyticsFilter = (typeof ANALYTICS_FILTERS)[number];
+export type AnalyticsFilters = Partial<
+  Record<AnalyticsFilter, readonly string[]>
+>;
+
+export interface AnalyticsSelection {
+  readonly presentationCurrency?: string;
+  readonly filters?: AnalyticsFilters;
+}
+
+export interface CashFlowAnalyticsQuery extends AnalyticsSelection {
   readonly workspaceId: string;
   readonly from: string;
   readonly to: string;
   readonly granularity: CashFlowGranularity;
 }
 
-export interface AdvancedAnalyticsQuery {
+export interface AdvancedAnalyticsQuery extends AnalyticsSelection {
   readonly workspaceId: string;
   readonly metric: AdvancedMetric;
   readonly from: string;
@@ -258,12 +381,51 @@ export type CashFlowAnalyticsOutcome =
   | AnalyticsForbiddenOutcome
   | AnalyticsMissingRateOutcome;
 
-export interface AdvancedAnalytics {
-  readonly metric: AdvancedMetric;
-  readonly generatedAt: string;
-  readonly data: Record<string, unknown>;
-  readonly explanation: string | null;
-}
+export type AdvancedMetricData = {
+  [ADVANCED_METRIC.RECURRING_VS_VARIABLE]: RecurringVsVariable;
+  [ADVANCED_METRIC.FINANCIAL_CALENDAR]: FinancialCalendar;
+  [ADVANCED_METRIC.WEEKDAY_HEATMAP]: {
+    readonly series: readonly WeekdayHeatmapPoint[];
+  };
+  [ADVANCED_METRIC.BALANCE_PROJECTION]: BalanceProjection;
+  [ADVANCED_METRIC.QUARTERLY_AVERAGE_COMPARISON]: {
+    readonly series: readonly QuarterlyAveragePoint[];
+  };
+  [ADVANCED_METRIC.SUBSCRIPTION_PRICE_INCREASES]: SubscriptionPriceIncreases;
+  [ADVANCED_METRIC.INCOME_STABILITY]: IncomeStability;
+  [ADVANCED_METRIC.MONTHLY_SAVINGS_CAPACITY]: {
+    readonly series: readonly SavingsComponents[];
+  };
+  [ADVANCED_METRIC.DEBT_COST_EVOLUTION]: DebtCostEvolution;
+  [ADVANCED_METRIC.NET_WORTH_HISTORY]: {
+    readonly series: readonly NetWorthPoint[];
+  };
+  [ADVANCED_METRIC.SPENDING_HEATMAP]: {
+    readonly cells: readonly SpendingHeatmapCell[];
+  };
+  [ADVANCED_METRIC.SUBSCRIPTION_ANNUAL_COST]: SubscriptionAnnualCost;
+};
+
+type JsonAmounts<T> = T extends bigint
+  ? string
+  : T extends object
+    ? {
+        [K in keyof T]: JsonAmounts<T[K]>;
+      }
+    : T;
+
+export type AdvancedAnalytics<M extends AdvancedMetric = AdvancedMetric> = {
+  [K in M]: {
+    readonly metric: K;
+    readonly generatedAt: string;
+    readonly currency: string;
+    readonly assumptions: readonly string[];
+    readonly missingData: readonly string[];
+    readonly data: JsonAmounts<AdvancedMetricData[K]>;
+    readonly explanation: string | null;
+    readonly fxRatesUsed?: readonly FxRateUsed[];
+  };
+}[M];
 
 export interface AdvancedAnalyticsOkOutcome {
   readonly kind: typeof ANALYTICS_OUTCOMES.OK;
@@ -312,6 +474,11 @@ export interface TransactionFlowRow extends Record<string, unknown> {
   readonly occurredAt: Date;
   readonly categoryId: string | null;
   readonly categoryName: string | null;
+  readonly payeeId?: string | null;
+  readonly essential?: boolean;
+  readonly extraordinary?: boolean;
+  readonly recurrent?: boolean;
+  readonly description?: string | null;
 }
 
 export interface BudgetAllocationRow extends Record<string, unknown> {
@@ -335,12 +502,20 @@ export interface SubscriptionPriceRow extends Record<string, unknown> {
 }
 
 export interface ActiveSubscriptionRow extends Record<string, unknown> {
+  readonly id?: string;
+  readonly payeeName?: string;
+  readonly previousAmountMinor?: string | null;
+  readonly previousCurrency?: string | null;
+  readonly nextExpectedDate?: string | null;
+  readonly recurringRuleId?: string | null;
+  readonly observationId?: string | null;
   readonly currentAmountMinor: string;
   readonly currentCurrency: string;
   readonly frequency: string;
 }
 
 export interface DebtPaymentCostRow extends Record<string, unknown> {
+  readonly principalPaidMinor?: string;
   readonly interestMinor: string;
   readonly feeMinor: string;
   readonly currency: string;
@@ -348,7 +523,9 @@ export interface DebtPaymentCostRow extends Record<string, unknown> {
 }
 
 export interface ScheduledOutflowRow extends Record<string, unknown> {
-  readonly kind: 'subscription' | 'debt_payment' | 'recurring_rule';
+  readonly kind: ScheduledOutflowItem['kind'];
+  readonly state?: ScheduledOutflowItem['state'];
+  readonly direction?: ScheduledOutflowItem['direction'];
   readonly refId: string;
   readonly label: string;
   readonly amountMinor?: string | bigint | null;
@@ -378,6 +555,7 @@ export interface AnalyticsStore {
   readAccountNativeBalances(
     client: TransactionClient,
     workspaceId: string,
+    accountIds?: readonly string[],
   ): Promise<readonly AccountNativeBalanceRow[]>;
 
   readDebtOutstandingBalances(
@@ -390,16 +568,37 @@ export interface AnalyticsStore {
     workspaceId: string,
     from: string,
     to: string,
+    filters?: AnalyticsFilters,
+    includeOtherBookings?: boolean,
+    classifyRecurring?: boolean,
   ): Promise<readonly TransactionFlowRow[]>;
+
+  hasRecurringHistory(client: TransactionClient): Promise<boolean>;
+
+  readHistoricPositions(
+    client: TransactionClient,
+    workspaceId: string,
+    dates: readonly string[],
+    asOf: Date,
+    accountIds?: readonly string[],
+  ): Promise<readonly HistoricPositionRow[]>;
+
+  readDebtTerms(
+    client: TransactionClient,
+    workspaceId: string,
+    asOf: Date,
+  ): Promise<readonly DebtTermsRow[]>;
 
   readSubscriptionsWithPreviousAmount(
     client: TransactionClient,
     workspaceId: string,
+    filters?: AnalyticsFilters,
   ): Promise<readonly SubscriptionPriceRow[]>;
 
   readActiveSubscriptions(
     client: TransactionClient,
     workspaceId: string,
+    filters?: AnalyticsFilters,
   ): Promise<readonly ActiveSubscriptionRow[]>;
 
   readDebtPaymentCostsInPeriod(
@@ -407,6 +606,7 @@ export interface AnalyticsStore {
     workspaceId: string,
     from: string,
     to: string,
+    filters?: AnalyticsFilters,
   ): Promise<readonly DebtPaymentCostRow[]>;
 
   readOverlappingBudgetAllocations(
@@ -429,13 +629,15 @@ export interface AnalyticsStore {
     baseCurrency: string,
     quoteCurrency: string,
     asOf?: Date | null,
-  ): Promise<string | undefined>;
+    historical?: boolean,
+  ): Promise<SelectedFxRate | undefined>;
 
   readScheduledOutflows(
     client: TransactionClient,
     workspaceId: string,
     from: string,
     to: string,
+    filters?: AnalyticsFilters,
   ): Promise<readonly ScheduledOutflowRow[]>;
 
   readActiveDebtsWithoutScheduledAmount(

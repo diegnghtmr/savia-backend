@@ -20,6 +20,7 @@ import {
 } from './analytics.port.js';
 import {
   AnalyticsQueryValidationError,
+  type AnalyticsSelectionInput,
   createAdvancedAnalyticsQuery,
   createAnalyticsSummaryQuery,
   createCashFlowAnalyticsQuery,
@@ -99,6 +100,7 @@ export class AnalyticsController {
     @Query('from') fromParam?: string,
     @Query('to') toParam?: string,
     @Query('granularity') granularityParam?: string,
+    @Query() selection?: AnalyticsSelectionInput,
   ): Promise<void> {
     const h = parseWorkspaceHeader(req.headers['x-workspace-id']);
     if (h.kind !== 'ok') {
@@ -116,6 +118,7 @@ export class AnalyticsController {
         fromParam,
         toParam,
         granularityParam,
+        selection,
       });
     } catch (error) {
       if (error instanceof AnalyticsQueryValidationError) {
@@ -158,6 +161,7 @@ export class AnalyticsController {
     @Query('metric') metricParam?: string,
     @Query('from') fromParam?: string,
     @Query('to') toParam?: string,
+    @Query() selection?: AnalyticsSelectionInput,
   ): Promise<void> {
     const h = parseWorkspaceHeader(req.headers['x-workspace-id']);
     if (h.kind !== 'ok') {
@@ -178,6 +182,7 @@ export class AnalyticsController {
           metricParam,
           fromParam,
           toParam,
+          selection,
         },
         this.clock(),
       );

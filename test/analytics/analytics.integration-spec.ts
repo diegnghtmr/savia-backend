@@ -5,7 +5,7 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
@@ -1189,6 +1189,681 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
     expect(unknownGranularityRes.statusCode).toBe(400);
   });
 
+  it('L16 cash flow clips UTC year buckets, matches any ID in each dimension, and uses historical FX', async () => {
+    const payeeId = randomUUID();
+    const tagId = randomUUID();
+    const {
+      rows: [member],
+    } = await admin.query<{ id: string }>(
+      `select id from public.workspace_memberships where workspace_id = $1 and profile_id = $2`,
+      [ws1Id, ownerId],
+    );
+    await admin.query(
+      `insert into public.payees (id, workspace_id, name, created_by) values ($1, $2, 'L16 payee', $3)`,
+      [payeeId, ws1Id, ownerId],
+    );
+    await admin.query(
+      `insert into public.tags (id, workspace_id, name, created_by) values ($1, $2, 'L16 tag', $3)`,
+      [tagId, ws1Id, ownerId],
+    );
+    await admin.query(
+      `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+       values ($1, 'USD', 'CAD', 1.5, '2024-12-30', 'manual', $2),
+              ($1, 'USD', 'CAD', 2, '2025-02-01', 'manual', $2)`,
+      [ws1Id, ownerId],
+    );
+    for (const [occurredAt, accountId, amountMinor] of [
+      ['2024-12-31T00:30:00+01:00', acctCheckingId, 999],
+      ['2024-12-31T23:59:59Z', acctCheckingId, 101],
+      ['2025-01-01T00:00:00Z', acctCheckingId, 20],
+      ['2025-01-01T00:00:01Z', acctSavingsId, 999],
+      ['2025-01-02T00:00:00Z', acctCheckingId, 999],
+    ] as const) {
+      const id = await seedTransaction({
+        type: 'expense',
+        occurredAt,
+        accountId,
+        amountMinor,
+        categoryId: catGroceriesId,
+      });
+      await admin.query(
+        'update public.transactions set payee_id = $2, tag_ids = array[$3::uuid] where id = $1',
+        [id, payeeId, tagId],
+      );
+    }
+    await seedTransaction({
+      type: 'expense',
+      occurredAt: '2025-01-01T01:00Z',
+      amountMinor: 999,
+      categoryId: catGroceriesId,
+    });
+    const query = new URLSearchParams({
+      from: '2024-12-31',
+      to: '2025-01-01',
+      granularity: 'year',
+      presentationCurrency: 'CAD',
+      accountIds: acctCheckingId,
+      categoryIds: catGroceriesId,
+      tagIds: tagId,
+      payeeIds: payeeId,
+      memberIds: member.id,
+    });
+    query.append('accountIds', acctWs2Id);
+    const inject = () =>
+      application.inject({
+        method: 'GET',
+        url: `/v1/analytics/cash-flow?${query}`,
+        headers: {
+          authorization: 'Bearer viewer-token',
+          'x-workspace-id': ws1Id,
+        },
+      });
+    const money = (amountMinor: string) => ({ amountMinor, currency: 'CAD' });
+    const response = await inject();
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      fxRatesUsed: [
+        {
+          baseCurrency: 'USD',
+          quoteCurrency: 'CAD',
+          rate: '1.5',
+          rateDate: '2024-12-30',
+          source: 'manual',
+          freshness: 'fresh',
+        },
+      ],
+      series: [
+        {
+          period: '2024-01-01',
+          value: money('-152'),
+          secondaryValue: money('-152'),
+        },
+        {
+          period: '2025-01-01',
+          value: money('-30'),
+          secondaryValue: money('-182'),
+        },
+      ],
+      categories: [
+        {
+          categoryId: catGroceriesId,
+          categoryName: 'Groceries',
+          amount: money('182'),
+          percentage: 100,
+        },
+      ],
+    });
+    for (const dimension of [
+      'accountIds',
+      'categoryIds',
+      'tagIds',
+      'payeeIds',
+      'memberIds',
+    ]) {
+      const previous = query.getAll(dimension);
+      query.set(dimension, randomUUID());
+      const unmatched = await inject();
+      expect(unmatched.statusCode).toBe(200);
+      expect(unmatched.json()).toEqual({
+        series: ['2024-01-01', '2025-01-01'].map((period) => ({
+          period,
+          value: money('0'),
+          secondaryValue: money('0'),
+        })),
+        categories: [],
+      });
+      query.delete(dimension);
+      previous.forEach((id) => query.append(dimension, id));
+    }
+    query.append('accountIds', acctCheckingId.toUpperCase());
+    const duplicate = await inject();
+    expect(duplicate.statusCode).toBe(400);
+    expect(duplicate.json()).toMatchObject({
+      title: 'Invalid cash flow analytics query',
+      status: 400,
+      errors: [
+        {
+          field: 'accountIds',
+          code: 'invalid',
+          message: 'accountIds must contain unique UUIDs.',
+        },
+      ],
+    });
+  });
+
+  it('202609170034_l16_analytics.sql defaults classification flags and excludes flagged bookings', async () => {
+    const id = await seedTransaction({
+      type: 'expense',
+      amountMinor: 71,
+      categoryId: catGroceriesId,
+      occurredAt: '2025-06-01T00:00Z',
+      includeInAccountBalance: true,
+    });
+    const { rows } = await admin.query(
+      `select to_jsonb(t)->'extraordinary' as extraordinary,
+              to_jsonb(t)->'excluded_from_reports' as excluded,
+              to_jsonb(c)->'essential' as essential
+         from public.transactions t join public.categories c on c.id = t.category_id
+        where t.id = $1`,
+      [id],
+    );
+    expect(rows).toEqual([
+      { extraordinary: false, excluded: false, essential: false },
+    ]);
+    const read = async (path: string) => {
+      const response = await application.inject({
+        method: 'GET',
+        url: `/v1/analytics/${path}?from=2025-06-01&to=2025-06-01`,
+        headers: {
+          authorization: 'Bearer owner-token',
+          'x-workspace-id': ws1Id,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json();
+    };
+    expect((await read('cash-flow')).series[0].value.amountMinor).toBe('-71');
+    await admin.query(
+      'update public.transactions set excluded_from_reports = true where id = $1',
+      [id],
+    );
+    expect(await read('cash-flow')).toEqual({
+      categories: [],
+      series: [
+        {
+          period: '2025-06-01',
+          value: { amountMinor: '0', currency: 'USD' },
+          secondaryValue: { amountMinor: '0', currency: 'USD' },
+        },
+      ],
+    });
+    expect((await read('summary')).expenses.amountMinor).toBe('0');
+  });
+
+  async function advanced(metric: string, params: Record<string, string> = {}) {
+    const query = new URLSearchParams({ metric, ...params });
+    const response = await application.inject({
+      method: 'GET',
+      url: `/v1/analytics/advanced?${query}`,
+      headers: {
+        authorization: 'Bearer viewer-token',
+        'x-workspace-id': ws1Id,
+      },
+    });
+    expect(response.statusCode, response.payload).toBe(200);
+    const body = response.json();
+    expect(body).toMatchObject({
+      metric,
+      generatedAt: expect.any(String),
+      currency: expect.any(String),
+      assumptions: expect.any(Array),
+      missingData: expect.any(Array),
+      data: expect.any(Object),
+    });
+    return body;
+  }
+
+  it('L16 returns median, income trend, source shares and UTC refund-adjusted spending cells', async () => {
+    const source = randomUUID();
+    await admin.query(
+      `insert into public.payees (id, workspace_id, name, created_by) values ($1, $2, 'L16 income source', $3)`,
+      [source, ws1Id, ownerId],
+    );
+    const income = await seedTransaction({
+      type: 'income',
+      amountMinor: 100,
+      occurredAt: '2024-03-05T00:00Z',
+    });
+    await admin.query(
+      'update public.transactions set payee_id = $2 where id = $1',
+      [income, source],
+    );
+    await seedTransaction({
+      type: 'income',
+      amountMinor: 300,
+      occurredAt: '2024-05-05T00:00Z',
+    });
+    await seedTransaction({
+      type: 'expense',
+      amountMinor: 40,
+      occurredAt: '2024-04-03T01:00Z',
+    });
+    await seedTransaction({
+      type: 'refund',
+      amountMinor: 12,
+      occurredAt: '2024-04-02T21:00:00-03:00',
+    });
+    const range = {
+      from: '2024-03-03',
+      to: '2024-05-31',
+      accountIds: acctCheckingId,
+    };
+    const stability = await advanced('income_stability', range);
+    expect(stability.data).toEqual({
+      monthsCounted: 3,
+      meanMonthlyIncomeMinor: '133',
+      minMonthlyIncomeMinor: '0',
+      maxMonthlyIncomeMinor: '300',
+      coefficientOfVariationPercent: 93.54,
+      medianMonthlyIncomeMinor: '100',
+      trendPercent: 200,
+      regularityPercent: 66.67,
+      sourceConcentration: [
+        {
+          payeeId: null,
+          amount: { amountMinor: '300', currency: 'USD' },
+          sharePercent: 75,
+        },
+        {
+          payeeId: source,
+          amount: { amountMinor: '100', currency: 'USD' },
+          sharePercent: 25,
+        },
+      ],
+    });
+    expect(stability.assumptions.join(' ')).toMatch(
+      /partial.*UTC|UTC.*partial/i,
+    );
+    const spending = await advanced('spending_heatmap', range);
+    expect(spending.data).toEqual({
+      cells: [
+        {
+          weekday: 3,
+          dayOfMonth: 3,
+          amount: { amountMinor: '28', currency: 'USD' },
+          count: 2,
+        },
+      ],
+    });
+    const missing = await advanced('spending_heatmap', {
+      ...range,
+      presentationCurrency: 'GBP',
+    });
+    expect(missing.data).toEqual({ cells: [] });
+    expect(missing.missingData.join(' ')).toMatch(/USD.*GBP/);
+  });
+
+  it('L16 annualizes active subscriptions exactly, labels unknown frequency, and emits native prices', async () => {
+    const monthly = randomUUID();
+    const unknown = randomUUID();
+    await admin.query(
+      `insert into public.subscriptions (id, workspace_id, payee_name, current_amount_minor, current_currency, previous_amount_minor, previous_currency, frequency, next_expected_at, status, created_by)
+       values ($1,$3,'L16 monthly',101,'USD',100,'USD','monthly','2025-08-05','detected',$4),
+              ($2,$3,'L16 unknown',300,'USD',null,null,'unknown',null,'confirmed',$4)`,
+      [monthly, unknown, ws1Id, ownerId],
+    );
+    const { data, missingData } = await advanced('subscription_annual_cost');
+    expect(data).toEqual({
+      items: [
+        {
+          subscriptionId: monthly,
+          payeeName: 'L16 monthly',
+          currentAmount: { amountMinor: '101', currency: 'USD' },
+          previousAmount: { amountMinor: '100', currency: 'USD' },
+          increasePercent: 1,
+          frequency: 'monthly',
+          nextExpectedDate: '2025-08-05',
+          annualCost: { amountMinor: '1212', currency: 'USD' },
+        },
+        {
+          subscriptionId: unknown,
+          payeeName: 'L16 unknown',
+          currentAmount: { amountMinor: '300', currency: 'USD' },
+          frequency: 'unknown',
+          annualCost: null,
+        },
+      ],
+      totalAnnualCost: { amountMinor: '1212', currency: 'USD' },
+    });
+    expect(missingData.join(' ')).toMatch(/frequency/i);
+  });
+
+  it('L16 calendar separates actual income from scheduled income, instalments, funds and reminders', async () => {
+    const day = '2027-10-05';
+    const actual = await seedTransaction({
+      type: 'income',
+      amountMinor: 72,
+      occurredAt: `${day}T00:00Z`,
+    });
+    const debt = await seedDebt({
+      name: 'L16 instalment',
+      principalMinor: 200,
+    });
+    await admin.query(
+      'update public.debts set term_months = 3, minimum_payment_minor = 45, next_payment_at = $2 where id = $1',
+      [debt, day],
+    );
+    const events = [];
+    for (const [type, behavior, amount, name] of [
+      ['income', 'confirm_automatically', 95, 'L16 salary'],
+      ['fund_contribution', 'create_pending', 25, 'L16 fund'],
+      ['expense', 'remind', 30, 'L16 reminder'],
+    ] as const) {
+      const id = randomUUID();
+      await admin.query(
+        `insert into public.recurring_rules (id, workspace_id, name, frequency, behavior, account_id, template, starts_at, next_occurrence_at, anchor_day_of_month, created_by)
+        values ($1,$2,$3,'monthly',$4,$5,$6,'2027-10-01',$7,5,$8)`,
+        [
+          id,
+          ws1Id,
+          name,
+          behavior,
+          acctCheckingId,
+          JSON.stringify({
+            type,
+            amount: { amountMinor: String(amount), currency: 'USD' },
+          }),
+          day,
+          ownerId,
+        ],
+      );
+      events.push(id);
+    }
+    const { data } = await advanced('financial_calendar', {
+      from: day,
+      to: day,
+    });
+    expect(data).toMatchObject({
+      periodStart: day,
+      periodEnd: day,
+      totalExpectedOutflowMinor: '70',
+      totalExpectedInflowMinor: '95',
+      recurringRulesWithUnreadableTemplate: 0,
+    });
+    expect(data.days).toEqual([
+      {
+        date: day,
+        expectedOutflowMinor: '70',
+        expectedInflowMinor: '95',
+        items: [
+          {
+            kind: 'fund_contribution',
+            refId: events[1],
+            label: 'L16 fund',
+            amountMinor: '25',
+            state: 'scheduled',
+            direction: 'outflow',
+          },
+          {
+            kind: 'income',
+            refId: actual,
+            label: 'Income',
+            amountMinor: '72',
+            state: 'actual',
+            direction: 'inflow',
+          },
+          {
+            kind: 'income',
+            refId: events[0],
+            label: 'L16 salary',
+            amountMinor: '95',
+            state: 'scheduled',
+            direction: 'inflow',
+          },
+          {
+            kind: 'installment',
+            refId: debt,
+            label: 'L16 instalment',
+            amountMinor: '45',
+            state: 'scheduled',
+            direction: 'outflow',
+          },
+          {
+            kind: 'reminder',
+            refId: events[2],
+            label: 'L16 reminder',
+            amountMinor: null,
+            state: 'scheduled',
+            direction: 'none',
+          },
+        ].sort(
+          (a, b) =>
+            a.kind.localeCompare(b.kind) || a.refId.localeCompare(b.refId),
+        ),
+      },
+    ]);
+  });
+
+  it('L16 net worth values recorded balances at the UTC cut and discloses unknown FX instead of replaying future rates', async () => {
+    const id = randomUUID();
+    await admin.query(
+      `insert into public.accounts (id, workspace_id, name, type, currency, created_by, created_at) values ($1,$2,'L16 historical asset','checking','EUR',$3,'2024-01-01')`,
+      [id, ws1Id, ownerId],
+    );
+    await seedTransaction({
+      type: 'income',
+      accountId: id,
+      amountMinor: 100,
+      currency: 'EUR',
+      occurredAt: '2024-01-02T00:00Z',
+      includeInAccountBalance: true,
+    });
+    await admin.query(
+      `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+       values ($1,'EUR','USD',1.2,'2024-02-01','manual',$2), ($1,'EUR','USD',1.4,'2024-03-01','manual',$2)`,
+      [ws1Id, ownerId],
+    );
+    await seedTransaction({
+      type: 'income',
+      accountId: id,
+      amountMinor: 100,
+      currency: 'EUR',
+      occurredAt: '2024-03-17T18:00Z',
+      includeInAccountBalance: true,
+    });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2024-03-17T12:00Z'));
+    const { data, missingData } = await advanced('net_worth_history', {
+      from: '2023-12-01',
+      to: '2024-03-17',
+      accountIds: id,
+    }).finally(() => vi.useRealTimers());
+    const usd = (amountMinor: string) => ({ amountMinor, currency: 'USD' });
+    expect(data).toEqual({
+      series: [
+        {
+          date: '2024-02-29',
+          assets: usd('120'),
+          debts: usd('0'),
+          netWorth: usd('120'),
+          fxValuationChange: null,
+        },
+        {
+          date: '2024-03-17',
+          assets: usd('140'),
+          debts: usd('0'),
+          netWorth: usd('140'),
+          fxValuationChange: usd('20'),
+        },
+      ],
+    });
+    expect(missingData.join(' ')).toMatch(/EUR.*USD.*2024-01-31/);
+  });
+
+  it('L16 savings separates essential, discretionary, extraordinary, debt and contributed savings', async () => {
+    const range = {
+      from: '2024-06-01',
+      to: '2024-06-30',
+      accountIds: acctCheckingId,
+    };
+    await admin.query(
+      'update public.categories set essential = true where id = $1',
+      [catGroceriesId],
+    );
+    for (const [type, amountMinor, categoryId] of [
+      ['income', 100, null],
+      ['expense', 24, catGroceriesId],
+      ['expense', 12, null],
+      ['debt_payment', 11, null],
+      ['fund_contribution', 7, null],
+    ] as const) {
+      await seedTransaction({
+        type,
+        amountMinor,
+        categoryId,
+        occurredAt: '2024-06-02T00:00Z',
+      });
+    }
+    const extraordinary = await seedTransaction({
+      type: 'expense',
+      amountMinor: 15,
+      occurredAt: '2024-06-02T00:00Z',
+    });
+    await admin.query(
+      'update public.transactions set extraordinary = true where id = $1',
+      [extraordinary],
+    );
+    const { data, missingData } = await advanced(
+      'monthly_savings_capacity',
+      range,
+    );
+    expect(data).toEqual({
+      series: [
+        {
+          month: '2024-06-01',
+          incomeMinor: '100',
+          expensesMinor: '51',
+          savingsCapacityMinor: '38',
+          recurringIncomeMinor: '0',
+          essentialExpensesMinor: '24',
+          discretionaryExpensesMinor: '12',
+          obligationsMinor: '11',
+          currentSavingsMinor: '7',
+        },
+      ],
+    });
+    expect(missingData.join(' ')).toMatch(/recurr/i);
+  });
+
+  it('L16 debt evolution separates principal, interest and fees and labels unknown outlook', async () => {
+    const known = await seedDebt({
+      name: 'L16 modeled debt',
+      principalMinor: 240,
+    });
+    const unknown = await seedDebt({
+      name: 'L16 unmodeled debt',
+      principalMinor: 120,
+    });
+    await admin.query(
+      `update public.debts set minimum_payment_minor = 100, annual_rate = 0.12, created_at = '2024-07-01' where id = $1`,
+      [known],
+    );
+    await admin.query(
+      `update public.debts set created_at = '2024-07-01' where id = $1`,
+      [unknown],
+    );
+    const id = await seedTransaction({
+      type: 'debt_payment',
+      amountMinor: 48,
+      occurredAt: '2024-07-06T00:00Z',
+    });
+    await admin.query(
+      `insert into public.debt_payments (workspace_id, debt_id, transaction_id, principal_minor, interest_minor, fee_minor) values ($1, $2, $3, 40, 5, 3)`,
+      [ws1Id, known, id],
+    );
+    const { data, missingData } = await advanced('debt_cost_evolution', {
+      from: '2024-07-01',
+      to: '2024-07-31',
+    });
+    expect(data).toMatchObject({
+      totalInterestMinor: '5',
+      totalFeeMinor: '3',
+      totalCostMinor: '8',
+      series: [
+        {
+          month: '2024-07-01',
+          principalPaidMinor: '40',
+          paymentsMinor: '48',
+          interestMinor: '5',
+          feeMinor: '3',
+          totalCostMinor: '8',
+        },
+      ],
+      debtOutlook: expect.arrayContaining([
+        {
+          debtId: known,
+          estimatedFutureCost: { amountMinor: '3', currency: 'USD' },
+          estimatedRemainingMonths: 3,
+        },
+        {
+          debtId: unknown,
+          estimatedFutureCost: null,
+          estimatedRemainingMonths: null,
+        },
+      ]),
+    });
+    expect(missingData.join(' ')).toContain(unknown);
+  });
+
+  it('L17 lists distinct exact rates actually applied by summary, cash flow and advanced analytics', async () => {
+    await admin.query(
+      `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, manual, created_by)
+      values ($1, 'USD', 'GBP', 0.999999999999999999, '2024-06-01', 'manual', true, $2),
+             ($1, 'USD', 'GBP', 1.200000000000000001, '2024-06-05', 'frankfurter', false, null),
+             ($1, 'USD', 'GBP', 1.5, '2024-06-12', 'vendor', false, $2),
+             ($1, 'USD', 'GBP', 8, '2024-06-30', 'frankfurter', false, null)`,
+      [ws2Id, otherOwnerId],
+    );
+    for (const day of [3, 4, 5, 9, 15]) {
+      await seedTransaction({
+        workspaceId: ws2Id,
+        accountId: acctWs2Id,
+        createdBy: otherOwnerId,
+        type: 'expense',
+        amountMinor: 100,
+        occurredAt: `2024-06-${String(day).padStart(2, '0')}T12:00Z`,
+        categoryId: catWs2Id,
+      });
+    }
+    const rates = [
+      {
+        baseCurrency: 'USD',
+        quoteCurrency: 'GBP',
+        rate: '0.999999999999999999',
+        rateDate: '2024-06-01',
+        source: 'manual',
+        freshness: 'fresh',
+      },
+      {
+        baseCurrency: 'USD',
+        quoteCurrency: 'GBP',
+        rate: '1.200000000000000001',
+        rateDate: '2024-06-05',
+        source: 'frankfurter',
+        freshness: 'fresh',
+      },
+      {
+        baseCurrency: 'USD',
+        quoteCurrency: 'GBP',
+        rate: '1.5',
+        rateDate: '2024-06-12',
+        source: 'vendor',
+        freshness: 'unknown',
+      },
+    ];
+    for (const [path, metric] of [
+      ['summary', ''],
+      ['cash-flow', ''],
+      ['advanced', '&metric=spending_heatmap'],
+    ]) {
+      const read = (presentationCurrency: string) =>
+        application.inject({
+          method: 'GET',
+          url: `/v1/analytics/${path}?from=2024-06-01&to=2024-06-29&presentationCurrency=${presentationCurrency}${metric}`,
+          headers: {
+            authorization: 'Bearer other-owner-token',
+            'x-workspace-id': ws2Id,
+          },
+        });
+      const response = await read('GBP');
+      expect(response.statusCode, response.payload).toBe(200);
+      expect(response.json().fxRatesUsed).toEqual(rates);
+      const native = await read('USD');
+      expect(native.statusCode).toBe(200);
+      expect(native.json()).not.toHaveProperty('fxRatesUsed');
+    }
+  });
+
   it('14. authorization contracts: 401 unauthenticated, 403 non-member, 200 viewer', async () => {
     const noTokenSummary = await application.inject({
       method: 'GET',
@@ -1247,5 +1922,107 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
       },
     });
     expect(viewerCashFlow.statusCode).toBe(200);
+  });
+
+  it('preserves legacy cash flow when only a later quote is available', async () => {
+    await admin.query(
+      `insert into public.exchange_rates (
+         workspace_id, base_currency, quote_currency, rate,
+         effective_at, source, created_by
+       ) values ($1, 'EUR', 'USD', 1.08, '2023-10-08T00:00:00Z', 'manual', $2)`,
+      [ws1Id, ownerId],
+    );
+
+    await seedTransaction({
+      type: 'expense',
+      amountMinor: 123,
+      currency: 'EUR',
+      occurredAt: '2023-10-07T05:00:00Z',
+      accountId: acctEurId,
+      categoryId: catGroceriesId,
+      includeInAccountBalance: true,
+    });
+
+    const response = await application.inject({
+      method: 'GET',
+      url: '/v1/analytics/cash-flow?from=2023-10-07&to=2023-10-07&granularity=day',
+      headers: {
+        authorization: 'Bearer viewer-token',
+        'x-workspace-id': ws1Id,
+      },
+    });
+
+    expect(response.statusCode, response.payload).toBe(200);
+    expect(response.json()).toEqual({
+      series: [
+        {
+          period: '2023-10-07',
+          value: { amountMinor: '-133', currency: 'USD' },
+          secondaryValue: { amountMinor: '-133', currency: 'USD' },
+        },
+      ],
+      categories: [
+        {
+          categoryId: catGroceriesId,
+          categoryName: 'Groceries',
+          amount: { amountMinor: '133', currency: 'USD' },
+          percentage: 100,
+        },
+      ],
+      fxRatesUsed: [
+        {
+          baseCurrency: 'EUR',
+          quoteCurrency: 'USD',
+          rate: '1.08',
+          rateDate: '2023-10-08',
+          source: 'manual',
+          freshness: 'fresh',
+        },
+      ],
+    });
+  });
+
+  it('does not compare against a nonadjacent quarter when the previous quarter has no historical FX', async () => {
+    await seedTransaction({
+      type: 'expense',
+      amountMinor: 100,
+      occurredAt: '2023-02-15T00:00:00Z',
+    });
+
+    for (const month of ['04', '05', '06']) {
+      await seedTransaction({
+        type: 'expense',
+        amountMinor: 55,
+        currency: 'EUR',
+        accountId: acctEurId,
+        occurredAt: `2023-${month}-15T00:00:00Z`,
+        includeInAccountBalance: true,
+      });
+    }
+
+    await seedTransaction({
+      type: 'expense',
+      amountMinor: 200,
+      occurredAt: '2023-08-15T00:00:00Z',
+    });
+
+    const response = await application.inject({
+      method: 'GET',
+      url: '/v1/analytics/advanced?metric=quarterly_average_comparison&from=2023-01-01&to=2023-09-30',
+      headers: {
+        authorization: 'Bearer viewer-token',
+        'x-workspace-id': ws1Id,
+      },
+    });
+
+    expect(response.statusCode, response.payload).toBe(200);
+    const body = response.json();
+    expect(body.missingData.join(' ')).toContain('EUR → USD');
+    expect(
+      body.data.series.map((point: { quarter: string }) => point.quarter),
+    ).toEqual(['2023-Q1', '2023-Q3']);
+    expect(
+      body.data.series[1].savingsCapacityDeltaPercentVsPreviousQuarter,
+    ).toBeNull();
   });
 });

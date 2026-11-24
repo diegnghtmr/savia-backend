@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 import type { TransactionClient } from '../../src/platform/pg-transaction.js';
 import {
   ADVANCED_METRIC,
@@ -16,6 +16,13 @@ import {
   type AnalyticsTransactionRunner,
   generateBucketPeriods,
 } from '../../src/analytics/analytics.service.js';
+
+const selectedRate = (rate: string) => ({
+  rate,
+  rateDate: '2025-01-01',
+  rateSource: 'manual',
+  freshness: 'fresh' as const,
+});
 
 describe('AnalyticsService', () => {
   const workspaceId = '00000000-0000-4000-8000-000000000001';
@@ -52,12 +59,15 @@ describe('AnalyticsService', () => {
     readAccountNativeBalances: async () => [],
     readDebtOutstandingBalances: async () => [],
     readTransactionsInPeriod: async () => [],
+    hasRecurringHistory: async () => true,
+    readHistoricPositions: async () => [],
+    readDebtTerms: async () => [],
     readSubscriptionsWithPreviousAmount: async () => [],
     readActiveSubscriptions: async () => [],
     readDebtPaymentCostsInPeriod: async () => [],
     readOverlappingBudgetAllocations: async () => [],
     readOverlappingBudgetSpend: async () => [],
-    findExchangeRate: async () => '1.0',
+    findExchangeRate: async () => selectedRate('1.0'),
     readScheduledOutflows: async () => [],
     readActiveDebtsWithoutScheduledAmount: async () => 0,
     ...overrides,
@@ -276,7 +286,7 @@ describe('AnalyticsService', () => {
       expect(fakeTx.runRead).toHaveBeenCalled();
     });
 
-    it('returns MISSING_RATE when exchange rate is missing for conversion', async () => {
+    it('discloses missing rates and omits unvalued bookings', async () => {
       const store = createMockStore({
         findExchangeRate: async () => undefined,
         readTransactionsInPeriod: async () => [
@@ -294,11 +304,19 @@ describe('AnalyticsService', () => {
       const service = new AnalyticsService(fakeTx, store, () => fixedClock);
       const res = await service.getAdvancedAnalytics(subject, {
         workspaceId,
-        metric: ADVANCED_METRIC.WEEKDAY_HEATMAP,
+        metric: ADVANCED_METRIC.SPENDING_HEATMAP,
         from: '2026-01-01',
         to: '2026-01-31',
       });
-      expect(res.kind).toBe(ANALYTICS_OUTCOMES.MISSING_RATE);
+      expect(res).toMatchObject({
+        kind: ANALYTICS_OUTCOMES.OK,
+        analytics: {
+          data: { cells: [] },
+          missingData: [
+            'No historical exchange rate EUR → USD effective by 2026-01-10.',
+          ],
+        },
+      });
     });
 
     it('emits generatedAt exactly matching the injected clock (determinism test)', async () => {
@@ -350,7 +368,8 @@ describe('AnalyticsService', () => {
       expect(() => JSON.stringify(ok.analytics)).not.toThrow();
 
       // Check that AmountMinor fields in data are string matching ^-?[0-9]+$
-      const series = ok.analytics.data.series as Array<Record<string, unknown>>;
+      assert(ok.analytics.metric === ADVANCED_METRIC.MONTHLY_SAVINGS_CAPACITY);
+      const series = ok.analytics.data.series;
       expect(series).toBeDefined();
       expect(series.length).toBeGreaterThan(0);
       const first = series[0];
@@ -392,7 +411,7 @@ describe('AnalyticsService', () => {
       expect(ok.analytics.explanation).toContain('basisMonths');
     });
 
-    it('mentions non-zero exclusion count in explanation when subscriptions are unclassified', async () => {
+    it('discloses subscription classification when recorded links are unavailable', async () => {
       const store = createMockStore({
         readActiveSubscriptions: async () => [
           {
@@ -411,8 +430,8 @@ describe('AnalyticsService', () => {
       });
       expect(res.kind).toBe(ANALYTICS_OUTCOMES.OK);
       const ok = res as AdvancedAnalyticsOkOutcome;
-      expect(ok.analytics.explanation).toContain(
-        '1 subscription(s) could not be classified',
+      expect(ok.analytics.missingData).toContain(
+        '1 subscription(s) without recorded transaction or rule links.',
       );
     });
 
@@ -554,7 +573,7 @@ describe('AnalyticsService', () => {
       const store = createMockStore({
         readTransactionsInPeriod: async () => txns,
         findExchangeRate: async (_c, _w, from, to) =>
-          from === 'EUR' && to === 'USD' ? '1.5' : '1.0',
+          selectedRate(from === 'EUR' && to === 'USD' ? '1.5' : '1.0'),
       });
       const service = new AnalyticsService(fakeTx, store, () => fixedClock);
       const res = await service.getAdvancedAnalytics(subject, {
@@ -568,9 +587,7 @@ describe('AnalyticsService', () => {
       if (res.kind !== ANALYTICS_OUTCOMES.OK) return;
 
       // 1. Outcome and shape
-      expect(res.analytics.metric).toBe(
-        ADVANCED_METRIC.MONTHLY_SAVINGS_CAPACITY,
-      );
+      assert(res.analytics.metric === ADVANCED_METRIC.MONTHLY_SAVINGS_CAPACITY);
       expect(Object.keys(res.analytics.data).sort()).toEqual(['series']);
       const series = res.analytics.data.series;
       expect(Array.isArray(series)).toBe(true);
@@ -578,9 +595,14 @@ describe('AnalyticsService', () => {
       expect(series).toHaveLength(2);
       for (const point of series) {
         expect(Object.keys(point).sort()).toEqual([
+          'currentSavingsMinor',
+          'discretionaryExpensesMinor',
+          'essentialExpensesMinor',
           'expensesMinor',
           'incomeMinor',
           'month',
+          'obligationsMinor',
+          'recurringIncomeMinor',
           'savingsCapacityMinor',
         ]);
       }
@@ -589,12 +611,22 @@ describe('AnalyticsService', () => {
         incomeMinor: '100000',
         expensesMinor: '25000',
         savingsCapacityMinor: '75000',
+        recurringIncomeMinor: '0',
+        essentialExpensesMinor: '0',
+        discretionaryExpensesMinor: '25000',
+        obligationsMinor: '0',
+        currentSavingsMinor: '0',
       });
       expect(series[1]).toEqual({
         month: '2026-02-01',
         incomeMinor: '30000',
         expensesMinor: '40000',
         savingsCapacityMinor: '-10000',
+        recurringIncomeMinor: '0',
+        essentialExpensesMinor: '0',
+        discretionaryExpensesMinor: '40000',
+        obligationsMinor: '0',
+        currentSavingsMinor: '0',
       });
 
       // 2. No bigint escapes & recursive amount string format check
@@ -665,7 +697,7 @@ describe('AnalyticsService', () => {
       const store = createMockStore({
         readTransactionsInPeriod: async () => txns,
         findExchangeRate: async (_c, _w, from, to) =>
-          from === 'EUR' && to === 'USD' ? '2.0' : '1.0',
+          selectedRate(from === 'EUR' && to === 'USD' ? '2.0' : '1.0'),
       });
       const service = new AnalyticsService(fakeTx, store, () => fixedClock);
       const res = await service.getAdvancedAnalytics(subject, {
@@ -679,13 +711,17 @@ describe('AnalyticsService', () => {
       if (res.kind !== ANALYTICS_OUTCOMES.OK) return;
 
       // 1. Outcome and shape
-      expect(res.analytics.metric).toBe(ADVANCED_METRIC.INCOME_STABILITY);
+      assert(res.analytics.metric === ADVANCED_METRIC.INCOME_STABILITY);
       expect(Object.keys(res.analytics.data).sort()).toEqual([
         'coefficientOfVariationPercent',
         'maxMonthlyIncomeMinor',
         'meanMonthlyIncomeMinor',
+        'medianMonthlyIncomeMinor',
         'minMonthlyIncomeMinor',
         'monthsCounted',
+        'regularityPercent',
+        'sourceConcentration',
+        'trendPercent',
       ]);
       expect(res.analytics.data.monthsCounted).toBe(3);
       expect(res.analytics.data.meanMonthlyIncomeMinor).toBe('200000');
@@ -811,7 +847,7 @@ describe('AnalyticsService', () => {
       const store = createMockStore({
         readTransactionsInPeriod: async () => txns,
         findExchangeRate: async (_c, _w, from, to) =>
-          from === 'EUR' && to === 'USD' ? '2.0' : '1.0',
+          selectedRate(from === 'EUR' && to === 'USD' ? '2.0' : '1.0'),
       });
       const service = new AnalyticsService(fakeTx, store, () => fixedClock);
       const res = await service.getAdvancedAnalytics(subject, {
@@ -825,8 +861,8 @@ describe('AnalyticsService', () => {
       if (res.kind !== ANALYTICS_OUTCOMES.OK) return;
 
       // 1. Outcome and shape
-      expect(res.analytics.metric).toBe(
-        ADVANCED_METRIC.QUARTERLY_AVERAGE_COMPARISON,
+      assert(
+        res.analytics.metric === ADVANCED_METRIC.QUARTERLY_AVERAGE_COMPARISON,
       );
       expect(Object.keys(res.analytics.data).sort()).toEqual(['series']);
       const series = res.analytics.data.series;
@@ -944,7 +980,7 @@ describe('AnalyticsService', () => {
       const store = createMockStore({
         readTransactionsInPeriod: async () => txns,
         findExchangeRate: async (_c, _w, from, to) =>
-          from === 'EUR' && to === 'USD' ? '2.0' : '1.0',
+          selectedRate(from === 'EUR' && to === 'USD' ? '2.0' : '1.0'),
       });
       const service = new AnalyticsService(fakeTx, store, () => fixedClock);
       const res = await service.getAdvancedAnalytics(subject, {
@@ -958,7 +994,7 @@ describe('AnalyticsService', () => {
       if (res.kind !== ANALYTICS_OUTCOMES.OK) return;
 
       // 1. Outcome and shape
-      expect(res.analytics.metric).toBe(ADVANCED_METRIC.WEEKDAY_HEATMAP);
+      assert(res.analytics.metric === ADVANCED_METRIC.WEEKDAY_HEATMAP);
       expect(Object.keys(res.analytics.data).sort()).toEqual(['series']);
       const series = res.analytics.data.series;
       expect(Array.isArray(series)).toBe(true);
@@ -1104,8 +1140,8 @@ describe('AnalyticsService', () => {
       if (res.kind !== ANALYTICS_OUTCOMES.OK) return;
 
       // 1. Outcome and shape
-      expect(res.analytics.metric).toBe(
-        ADVANCED_METRIC.SUBSCRIPTION_PRICE_INCREASES,
+      assert(
+        res.analytics.metric === ADVANCED_METRIC.SUBSCRIPTION_PRICE_INCREASES,
       );
       expect(Object.keys(res.analytics.data).sort()).toEqual([
         'consideredCount',
@@ -1212,7 +1248,7 @@ describe('AnalyticsService', () => {
       const store = createMockStore({
         readDebtPaymentCostsInPeriod: async () => debtCostRows,
         findExchangeRate: async (_c, _w, from, to) =>
-          from === 'EUR' && to === 'USD' ? '1.5' : '1.0',
+          selectedRate(from === 'EUR' && to === 'USD' ? '1.5' : '1.0'),
       });
       const service = new AnalyticsService(fakeTx, store, () => fixedClock);
       const res = await service.getAdvancedAnalytics(subject, {
@@ -1226,8 +1262,9 @@ describe('AnalyticsService', () => {
       if (res.kind !== ANALYTICS_OUTCOMES.OK) return;
 
       // 1. Outcome and shape
-      expect(res.analytics.metric).toBe(ADVANCED_METRIC.DEBT_COST_EVOLUTION);
+      assert(res.analytics.metric === ADVANCED_METRIC.DEBT_COST_EVOLUTION);
       expect(Object.keys(res.analytics.data).sort()).toEqual([
+        'debtOutlook',
         'series',
         'totalCostMinor',
         'totalFeeMinor',
@@ -1246,6 +1283,8 @@ describe('AnalyticsService', () => {
           'feeMinor',
           'interestMinor',
           'month',
+          'paymentsMinor',
+          'principalPaidMinor',
           'totalCostMinor',
         ]);
       }
@@ -1253,12 +1292,16 @@ describe('AnalyticsService', () => {
         month: '2026-01-01',
         interestMinor: '15000',
         feeMinor: '2500',
+        paymentsMinor: '17500',
+        principalPaidMinor: '0',
         totalCostMinor: '17500',
       });
       expect(series[1]).toEqual({
         month: '2026-02-01',
         interestMinor: '15000',
         feeMinor: '1500',
+        paymentsMinor: '16500',
+        principalPaidMinor: '0',
         totalCostMinor: '16500',
       });
 
@@ -1278,7 +1321,7 @@ describe('AnalyticsService', () => {
         'Monthly evolution of debt interest and fee costs across the period.',
       );
     });
-    it('successfully computes all nine metrics', async () => {
+    it('successfully computes every declared metric', async () => {
       const store = createMockStore();
       const service = new AnalyticsService(fakeTx, store, () => fixedClock);
       for (const metric of Object.values(ADVANCED_METRIC)) {

@@ -1705,6 +1705,68 @@ describe('Report runs integration contract and endpoint suite', () => {
       }
     });
 
+    it('L17 persists the FX snapshot with a completed run and does not re-read rates later', async () => {
+      const effectiveAt = new Date();
+      const rate = '1.234567890123456789';
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+        values ($1,'EUR','USD',$2,$3,'manual',$4)`,
+        [workspace1Id, rate, effectiveAt, ownerId],
+      );
+      const headers = {
+        authorization: 'Bearer editor-token',
+        'x-workspace-id': workspace1Id,
+      };
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: { from: '2026-06-01', to: '2026-06-30' },
+        },
+      });
+      expect(response.statusCode).toBe(202);
+      const queued = response.json();
+      expect(queued).not.toHaveProperty('fxRatesUsed');
+      expect(await drainUntilRunTerminal(queued.id)).toMatchObject({
+        jobStatus: 'completed',
+        runStatus: 'completed',
+      });
+      const read = () =>
+        application.inject({
+          method: 'GET',
+          url: `/v1/report-runs/${queued.id}`,
+          headers,
+        });
+      const first = await read();
+      expect(first.statusCode).toBe(200);
+      expect(first.json()).toMatchObject({
+        status: 'completed',
+        snapshotId: queued.snapshotId,
+        fxRatesUsed: [
+          {
+            baseCurrency: 'EUR',
+            quoteCurrency: 'USD',
+            rate,
+            rateDate: effectiveAt.toISOString().slice(0, 10),
+            source: 'manual',
+            freshness: 'fresh',
+          },
+        ],
+      });
+      const newer = new Date(effectiveAt.getTime() + 1);
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+        values ($1,'EUR','USD',9,$2,'manual',$3)`,
+        [workspace1Id, newer, ownerId],
+      );
+      const reread = await read();
+      expect(reread.statusCode).toBe(200);
+      expect(reread.json()).toEqual(first.json());
+    });
+
     it('rolls back the report run completion when persist throws after writing', async () => {
       const handlers = workerModule.get<readonly JobHandler[] | JobHandler>(
         JOB_HANDLERS,

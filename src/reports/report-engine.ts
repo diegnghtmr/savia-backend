@@ -1,3 +1,4 @@
+import { FxUsage, type FxRateUsed } from '../platform/currency-conversion.js';
 import {
   GRANULARITY,
   truncateToBucketStart,
@@ -48,6 +49,7 @@ export interface ReportGrid {
   readonly measures: readonly ReportMeasure[];
   readonly baseCurrency: string;
   readonly warnings: readonly string[];
+  readonly fxRatesUsed?: readonly FxRateUsed[];
 }
 
 const ALLOWED_DIMENSIONS = new Set<string>(REPORT_DIMENSIONS);
@@ -206,6 +208,8 @@ export function buildReportGrid(input: ReportEngineInput): ReportGrid {
   let hasMixedCurrencyWarning = false;
 
   const reportRows: ReportRow[] = [];
+  const convertedBuckets = new Set<number>();
+  let usesAllConversions = false;
 
   for (let i = 0; i < sortedBuckets.length; i++) {
     const b = sortedBuckets[i];
@@ -339,6 +343,28 @@ export function buildReportGrid(input: ReportEngineInput): ReportGrid {
         }
       }
 
+      if (value !== null) {
+        switch (measure) {
+          case REPORT_MEASURE.CONVERTED_VALUE:
+          case REPORT_MEASURE.AVERAGE:
+          case REPORT_MEASURE.MINIMUM:
+          case REPORT_MEASURE.MAXIMUM:
+          case REPORT_MEASURE.VARIANCE:
+            convertedBuckets.add(i);
+            break;
+          case REPORT_MEASURE.BALANCE:
+          case REPORT_MEASURE.PERCENTAGE:
+            usesAllConversions = true;
+            break;
+          case REPORT_MEASURE.MOVING_AVERAGE:
+            convertedBuckets.add(i - 2);
+          // Falls through: it also uses the previous and current buckets.
+          case REPORT_MEASURE.VARIATION:
+            convertedBuckets.add(i - 1);
+            convertedBuckets.add(i);
+            break;
+        }
+      }
       cells.push({ measure, value });
     }
 
@@ -365,12 +391,18 @@ export function buildReportGrid(input: ReportEngineInput): ReportGrid {
     }
   }
 
+  const usage = new FxUsage();
+  for (const [index, bucket] of sortedBuckets.entries()) {
+    if (!usesAllConversions && !convertedBuckets.has(index)) continue;
+    for (const row of bucket.rows) usage.add(row.fxRate);
+  }
   return {
     rows: reportRows,
     dimensions: input.dimensions,
     measures: input.measures,
     baseCurrency: input.baseCurrency,
     warnings,
+    ...usage.fields(),
   };
 }
 

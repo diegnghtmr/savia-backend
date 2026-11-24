@@ -1,16 +1,29 @@
 export const FRANKFURTER_RATE_MAX_AGE_HOURS = 72;
 
-export const CURRENCY_RATE_SELECTION_SQL = `
+export function fxFreshnessSql(valuation: string): string {
+  return `case
+    when source = 'manual' then 'fresh'
+    when source <> 'frankfurter' or not isfinite(effective_at) or effective_at > ${valuation} then 'unknown'
+    when effective_at <= ${valuation} - interval '${FRANKFURTER_RATE_MAX_AGE_HOURS} hours' then 'stale'
+    else 'fresh'
+  end`;
+}
+
+function currencyRateSelectionSql(
+  historical: boolean,
+  provenance = false,
+): string {
+  return `
 select rate::text as rate,
        to_char(effective_at at time zone 'utc', 'YYYY-MM-DD') as "rateDate",
-       source as "rateSource"
+       source as "rateSource"${provenance ? `,\n       ${fxFreshnessSql('coalesce($4::timestamptz, now())')} as freshness` : ''}
   from public.exchange_rates
  where workspace_id = $1::uuid
    and base_currency = $2
    and quote_currency = $3
    -- FR-FX-007/008: provider rates expire after 72 hours; manual rates never do.
    and not (source = 'frankfurter'
-            and effective_at <= coalesce($4::timestamptz, now()) - interval '${FRANKFURTER_RATE_MAX_AGE_HOURS} hours')
+            and effective_at <= coalesce($4::timestamptz, now()) - interval '${FRANKFURTER_RATE_MAX_AGE_HOURS} hours')${historical ? '\n   and effective_at <= $4::timestamptz' : ''}
  order by (effective_at <= coalesce($4::timestamptz, now())) desc,
           case
             when effective_at <= coalesce($4::timestamptz, now()) then effective_at
@@ -18,6 +31,76 @@ select rate::text as rate,
           effective_at asc,
           id desc
  limit 1`;
+}
+
+export const CURRENCY_RATE_SELECTION_SQL = currencyRateSelectionSql(false);
+export const ANALYTICS_CURRENCY_RATE_SELECTION_SQL = currencyRateSelectionSql(
+  false,
+  true,
+);
+export const HISTORICAL_CURRENCY_RATE_SELECTION_SQL = currencyRateSelectionSql(
+  true,
+  true,
+);
+
+export interface FxRateUsed {
+  readonly baseCurrency: string;
+  readonly quoteCurrency: string;
+  readonly rate: string;
+  readonly rateDate: string;
+  readonly source: string;
+  readonly freshness: 'fresh' | 'stale' | 'unknown';
+}
+
+export interface SelectedFxRate
+  extends Pick<FxRateUsed, 'rate' | 'rateDate' | 'freshness'> {
+  readonly rateSource: string;
+}
+
+export function describeFxRate(
+  baseCurrency: string,
+  quoteCurrency: string,
+  selected: SelectedFxRate,
+): FxRateUsed {
+  return {
+    baseCurrency,
+    quoteCurrency,
+    rate: selected.rate,
+    rateDate: selected.rateDate,
+    source: selected.rateSource,
+    freshness: selected.freshness,
+  };
+}
+
+export class FxUsage {
+  private readonly rates = new Map<string, FxRateUsed>();
+
+  public add(rate: FxRateUsed | undefined): void {
+    if (!rate) return;
+    const key = JSON.stringify([
+      rate.baseCurrency,
+      rate.quoteCurrency,
+      rate.rateDate,
+      rate.rate,
+      rate.source,
+      rate.freshness,
+    ]);
+    this.rates.set(key, rate);
+  }
+
+  public include(usage: FxUsage): void {
+    for (const [key, rate] of usage.rates) this.rates.set(key, rate);
+  }
+
+  public fields(): { readonly fxRatesUsed?: readonly FxRateUsed[] } {
+    if (!this.rates.size) return {};
+    return {
+      fxRatesUsed: [...this.rates.keys()]
+        .sort()
+        .map((key) => this.rates.get(key)!),
+    };
+  }
+}
 
 export function multiplyMinorByRate(
   amountMinorStr: string,

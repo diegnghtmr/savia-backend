@@ -1,5 +1,11 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
-import { multiplyMinorByRate } from '../platform/currency-conversion.js';
+import {
+  describeFxRate,
+  fxFreshnessSql,
+  multiplyMinorByRate,
+  type FxRateUsed,
+  type SelectedFxRate,
+} from '../platform/currency-conversion.js';
 import type {
   CompleteProcessingReportRunRecord,
   CreateQueuedReportRunRecord,
@@ -181,7 +187,7 @@ limit $4`;
     const sql = `
 select t.id::text as "transactionId", t.occurred_at as "occurredAt", t.type,
        t.status, t.amount_minor::text as "amountMinor", t.currency,
-       rates.rate,
+       rates.rate, rates."rateDate", rates."rateSource", rates.freshness,
        t.account_id::text as "accountId", coalesce(a.type, '') as "accountType",
        t.category_id::text as "categoryId", coalesce(tags.names, '{}') as tags,
        p.name as payee, t.created_by::text as "memberId",
@@ -195,13 +201,16 @@ left join lateral (
   from public.tags tag where tag.workspace_id = t.workspace_id and tag.id = any(coalesce(t.tag_ids, '{}'))
 ) tags on true
 left join lateral (
-  select rate::text as rate from public.exchange_rates
+  select rate::text as rate, to_char(effective_at at time zone 'UTC', 'YYYY-MM-DD') as "rateDate",
+         source as "rateSource", ${fxFreshnessSql('$5::timestamptz')} as freshness
+    from public.exchange_rates
    where workspace_id = t.workspace_id and base_currency = t.currency and quote_currency = w.base_currency
      and not (source = 'frankfurter' and effective_at <= $5::timestamptz - interval '72 hours')
    order by (effective_at <= $5::timestamptz) desc, case when effective_at <= $5::timestamptz then effective_at end desc, effective_at asc, id desc
    limit 1
 ) rates on t.currency <> w.base_currency
 where t.workspace_id = $1::uuid
+  and not t.excluded_from_reports
   and t.status in ('confirmed', 'reconciled')
   and exists (
     select 1 from public.ledger_postings p1
@@ -250,6 +259,20 @@ limit $6`;
           ? String(row.amountMinor)
           : multiplyMinorByRate(String(row.amountMinor), String(row.rate)),
       ),
+      ...(row.currency !== row.baseCurrency
+        ? {
+            fxRate: describeFxRate(
+              String(row.currency),
+              String(row.baseCurrency),
+              {
+                rate: String(row.rate),
+                rateDate: String(row.rateDate),
+                rateSource: String(row.rateSource),
+                freshness: row.freshness as SelectedFxRate['freshness'],
+              },
+            ),
+          }
+        : {}),
       accountId: String(row.accountId),
       accountType: String(row.accountType),
       categoryId: row.categoryId === null ? null : String(row.categoryId),
@@ -386,12 +409,14 @@ limit $6`;
           set status = 'completed',
               download_url = $3,
               expires_at = $4::timestamptz,
-              completed_at = $5::timestamptz
+              completed_at = $5::timestamptz,
+              fx_rates_used = $7::jsonb
         where workspace_id = $1::uuid
           and id = $2::uuid
           and job_id = $6::uuid
           and status = 'processing'
        returning id::text, definition_id::text as "definitionId", preset, status, format, snapshot_id::text as "snapshotId", download_url as "downloadUrl",
+                 fx_rates_used as "fxRatesUsed",
                  to_char(expires_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "expiresAt",
                  to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt"`,
       [
@@ -401,6 +426,7 @@ limit $6`;
         data.expiresAt.toISOString(),
         data.completedAt.toISOString(),
         jobId,
+        data.fxRatesUsed?.length ? JSON.stringify(data.fxRatesUsed) : null,
       ],
     );
     const row = result.rows[0];
@@ -419,6 +445,7 @@ limit $6`;
   ): Promise<ReportRun | undefined> {
     const result = await client.query<ReportRunRow>(
       `select id::text, definition_id::text as "definitionId", preset, status, format, snapshot_id::text as "snapshotId", download_url as "downloadUrl",
+              fx_rates_used as "fxRatesUsed",
               to_char(expires_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "expiresAt",
               to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt"
          from public.report_runs where workspace_id = $1::uuid and id = $2::uuid`,
@@ -438,6 +465,7 @@ interface ReportRunRow extends Record<string, unknown> {
   readonly downloadUrl: string | null;
   readonly expiresAt: string | null;
   readonly createdAt: string;
+  readonly fxRatesUsed?: readonly FxRateUsed[] | null;
 }
 
 function mapReportRun(row: ReportRunRow): ReportRun {
@@ -451,5 +479,8 @@ function mapReportRun(row: ReportRunRow): ReportRun {
     downloadUrl: row.downloadUrl,
     expiresAt: row.expiresAt,
     createdAt: row.createdAt,
+    ...(row.status === 'completed' && row.fxRatesUsed?.length
+      ? { fxRatesUsed: row.fxRatesUsed }
+      : {}),
   };
 }

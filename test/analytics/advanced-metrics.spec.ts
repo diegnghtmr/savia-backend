@@ -50,6 +50,10 @@ describe('buildIncomeStability', () => {
 
     expect(result).toEqual({
       monthsCounted: 0,
+      medianMonthlyIncomeMinor: 0n,
+      trendPercent: null,
+      regularityPercent: null,
+      sourceConcentration: [],
       meanMonthlyIncomeMinor: 0n,
       minMonthlyIncomeMinor: 0n,
       maxMonthlyIncomeMinor: 0n,
@@ -71,6 +75,10 @@ describe('buildIncomeStability', () => {
 
     expect(result).toEqual({
       monthsCounted: 1,
+      medianMonthlyIncomeMinor: 50000n,
+      trendPercent: null,
+      regularityPercent: 100,
+      sourceConcentration: [],
       meanMonthlyIncomeMinor: 50000n,
       minMonthlyIncomeMinor: 50000n,
       maxMonthlyIncomeMinor: 50000n,
@@ -98,6 +106,10 @@ describe('buildIncomeStability', () => {
 
     expect(result).toEqual({
       monthsCounted: 2,
+      medianMonthlyIncomeMinor: 0n,
+      trendPercent: null,
+      regularityPercent: 0,
+      sourceConcentration: [],
       meanMonthlyIncomeMinor: 0n,
       minMonthlyIncomeMinor: 0n,
       maxMonthlyIncomeMinor: 0n,
@@ -158,6 +170,10 @@ describe('buildIncomeStability', () => {
 
     expect(result).toEqual({
       monthsCounted: 3,
+      medianMonthlyIncomeMinor: 150000n,
+      trendPercent: 50,
+      regularityPercent: 100,
+      sourceConcentration: [],
       meanMonthlyIncomeMinor: 150000n,
       minMonthlyIncomeMinor: 100000n,
       maxMonthlyIncomeMinor: 200000n,
@@ -331,6 +347,29 @@ describe('buildQuarterlyAverageComparison', () => {
     expect(result[2].averageMonthlySavingsCapacityMinor).toBe(20000n);
     // Delta vs Q2: ((20000 - 5000) / 5000) * 100 = +300%
     expect(result[2].savingsCapacityDeltaPercentVsPreviousQuarter).toBe(300);
+  });
+
+  it('compares Q1 with the immediately preceding Q4 across a year boundary', () => {
+    const result = buildQuarterlyAverageComparison([
+      {
+        month: '2025-12-01',
+        incomeMinor: 100n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 100n,
+      },
+      {
+        month: '2026-01-01',
+        incomeMinor: 125n,
+        expensesMinor: 0n,
+        savingsCapacityMinor: 125n,
+      },
+    ]);
+
+    expect(result.map((point) => point.quarter)).toEqual([
+      '2025-Q4',
+      '2026-Q1',
+    ]);
+    expect(result[1].savingsCapacityDeltaPercentVsPreviousQuarter).toBe(25);
   });
 
   it('returns null delta when previous quarter average savings capacity is exactly 0', () => {
@@ -1155,6 +1194,8 @@ describe('buildDebtCostEvolution', () => {
     // January bucket
     expect(result.series[0]).toEqual({
       month: '2026-01-01',
+      principalPaidMinor: 0n,
+      paymentsMinor: 1200n,
       interestMinor: 1000n,
       feeMinor: 200n,
       totalCostMinor: 1200n,
@@ -1162,6 +1203,8 @@ describe('buildDebtCostEvolution', () => {
     // February bucket
     expect(result.series[1]).toEqual({
       month: '2026-02-01',
+      principalPaidMinor: 0n,
+      paymentsMinor: 1800n,
       interestMinor: 1500n,
       feeMinor: 300n,
       totalCostMinor: 1800n,
@@ -1169,6 +1212,8 @@ describe('buildDebtCostEvolution', () => {
     // March bucket: zero-filled
     expect(result.series[2]).toEqual({
       month: '2026-03-01',
+      principalPaidMinor: 0n,
+      paymentsMinor: 0n,
       interestMinor: 0n,
       feeMinor: 0n,
       totalCostMinor: 0n,
@@ -1221,12 +1266,16 @@ describe('buildDebtCostEvolution', () => {
     expect(result.series).toEqual([
       {
         month: '2026-04-01',
+        principalPaidMinor: 0n,
+        paymentsMinor: 0n,
         interestMinor: 0n,
         feeMinor: 0n,
         totalCostMinor: 0n,
       },
       {
         month: '2026-05-01',
+        principalPaidMinor: 0n,
+        paymentsMinor: 0n,
         interestMinor: 0n,
         feeMinor: 0n,
         totalCostMinor: 0n,
@@ -1407,7 +1456,14 @@ describe('buildFinancialCalendar', () => {
     expect(result.days[0].date).toBe('2026-03-15');
     expect(result.days[0].expectedOutflowMinor).toBe(7500n);
     // Ordered by kind ('debt_payment' < 'recurring_rule' < 'subscription'), then refId ('rule-a' < 'rule-b')
-    expect(result.days[0].items).toEqual([
+    expect(
+      result.days[0].items.map(({ kind, refId, label, amountMinor }) => ({
+        kind,
+        refId,
+        label,
+        amountMinor,
+      })),
+    ).toEqual([
       {
         kind: 'debt_payment',
         refId: 'debt-a',
@@ -1483,7 +1539,7 @@ describe('buildFinancialCalendar', () => {
     expect(result.totalExpectedOutflowMinor).toBe(5000n);
   });
 
-  it('excludes income-typed recurring templates entirely and retains only outflow types', () => {
+  it('counts scheduled income separately and excludes unsupported recurring types', () => {
     const from = '2026-05-01';
     const to = '2026-05-31';
     const rows: readonly ScheduledOutflowRow[] = [
@@ -1568,11 +1624,16 @@ describe('buildFinancialCalendar', () => {
 
     const result = buildFinancialCalendar(from, to, rows);
 
-    // M2 test: income-typed recurring templates excluded entirely
-    expect(result.days).toHaveLength(3);
-    expect(
-      result.days.some((d) => d.items.some((i) => i.refId === 'rule-income')),
-    ).toBe(false);
+    expect(result.days).toHaveLength(4);
+    const income = result.days
+      .flatMap((day) => day.items)
+      .find((item) => item.refId === 'rule-income');
+    expect(income).toMatchObject({
+      kind: 'income',
+      direction: 'inflow',
+      state: 'scheduled',
+    });
+    expect(result.totalExpectedInflowMinor).toBe(income?.amountMinor);
     expect(
       result.days.some((d) => d.items.some((i) => i.refId === 'rule-refund')),
     ).toBe(false);
@@ -1587,7 +1648,7 @@ describe('buildFinancialCalendar', () => {
     expect(result.totalExpectedOutflowMinor).toBe(7500n); // 1500 + 2500 + 3500
   });
 
-  it('requires an explicitly allowed outflow type for recurring templates and counts missing or non-outflow types as unreadable', () => {
+  it('requires an explicitly recognized movement type for recurring templates', () => {
     const from = '2026-04-01';
     const to = '2026-04-30';
     const rows: readonly ScheduledOutflowRow[] = [
@@ -1658,15 +1719,15 @@ describe('buildFinancialCalendar', () => {
 
     const result = buildFinancialCalendar(from, to, rows);
 
-    // 3 invalid/unreadable templates (no type, null type, income) counted
-    expect(result.recurringRulesWithUnreadableTemplate).toBe(3);
-    // Only the 3 allowed outflow types emitted
-    expect(result.days).toHaveLength(3);
+    expect(result.recurringRulesWithUnreadableTemplate).toBe(2);
+    expect(result.days).toHaveLength(4);
+    expect(result.totalExpectedInflowMinor).toBe(999n);
     expect(result.totalExpectedOutflowMinor).toBe(6000n); // 1000 + 2000 + 3000
     const emittedRefIds = result.days.flatMap((d) =>
       d.items.map((i) => i.refId),
     );
     expect(emittedRefIds).toEqual([
+      'rule-income-type',
       'rule-expense-type',
       'rule-debt-pmt-type',
       'rule-fund-contrib-type',

@@ -1,5 +1,10 @@
+import { FxUsage } from '../platform/currency-conversion.js';
 import {
   GRANULARITY,
+  type ActiveSubscriptionRow,
+  type AnalyticsFlowRow,
+  type AnnualSubscriptionItem,
+  type BookedMoneyRow,
   type BalanceProjection,
   type BalanceProjectionPoint,
   type ConvertedDebtCostRow,
@@ -7,14 +12,22 @@ import {
   type ConvertedSubscriptionRow,
   type DebtCostEvolution,
   type DebtCostEvolutionPoint,
+  type DebtOutlook,
+  type DebtTermsRow,
+  type HistoricPositionRow,
+  type NetWorthPoint,
+  type SavingsComponents,
   type FinancialCalendar,
   type FinancialCalendarDay,
   type IncomeStability,
+  type Money,
   type MonthlyCapacityPoint,
   type QuarterlyAveragePoint,
   type RecurringVsVariable,
   type ScheduledOutflowItem,
   type ScheduledOutflowRow,
+  type SpendingHeatmapCell,
+  type SubscriptionAnnualCost,
   type SubscriptionPriceIncreaseItem,
   type SubscriptionPriceIncreases,
   type SubscriptionPriceRow,
@@ -68,7 +81,68 @@ export function bigintSqrt(value: bigint): bigint {
  */
 export function buildIncomeStability(
   monthlySeries: readonly MonthlyCapacityPoint[],
+  rows: readonly AnalyticsFlowRow[] = [],
+  currency = 'USD',
 ): IncomeStability {
+  const counts = monthlySeries
+    .map((point) => point.incomeMinor)
+    .sort(compareMinor);
+  const middle = Math.floor(counts.length / 2);
+  const first = monthlySeries[0]?.incomeMinor;
+  const last = monthlySeries.at(-1)?.incomeMinor;
+  const months = new Set(monthlySeries.map(({ month }) => month));
+  const sources = new Map<string | null, bigint>();
+  let totalIncome = 0n;
+  for (const row of rows) {
+    if (
+      row.type !== 'income' ||
+      row.amountMinor <= 0n ||
+      !months.has(truncateToBucketStart(row.occurredAt, GRANULARITY.MONTH))
+    )
+      continue;
+    const payeeId = row.payeeId ?? null;
+    sources.set(payeeId, (sources.get(payeeId) ?? 0n) + row.amountMinor);
+    totalIncome += row.amountMinor;
+  }
+  return {
+    ...buildIncomeVariation(monthlySeries),
+    medianMonthlyIncomeMinor:
+      counts.length === 0
+        ? 0n
+        : counts.length % 2 === 1
+          ? counts[middle]
+          : roundDivHalfAwayFromZero(counts[middle - 1] + counts[middle], 2n),
+    trendPercent:
+      first && last !== undefined && counts.length > 1
+        ? computeQuarterlyDeltaPercent(last, first)
+        : null,
+    regularityPercent: percentage(
+      BigInt(counts.filter((amount) => amount > 0n).length),
+      BigInt(counts.length),
+    ),
+    sourceConcentration: [...sources]
+      .sort(
+        ([a, x], [b, y]) =>
+          compareMinor(y, x) || (a ?? '').localeCompare(b ?? ''),
+      )
+      .map(([payeeId, amount]) => ({
+        payeeId,
+        amount: asMoney(amount, currency),
+        sharePercent: percentage(amount, totalIncome)!,
+      })),
+  };
+}
+
+function buildIncomeVariation(
+  monthlySeries: readonly MonthlyCapacityPoint[],
+): Pick<
+  IncomeStability,
+  | 'monthsCounted'
+  | 'meanMonthlyIncomeMinor'
+  | 'minMonthlyIncomeMinor'
+  | 'maxMonthlyIncomeMinor'
+  | 'coefficientOfVariationPercent'
+> {
   const monthsCounted = monthlySeries.length;
   if (monthsCounted === 0) {
     return {
@@ -209,8 +283,7 @@ function computeQuarterlyDeltaPercent(
  * - Averages: integer, half-away-from-zero, divided by monthsCounted.
  * - savingsCapacityDeltaPercentVsPreviousQuarter:
  *   ((current - previous) / |previous|) * 100, 2 decimals, half-away-from-zero.
- *   - null for first quarter in series
- *   - null when previous quarter average is 0
+ *   - null when the immediately preceding calendar quarter is absent or its average is 0
  *   - uses |previous| in denominator
  * - Order: ascending by quarter. Deterministic.
  */
@@ -221,13 +294,12 @@ export function buildQuarterlyAverageComparison(
     return [];
   }
 
-  // Group monthly points by calendar quarter (YYYY-Qn)
-  const quarterGroups = new Map<string, MonthlyCapacityPoint[]>();
+  // Use a calendar quarter ordinal so adjacency also works across years.
+  const quarterGroups = new Map<number, MonthlyCapacityPoint[]>();
   for (const point of monthlySeries) {
-    const year = point.month.slice(0, 4);
-    const monthNum = parseInt(point.month.slice(5, 7), 10);
-    const quarterNum = Math.floor((monthNum - 1) / 3) + 1;
-    const quarterKey = `${year}-Q${quarterNum}`;
+    const year = Number(point.month.slice(0, 4));
+    const monthNum = Number(point.month.slice(5, 7));
+    const quarterKey = year * 4 + Math.floor((monthNum - 1) / 3);
 
     let group = quarterGroups.get(quarterKey);
     if (!group) {
@@ -237,16 +309,13 @@ export function buildQuarterlyAverageComparison(
     group.push(point);
   }
 
-  // Deterministic ascending quarter ordering
-  const sortedQuarters = [...quarterGroups.keys()].sort((a, b) =>
-    a.localeCompare(b),
-  );
-
+  const sortedQuarters = [...quarterGroups.keys()].sort((a, b) => a - b);
   const results: QuarterlyAveragePoint[] = [];
 
-  for (let i = 0; i < sortedQuarters.length; i += 1) {
-    const quarter = sortedQuarters[i];
-    const points = quarterGroups.get(quarter)!;
+  for (const [i, quarterKey] of sortedQuarters.entries()) {
+    const year = String(Math.floor(quarterKey / 4)).padStart(4, '0');
+    const quarter = `${year}-Q${(quarterKey % 4) + 1}`;
+    const points = quarterGroups.get(quarterKey)!;
     const monthsCounted = points.length;
     const monthsCountedBigInt = BigInt(monthsCounted);
 
@@ -274,7 +343,7 @@ export function buildQuarterlyAverageComparison(
     );
 
     let savingsCapacityDeltaPercentVsPreviousQuarter: number | null = null;
-    if (i > 0) {
+    if (sortedQuarters[i - 1] === quarterKey - 1) {
       const previousQuarterSavings =
         results[i - 1].averageMonthlySavingsCapacityMinor;
       savingsCapacityDeltaPercentVsPreviousQuarter =
@@ -295,6 +364,49 @@ export function buildQuarterlyAverageComparison(
   }
 
   return results;
+}
+
+export function asMoney(amount: bigint, currency: string): Money {
+  return { amountMinor: amount.toString(), currency };
+}
+
+function compareMinor(a: bigint, b: bigint): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function percentage(numerator: bigint, denominator: bigint): number | null {
+  if (denominator === 0n) return null;
+  const percent =
+    Number(roundDivHalfAwayFromZero(numerator * 10000n, denominator)) / 100;
+  return Number.isFinite(percent) ? percent : null;
+}
+
+export function buildSpendingHeatmap(
+  rows: readonly ConvertedFlowRow[],
+  currency: string,
+): readonly SpendingHeatmapCell[] {
+  const cells = new Map<
+    number,
+    { weekday: number; dayOfMonth: number; amount: bigint; count: number }
+  >();
+  for (const row of rows) {
+    if (row.type !== 'expense' && row.type !== 'refund') continue;
+    const weekday = ((row.occurredAt.getUTCDay() + 6) % 7) + 1;
+    const dayOfMonth = row.occurredAt.getUTCDate();
+    const key = weekday * 32 + dayOfMonth;
+    const cell = cells.get(key) ?? {
+      weekday,
+      dayOfMonth,
+      amount: 0n,
+      count: 0,
+    };
+    cell.amount += row.type === 'expense' ? row.amountMinor : -row.amountMinor;
+    cell.count++;
+    cells.set(key, cell);
+  }
+  return [...cells.values()]
+    .sort((a, b) => a.weekday - b.weekday || a.dayOfMonth - b.dayOfMonth)
+    .map((cell) => ({ ...cell, amount: asMoney(cell.amount, currency) }));
 }
 
 interface MutableWeekdayHeatmapPoint {
@@ -451,6 +563,73 @@ const FREQUENCY_PER_YEAR: Readonly<Record<string, bigint>> = {
   annually: 1n,
 };
 
+function annualFrequency(frequency: string): bigint | undefined {
+  const key = frequency.trim().toLowerCase();
+  return Object.hasOwn(FREQUENCY_PER_YEAR, key)
+    ? FREQUENCY_PER_YEAR[key]
+    : undefined;
+}
+
+export async function buildSubscriptionAnnualCost(
+  rows: readonly ActiveSubscriptionRow[],
+  currency: string,
+  convert: (amount: bigint, from: string) => Promise<bigint | undefined>,
+  missingData: Set<string>,
+): Promise<SubscriptionAnnualCost> {
+  const items: AnnualSubscriptionItem[] = [];
+  let total = 0n;
+  for (const row of rows) {
+    if (!row.id || !row.payeeName) continue;
+    const currentAmount = asMoney(
+      BigInt(row.currentAmountMinor),
+      row.currentCurrency,
+    );
+    const previousAmount =
+      row.previousAmountMinor != null && row.previousCurrency
+        ? asMoney(BigInt(row.previousAmountMinor), row.previousCurrency)
+        : undefined;
+    const perYear = annualFrequency(row.frequency);
+    let annualCost: Money | null = null;
+    if (perYear === undefined) {
+      missingData.add(`Unknown frequency for subscription ${row.id}.`);
+    } else {
+      const converted = await convert(
+        BigInt(row.currentAmountMinor) * perYear,
+        row.currentCurrency,
+      );
+      if (converted !== undefined) {
+        annualCost = asMoney(converted, currency);
+        total += converted;
+      }
+    }
+    items.push({
+      subscriptionId: row.id,
+      payeeName: row.payeeName,
+      currentAmount,
+      ...(previousAmount
+        ? {
+            previousAmount,
+            increasePercent: computeIncreasePercent(
+              currentAmount,
+              previousAmount,
+            ),
+          }
+        : {}),
+      frequency: row.frequency,
+      ...(row.nextExpectedDate
+        ? { nextExpectedDate: row.nextExpectedDate }
+        : {}),
+      annualCost,
+    });
+  }
+  items.sort(
+    (a, b) =>
+      a.payeeName.localeCompare(b.payeeName) ||
+      a.subscriptionId.localeCompare(b.subscriptionId),
+  );
+  return { items, totalAnnualCost: asMoney(total, currency) };
+}
+
 /**
  * §3.2 buildRecurringVsVariable
  * Pure builder that calculates committed recurring spend vs variable expenses.
@@ -484,8 +663,7 @@ export function buildRecurringVsVariable(
   let unclassifiedSubscriptionCount = 0;
 
   for (const sub of subscriptions) {
-    const key = sub.frequency.trim().toLowerCase();
-    const perYear = FREQUENCY_PER_YEAR[key];
+    const perYear = annualFrequency(sub.frequency);
 
     if (perYear === undefined) {
       unclassifiedSubscriptionCount += 1;
@@ -549,6 +727,7 @@ export function buildRecurringVsVariable(
 }
 
 interface DebtCostAccumulator {
+  principalPaidMinor: bigint;
   interestMinor: bigint;
   feeMinor: bigint;
 }
@@ -569,12 +748,20 @@ export function buildDebtCostEvolution(
   from: string,
   to: string,
   rows: readonly ConvertedDebtCostRow[],
+  debtOutlook: readonly DebtOutlook[] = [],
+  unknownMonths: ReadonlySet<string> = new Set(),
 ): DebtCostEvolution {
-  const bucketPeriods = generateBucketPeriods(from, to, GRANULARITY.MONTH);
+  const bucketPeriods =
+    from <= to ? generateBucketPeriods(from, to, GRANULARITY.MONTH) : [];
 
   const bucketMap = new Map<string, DebtCostAccumulator>();
   for (const period of bucketPeriods) {
-    bucketMap.set(period, { interestMinor: 0n, feeMinor: 0n });
+    if (!unknownMonths.has(period))
+      bucketMap.set(period, {
+        principalPaidMinor: 0n,
+        interestMinor: 0n,
+        feeMinor: 0n,
+      });
   }
 
   for (const row of rows) {
@@ -587,6 +774,7 @@ export function buildDebtCostEvolution(
       continue;
     }
 
+    bucket.principalPaidMinor += row.principalPaidMinor ?? 0n;
     bucket.interestMinor += row.interestMinor;
     bucket.feeMinor += row.feeMinor;
   }
@@ -594,32 +782,227 @@ export function buildDebtCostEvolution(
   let totalInterestMinor = 0n;
   let totalFeeMinor = 0n;
 
-  const series: DebtCostEvolutionPoint[] = bucketPeriods.map((month) => {
-    const bucket = bucketMap.get(month)!;
+  const series: DebtCostEvolutionPoint[] = [];
+  for (const [month, bucket] of bucketMap) {
     totalInterestMinor += bucket.interestMinor;
     totalFeeMinor += bucket.feeMinor;
-
-    return {
+    const totalCostMinor = bucket.interestMinor + bucket.feeMinor;
+    series.push({
       month,
-      interestMinor: bucket.interestMinor,
-      feeMinor: bucket.feeMinor,
-      totalCostMinor: bucket.interestMinor + bucket.feeMinor,
-    };
-  });
-
+      ...bucket,
+      totalCostMinor,
+      paymentsMinor: bucket.principalPaidMinor + totalCostMinor,
+    });
+  }
   return {
     series,
     totalInterestMinor,
     totalFeeMinor,
     totalCostMinor: totalInterestMinor + totalFeeMinor,
+    debtOutlook,
   };
 }
 
-const OUTFLOW_TYPES: ReadonlySet<string> = new Set([
-  'expense',
-  'debt_payment',
-  'fund_contribution',
-]);
+export function buildSavingsComponents(
+  monthly: readonly MonthlyCapacityPoint[],
+  flows: readonly AnalyticsFlowRow[],
+  obligations: readonly BookedMoneyRow[],
+): readonly SavingsComponents[] {
+  const months = new Map(
+    monthly.map((point) => [
+      point.month,
+      {
+        ...point,
+        recurringIncomeMinor: 0n,
+        essentialExpensesMinor: 0n,
+        discretionaryExpensesMinor: 0n,
+        obligationsMinor: 0n,
+        currentSavingsMinor: 0n,
+      },
+    ]),
+  );
+  for (const row of flows) {
+    const month = months.get(
+      truncateToBucketStart(row.occurredAt, GRANULARITY.MONTH),
+    );
+    if (!month) continue;
+    if (row.type === 'income') {
+      if (row.recurrent) month.recurringIncomeMinor += row.amountMinor;
+    } else {
+      const net = row.type === 'refund' ? -row.amountMinor : row.amountMinor;
+      if (row.essential) month.essentialExpensesMinor += net;
+      else if (!row.extraordinary) month.discretionaryExpensesMinor += net;
+    }
+  }
+  for (const row of obligations) {
+    const month = months.get(
+      truncateToBucketStart(row.occurredAt, GRANULARITY.MONTH),
+    );
+    if (!month) continue;
+    if (row.type === 'debt_payment') {
+      month.obligationsMinor += row.amountMinor;
+      month.savingsCapacityMinor -= row.amountMinor;
+    } else if (row.type === 'fund_contribution')
+      month.currentSavingsMinor += row.amountMinor;
+  }
+  return [...months.values()];
+}
+
+export function classifyBookedRecurring(
+  from: string,
+  to: string,
+  flows: readonly AnalyticsFlowRow[],
+  subscriptions: readonly ActiveSubscriptionRow[],
+): RecurringVsVariable {
+  let totalExpensesMinor = 0n;
+  let committedMinor = 0n;
+  for (const row of flows) {
+    if (row.type === 'income') continue;
+    const amount = row.type === 'refund' ? -row.amountMinor : row.amountMinor;
+    totalExpensesMinor += amount;
+    if (row.recurrent) committedMinor += amount;
+  }
+  return {
+    periodStart: from,
+    periodEnd: to,
+    committedMinor,
+    variableMinor: totalExpensesMinor - committedMinor,
+    totalExpensesMinor,
+    committedPercent: percentage(committedMinor, totalExpensesMinor),
+    consideredSubscriptionCount: subscriptions.length,
+    unclassifiedSubscriptionCount: subscriptions.filter(
+      (row) => !row.observationId && !row.recurringRuleId,
+    ).length,
+  };
+}
+
+export function buildDebtOutlook(row: DebtTermsRow): DebtOutlook {
+  const unknown = {
+    debtId: row.id,
+    estimatedFutureCost: null,
+    estimatedRemainingMonths: null,
+  };
+  let balance = BigInt(row.outstandingBalanceMinor);
+  const result = (interest: bigint, months: number): DebtOutlook => ({
+    debtId: row.id,
+    estimatedFutureCost: asMoney(interest, row.currency),
+    estimatedRemainingMonths: months,
+  });
+  if (balance === 0n) return result(0n, 0);
+  if (
+    row.rateType !== 'fixed' ||
+    row.minimumPaymentMinor === null ||
+    (row.frequency && row.frequency !== 'monthly')
+  )
+    return unknown;
+  const installment = BigInt(row.minimumPaymentMinor);
+  const [integer, fraction = ''] = row.annualRate.split('.');
+  if (!/^\d+$/.test(integer) || (fraction && !/^\d+$/.test(fraction)))
+    return unknown;
+  const rate = BigInt(integer + fraction);
+  const denominator = 12n * 10n ** BigInt(fraction.length);
+  let totalInterest = 0n;
+  for (let month = 1; month <= 1200; month++) {
+    const interest = roundDivHalfAwayFromZero(balance * rate, denominator);
+    if (installment <= interest) return unknown;
+    totalInterest += interest;
+    balance += interest - installment;
+    if (balance <= 0n) return result(totalInterest, month);
+  }
+  return unknown;
+}
+
+export async function buildNetWorthHistory(
+  rows: readonly HistoricPositionRow[],
+  dates: readonly string[],
+  currency: string,
+  convert: (
+    amount: bigint,
+    from: string,
+    date: string,
+    applied: FxUsage,
+  ) => Promise<bigint | undefined>,
+  missingData: Set<string>,
+  usage: FxUsage,
+): Promise<readonly NetWorthPoint[]> {
+  const byDate = new Map<string, HistoricPositionRow[]>();
+  for (const row of rows) {
+    const bucket = byDate.get(row.date) ?? [];
+    bucket.push(row);
+    byDate.set(row.date, bucket);
+  }
+  async function value(
+    positions: readonly HistoricPositionRow[],
+    date: string,
+  ) {
+    let assets = 0n,
+      debts = 0n;
+    let complete = true;
+    const applied = new FxUsage();
+    for (const row of positions) {
+      const amount = await convert(
+        BigInt(row.amountMinor),
+        row.currency,
+        date,
+        applied,
+      );
+      if (amount === undefined) complete = false;
+      else if (row.kind === 'debt') debts += amount;
+      else if (amount < 0n) debts -= amount;
+      else assets += amount;
+    }
+    if (!complete) return undefined;
+    usage.include(applied);
+    return { assets, debts, netWorth: assets - debts };
+  }
+  const series: NetWorthPoint[] = [];
+  let previous:
+    | { positions: readonly HistoricPositionRow[]; worth: bigint }
+    | undefined;
+  for (const date of dates) {
+    const positions = byDate.get(date);
+    if (!positions?.length) {
+      missingData.add(`No recorded accounts or debts at ${date}.`);
+      previous = undefined;
+      continue;
+    }
+    const current = await value(positions, date);
+    if (!current) {
+      previous = undefined;
+      continue;
+    }
+    const revalued = previous && (await value(previous.positions, date));
+    series.push({
+      date,
+      assets: asMoney(current.assets, currency),
+      debts: asMoney(current.debts, currency),
+      netWorth: asMoney(current.netWorth, currency),
+      fxValuationChange:
+        revalued && previous
+          ? asMoney(revalued.netWorth - previous.worth, currency)
+          : null,
+    });
+    previous = { positions, worth: current.netWorth };
+  }
+  return series;
+}
+
+export function calendarMovement(
+  type: string,
+): Pick<ScheduledOutflowItem, 'kind' | 'direction'> | undefined {
+  switch (type) {
+    case 'income':
+      return { kind: 'income', direction: 'inflow' };
+    case 'expense':
+      return { kind: 'recurring_rule', direction: 'outflow' };
+    case 'debt_payment':
+      return { kind: 'debt_payment', direction: 'outflow' };
+    case 'fund_contribution':
+      return { kind: 'fund_contribution', direction: 'outflow' };
+    default:
+      return undefined;
+  }
+}
 
 const INTEGER_AMOUNT_PATTERN = /^-?[0-9]+$/;
 
@@ -688,7 +1071,20 @@ export function buildFinancialCalendar(
       continue;
     }
 
-    if (row.kind === 'debt_payment') {
+    if (row.kind === 'reminder') {
+      const items = daysMap.get(dateStr) ?? [];
+      items.push({
+        kind: row.kind,
+        refId: row.refId,
+        label: row.label,
+        amountMinor: null,
+        state: 'scheduled',
+        direction: 'none',
+      });
+      daysMap.set(dateStr, items);
+      continue;
+    }
+    if (row.kind === 'installment' || row.kind === 'debt_payment') {
       if (row.amountMinor === null || row.amountMinor === undefined) {
         countedDebtsWithoutScheduledAmount += 1;
         continue;
@@ -717,8 +1113,10 @@ export function buildFinancialCalendar(
         refId: row.refId,
         label: row.label,
         amountMinor: positiveAmount,
+        state: row.state ?? 'scheduled',
+        direction: row.direction ?? 'outflow',
       });
-    } else if (row.kind === 'subscription') {
+    } else if (row.kind !== 'recurring_rule') {
       if (row.amountMinor === null || row.amountMinor === undefined) {
         continue;
       }
@@ -745,17 +1143,17 @@ export function buildFinancialCalendar(
         refId: row.refId,
         label: row.label,
         amountMinor: positiveAmount,
+        state: row.state ?? 'scheduled',
+        direction: row.direction ?? 'outflow',
       });
-    } else if (row.kind === 'recurring_rule') {
+    } else {
       if (row.template) {
         const templateType = row.template.type;
         // An allow-list must require the known-good, never merely reject the known-bad.
         // A missing discriminator is not evidence that a charge is an outflow, and this
         // column guarantees only `jsonb not null`.
-        if (
-          typeof templateType !== 'string' ||
-          !OUTFLOW_TYPES.has(templateType)
-        ) {
+        const movement = calendarMovement(templateType ?? '');
+        if (!movement) {
           countedUnreadableTemplate += 1;
           continue;
         }
@@ -779,10 +1177,11 @@ export function buildFinancialCalendar(
           daysMap.set(dateStr, dayItems);
         }
         dayItems.push({
-          kind: row.kind,
+          ...movement,
           refId: row.refId,
           label: row.label,
           amountMinor: positiveAmount,
+          state: 'scheduled',
         });
       } else {
         if (row.amountMinor === null || row.amountMinor === undefined) {
@@ -813,6 +1212,8 @@ export function buildFinancialCalendar(
           refId: row.refId,
           label: row.label,
           amountMinor: positiveAmount,
+          state: 'scheduled',
+          direction: 'outflow',
         });
       }
     }
@@ -834,16 +1235,15 @@ export function buildFinancialCalendar(
       return a.refId.localeCompare(b.refId);
     });
 
-    let dayExpectedOutflowMinor = 0n;
+    let expectedOutflowMinor = 0n;
+    let expectedInflowMinor = 0n;
     for (const item of items) {
-      dayExpectedOutflowMinor += item.amountMinor;
+      if (item.state !== 'scheduled' || item.amountMinor === null) continue;
+      if (item.direction === 'outflow')
+        expectedOutflowMinor += item.amountMinor;
+      if (item.direction === 'inflow') expectedInflowMinor += item.amountMinor;
     }
-
-    days.push({
-      date,
-      expectedOutflowMinor: dayExpectedOutflowMinor,
-      items,
-    });
+    days.push({ date, expectedOutflowMinor, expectedInflowMinor, items });
   }
 
   // Derived from days, so the total cannot diverge from its parts by construction.
@@ -858,6 +1258,10 @@ export function buildFinancialCalendar(
     periodEnd: to,
     days,
     totalExpectedOutflowMinor,
+    totalExpectedInflowMinor: days.reduce(
+      (sum, day) => sum + day.expectedInflowMinor,
+      0n,
+    ),
     debtsWithoutScheduledAmount:
       debtsWithoutScheduledAmount + countedDebtsWithoutScheduledAmount,
     recurringRulesWithUnreadableTemplate:
