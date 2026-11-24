@@ -308,12 +308,22 @@ export class PgTransaction implements OnApplicationShutdown {
 
   public async runAsQueueConsumer<T>(
     callback: (client: TransactionClient) => Promise<T>,
-    optionsOrTimeout?: { timeoutMs?: number } | number,
+    optionsOrTimeout?:
+      | { timeoutMs?: number }
+      | { holdUntilCallbackSettles: true }
+      | number,
   ): Promise<T> {
+    const holdUntilCallbackSettles =
+      typeof optionsOrTimeout === 'object' &&
+      optionsOrTimeout !== null &&
+      'holdUntilCallbackSettles' in optionsOrTimeout &&
+      optionsOrTimeout.holdUntilCallbackSettles === true;
     const effectiveTimeoutMs =
       typeof optionsOrTimeout === 'number'
         ? optionsOrTimeout
-        : optionsOrTimeout?.timeoutMs;
+        : optionsOrTimeout && 'timeoutMs' in optionsOrTimeout
+          ? optionsOrTimeout.timeoutMs
+          : undefined;
     if (effectiveTimeoutMs !== undefined) {
       return this.runWithLifetimeTimeout(
         effectiveTimeoutMs,
@@ -393,12 +403,23 @@ export class PgTransaction implements OnApplicationShutdown {
       began = true;
       await client.query('SET LOCAL ROLE savia_worker');
       await this.configureTimeouts(client);
-      const callbackDeadline = monotonicDeadline(this.timeouts.callbackTimeoutMs);
+      if (holdUntilCallbackSettles) {
+        // An advisory-lock owner may be waiting for an issued external write.
+        // Keep query timeouts, but do not end the lock-holding transaction
+        // just because the callback is still waiting for that write to settle.
+        await client.query('SET LOCAL idle_in_transaction_session_timeout = 0');
+        await client.query('SET LOCAL transaction_timeout = 0');
+      }
+      const callbackDeadline = holdUntilCallbackSettles
+        ? undefined
+        : monotonicDeadline(this.timeouts.callbackTimeoutMs);
       let active = true;
       const transactionClient: TransactionClient = {
         query: async <Row extends Record<string, unknown>>(text: string, values?: readonly unknown[]) => {
+          if (!active) throw deadlineError();
+          if (callbackDeadline === undefined) return client.query<Row>(text, values);
           const remaining = remainingMilliseconds(callbackDeadline);
-          if (!active || remaining < 1) throw deadlineError();
+          if (remaining < 1) throw deadlineError();
           if (!text.trim().toUpperCase().startsWith('ROLLBACK TO')) {
             await client.query('select set_config($1, $2::text, true)', [
               'statement_timeout',
@@ -409,10 +430,10 @@ export class PgTransaction implements OnApplicationShutdown {
           return client.query<Row>(text, values);
         },
       };
-      const result = await deadline(
-        callback(transactionClient),
-        remainingMilliseconds(callbackDeadline),
-        () => (active = false),
+      const work = callback(transactionClient);
+      const result = await (callbackDeadline === undefined
+        ? work
+        : deadline(work, remainingMilliseconds(callbackDeadline), () => (active = false))
       ).finally(() => (active = false));
       try {
         await client.query('COMMIT');
@@ -734,7 +755,7 @@ function isDatabaseTimeout(error: unknown): boolean {
   if (
     error instanceof Error &&
     'code' in error &&
-    ['55P03', '57014', '25P03'].includes(String(error.code))
+    ['55P03', '57014', '25P03', '25P04'].includes(String(error.code))
   ) {
     return true;
   }
@@ -742,11 +763,7 @@ function isDatabaseTimeout(error: unknown): boolean {
 }
 function databaseTimeout(error: unknown): Error {
   if (error instanceof TransactionTimeoutError) return error;
-  if (
-    error instanceof Error &&
-    'code' in error &&
-    ['55P03', '57014', '25P03'].includes(String(error.code))
-  ) {
+  if (isDatabaseTimeout(error)) {
     return new TransactionTimeoutError(
       'PostgreSQL transaction timed out.',
       error,

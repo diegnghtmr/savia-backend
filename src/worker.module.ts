@@ -2,6 +2,8 @@ import { Inject, Injectable, Module } from '@nestjs/common';
 import { FrankfurterFxAdapter } from './currencies/frankfurter-fx.adapter.js';
 import { FrankfurterRateJob } from './currencies/frankfurter-rate-job.js';
 import { PostgresFrankfurterRateAdapter } from './currencies/postgres-frankfurter-rate.adapter.js';
+import { PostgresBudgetAdapter } from './budgets/postgres-budget.adapter.js';
+import { PostgresDebtAdapter } from './debts/postgres-debt.adapter.js';
 import { ForecastJobHandler } from './forecasts/forecast-job.handler.js';
 import { ForecastWorkerModule } from './forecasts/forecast-worker.module.js';
 import { PostgresJobsAdapter } from './jobs/postgres-jobs.adapter.js';
@@ -16,6 +18,7 @@ import { ReportJobHandler } from './reports/report-job.handler.js';
 import { ReportWorkerModule } from './reports/report-worker.module.js';
 import { ExportJobHandler } from './exports/export-job.handler.js';
 import { ExportWorkerModule } from './exports/export-worker.module.js';
+import { WorkspaceBackupHandler } from './exports/workspace-backup.handler.js';
 import { ReceiptOcrJobHandler } from './receipts/receipt-ocr-job.handler.js';
 import { ReceiptWorkerModule } from './receipts/receipt-worker.module.js';
 
@@ -49,7 +52,10 @@ class ScheduledWorkerRunner extends JobRunner {
     WorkerPlatformModule,
     ForecastWorkerModule,
     ReportWorkerModule,
-    ExportWorkerModule,
+    ExportWorkerModule.withReaders({
+      budgets: new PostgresBudgetAdapter(),
+      debts: new PostgresDebtAdapter(),
+    }),
     ReceiptWorkerModule,
   ],
   providers: [
@@ -64,14 +70,16 @@ class ScheduledWorkerRunner extends JobRunner {
         ForecastJobHandler,
         ReportJobHandler,
         ExportJobHandler,
+        WorkspaceBackupHandler,
         ReceiptOcrJobHandler,
       ],
       useFactory: (
         forecast: ForecastJobHandler,
         report: ReportJobHandler,
         exportJob: ExportJobHandler,
+        workspaceBackup: WorkspaceBackupHandler,
         receiptOcr: ReceiptOcrJobHandler,
-      ) => [forecast, report, exportJob, receiptOcr],
+      ) => [forecast, report, exportJob, workspaceBackup, receiptOcr],
     },
     {
       provide: FrankfurterRateJob,

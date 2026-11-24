@@ -24,6 +24,22 @@ describe('export command validation', () => {
       createExportCommand({ format: 'xlsx', resource: 'accounts' }).format,
     ).toBe('xlsx');
   });
+  it.each(['budgets', 'debts'] as const)(
+    'preserves nullable UTC date bounds and report-only IDs for %s',
+    (resource) => {
+      const input = { format: 'csv', resource, from: '2026-06-01', to: null };
+      expect(createExportCommand(input)).toEqual({
+        ...input,
+        resourceId: null,
+      });
+      expect(() =>
+        createExportCommand({
+          ...input,
+          resourceId: '00000000-0000-0000-0000-000000000001',
+        }),
+      ).toThrow(ExportCommandValidationError);
+    },
+  );
   it.each([
     [
       {

@@ -1,4 +1,8 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import type {
+  ExportReader,
+  ExportReaderQuery,
+} from '../platform/export-reader.port.js';
 import { buildCategorySpendSql } from '../platform/category-spend-query.js';
 import {
   CURRENCY_RATE_SELECTION_SQL,
@@ -38,7 +42,19 @@ function map(row: Row, allocations: readonly BudgetAllocation[] = []): Budget {
     version: Number(row.version),
   };
 }
-export class PostgresBudgetAdapter implements BudgetStore {
+export class PostgresBudgetAdapter implements BudgetStore, ExportReader {
+  public async readExportPage(
+    client: TransactionClient,
+    query: ExportReaderQuery,
+  ) {
+    const page = await this.listBudgets(client, query, query.limit);
+    return page.map(({ budget, cursorAt }) => ({
+      id: budget.id,
+      cursorAt,
+      row: { ...budget },
+    }));
+  }
+
   public async readActiveRole(
     c: TransactionClient,
     w: string,

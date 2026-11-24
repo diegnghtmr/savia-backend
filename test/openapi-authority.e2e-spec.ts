@@ -184,7 +184,7 @@ describe('executable OpenAPI authority', () => {
   });
 
   it.skipIf(!authorityAvailable)(
-    'mirrors budget response schemas and MCP OAuth scopes semantically',
+    'mirrors backup operations, budget response schemas and MCP OAuth scopes',
     () => {
       const bundle = (path: string) => {
         const directory = mkdtempSync(
@@ -216,6 +216,9 @@ describe('executable OpenAPI authority', () => {
           string,
           Record<string, unknown>
         >;
+        const oauth = schemas.securitySchemes?.mcpOAuth as
+          | { flows: { authorizationCode: { scopes: unknown } } }
+          | undefined;
         const responseContent = (responses: unknown) =>
           Object.fromEntries(
             Object.entries(
@@ -228,8 +231,11 @@ describe('executable OpenAPI authority', () => {
           list: responseContent(paths['/v1/budgets']?.get?.responses),
           create: responseContent(paths['/v1/budgets']?.post?.responses),
           get: responseContent(paths['/v1/budgets/{budgetId}']?.get?.responses),
-          oauth: (schemas.securitySchemes?.mcpOAuth as Record<string, unknown>)
-            ?.flows,
+          backupCreate: paths['/v1/backup-jobs'],
+          backupPoll: paths['/v1/backup-jobs/{backupJobId}'],
+          backupSchema: schemas.schemas?.WorkspaceBackupJob,
+          // B19 has no MCP routes. Compare the vocabulary, not the deployment URLs.
+          oauthScopes: oauth?.flows.authorizationCode.scopes,
         };
       };
       expect(pick(mirror)).toEqual(pick(authority));

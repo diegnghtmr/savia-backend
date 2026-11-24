@@ -1,5 +1,6 @@
+import { Logger } from '@nestjs/common';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   CommitOutcomeUnknownError,
   PgTransaction,
@@ -17,11 +18,13 @@ import {
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 const subject = '00000000-0000-0000-0000-000000000201';
-let source: Pool;
+let source: PostgresPool;
 
 // prettier-ignore
 describe('PgTransaction', () => {
-  beforeAll(() => { source = new Pool({ connectionString: url, max: 2 }); });
+  beforeAll(() => {
+    source = new PostgresPool(PostgresConfig.fromUrl(url, { DATABASE_POOL_MAX: '2' }));
+  });
   afterAll(() => source.end());
   it('rejects invalid input before acquisition', async () => {
     let acquired = false; const transaction = new PgTransaction({ connect: async () => { acquired = true; throw Error(); }, end: async () => undefined });
@@ -59,6 +62,108 @@ describe('PgTransaction', () => {
     const faulty = new FaultPool(transactionPool()); const tx = new PgTransaction(faulty); await expect(tx.run(subject, async () => undefined)).rejects.toBeInstanceOf(CommitOutcomeUnknownError); await tx.run(subject, async () => undefined); expect(faulty.rolledBack).toBe(true); expect(faulty.releasedWithError).toBe(true); expect(faulty.pids[0]).not.toBe(faulty.pids[1]); await tx.close();
     const failed = fakePool('ROLLBACK'); await expect(new PgTransaction(failed).run(subject, async () => { throw Error(); })).rejects.toThrow(); expect(failed.releases).toEqual([expect.any(Error)]);
   });
+  // Reviewer drafts (verify mwtpt0ri).
+  it('retains separate PostgreSQL statement and lock timeouts when opted in', async () => {
+    const tx = transaction({ statementTimeoutMs: 700, lockTimeoutMs: 125 });
+    const hold = { holdUntilCallbackSettles: true } as const;
+    const sqlTimeout = {
+      name: 'TransactionTimeoutError',
+      message: 'PostgreSQL transaction timed out.',
+    };
+
+    await expect(
+      tx.runAsQueueConsumer(
+        (client) => client.query('select pg_sleep(5)'),
+        hold,
+      ),
+    ).rejects.toMatchObject({ ...sqlTimeout, cause: { code: '57014' } });
+
+    const holder = await source.connect();
+    const lock = 'select pg_advisory_xact_lock(1356412354162::bigint)';
+    try {
+      await holder.query('BEGIN');
+      await holder.query(lock);
+      await expect(
+        tx.runAsQueueConsumer((client) => client.query(lock), hold),
+      ).rejects.toMatchObject({ ...sqlTimeout, cause: { code: '55P03' } });
+    } finally {
+      try {
+        await holder.query('ROLLBACK');
+      } finally {
+        holder.release();
+      }
+    }
+  });
+
+  it('keeps the default, numeric, and object queue-consumer deadlines', async () => {
+    const tx = transaction({
+      callbackTimeoutMs: 500,
+      idleTransactionTimeoutMs: 3_000,
+    });
+    const cases = [
+      [undefined, 'TransactionTimeoutError', 'Transaction callback deadline elapsed.'],
+      [500, 'DeliveryDeadlineExceededError', 'Delivery deadline exceeded.'],
+      [{ timeoutMs: 500 }, 'DeliveryDeadlineExceededError', 'Delivery deadline exceeded.'],
+    ] as const;
+
+    for (const [options, name, message] of cases) {
+      let entered = false;
+      const gate = Promise.withResolvers<void>();
+      try {
+        await expect(
+          tx.runAsQueueConsumer(() => {
+            entered = true;
+            return gate.promise;
+          }, options),
+        ).rejects.toMatchObject({ name, message });
+        expect(entered).toBe(true);
+      } finally {
+        gate.resolve();
+      }
+    }
+  });
+
+  it('discards and logs a server-terminated checkout without exposing the backend error', async () => {
+    const pool = new PostgresPool(PostgresConfig.fromUrl(url, { DATABASE_POOL_MAX: '1' }));
+    const tx = new PgTransaction(pool, { callbackTimeoutMs: 500, idleTransactionTimeoutMs: 3_000 });
+    const gate = Promise.withResolvers<void>();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const pidSql = 'select pg_backend_pid() as pid';
+    let terminatedPid: number | undefined;
+    try {
+      // Arm the server timeout before BEGIN, not after PostgreSQL has started
+      // the transaction's timer. The backend must win the deadline race.
+      const checkout = await pool.connect();
+      try {
+        await checkout.query("SET transaction_timeout = '150ms'");
+      } finally {
+        checkout.release();
+      }
+      await expect(tx.runAsQueueConsumer(async (client) => {
+        terminatedPid = (await client.query<{ pid: number }>(pidSql)).rows[0]?.pid;
+        await gate.promise;
+      })).rejects.toMatchObject({
+        name: 'TransactionTimeoutError',
+        message: 'Transaction callback deadline elapsed.',
+      });
+      expect(terminatedPid).toEqual(expect.any(Number));
+      expect(warn.mock.calls).toEqual([['PostgreSQL checked-out connection failed; discarded.']]);
+
+      const readPid = async () => (await tx.runAsQueueConsumer((client) =>
+        client.query<{ pid: number }>(pidSql),
+      )).rows[0]?.pid;
+      const replacement = await readPid();
+      expect(replacement).toEqual(expect.any(Number));
+      expect(replacement).not.toBe(terminatedPid);
+      expect(await readPid()).toBe(replacement);
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      gate.resolve();
+      warn.mockRestore();
+      await tx.close();
+    }
+  });
+
   it('takes no advisory lock during runRead and sets session context', async () => {
     const tx = transaction(); const probe = "select count(*)::int as count from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()";
     await tx.run(subject, async client => { await expect(client.query<{ count: number }>(probe)).resolves.toMatchObject({ rows: [{ count: 1 }] }); });

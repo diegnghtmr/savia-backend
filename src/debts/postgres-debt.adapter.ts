@@ -3,6 +3,10 @@ import { enforceDeferredConstraints } from '../platform/deferred-constraints.js'
 import { negateAmountMinor } from '../platform/amount-minor.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
+  ExportReader,
+  ExportReaderQuery,
+} from '../platform/export-reader.port.js';
+import type {
   CreateDebtPaymentRequest,
   CreateDebtRequest,
   Debt,
@@ -100,7 +104,7 @@ function mapDebt(row: DebtRow): Debt {
   };
 }
 
-export class PostgresDebtAdapter implements DebtStore {
+export class PostgresDebtAdapter implements DebtStore, ExportReader {
   public async readActiveRole(
     client: TransactionClient,
     workspaceId: string,
@@ -241,6 +245,39 @@ where d.workspace_id = $1::uuid
     query: DebtListQuery,
     limit: number,
   ): Promise<readonly DebtItem[]> {
+    const rows = await this.readDebtPage(client, query, limit);
+    return rows.map((row) => ({
+      debt: mapDebt(row),
+      cursorAt: row.cursorAt ?? '',
+    }));
+  }
+
+  public async readExportPage(
+    client: TransactionClient,
+    query: ExportReaderQuery,
+  ) {
+    const rows = await this.readDebtPage(client, query, query.limit, query);
+    return rows.map((row) => ({
+      id: row.id,
+      cursorAt: row.cursorAt ?? '',
+      row: {
+        ...mapDebt(row),
+        startDate: row.startDate,
+        termMonths: row.termMonths,
+      },
+    }));
+  }
+
+  private async readDebtPage(
+    client: TransactionClient,
+    query: DebtListQuery,
+    limit: number,
+    bounds?: Pick<ExportReaderQuery, 'from' | 'to'>,
+  ): Promise<DebtRow[]> {
+    const filtered = bounds?.from !== undefined || bounds?.to !== undefined;
+    const startDateFilter = filtered
+      ? '\n  and ($5::date is null or d.start_date >= $5::date) and ($6::date is null or d.start_date <= $6::date)'
+      : '';
     const sql = `
 select
   d.id::text,
@@ -262,7 +299,7 @@ select
   ${DEBT_OUTSTANDING_BALANCE_EXPRESSION}::text as "outstandingBalanceMinor"
 from public.debts d
 where d.workspace_id = $1::uuid
-  and ($2::timestamptz is null or (d.created_at, d.id) > ($2::timestamptz, $3::uuid))
+  and ($2::timestamptz is null or (d.created_at, d.id) > ($2::timestamptz, $3::uuid))${startDateFilter}
 order by d.created_at asc, d.id asc
 limit $4`;
 
@@ -272,12 +309,8 @@ limit $4`;
       query.cursor?.id ?? null,
       limit,
     ];
-
-    const result = await client.query<DebtRow>(sql, values);
-    return result.rows.map((row) => ({
-      debt: mapDebt(row),
-      cursorAt: row.cursorAt ?? '',
-    }));
+    if (filtered) values.push(bounds?.from ?? null, bounds?.to ?? null);
+    return (await client.query<DebtRow>(sql, values)).rows;
   }
 
   public async createDebtPayment(
