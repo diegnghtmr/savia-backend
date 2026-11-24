@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import type { NotificationPage } from '../../src/notifications/notification.port.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -974,6 +975,20 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       },
       skipDuplicateCandidates: false,
     };
+    const inbox = async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/notifications',
+        headers: { authorization: headers.authorization },
+      });
+      expect(response.statusCode).toBe(200);
+      const page = response.json<NotificationPage>();
+      expect(page.pageInfo).toEqual({ hasNextPage: false, nextCursor: null });
+      return page.items;
+    };
+    // Earlier imports use the same requester and can already have notified them.
+    const before = await inbox();
+    const existingIds = new Set(before.map(({ id }) => id));
     const committed = await app.inject({
       method: 'POST',
       url: `/v1/import-jobs/${id}/commit`,
@@ -981,6 +996,15 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       payload: command,
     });
     expect(committed.statusCode).toBe(202);
+    const after = await inbox();
+    expect(after.filter(({ id }) => existingIds.has(id))).toEqual(before);
+    expect(after.filter(({ id }) => !existingIds.has(id))).toEqual([
+      expect.objectContaining({
+        type: 'import_completed',
+        title: 'Import completed',
+        read: false,
+      }),
+    ]);
     const replay = await app.inject({
       method: 'POST',
       url: `/v1/import-jobs/${id}/commit`,
@@ -1030,19 +1054,7 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       payload: command,
     });
     expect(missing.statusCode).toBe(404);
-    const notifications = await app.inject({
-      method: 'GET',
-      url: '/v1/notifications',
-      headers: { authorization: headers.authorization },
-    });
-    expect(notifications.statusCode).toBe(200);
-    expect(notifications.json().items).toEqual([
-      expect.objectContaining({
-        type: 'import_completed',
-        title: 'Import completed',
-        read: false,
-      }),
-    ]);
+    expect(await inbox()).toEqual(after);
   });
   it('commits an import promptly when notification insertion is blocked', async () => {
     const uploaded = await upload(

@@ -291,27 +291,16 @@ describe('budgets schema', () => {
       tablename: string;
       policyname: string;
       cmd: string;
+      permissive: string;
+      roles: string[];
       qual: string | null;
       with_check: string | null;
     }>(
-      `select tablename,policyname,cmd,qual,with_check from pg_policies where schemaname='public' and tablename in ('budgets','budget_allocations') order by tablename,policyname`,
+      `select tablename,policyname,cmd,permissive,roles::text[] as roles,qual,with_check from pg_policies where schemaname='public' and tablename in ('budgets','budget_allocations') order by tablename,policyname`,
     );
     expect(
-      policies.rows.map((x) => `${x.tablename}.${x.policyname}.${x.cmd}`),
-    ).toEqual([
-      'budget_allocations.application_deletes_workspace_budget_allocations.DELETE',
-      'budget_allocations.application_inserts_workspace_budget_allocations.INSERT',
-      'budget_allocations.application_reads_workspace_budget_allocations.SELECT',
-      'budgets.application_inserts_workspace_budgets.INSERT',
-      'budgets.application_reads_workspace_budgets.SELECT',
-      'budgets.application_updates_workspace_budgets.UPDATE',
-      'budgets.elevated_reads_budgets.SELECT',
-    ]);
-    expect(
       policies.rows.map((x) => ({
-        tablename: x.tablename,
-        policyname: x.policyname,
-        cmd: x.cmd,
+        ...x,
         qual: normalizeSql(x.qual),
         with_check: normalizeSql(x.with_check),
       })),
@@ -320,6 +309,8 @@ describe('budgets schema', () => {
         tablename: 'budget_allocations',
         policyname: 'application_deletes_workspace_budget_allocations',
         cmd: 'DELETE',
+        permissive: 'PERMISSIVE',
+        roles: ['savia_application'],
         qual: "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text]))",
         with_check: null,
       },
@@ -327,6 +318,8 @@ describe('budgets schema', () => {
         tablename: 'budget_allocations',
         policyname: 'application_inserts_workspace_budget_allocations',
         cmd: 'INSERT',
+        permissive: 'PERMISSIVE',
+        roles: ['savia_application'],
         qual: null,
         with_check:
           "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text]))",
@@ -335,6 +328,8 @@ describe('budgets schema', () => {
         tablename: 'budget_allocations',
         policyname: 'application_reads_workspace_budget_allocations',
         cmd: 'SELECT',
+        permissive: 'PERMISSIVE',
+        roles: ['savia_application'],
         qual: "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text, 'viewer'::text]))",
         with_check: null,
       },
@@ -342,6 +337,8 @@ describe('budgets schema', () => {
         tablename: 'budgets',
         policyname: 'application_inserts_workspace_budgets',
         cmd: 'INSERT',
+        permissive: 'PERMISSIVE',
+        roles: ['savia_application'],
         qual: null,
         with_check:
           "((workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text])) and (created_by = (nullif(current_setting('app.subject_id'::text, true), ''::text))::uuid))",
@@ -350,6 +347,8 @@ describe('budgets schema', () => {
         tablename: 'budgets',
         policyname: 'application_reads_workspace_budgets',
         cmd: 'SELECT',
+        permissive: 'PERMISSIVE',
+        roles: ['savia_application'],
         qual: "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text, 'viewer'::text]))",
         with_check: null,
       },
@@ -357,14 +356,27 @@ describe('budgets schema', () => {
         tablename: 'budgets',
         policyname: 'application_updates_workspace_budgets',
         cmd: 'UPDATE',
+        permissive: 'PERMISSIVE',
+        roles: ['savia_application'],
         qual: "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text]))",
         with_check:
           "(workspace_actor_active_role(workspace_id) = any (array['owner'::text, 'administrator'::text, 'editor'::text]))",
       },
       {
         tablename: 'budgets',
+        policyname: 'elevated_reads_budget_alert_targets',
+        cmd: 'SELECT',
+        permissive: 'PERMISSIVE',
+        roles: ['savia_elevated'],
+        qual: 'true',
+        with_check: null,
+      },
+      {
+        tablename: 'budgets',
         policyname: 'elevated_reads_budgets',
         cmd: 'SELECT',
+        permissive: 'PERMISSIVE',
+        roles: ['savia_elevated'],
         qual: 'true',
         with_check: null,
       },
