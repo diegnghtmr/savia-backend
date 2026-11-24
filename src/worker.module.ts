@@ -56,7 +56,9 @@ class ScheduledWorkerRunner extends JobRunner {
     config: WorkerConfig,
     @Inject(JOB_HANDLERS) handlers: readonly JobHandler[],
     @Inject(JOB_SWEEP) sweeps: readonly JobSweep[],
-    private readonly fx: FrankfurterRateJob,
+    // Explicit token: JobRunner's inherited parameter metadata marks index 6
+    // as JOB_SWEEP, so an implicit type here would receive the sweep array.
+    @Inject(FrankfurterRateJob) private readonly fx: FrankfurterRateJob,
   ) {
     super(queue, transaction, writer, config, handlers, undefined, sweeps);
   }
