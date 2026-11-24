@@ -1,8 +1,12 @@
 // Migrations under test: 202609100016_job_queue.sql, 202609100018_job_dead_letter_audit.sql,
-// 202609170009_frankfurter_pairs.sql, 202609170014_notification_delivery.sql,
-// 202609170016_notification_settings.sql, 202609170020_notification_mute_at_creation.sql
+// 202609170008_recurring_job_type.sql, 202609170009_frankfurter_pairs.sql,
+// 202609170011_recurring_creator_lock.sql, 202609170013_budget_alert_discovery.sql,
+// 202609170014_notification_delivery.sql, 202609170016_notification_settings.sql,
+// 202609170017_subscription_detection.sql, 202609170018_b6_alert_recipients.sql,
+// 202609170020_notification_mute_at_creation.sql, 202609170036_integration_check_constraints.sql
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { Pool } from 'pg';
 import {
@@ -42,6 +46,17 @@ import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import * as tesseractAdapter from '../../src/platform/system-tesseract.adapter.js';
 import { WorkerConfig } from '../../src/platform/worker-config.js';
 import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
+import { RecurringJobSweep } from '../../src/recurring/recurring-job-sweep.js';
+import { RecurringService } from '../../src/recurring/recurring.service.js';
+import { PostgresRecurringAdapter } from '../../src/recurring/postgres-recurring.adapter.js';
+import { createSubscriptionListQuery } from '../../src/recurring/subscription-query.js';
+import { PostgresOccurrenceAdapter } from '../../src/recurring/postgres-occurrence.adapter.js';
+import { PostgresWorkspaceMemberAdapter } from '../../src/identity/postgres-workspace-member.adapter.js';
+import { PostgresTransactionAdapter } from '../../src/ledger/postgres-transaction.adapter.js';
+import { TransactionService } from '../../src/ledger/transaction.service.js';
+import { NotificationService } from '../../src/notifications/notification.service.js';
+import { PostgresNotificationAdapter } from '../../src/notifications/postgres-notification.adapter.js';
+import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempotency.adapter.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -215,6 +230,405 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       await checkTableCannotBeRead('accounts');
       await checkTableCannotBeRead('workspaces');
     });
+  });
+
+  it('sends each reached budget threshold once, only to the active creator in the current period', async () => {
+    const day = (offset: number) =>
+      new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+    const category = id(8161);
+    const now = new Date().toISOString();
+    const budgets = [
+      [id(8171), 'Groceries', ownerA, day(-1), day(1), 1000],
+      [id(8172), 'Expired', ownerA, day(-5), day(-4), 1],
+      [id(8173), 'Non-member', ownerB, day(-1), day(1), 1],
+      [id(8174), 'No plan', ownerA, day(-1), day(1), 0],
+    ] as const;
+    const idempotency = new PostgresIdempotencyAdapter();
+    const ledger = new TransactionService(
+      transaction,
+      new PostgresTransactionAdapter(),
+      idempotency,
+    );
+    const notifications = new NotificationService(
+      transaction,
+      new PostgresNotificationAdapter(),
+      idempotency,
+    );
+    const list = async (subject: string) =>
+      (
+        await notifications.listNotifications(subject, {
+          subject,
+          limit: 50,
+          unreadOnly: false,
+        })
+      ).page.items;
+    const spend = async (
+      amountMinor: string,
+      status: 'draft' | 'confirmed' = 'confirmed',
+      occurredAt = now,
+    ) => {
+      const result = await ledger.create(
+        ownerA,
+        ws1Id,
+        {
+          type: 'expense',
+          accountId: id(8201),
+          amount: { currency: 'USD', amountMinor },
+          occurredAt,
+          categoryId: category,
+          status,
+        },
+        randomUUID(),
+      );
+      expect(result.kind).toBe('created');
+    };
+    await admin.query(
+      `insert into public.categories (id, workspace_id, name, kind, created_by)
+      values ($1,$2,'Budget alert test','expense',$3)`,
+      [category, ws1Id, ownerA],
+    );
+    for (const [budget, name, actor, start, end, planned] of budgets) {
+      await admin.query(
+        `insert into public.budgets (id, workspace_id, name, method, period_start, period_end, currency, created_by)
+        values ($1,$2,$3,'envelope',$4,$5,'USD',$6)`,
+        [budget, ws1Id, name, start, end, actor],
+      );
+      await admin.query(
+        `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor)
+        values ($1,$2,$3,$4)`,
+        [ws1Id, budget, category, planned],
+      );
+    }
+    await spend('1000', 'draft');
+    await spend('1000', 'confirmed', `${day(-4)}T00:00:00Z`);
+    await spend('799');
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    try {
+      const appRunner = app.get(JobRunner);
+      const sweep = async () => {
+        await appRunner.start();
+        await vi.waitFor(() => expect(appRunner.activeJobsCount).toBe(0));
+        await appRunner.stop();
+      };
+      await sweep();
+      expect(await list(ownerA)).toEqual([]);
+      await spend('1');
+      await sweep();
+      const warning = await list(ownerA);
+      expect(warning).toEqual([
+        expect.objectContaining({
+          type: 'budget_threshold_80',
+          title: 'Budget “Groceries” reached 80%',
+          read: false,
+          body: null,
+          actionUrl: null,
+        }),
+      ]);
+      await spend('200');
+      await sweep();
+      const reached = await list(ownerA);
+      expect(reached).toEqual([
+        warning[0],
+        expect.objectContaining({
+          type: 'budget_threshold_100',
+          title: 'Budget “Groceries” reached 100%',
+          read: false,
+          body: null,
+          actionUrl: null,
+        }),
+      ]);
+      await sweep();
+      expect(await list(ownerA)).toEqual(reached);
+      expect(await list(viewerA)).toEqual([]);
+      expect(await list(ownerB)).toEqual([]);
+    } finally {
+      await app.close();
+      preflight.mockRestore();
+    }
+  }, 10_000);
+
+  it('confines budget discovery to the worker function, with no worker table access', async () => {
+    const { rows } = await admin.query(`
+      select r as role, has_function_privilege(r, f.oid, 'EXECUTE') as execute,
+             has_any_column_privilege(r, 'public.budgets', 'SELECT') as read_budget,
+             f.proconfig as config
+      from pg_proc f cross join unnest(array['anon','authenticated','savia_application','savia_worker','service_role']) r
+      where f.oid = to_regprocedure('public.find_budget_alert_targets(date,uuid)') order by role`);
+    expect(rows).toEqual([
+      {
+        role: 'anon',
+        execute: false,
+        read_budget: false,
+        config: ['search_path=pg_catalog, public'],
+      },
+      {
+        role: 'authenticated',
+        execute: false,
+        read_budget: false,
+        config: ['search_path=pg_catalog, public'],
+      },
+      {
+        role: 'savia_application',
+        execute: false,
+        read_budget: true,
+        config: ['search_path=pg_catalog, public'],
+      },
+      {
+        role: 'savia_worker',
+        execute: true,
+        read_budget: false,
+        config: ['search_path=pg_catalog, public'],
+      },
+      {
+        role: 'service_role',
+        execute: false,
+        read_budget: false,
+        config: ['search_path=pg_catalog, public'],
+      },
+    ]);
+  });
+
+  it('does not give a viewer access to the worker budget publisher or notification writes', async () => {
+    const attemptedWrite = (sql: string, values: string[]) =>
+      capturePgError(() =>
+        transaction.run(viewerA, (client) => client.query(sql, values)),
+      );
+    expect(
+      (
+        await attemptedWrite(
+          `select public.publish_budget_thresholds($1, $2, current_date, array[80])`,
+          [ws1Id, id(8171)],
+        )
+      ).code,
+    ).toBe('42501');
+    expect(
+      (
+        await attemptedWrite(
+          `insert into public.notifications (workspace_id, subject_id, type, resource_id, title)
+      values ($1,$2,'budget_threshold_80',$3,'Should not be inserted')`,
+          [ws1Id, viewerA, id(8171)],
+        )
+      ).code,
+    ).toBe('42501');
+  });
+
+  it('proposes only regular confirmed expenses, preserves candidate identity, and alerts once per price change', async () => {
+    const idempotency = new PostgresIdempotencyAdapter();
+    const ledger = new TransactionService(
+      transaction,
+      new PostgresTransactionAdapter(),
+      idempotency,
+    );
+    const recurring = new RecurringService(
+      transaction,
+      new PostgresRecurringAdapter(),
+      idempotency,
+    );
+    const notifications = new NotificationService(
+      transaction,
+      new PostgresNotificationAdapter(),
+      idempotency,
+    );
+    const at = (days: number) =>
+      new Date(Date.now() + days * 86_400_000).toISOString();
+    const charge = async (
+      description: string,
+      days: number,
+      amountMinor = '1000',
+      payeeId?: string,
+      status: 'draft' | 'confirmed' = 'confirmed',
+    ) => {
+      const result = await ledger.create(
+        ownerA,
+        ws1Id,
+        {
+          type: 'expense',
+          accountId: id(8201),
+          amount: { currency: 'USD', amountMinor },
+          occurredAt: at(days),
+          description,
+          status,
+          ...(payeeId === undefined ? {} : { payeeId }),
+        },
+        randomUUID(),
+      );
+      expect(result.kind).toBe('created');
+    };
+    for (const [offset, day] of [-92, -62, -32].entries())
+      await charge(
+        ['Stream Plus', 'stream   plus', 'STREAM PLUS'][offset]!,
+        day,
+      );
+    for (const [offset, day] of [-15, -8, -1].entries())
+      await charge('Weekly delivery', day, offset === 2 ? '900' : '1000');
+    for (const day of [-732, -367, -2]) await charge('Annual licence', day);
+    await charge('One-off', -1);
+    for (const day of [-70, -34, -1]) await charge('Irregular', day);
+    for (const [offset, day] of [-62, -32, -2].entries()) {
+      const payee = id(8190 + offset);
+      await admin.query(
+        `insert into public.payees (id,workspace_id,name,created_by) values ($1,$2,$3,$4)`,
+        [payee, ws1Id, `Shop ${offset}`, ownerA],
+      );
+      await charge('Same receipt description', day, '1000', payee);
+      await charge('Draft only', day, '1000', undefined, 'draft');
+      await charge('Unrelated prices', day, String(1000 * (offset + 1)));
+    }
+    await admin.query(
+      `insert into public.subscriptions
+      (workspace_id, payee_name, current_amount_minor, current_currency, previous_amount_minor, previous_currency, frequency, status, created_by)
+      values ($1,'Legacy subscription',1100,'USD',1000,'USD','monthly','confirmed',$2)`,
+      [ws2Id, ownerB],
+    );
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    try {
+      const appRunner = app.get(JobRunner);
+      const sweep = async () => {
+        await appRunner.start();
+        await vi.waitFor(() => expect(appRunner.activeJobsCount).toBe(0));
+        await appRunner.stop();
+      };
+      const list = async (actor = viewerA, workspaceId = ws1Id) => {
+        const result = await recurring.listSubscriptions(
+          actor,
+          createSubscriptionListQuery({ workspaceId, statusParam: 'detected' }),
+        );
+        if (result.kind !== 'ok')
+          throw new Error('Could not list detected subscriptions');
+        return [...result.page.items].sort((a, b) =>
+          a.frequency.localeCompare(b.frequency),
+        );
+      };
+      const alerts = async (subject: string) =>
+        (
+          await notifications.listNotifications(subject, {
+            subject,
+            limit: 50,
+            unreadOnly: false,
+          })
+        ).page.items.filter(
+          ({ type }) => type === 'subscription_price_increase',
+        );
+      await sweep();
+      const initial = await list();
+      expect(initial).toEqual([
+        expect.objectContaining({
+          frequency: 'monthly',
+          status: 'detected',
+          currentAmount: { currency: 'USD', amountMinor: '1000' },
+          increasePercent: 0,
+        }),
+        expect.objectContaining({
+          frequency: 'weekly',
+          status: 'detected',
+          payeeName: 'Weekly delivery',
+          increasePercent: -10,
+        }),
+        expect.objectContaining({
+          frequency: 'yearly',
+          status: 'detected',
+          payeeName: 'Annual licence',
+          increasePercent: 0,
+        }),
+      ]);
+      expect(initial[0]?.payeeName.toLowerCase()).toBe('stream plus');
+      expect(await list(ownerB, ws2Id)).toEqual([]);
+      expect(
+        await recurring.listSubscriptions(
+          ownerB,
+          createSubscriptionListQuery({ workspaceId: ws1Id }),
+        ),
+      ).toEqual({ kind: 'forbidden' });
+      expect(await alerts(ownerA)).toEqual([]);
+      const legacy = await alerts(ownerB);
+      expect(legacy).toEqual([
+        expect.objectContaining({
+          title: 'Subscription “Legacy subscription” increased by 10%',
+        }),
+      ]);
+      await charge('Stream Plus', -2, '1100');
+      await sweep();
+      const updated = await list();
+      expect(updated).toEqual([
+        {
+          ...initial[0],
+          payeeName: 'Stream Plus',
+          currentAmount: { currency: 'USD', amountMinor: '1100' },
+          increasePercent: 10,
+          nextExpectedAt: expect.any(String),
+        },
+        initial[1],
+        initial[2],
+      ]);
+      const increased = await alerts(ownerA);
+      expect(increased).toEqual([
+        expect.objectContaining({
+          title: 'Subscription “Stream Plus” increased by 10%',
+          body: null,
+          actionUrl: null,
+          read: false,
+        }),
+      ]);
+      await sweep();
+      expect(await list()).toEqual(updated);
+      expect(await alerts(ownerA)).toEqual(increased);
+      expect(await alerts(ownerB)).toEqual(legacy);
+      expect(await alerts(viewerA)).toEqual([]);
+      expect(
+        (await admin.query('select id from public.recurring_rules')).rows,
+      ).toEqual([]);
+    } finally {
+      await app.close();
+      preflight.mockRestore();
+    }
+  }, 10_000);
+
+  it('grants only worker execution of fixed-path subscription discovery, without direct table grants', async () => {
+    const { rows } = await admin.query(`
+      select r as role, has_function_privilege(r, f.oid, 'EXECUTE') as execute,
+             f.proconfig as config
+      from pg_proc f cross join unnest(array['anon','authenticated','savia_application','savia_worker','service_role']) r
+      where f.oid = to_regprocedure('public.find_subscription_detection_targets(uuid)') order by role`);
+    expect(rows).toEqual(
+      [
+        'anon',
+        'authenticated',
+        'savia_application',
+        'savia_worker',
+        'service_role',
+      ].map((role) => ({
+        role,
+        execute: role === 'savia_worker',
+        config: ['search_path=pg_catalog, public'],
+      })),
+    );
+    const result = await transaction.runAsQueueConsumer((client) =>
+      client.query(
+        `select * from public.find_subscription_detection_targets(null)`,
+      ),
+    );
+    expect(result.rows).toEqual([
+      { workspaceId: ws1Id, subject: ownerA },
+      { workspaceId: ws2Id, subject: ownerB },
+    ]);
+    for (const table of ['subscriptions', 'transactions', 'payees']) {
+      const error = await capturePgError(() =>
+        transaction.runAsQueueConsumer((client) =>
+          client.query(`select 1 from public.${table}`),
+        ),
+      );
+      expect(error.code).toBe('42501');
+    }
   });
 
   describe('Probe job execution and creator RLS scoping', () => {
@@ -1051,6 +1465,11 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
     });
   });
 
+  registerRecurringAndAlertTests(
+    () => ({ admin, transaction, adapter, queueAdapter }),
+    { ownerA, ownerB, viewerA, ws1Id, ws2Id },
+  );
+
   describe('Daily system FX job', () => {
     beforeAll(async () => {
       await admin.query(
@@ -1736,3 +2155,968 @@ describe('Notification delivery outbox', () => {
     expect(await claim()).toBeUndefined();
   });
 });
+
+function registerRecurringAndAlertTests(
+  fixture: () => {
+    admin: Pool;
+    transaction: PgTransaction;
+    adapter: PostgresJobsAdapter;
+    queueAdapter: PgmqJobQueueAdapter;
+  },
+  {
+    ownerA,
+    ownerB,
+    viewerA,
+    ws1Id,
+    ws2Id,
+  }: {
+    ownerA: string;
+    ownerB: string;
+    viewerA: string;
+    ws1Id: string;
+    ws2Id: string;
+  },
+): void {
+  let admin: Pool;
+  let transaction: PgTransaction;
+  let adapter: PostgresJobsAdapter;
+  let queueAdapter: PgmqJobQueueAdapter;
+
+  beforeAll(() => {
+    ({ admin, transaction, adapter, queueAdapter } = fixture());
+  });
+
+  it('sweeps due rules once per scheduled timestamp and commits completion with the occurrence', async () => {
+    const scheduledAt = '2025-01-31T08:00:00.000123Z';
+    const asOf = '2025-02-01T00:00:00.000Z';
+    const nextConfirmedAt = '2025-02-28T08:00:00.000000Z';
+    const [confirm, remind, later, inactive, viewer] = [
+      8301, 8302, 8303, 8304, 8305,
+    ].map(id);
+    for (const [
+      ruleId,
+      workspaceId,
+      actorId,
+      accountId,
+      due,
+      active,
+      behavior,
+    ] of [
+      [
+        confirm,
+        ws1Id,
+        ownerA,
+        id(8201),
+        scheduledAt,
+        true,
+        'confirm_automatically',
+      ],
+      [remind, ws2Id, ownerB, id(8202), scheduledAt, true, 'remind'],
+      [
+        later,
+        ws1Id,
+        ownerA,
+        id(8201),
+        '2025-02-02T08:00:00.000000Z',
+        true,
+        'remind',
+      ],
+      [inactive, ws1Id, ownerA, id(8201), scheduledAt, false, 'remind'],
+      [viewer, ws1Id, viewerA, id(8201), scheduledAt, true, 'remind'],
+    ] as const) {
+      await admin.query(
+        `insert into public.recurring_rules
+           (id, workspace_id, name, frequency, behavior, account_id, template, active,
+            created_by, starts_at, ends_at, next_occurrence_at, anchor_day_of_month)
+         values ($1,$2,'Worker rule','monthly',$3,$4,$5,$6,$7,'2024-12-31T08:00:00Z',$9,$8,31)`,
+        [
+          ruleId,
+          workspaceId,
+          behavior,
+          accountId,
+          JSON.stringify({
+            type: 'expense',
+            accountId,
+            amount: { currency: 'USD', amountMinor: '100' },
+            status: 'draft',
+            occurredAt: '2024-12-31T08:00:00Z',
+            description: 'Recurring worker test',
+          }),
+          active,
+          actorId,
+          due,
+          ruleId === confirm ? nextConfirmedAt : due,
+        ],
+      );
+    }
+    const jobs = () =>
+      admin.query<{
+        id: string;
+        workspace_id: string;
+        created_by: string;
+        status: string;
+        result_resource_id: string | null;
+        payload: { ruleId: string; scheduledAt: string; asOf: string };
+      }>(`select id, workspace_id, created_by, status, result_resource_id, payload from public.jobs
+        where type = 'recurring_materialization' order by payload->>'ruleId', payload->>'scheduledAt'`);
+    const effects = () =>
+      admin.query(
+        `select r.active, o.id as occurrence_id, o.transaction_id, t.status, t.created_by
+         from public.recurring_rules r
+         left join public.recurring_occurrences o on o.rule_id = r.id
+         left join public.transactions t on t.id = o.transaction_id
+        where r.id = any($1::uuid[]) order by r.id`,
+        [[confirm, remind]],
+      );
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    vi.stubEnv('SAVIA_WORKER_POLL_INTERVAL_MS', '50');
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    try {
+      const sweep = app.get(RecurringJobSweep);
+      const counts = await Promise.all([
+        sweep.sweep(new Date(asOf)),
+        sweep.sweep(new Date(asOf)),
+      ]);
+      expect(counts.reduce((sum, count) => sum + count, 0)).toBe(2);
+      expect(await sweep.sweep(new Date(asOf))).toBe(0);
+      const queued = (await jobs()).rows;
+      expect(queued).toMatchObject([
+        {
+          workspace_id: ws1Id,
+          created_by: ownerA,
+          status: 'queued',
+          payload: { ruleId: confirm, asOf, scheduledAt },
+        },
+        {
+          workspace_id: ws2Id,
+          created_by: ownerB,
+          status: 'queued',
+          payload: { ruleId: remind, asOf, scheduledAt },
+        },
+      ]);
+
+      const messages = await queueAdapter.claim(300, 50);
+      const [first, reminder] = queued.map(
+        (job) => messages.find((msg) => msg.message.job_id === job.id)!,
+      );
+      expect(first.message).toMatchObject({
+        actor_id: ownerA,
+        workspace_id: ws1Id,
+      });
+      expect(reminder.message).toMatchObject({
+        actor_id: ownerB,
+        workspace_id: ws2Id,
+      });
+      const appRunner = app.get(JobRunner);
+      vi.spyOn(
+        app.get(PostgresJobsAdapter),
+        'completeJob',
+      ).mockRejectedValueOnce(new Error('Completion unavailable'));
+      expect(await appRunner.processMessage(first)).toBe(false);
+      expect((await jobs()).rows.map((job) => job.status)).toEqual([
+        'processing',
+        'queued',
+      ]);
+      expect((await effects()).rows).toEqual(
+        Array.from({ length: 2 }, () => ({
+          active: true,
+          occurrence_id: null,
+          transaction_id: null,
+          status: null,
+          created_by: null,
+        })),
+      );
+      expect(
+        (
+          await admin.query(
+            `select 1 from public.transactions where description = 'Recurring worker test'`,
+          )
+        ).rowCount,
+      ).toBe(0);
+      await queueAdapter.defer(first.msgId, 0);
+      const redelivery = (await queueAdapter.claim(300, 50)).find(
+        (msg) => msg.msgId === first.msgId,
+      )!;
+      expect(redelivery.readCt).toBe(2);
+      expect(await appRunner.processMessage(redelivery)).toBe(true);
+      expect(await appRunner.processMessage(reminder)).toBe(true);
+      const completed = (await jobs()).rows;
+      expect(completed.map((job) => job.status)).toEqual([
+        'completed',
+        'completed',
+      ]);
+      expect((await effects()).rows).toEqual([
+        {
+          active: true,
+          occurrence_id: completed[0].result_resource_id,
+          transaction_id: expect.any(String),
+          status: 'confirmed',
+          created_by: ownerA,
+        },
+        {
+          active: false,
+          occurrence_id: completed[1].result_resource_id,
+          transaction_id: null,
+          status: null,
+          created_by: null,
+        },
+      ]);
+      expect(await sweep.sweep(new Date(asOf))).toBe(0);
+
+      await appRunner.start();
+      await vi.waitFor(async () => {
+        expect(
+          (await jobs()).rows.map((job) => [
+            job.payload.ruleId,
+            job.payload.scheduledAt,
+            job.status,
+          ]),
+        ).toEqual([
+          [confirm, scheduledAt, 'completed'],
+          [confirm, nextConfirmedAt, 'completed'],
+          [remind, scheduledAt, 'completed'],
+          [later, '2025-02-02T08:00:00.000000Z', 'completed'],
+        ]);
+      });
+    } finally {
+      await app.close();
+      preflight.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  }, 10_000);
+
+  it('S5 discovery has no effective execute privilege for API roles', async () => {
+    const result = await admin.query(`
+      select role, has_function_privilege(role, f.oid, 'EXECUTE') as allowed
+      from pg_proc f cross join unnest(array['anon','authenticated','service_role',
+        'savia_application','savia_worker']) as role
+      where f.oid = 'public.find_due_recurring_occurrences(timestamptz)'::regprocedure
+      order by role`);
+    console.log('S5 effective discovery ACL', JSON.stringify(result.rows));
+    expect(result.rows).toEqual([
+      { role: 'anon', allowed: false },
+      { role: 'authenticated', allowed: false },
+      { role: 'savia_application', allowed: false },
+      { role: 'savia_worker', allowed: true },
+      { role: 'service_role', allowed: false },
+    ]);
+  });
+
+  it('S5 worker sees minimal discovery metadata and has no effective table grants', async () => {
+    const { rows } = await admin.query(`
+      select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname in ('public', 'pgmq') and c.relkind in ('r', 'p', 'v', 'm', 'f')
+        and (has_table_privilege('savia_worker', c.oid, 'TRUNCATE,TRIGGER')
+          or has_table_privilege('savia_worker', c.oid, 'DELETE')
+          or has_any_column_privilege('savia_worker', c.oid, 'SELECT,INSERT,UPDATE,REFERENCES'))`);
+    expect(rows).toEqual([]);
+    const discovery = await transaction.runAsQueueConsumer((client) =>
+      client.query(`
+      select * from public.find_due_recurring_occurrences('2024-01-01Z')`),
+    );
+    expect(discovery.rows).toEqual([]);
+  });
+
+  it('S5 does not publish after discovery or book after queueing if the creator loses write access', async () => {
+    const creator = viewerA;
+    const ruleId = id(8399);
+    const starts = '2024-03-08T06:30:00.000Z';
+    const scheduledAt = '2024-03-10T06:30:00.000Z';
+    const sixDigit = scheduledAt.replace('.000Z', '.000000Z');
+    const setRole = (role: string) =>
+      admin.query(
+        `update public.workspace_memberships
+      set role = $1 where workspace_id = $2 and profile_id = $3`,
+        [role, ws1Id, creator],
+      );
+    await setRole('editor');
+    await admin.query(
+      `insert into public.recurring_rules
+      (id, workspace_id, name, frequency, behavior, account_id, template, active,
+       created_by, starts_at, ends_at, next_occurrence_at, anchor_day_of_month)
+      values ($1,$2,'Revocation probe','daily','confirm_automatically',$3,$4,true,$5,$6,$7,$7,8)`,
+      [
+        ruleId,
+        ws1Id,
+        id(8201),
+        JSON.stringify({
+          type: 'expense',
+          accountId: id(8201),
+          amount: { currency: 'USD', amountMinor: '100' },
+          status: 'draft',
+          occurredAt: starts,
+          description: 'S5 revocation probe',
+        }),
+        creator,
+        starts,
+        scheduledAt,
+      ],
+    );
+    const bootstrap = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    try {
+      const sweep = app.get(RecurringJobSweep);
+      expect(await sweep.sweep(new Date('2024-03-10T06:29:59.999Z'))).toBe(0);
+      const found = await transaction.runAsQueueConsumer((client) =>
+        client.query(
+          `
+        select * from public.find_due_recurring_occurrences($1)`,
+          [scheduledAt],
+        ),
+      );
+      expect(found.rows).toEqual([
+        { workspaceId: ws1Id, subject: creator, ruleId, scheduledAt: sixDigit },
+      ]);
+      const revokeAfterDiscovery = new RecurringJobSweep(
+        {
+          run: transaction.run.bind(transaction),
+          runAsQueueConsumer: async (callback, timeout) => {
+            const rows = await transaction.runAsQueueConsumer(
+              callback,
+              timeout,
+            );
+            await setRole('viewer');
+            return rows;
+          },
+        },
+        new PostgresOccurrenceAdapter(),
+        adapter,
+        5000,
+      );
+      expect(await revokeAfterDiscovery.sweep(new Date(scheduledAt))).toBe(0);
+      await setRole('editor');
+      expect(await sweep.sweep(new Date(scheduledAt))).toBe(1);
+      const [message] = await queueAdapter.claim(300, 50);
+      expect(message.message.actor_id).toBe(creator);
+      await admin.query(
+        'delete from public.workspace_memberships where workspace_id=$1 and profile_id=$2',
+        [ws1Id, creator],
+      );
+      expect(await app.get(JobRunner).processMessage(message)).toBe(false);
+      const { rows } = await admin.query(
+        `select j.status, j.error->>'code' as reason,
+        (select count(*)::int from public.recurring_occurrences where rule_id=$1) as occurrences,
+        (select count(*)::int from public.transactions where description='S5 revocation probe') as transactions
+        from public.jobs j where j.payload->>'ruleId'=$1::text`,
+        [ruleId],
+      );
+      console.log('S5 revoked execution', JSON.stringify(rows));
+      expect(rows).toMatchObject([
+        { status: 'failed', occurrences: 0, transactions: 0 },
+      ]);
+    } finally {
+      await app.close();
+      bootstrap.mockRestore();
+      await admin.query(
+        `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+         values ($1,$2,'viewer','active') on conflict (workspace_id, profile_id)
+         do update set role = excluded.role, status = excluded.status`,
+        [ws1Id, creator],
+      );
+    }
+  }, 10000);
+  it('S5 does not book after an in-flight creator removal commits', async () => {
+    const ruleId = id(8400);
+    const creator = ownerB;
+    const membership = await admin.query(
+      `insert into public.workspace_memberships
+      (workspace_id,profile_id,role,status) values ($1,$2,'editor','active') returning id`,
+      [ws1Id, creator],
+    );
+    const scheduled = '2024-02-29T23:30:00.000Z';
+    await admin.query(
+      `insert into public.recurring_rules
+      (id,workspace_id,name,frequency,behavior,account_id,template,active,created_by,
+        starts_at,ends_at,next_occurrence_at,anchor_day_of_month)
+      values ($1,$2,'Commit race','monthly','confirm_automatically',$3,$4,true,$5,
+        '2024-01-31T23:30:00Z',$6,$6,31)`,
+      [
+        ruleId,
+        ws1Id,
+        id(8201),
+        JSON.stringify({
+          type: 'expense',
+          accountId: id(8201),
+          amount: { currency: 'USD', amountMinor: '100' },
+          status: 'draft',
+          occurredAt: '2024-01-31T23:30:00Z',
+          description: 'S5 commit race',
+        }),
+        creator,
+        scheduled,
+      ],
+    );
+    const bootstrap = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    const memberStore = new PostgresWorkspaceMemberAdapter();
+    try {
+      expect(await app.get(RecurringJobSweep).sweep(new Date(scheduled))).toBe(
+        1,
+      );
+      const [message] = await queueAdapter.claim(300, 50);
+      const writer = app.get(PostgresJobsAdapter);
+      const original = writer.completeJob.bind(writer);
+      let removalCommittedBeforeBooking = false;
+      vi.spyOn(writer, 'completeJob').mockImplementationOnce(
+        async (...args) => {
+          const result = await original(...args);
+          const removal = await transaction
+            .run(ownerA, async (client) => {
+              await client.query(
+                "select set_config('lock_timeout', '100ms', true)",
+              );
+              const count = await memberStore.deleteMember(
+                client,
+                ws1Id,
+                membership.rows[0].id,
+              );
+              await memberStore.enforceDeferredConstraints(client);
+              return count;
+            })
+            .catch((e: unknown) => {
+              if ((e as { cause?: { code?: string } }).cause?.code === '55P03')
+                return 0;
+              throw e;
+            });
+          removalCommittedBeforeBooking = removal === 1;
+          expect(
+            (
+              await admin.query(
+                `select 1 from public.transactions where description='S5 commit race'`,
+              )
+            ).rowCount,
+          ).toBe(0);
+          return result;
+        },
+      );
+      const processed = await app.get(JobRunner).processMessage(message);
+      const { rows } = await admin.query(
+        `select
+        (select count(*)::int from public.recurring_occurrences where rule_id=$1) as occurrences,
+        (select count(*)::int from public.transactions where description='S5 commit race') as bookings`,
+        [ruleId],
+      );
+      console.log(
+        'S5 commit race',
+        JSON.stringify({
+          removalCommittedBeforeBooking,
+          processed,
+          ...rows[0],
+        }),
+      );
+      if (removalCommittedBeforeBooking)
+        expect(rows).toEqual([{ occurrences: 0, bookings: 0 }]);
+      else expect(rows).toEqual([{ occurrences: 1, bookings: 1 }]);
+    } finally {
+      await app.close();
+      bootstrap.mockRestore();
+    }
+  }, 10000);
+  it('S5 rechecks a non-key demotion that wins the row lock', async () => {
+    const creator = ownerB;
+    const ruleId = id(8401);
+    const scheduledAt = '2024-01-01T00:00:00.000Z';
+    await admin.query(
+      `insert into public.workspace_memberships
+      (workspace_id,profile_id,role,status) values ($1,$2,'editor','active')
+      on conflict (workspace_id,profile_id) do update set role='editor', status='active'`,
+      [ws1Id, creator],
+    );
+    await admin.query(
+      `insert into public.recurring_rules
+      (id,workspace_id,name,frequency,behavior,account_id,template,active,created_by,
+       starts_at,ends_at,next_occurrence_at,anchor_day_of_month)
+      values ($1,$2,'Revocation-first probe','daily','remind',$3,$4,true,$5,$6,$6,$6,1)`,
+      [
+        ruleId,
+        ws1Id,
+        id(8201),
+        JSON.stringify({
+          type: 'expense',
+          accountId: id(8201),
+          amount: { amountMinor: '2', currency: 'USD' },
+          status: 'draft',
+          occurredAt: scheduledAt,
+        }),
+        creator,
+        scheduledAt,
+      ],
+    );
+    const acl = await admin.query(`select role, has_function_privilege(role,
+      'public.lock_recurring_creator_membership(uuid)', 'EXECUTE') as allowed
+      from unnest(array['anon','authenticated','savia_application','savia_worker','service_role']) role
+      order by role`);
+    expect(acl.rows.map(({ allowed }) => allowed)).toEqual([
+      false,
+      false,
+      true,
+      false,
+      false,
+    ]);
+    const holder = await admin.connect();
+    let locking: Promise<unknown> | undefined;
+    try {
+      await holder.query('begin');
+      const {
+        rows: [{ pid: holderPid }],
+      } = await holder.query('select pg_backend_pid() pid');
+      await holder.query(
+        `update public.workspace_memberships set role='viewer'
+        where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, creator],
+      );
+      const connected = Promise.withResolvers<number>();
+      locking = transaction.run(creator, async (client) => {
+        const {
+          rows: [{ pid }],
+        } = await client.query<{ pid: number }>('select pg_backend_pid() pid');
+        connected.resolve(pid);
+        return new PostgresOccurrenceAdapter().lockDue(client, {
+          workspaceId: ws1Id,
+          subject: creator,
+          ruleId,
+          scheduledAt,
+          asOf: scheduledAt,
+        });
+      });
+      void locking.catch(() => undefined);
+      const pid = await connected.promise;
+      await vi.waitFor(
+        async () => {
+          const { rows } = await admin.query(
+            'select $1::int = any(pg_blocking_pids($2)) blocked',
+            [holderPid, pid],
+          );
+          expect(rows[0].blocked).toBe(true);
+        },
+        { timeout: 1000 },
+      );
+      await holder.query('commit');
+      expect(await locking).toBeUndefined();
+      console.log(
+        'S5 demotion-first probe: waiter observed, denied after commit; helper ACL application-only',
+      );
+    } finally {
+      await holder.query('rollback');
+      holder.release();
+      await locking?.catch(() => undefined);
+    }
+  });
+
+  // Reviewer regressions for B6 (verify task mwr1jzkz). Insert inside the outer describe of
+  // test/jobs/job-worker.integration-spec.ts, before its final "});".
+  const b6Ledger = () =>
+    new TransactionService(
+      transaction,
+      new PostgresTransactionAdapter(),
+      new PostgresIdempotencyAdapter(),
+    );
+  const b6Charge = (
+    description: string,
+    days: number,
+    amountMinor: string,
+    payeeId?: string,
+    categoryId?: string,
+  ) =>
+    b6Ledger().create(
+      ownerA,
+      ws1Id,
+      {
+        type: 'expense',
+        accountId: id(8201),
+        amount: { currency: 'USD', amountMinor },
+        occurredAt: new Date(Date.now() + days * 86_400_000).toISOString(),
+        description,
+        status: 'confirmed',
+        payeeId,
+        categoryId,
+      },
+      randomUUID(),
+    );
+  const b6Sweep = async () => {
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    const app = await NestFactory.createApplicationContext(WorkerModule, {
+      logger: false,
+    });
+    try {
+      const runner = app.get(JobRunner);
+      await runner.start();
+      await vi.waitFor(() => expect(runner.activeJobsCount).toBe(0));
+      await runner.stop();
+    } finally {
+      await app.close();
+      preflight.mockRestore();
+    }
+  };
+
+  it('S6 alerts an active creator who retained read access after demotion', async () => {
+    const category = id(9001);
+    const budget = id(9002);
+    await admin.query(
+      `insert into public.categories (id, workspace_id, name, kind, created_by)
+      values ($1,$2,'Demotion category','expense',$3)`,
+      [category, ws1Id, ownerA],
+    );
+    await admin.query(
+      `insert into public.budgets (id, workspace_id, name, method, period_start, period_end, currency, created_by)
+      values ($1,$2,'Demotion budget','envelope',(now() at time zone 'UTC')::date-1,(now() at time zone 'UTC')::date+1,'USD',$3)`,
+      [budget, ws1Id, ownerA],
+    );
+    await admin.query(
+      `insert into public.budget_allocations (workspace_id,budget_id,category_id,planned_minor)
+      values ($1,$2,$3,1000)`,
+      [ws1Id, budget, category],
+    );
+    expect(
+      (await b6Charge('Demotion expense', 0, '1000', undefined, category)).kind,
+    ).toBe('created');
+    await admin.query(
+      `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+      [ws1Id, viewerA],
+    );
+    try {
+      await admin.query(
+        `update public.workspace_memberships set role='viewer' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      expect(
+        (
+          await transaction.runRead(ownerA, (client) =>
+            client.query(`select id from public.budgets where id=$1`, [budget]),
+          )
+        ).rows,
+      ).toEqual([{ id: budget }]);
+      await b6Sweep();
+      await b6Sweep();
+      const rows = (
+        await admin.query(
+          `select subject_id, type from public.notifications where resource_id=$1 order by type`,
+          [budget],
+        )
+      ).rows;
+      expect(rows).toEqual([
+        { subject_id: ownerA, type: 'budget_threshold_100' },
+        { subject_id: ownerA, type: 'budget_threshold_80' },
+      ]);
+    } finally {
+      await admin.query(
+        `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      await admin.query(
+        `update public.workspace_memberships set role='viewer' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, viewerA],
+      );
+    }
+  });
+
+  it('S6 does not merge distinct one-off purchases from a known payee', async () => {
+    const payee = id(9003);
+    await admin.query(
+      `insert into public.payees (id,workspace_id,name,created_by)
+      values ($1,$2,'Office Supply Store',$3)`,
+      [payee, ws1Id, ownerA],
+    );
+    for (const [i, item] of ['Printer ink', 'USB cable', 'Mouse pad'].entries())
+      expect((await b6Charge(item, -16 + 7 * i, '1999', payee)).kind).toBe(
+        'created',
+      );
+    await b6Sweep();
+    expect(
+      (
+        await admin.query(
+          `select status, frequency from public.subscriptions where workspace_id=$1 and payee_name='Office Supply Store'`,
+          [ws1Id],
+        )
+      ).rows,
+    ).toEqual([]);
+  });
+
+  it('S6 alerts on a 25% increase in an already established monthly series', async () => {
+    for (const day of [-92, -62, -32])
+      expect((await b6Charge('Cloud archive', day, '1000')).kind).toBe(
+        'created',
+      );
+    await b6Sweep();
+    const rows = async () =>
+      (
+        await admin.query(
+          `select id, current_amount_minor from public.subscriptions where workspace_id=$1 and payee_name='Cloud archive'`,
+          [ws1Id],
+        )
+      ).rows;
+    expect((await rows()).map((row) => row.current_amount_minor)).toEqual([
+      '1000',
+    ]);
+    const subscriptionId = (await rows())[0].id;
+    expect((await b6Charge('Cloud archive', -2, '1250')).kind).toBe('created');
+    await b6Sweep();
+    await b6Sweep();
+    expect({
+      rows: await rows(),
+      alerts: (
+        await admin.query(
+          `select title from public.notifications where workspace_id=$1 and title like 'Subscription “Cloud archive”%'`,
+          [ws1Id],
+        )
+      ).rows,
+    }).toEqual({
+      rows: [{ id: subscriptionId, current_amount_minor: '1250' }],
+      alerts: [{ title: 'Subscription “Cloud archive” increased by 25%' }],
+    });
+  });
+
+  it('S6 does not re-emit the same subscription increase when the workspace actor changes', async () => {
+    await admin.query(
+      `insert into public.subscriptions
+      (workspace_id, payee_name, current_amount_minor, current_currency, previous_amount_minor, previous_currency, frequency, status, created_by)
+      values ($1,'Owner rotation',1100,'USD',1000,'USD','monthly','confirmed',$2)`,
+      [ws1Id, ownerA],
+    );
+    const alerts = async () =>
+      (
+        await admin.query(
+          `select resource_id, subject_id from public.notifications
+      where workspace_id=$1 and title = 'Subscription “Owner rotation” increased by 10%' order by subject_id`,
+          [ws1Id],
+        )
+      ).rows;
+    await b6Sweep();
+    const first = await alerts();
+    expect(first).toEqual([
+      { resource_id: expect.any(String), subject_id: ownerA },
+    ]);
+    await admin.query(
+      `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+      [ws1Id, viewerA],
+    );
+    try {
+      await admin.query(
+        `update public.workspace_memberships set role='editor' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      await b6Sweep();
+      expect(await alerts()).toEqual(first);
+    } finally {
+      await admin.query(
+        `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      await admin.query(
+        `update public.workspace_memberships set role='viewer' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, viewerA],
+      );
+    }
+  });
+
+  it('S6 alerts once when a tracked series changes frequency', async () => {
+    for (const day of [-75, -45, -15])
+      expect((await b6Charge('Change cadence', day, '1000')).kind).toBe(
+        'created',
+      );
+    const subscriptions = new RecurringService(
+      transaction,
+      new PostgresRecurringAdapter(),
+      new PostgresIdempotencyAdapter(),
+    );
+    const query = createSubscriptionListQuery({
+      workspaceId: ws1Id,
+      statusParam: 'detected',
+    });
+    const candidate = async () => {
+      const listed = await subscriptions.listSubscriptions(ownerA, query);
+      if (listed.kind !== 'ok') throw new Error('Could not list candidates');
+      return listed.page.items.find(
+        ({ payeeName }) => payeeName === 'Change cadence',
+      );
+    };
+    const notifications = new NotificationService(
+      transaction,
+      new PostgresNotificationAdapter(),
+      new PostgresIdempotencyAdapter(),
+    );
+    const alerts = async () =>
+      (
+        await notifications.listNotifications(ownerA, {
+          subject: ownerA,
+          limit: 50,
+          unreadOnly: false,
+        })
+      ).page.items.filter(({ title }) =>
+        title.startsWith('Subscription “Change cadence”'),
+      );
+    await b6Sweep();
+    const initial = await candidate();
+    expect(initial).toMatchObject({ frequency: 'monthly', status: 'detected' });
+    expect(await alerts()).toEqual([]);
+    for (const day of [-8, -1])
+      expect((await b6Charge('Change cadence', day, '1000')).kind).toBe(
+        'created',
+      );
+    await b6Sweep();
+    expect(await candidate()).toMatchObject({
+      id: initial?.id,
+      frequency: 'weekly',
+      status: 'detected',
+    });
+    const emitted = await alerts();
+    expect(emitted).toEqual([
+      expect.objectContaining({
+        type: 'subscription_frequency_change',
+        title: 'Subscription “Change cadence” changed from monthly to weekly',
+        read: false,
+        body: null,
+        actionUrl: null,
+      }),
+    ]);
+    await b6Sweep();
+    expect(await alerts()).toEqual(emitted);
+  });
+
+  it('S6 preserves populated 0017 subscription IDs and does not replay their price alerts after the 0018 upgrade', async () => {
+    const payee = id(9050);
+    const detected = id(9051);
+    const legacy = id(9052);
+    const detectedName = 'Upgrade detected';
+    const legacyName = 'Upgrade legacy';
+    const controlName = 'Upgrade control';
+    const priceTitle = (name: string) =>
+      `Subscription “${name}” increased by 10%`;
+    await admin.query(
+      `insert into public.payees (id, workspace_id, name, created_by) values ($1, $2, $3, $4)`,
+      [payee, ws1Id, detectedName, ownerA],
+    );
+    for (const day of [-62, -32]) {
+      expect((await b6Charge('Monthly archive', day, '1000', payee)).kind).toBe(
+        'created',
+      );
+    }
+    const newest = await b6Charge('MONTHLY   ARCHIVE', -2, '1100', payee);
+    if (newest.kind !== 'created')
+      throw new Error('Could not create the 0017 observation');
+    const observation = newest.transaction.id;
+
+    // 0017 grouped known payees without a description and used the raw charge ID for its alert.
+    await admin.query(
+      `insert into public.subscriptions
+         (id, workspace_id, created_by, status, detection_key, detection_observed_at, detection_observation_id,
+          payee_name, current_currency, current_amount_minor, previous_currency, previous_amount_minor, frequency, next_expected_at)
+       select $1, t.workspace_id, $2, 'detected',
+         encode(sha256(convert_to(jsonb_build_array(t.account_id, t.currency, t.payee_id, null)::text, 'UTF8')), 'hex'),
+         t.occurred_at, t.id, $3, t.currency, t.amount_minor, t.currency, 1000, 'monthly', t.occurred_at + interval '1 month'
+       from public.transactions t where t.id = $4`,
+      [detected, ownerA, detectedName, observation],
+    );
+    await admin.query(
+      `insert into public.subscriptions
+         (id, workspace_id, payee_name, current_amount_minor, current_currency, previous_amount_minor,
+          previous_currency, frequency, status, created_by)
+       values ($1,$2,$3,1100,'USD',1000,'USD','monthly','confirmed',$4),
+              ($5,$2,$6,1100,'USD',1000,'USD','monthly','confirmed',$4)`,
+      [legacy, ws1Id, legacyName, ownerA, id(9053), controlName],
+    );
+    // A legacy subscription has no observation metadata and uses the 0017 amount-pair UUID.
+    await admin.query(
+      `insert into public.notifications (workspace_id, subject_id, type, resource_id, title)
+       values ($1,$2,'subscription_price_increase',$3,$4),
+              ($1,$2,'subscription_price_increase',md5(jsonb_build_array($5::uuid, 1100, 'USD', 1000, 'USD')::text)::uuid,$6)`,
+      [
+        ws1Id,
+        ownerA,
+        observation,
+        priceTitle(detectedName),
+        legacy,
+        priceTitle(legacyName),
+      ],
+    );
+    const history = async () =>
+      (
+        await admin.query(
+          `select id, subject_id, resource_id, title from public.notifications
+       where workspace_id = $1 and type = 'subscription_price_increase' and title = any($2::text[]) order by title, id`,
+          [ws1Id, [priceTitle(detectedName), priceTitle(legacyName)]],
+        )
+      ).rows;
+    const original = await history();
+    expect(original).toEqual(
+      [detectedName, legacyName].map((name) =>
+        expect.objectContaining({
+          subject_id: ownerA,
+          title: priceTitle(name),
+        }),
+      ),
+    );
+
+    // The disposable runner installs the whole schema before fixtures. Run the
+    // two data statements verbatim on the seeded 0017 rows, without replaying DDL.
+    const migration = readFileSync(
+      'supabase/migrations/202609170018_b6_alert_recipients.sql',
+      'utf8',
+    );
+    const backfill =
+      migration.match(
+        /^(?:update public\.subscriptions s|insert into public\.subscription_notification_events \().*?;$/gms,
+      ) ?? [];
+    expect(backfill).toHaveLength(2);
+    await admin.query(backfill.join('\n'));
+
+    await admin.query(
+      `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+      [ws1Id, viewerA],
+    );
+    try {
+      await admin.query(
+        `update public.workspace_memberships set role='editor' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      await b6Sweep();
+      // The same sweep must deliver an unseen increase to the new recipient.
+      expect(
+        (
+          await admin.query(
+            `select subject_id from public.notifications where workspace_id=$1 and title=$2`,
+            [ws1Id, priceTitle(controlName)],
+          )
+        ).rows,
+      ).toEqual([{ subject_id: viewerA }]);
+      expect({
+        subscriptions: (
+          await admin.query(
+            `select id, status from public.subscriptions where workspace_id=$1 and payee_name = any($2::text[]) order by payee_name, id`,
+            [ws1Id, [detectedName, legacyName]],
+          )
+        ).rows,
+        alerts: await history(),
+      }).toEqual({
+        subscriptions: [
+          { id: detected, status: 'detected' },
+          { id: legacy, status: 'confirmed' },
+        ],
+        alerts: original,
+      });
+    } finally {
+      await admin.query(
+        `update public.workspace_memberships set role='owner' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, ownerA],
+      );
+      await admin.query(
+        `update public.workspace_memberships set role='viewer' where workspace_id=$1 and profile_id=$2`,
+        [ws1Id, viewerA],
+      );
+    }
+  });
+}

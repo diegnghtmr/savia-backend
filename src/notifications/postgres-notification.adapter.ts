@@ -1,6 +1,8 @@
 import { Logger } from '@nestjs/common';
 import type { Cursor } from '../platform/cursor.js';
 import type {
+  BudgetThreshold,
+  BudgetThresholdNotificationWriter,
   NotificationEvent,
   NotificationWriter,
 } from '../platform/notification-writer.port.js';
@@ -27,7 +29,10 @@ interface NotificationSqlRow extends Record<string, unknown> {
 }
 
 export class PostgresNotificationAdapter
-  implements NotificationStore, NotificationWriter
+  implements
+    NotificationStore,
+    NotificationWriter,
+    BudgetThresholdNotificationWriter
 {
   private readonly logger = new Logger(PostgresNotificationAdapter.name);
 
@@ -56,6 +61,19 @@ export class PostgresNotificationAdapter
       this.logger.warn('In-app notification insert failed.');
     }
     await client.query('release savepoint notification_publish');
+  }
+
+  public async publishBudgetThresholds(
+    client: TransactionClient,
+    workspaceId: string,
+    budgetId: string,
+    day: string,
+    thresholds: readonly BudgetThreshold[],
+  ): Promise<void> {
+    await client.query(
+      'select public.publish_budget_thresholds($1, $2, $3, $4)',
+      [workspaceId, budgetId, day, thresholds],
+    );
   }
 
   public async listNotifications(

@@ -10,6 +10,7 @@ export const JOB_WRITER_TYPES = {
   EXPORT_JOB: 'export_job',
   WORKSPACE_BACKUP: 'workspace_backup',
   RECEIPT_OCR: 'receipt_ocr',
+  RECURRING_MATERIALIZATION: 'recurring_materialization',
 } as const;
 
 export type JobWriterType =

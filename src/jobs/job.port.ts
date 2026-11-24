@@ -1,7 +1,11 @@
+import {
+  JOB_WRITER_TYPES,
+  type JobWriterType,
+} from '../platform/job-writer.port.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 
-export const JOBS_PORT = Symbol('JobsPort');
 export { JOB_WRITER } from '../platform/job-writer.port.js';
+export const JOBS_PORT = Symbol('JobsPort');
 
 export const JOB_STATUSES = [
   'queued',
@@ -14,16 +18,9 @@ export const JOB_STATUSES = [
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
-export const JOB_TYPES = [
-  'import_commit',
-  'import_rollback',
-  'balance_forecast',
-  'report_run',
-  'export_job',
-  'workspace_backup',
-  'receipt_ocr',
-] as const;
-export type JobType = (typeof JOB_TYPES)[number];
+export const JOB_TYPES: readonly JobWriterType[] =
+  Object.values(JOB_WRITER_TYPES);
+export type JobType = JobWriterType;
 
 export interface Job {
   readonly id: string;
