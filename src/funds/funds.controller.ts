@@ -29,6 +29,7 @@ import {
   createFundContributionCommand,
   createFundWithdrawalCommand,
   FundCommandValidationError,
+  parseFundIfMatch,
   updateFundCommand,
 } from './fund-command.js';
 import {
@@ -36,8 +37,6 @@ import {
   validateFundId,
   FundQueryValidationError,
 } from './fund-query.js';
-
-const STRONG_ETAG = /^"[\x21\x23-\x7e\x80-\xff]*"$/;
 
 const UPDATE_VALIDATION = {
   'currency-mismatch': [
@@ -225,8 +224,8 @@ export class FundsController {
         status: 428,
       });
     }
-    const ifMatch = typeof rawMatch === 'string' ? rawMatch.trim() : '';
-    if (!STRONG_ETAG.test(ifMatch)) {
+    const ifMatch = parseFundIfMatch(rawMatch);
+    if (!ifMatch) {
       return sendProblem(reply, {
         type: PROBLEM_TYPES.BAD_REQUEST,
         title: 'If-Match must contain one strong ETag',

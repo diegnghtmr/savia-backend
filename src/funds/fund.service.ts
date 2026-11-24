@@ -79,6 +79,53 @@ export class FundService implements FundsPort {
     });
   }
 
+  public readDetailWithin(
+    client: TransactionClient,
+    workspaceId: string,
+    fundId: string,
+  ) {
+    return this.store.readFundDetail(client, workspaceId, fundId);
+  }
+
+  public async checkUpdateWithin(
+    client: TransactionClient,
+    workspaceId: string,
+    fundId: string,
+    command: UpdateFundRequest,
+    ifMatch: string,
+  ) {
+    await this.store.lockFund(client, workspaceId, fundId);
+    const current = await this.readDetailWithin(client, workspaceId, fundId);
+    if (!current) return { kind: FUND_OUTCOMES.NOT_FOUND } as const;
+    if (current.fund.etag !== ifMatch) return { kind: 'stale' } as const;
+    if (
+      command.targetAmount &&
+      command.targetAmount.currency !== current.fund.currency
+    ) {
+      return { kind: FUND_OUTCOMES.CURRENCY_MISMATCH } as const;
+    }
+    if (
+      !(await this.checkLinkedAccountWithin(
+        client,
+        workspaceId,
+        command.linkedAccountId,
+      ))
+    ) {
+      return { kind: FUND_OUTCOMES.LINKED_ACCOUNT_NOT_FOUND } as const;
+    }
+    if (
+      command.responsibleMemberIds &&
+      !(await this.store.hasActiveMembers(
+        client,
+        workspaceId,
+        command.responsibleMemberIds,
+      ))
+    ) {
+      return { kind: 'inactive-members' } as const;
+    }
+    return { kind: 'ok', version: current.version } as const;
+  }
+
   public async updateFund(
     subject: string,
     workspaceId: string,
@@ -86,6 +133,7 @@ export class FundService implements FundsPort {
     command: UpdateFundRequest,
     ifMatch: string,
     key: string,
+    boundClient?: TransactionClient,
   ): Promise<FundUpdateOutcome> {
     const route = 'PATCH /v1/funds/{fundId}';
     const fingerprint = computeRequestFingerprint({
@@ -93,8 +141,10 @@ export class FundService implements FundsPort {
       ifMatch,
       command,
     });
-    // PgTransaction serializes this subject's writes, including idempotency records.
-    return this.tx.run(subject, async (client) => {
+    // Both entry points hold the subject lock, including for idempotency records.
+    const apply = async (
+      client: TransactionClient,
+    ): Promise<FundUpdateOutcome> => {
       const role = await this.store.readActiveRole(client, workspaceId);
       if (!['owner', 'administrator', 'editor'].includes(role ?? '')) {
         return { kind: FUND_OUTCOMES.FORBIDDEN };
@@ -117,40 +167,14 @@ export class FundService implements FundsPort {
             };
       }
 
-      await this.store.lockFund(client, workspaceId, fundId);
-      const current = await this.store.readFundDetail(
+      const current = await this.checkUpdateWithin(
         client,
         workspaceId,
         fundId,
+        command,
+        ifMatch,
       );
-      if (!current) return { kind: FUND_OUTCOMES.NOT_FOUND };
-      if (current.fund.etag !== ifMatch) return { kind: 'stale' };
-      if (
-        command.targetAmount &&
-        command.targetAmount.currency !== current.fund.currency
-      ) {
-        return { kind: FUND_OUTCOMES.CURRENCY_MISMATCH };
-      }
-      if (
-        command.linkedAccountId &&
-        !(await this.store.lockAndReadAccount(
-          client,
-          workspaceId,
-          command.linkedAccountId,
-        ))
-      ) {
-        return { kind: FUND_OUTCOMES.LINKED_ACCOUNT_NOT_FOUND };
-      }
-      if (
-        command.responsibleMemberIds &&
-        !(await this.store.hasActiveMembers(
-          client,
-          workspaceId,
-          command.responsibleMemberIds,
-        ))
-      ) {
-        return { kind: 'inactive-members' };
-      }
+      if (current.kind !== 'ok') return current;
       if (
         !(await this.store.updateFund(
           client,
@@ -184,7 +208,8 @@ export class FundService implements FundsPort {
         throw new Error('Updated fund response could not be recorded.');
       }
       return { kind: 'ok', fund: updated.fund };
-    });
+    };
+    return boundClient ? apply(boundClient) : this.tx.run(subject, apply);
   }
 
   public async checkLinkedAccountWithin(
@@ -398,8 +423,16 @@ export class FundService implements FundsPort {
     fundId: string,
     command: CreateFundWithdrawalRequest,
     key: string,
+    boundClient?: TransactionClient,
   ): Promise<FundMovementOutcome> {
-    return this.moveFund(subject, workspaceId, fundId, command, key);
+    return this.moveFund(
+      subject,
+      workspaceId,
+      fundId,
+      command,
+      key,
+      boundClient,
+    );
   }
 
   private async moveFund(

@@ -20,7 +20,7 @@ import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 export const MCP_PROPOSALS_PORT = Symbol('McpProposalsPort');
 type Outcome =
   | { kind: 'ok'; body: unknown }
-  | { kind: 'invalid' | 'forbidden' | 'conflict' };
+  | { kind: 'invalid' | 'forbidden' | 'conflict' | 'unavailable' };
 
 export type McpProposalsPort = (
   identity: McpProposalIdentity,
@@ -94,7 +94,10 @@ export class McpProposalsController {
       });
     return sendProblem(reply, {
       type: PROBLEM_TYPES.UNPROCESSABLE,
-      title: 'Invalid MCP proposal tool or arguments',
+      title:
+        outcome.kind === 'unavailable'
+          ? 'Tool not available for proposals'
+          : 'Invalid MCP proposal tool or arguments',
       status: 422,
     });
   }

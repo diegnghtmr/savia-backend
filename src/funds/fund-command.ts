@@ -41,6 +41,7 @@ const INTEGER_PATTERN = /^-?[0-9]+$/;
 const INT64_MIN = -9223372036854775808n;
 const INT64_MAX = 9223372036854775807n;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const STRONG_ETAG = /^"[\x21\x23-\x7e\x80-\xff]*"$/;
 const ISO_DATE_TIME_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/i;
 
@@ -212,6 +213,11 @@ const UPDATE_FUND_FIELDS = new Set([
   'linkedAccountId',
   'responsibleMemberIds',
 ]);
+
+export function parseFundIfMatch(value: unknown): string | undefined {
+  const ifMatch = typeof value === 'string' ? value.trim() : '';
+  return STRONG_ETAG.test(ifMatch) ? ifMatch : undefined;
+}
 
 export function updateFundCommand(input: unknown): UpdateFundRequest {
   const body = readBody(input);

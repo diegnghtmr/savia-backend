@@ -145,8 +145,11 @@ function authorizeLedgerTool(
     workspaceId,
     toolName,
     accountIds: ledgerToolAccountIds(command),
-    // A same-currency transfer is one monetary effect, not two.
-    amounts: [command.amount],
+    // Count the transfer principal once, and its separate source fee once.
+    amounts:
+      'fee' in command && command.fee
+        ? [command.amount, command.fee]
+        : [command.amount],
   });
 }
 
@@ -172,11 +175,9 @@ function normalizeMcpArguments(toolName: string, args: ToolArguments) {
       },
     };
   }
-  // The ledger posts only the two principal legs and stores no description.
-  if (toolName !== CREATE_TRANSFER_TOOL || hasUnsupportedTransferFields(args))
-    return null;
+  if (toolName !== CREATE_TRANSFER_TOOL) return null;
   const command = validateAgentTransfer(args);
-  if (!command) return null;
+  if (!command || command.description?.isWellFormed() === false) return null;
   return {
     sourceAccountId: command.sourceAccountId.toLowerCase(),
     destinationAccountId: command.destinationAccountId.toLowerCase(),
@@ -185,11 +186,19 @@ function normalizeMcpArguments(toolName: string, args: ToolArguments) {
       amountMinor: BigInt(command.amount.amountMinor).toString(),
     },
     occurredAt: command.occurredAt,
+    ...(command.fee
+      ? {
+          fee: {
+            ...command.fee,
+            amountMinor: BigInt(command.fee.amountMinor).toString(),
+          },
+        }
+      : {}),
+    // Preserve the legacy plain-transfer snapshot when description is omitted.
+    ...(Object.hasOwn(args, 'description')
+      ? { description: command.description ?? null }
+      : {}),
   };
-}
-
-function hasUnsupportedTransferFields(args: ToolArguments): boolean {
-  return Object.hasOwn(args, 'fee') || Object.hasOwn(args, 'description');
 }
 
 const approvals = ApprovalsModule.withExecutors(
@@ -266,8 +275,7 @@ const approvals = ApprovalsModule.withExecutors(
         grantId,
       ) => {
         const command = validateAgentTransfer(args);
-        if (!command || (grantId && hasUnsupportedTransferFields(args)))
-          return 'invalid_action';
+        if (!command) return 'invalid_action';
         if (
           grantId &&
           !(await authorizeLedgerTool(
@@ -353,6 +361,8 @@ const mcpProposals = McpProposalsModule.withPort(proposalImports, {
     return async (identity, workspaceId, toolName, args, key) => {
       const write = writes.get(toolName);
       if (write) return write(identity, workspaceId, toolName, args, key);
+      // L19: a multipart receipt upload has no safe JSON proposal representation.
+      if (toolName === 'scan_receipt') return { kind: 'unavailable' };
       const tool = MCP_TOOL_ANNOTATIONS.get(toolName);
       if (!tool?.requiresApproval || tool.riskClass === 'read')
         return { kind: 'invalid' };
