@@ -12,6 +12,7 @@ import { ARTIFACT_STORAGE } from './artifact-storage.port.js';
 import { SupabaseStorageAdapter } from './supabase-storage.adapter.js';
 import { CredentialCrypto } from './credential-crypto.js';
 import { CliTokenVerifier } from './cli-token-verifier.js';
+import { PostgresSessionStore } from './postgres-session.store.js';
 
 @Module({
   providers: [
@@ -21,10 +22,13 @@ import { CliTokenVerifier } from './cli-token-verifier.js';
     },
     {
       provide: JoseJwtVerifier,
-      inject: [AuthConfig],
-      useFactory: (config: AuthConfig): JoseJwtVerifier =>
-        new JoseJwtVerifier(config),
+      inject: [AuthConfig, PostgresSessionStore],
+      useFactory: (
+        config: AuthConfig,
+        sessions: PostgresSessionStore,
+      ): JoseJwtVerifier => new JoseJwtVerifier(config, sessions),
     },
+    PostgresSessionStore,
     JwtAuthGuard,
     McpProposalAuthGuard,
     {
@@ -69,6 +73,7 @@ import { CliTokenVerifier } from './cli-token-verifier.js';
   exports: [
     AuthConfig,
     JoseJwtVerifier,
+    PostgresSessionStore,
     JwtAuthGuard,
     McpProposalAuthGuard,
     CliTokenVerifier,

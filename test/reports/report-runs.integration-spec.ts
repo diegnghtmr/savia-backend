@@ -47,6 +47,16 @@ import {
   setReportSourceRowCap,
 } from '../../src/reports/report.port.js';
 
+// This suite runs the report worker but never executes OCR. Leave the real
+// language-pack preflight to the OCR suites so a report DB run needs no OCR data.
+vi.mock(
+  import('../../src/platform/system-tesseract.adapter.js'),
+  async (load) => ({
+    ...(await load()),
+    runOcrStartupPreflight: () => Promise.resolve(),
+  }),
+);
+
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 
@@ -708,8 +718,74 @@ describe('Report runs integration contract and endpoint suite', () => {
     });
   });
 
+  it('removes excluded ledger movements from rendered report results and restores them on inclusion', async () => {
+    const headers = {
+      authorization: 'Bearer editor-token',
+      'x-workspace-id': workspace1Id,
+    };
+    const txn = await application.inject({
+      method: 'POST',
+      url: '/v1/transactions',
+      headers: { ...headers, 'idempotency-key': randomUUID() },
+      payload: {
+        type: 'expense',
+        accountId: acct1Usd,
+        categoryId: catExpenseId,
+        amount: { amountMinor: '1234', currency: 'USD' },
+        occurredAt: '2026-11-06T12:00:00Z',
+      },
+    });
+    expect(txn.statusCode, txn.payload).toBe(201);
+    const { id } = txn.json<{ id: string }>();
+    async function render(): Promise<ReportGrid> {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: { from: '2026-11-01', to: '2026-11-30' },
+        },
+      });
+      expect(response.statusCode, response.payload).toBe(202);
+      const { id: runId } = response.json<{ id: string }>();
+      expect((await drainUntilRunTerminal(runId)).runStatus).toBe('completed');
+      const result = inMemoryStorage.uploaded.get(
+        `${workspace1Id}/${runId}.json`,
+      );
+      expect(result).toBeDefined();
+      return JSON.parse(result!.content.toString('utf8')) as ReportGrid;
+    }
+    const cell = (grid: ReportGrid) =>
+      grid.rows
+        .find((row) => row.key.includes(catExpenseId))
+        ?.cells.find((value) => value.measure === 'converted_value')?.value;
+    expect(cell(await render())).toBe('1234');
+    for (const [action, expectedVersion, reported] of [
+      ['excludeFromReports', 1, undefined],
+      ['includeInReports', 2, '1234'],
+    ] as const) {
+      const changed = await application.inject({
+        method: 'POST',
+        url: '/v1/transactions/bulk',
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+        payload: {
+          targets: [{ id, expectedVersion }],
+          action: { type: action },
+        },
+      });
+      expect(changed.statusCode, changed.payload).toBe(200);
+      expect(changed.json()).toEqual({
+        updated: [{ id, version: expectedVersion + 1 }],
+      });
+      expect(cell(await render())).toBe(reported);
+    }
+  });
+
   describe('FIX 1: Exchange rate conversion direction', () => {
     it('converts EUR to USD using the available EUR/USD rate', async () => {
+      const uploadsBeforeEnqueue = inMemoryStorage.uploadCallCount;
       const response = await application.inject({
         method: 'POST',
         url: '/v1/report-runs',
@@ -736,7 +812,7 @@ describe('Report runs integration contract and endpoint suite', () => {
       };
       expect(body.status).toBe('queued');
       expect(body.downloadUrl).toBeNull();
-      expect(inMemoryStorage.uploadCallCount).toBe(0);
+      expect(inMemoryStorage.uploadCallCount).toBe(uploadsBeforeEnqueue);
 
       const finished = await drainUntilRunTerminal(body.id);
       expect(finished.jobStatus).toBe('completed');

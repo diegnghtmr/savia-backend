@@ -6,6 +6,8 @@ import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { createJwksServer, type JwksServer } from '../helpers/jwks-server.js';
 const issuer = 'https://issuer.example.test';
 const audience = 'savia-api';
+const subject = '00000000-0000-0000-0000-000000000123';
+const sessionId = '00000000-0000-0000-0000-000000000456';
 const config = AuthConfig.fromEnvironment({
   JWT_ISSUER: issuer,
   JWT_AUDIENCE: audience,
@@ -26,11 +28,15 @@ async function publicJwk(signingKey: CryptoKeyPair, kid: string) {
 }
 async function verifierFor(keys: unknown[]): Promise<JoseJwtVerifier> {
   server = await createJwksServer({ kind: 'jwks', body: { keys } });
-  return new JoseJwtVerifier(config, {
-    cooldownDuration: 30,
-    fetch: (_input, init) => fetch(server?.uri ?? '', init),
-    timeoutDuration: 500,
-  });
+  return new JoseJwtVerifier(
+    config,
+    { isActive: () => Promise.resolve(true) },
+    {
+      cooldownDuration: 30,
+      fetch: (_input, init) => fetch(server?.uri ?? '', init),
+      timeoutDuration: 500,
+    },
+  );
 }
 async function token(
   signingKey: CryptoKeyPair,
@@ -40,7 +46,8 @@ async function token(
   return new SignJWT({
     iss: issuer,
     aud: audience,
-    sub: 'subject-123',
+    sub: subject,
+    session_id: sessionId,
     exp: Math.floor(Date.now() / 1000) + 60,
     ...claims,
   })
@@ -55,7 +62,8 @@ describe('JoseJwtVerifier', () => {
     const signingKey = await key();
     const verifier = await verifierFor([await publicJwk(signingKey, 'key-1')]);
     await expect(verifier.verify(await token(signingKey))).resolves.toEqual({
-      subject: 'subject-123',
+      subject,
+      sessionId,
       authMethod: 'session',
     });
     await expectUnauthorized(verifier.verify('not-a-jwt'));
@@ -63,6 +71,8 @@ describe('JoseJwtVerifier', () => {
   it.each([
     ['missing subject', { sub: undefined }],
     ['empty subject', { sub: '' }],
+    ['missing session id', { session_id: undefined }],
+    ['malformed session id', { session_id: 'session' }],
     ['missing expiration', { exp: undefined }],
     ['expired expiration', { exp: Math.floor(Date.now() / 1000) - 1 }],
     ['future not-before', { nbf: Math.floor(Date.now() / 1000) + 60 }],

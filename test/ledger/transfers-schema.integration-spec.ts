@@ -1,4 +1,5 @@
-// Migrations under test: 202608240007_transfers.sql, 202608240005_ledger_postings.sql
+// Migrations under test: 202608240007_transfers.sql, 202608240005_ledger_postings.sql,
+// and 202609170027_transfer_fees.sql (description column and grants).
 import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -330,6 +331,7 @@ describe('Workspace transfers schema, composite posting binding, RLS, and grants
       expect(readable).toEqual([
         'created_at',
         'created_by',
+        'description',
         'destination_account_id',
         'destination_amount_minor',
         'destination_currency',
@@ -354,6 +356,7 @@ describe('Workspace transfers schema, composite posting binding, RLS, and grants
         .map((r) => r.column_name);
       expect(insertable).toEqual([
         'created_by',
+        'description',
         'destination_account_id',
         'destination_amount_minor',
         'destination_currency',
@@ -396,6 +399,7 @@ describe('Workspace transfers schema, composite posting binding, RLS, and grants
       expect(inventoryRes.rows.map((r) => r.column_name)).toEqual([
         'created_at',
         'created_by',
+        'description',
         'destination_account_id',
         'destination_amount_minor',
         'destination_currency',

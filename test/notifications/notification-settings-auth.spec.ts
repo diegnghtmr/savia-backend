@@ -8,19 +8,29 @@ import { JwtAuthGuard } from '../../src/platform/jwt-auth.guard.js';
 
 it('denies a signed MCP-resource JWT on the notification settings routes', async () => {
   const issuer = 'https://auth.example.test';
+  const mcpAudience = 'https://mcp.example.test/mcp';
   const config = AuthConfig.fromEnvironment({
     JWT_ISSUER: issuer,
     JWT_AUDIENCE: 'savia-api',
     JWT_JWKS_URI: `${issuer}/jwks`,
     JWT_ALGORITHMS: 'RS256',
+    SAVIA_MCP_PROPOSAL_AUDIENCE: mcpAudience,
   });
   const { publicKey, privateKey } = await generateKeyPair('RS256');
   const jwk = await exportJWK(publicKey);
-  const verifier = new JoseJwtVerifier(config, {
-    fetch: async () => Response.json({ keys: [{ ...jwk, kid: 'review' }] }),
-  });
+  const verifier = new JoseJwtVerifier(
+    config,
+    { isActive: async () => true },
+    {
+      fetch: async () => Response.json({ keys: [{ ...jwk, kid: 'review' }] }),
+    },
+  );
   const mint = (audience: string) =>
-    new SignJWT({})
+    new SignJWT(
+      audience === config.audience
+        ? { session_id: '22222222-0000-4000-8000-000000000002' }
+        : { mcp_grant_id: '33333333-0000-4000-8000-000000000003' },
+    )
       .setProtectedHeader({ alg: 'RS256', kid: 'review' })
       .setIssuer(issuer)
       .setAudience(audience)
@@ -29,7 +39,7 @@ it('denies a signed MCP-resource JWT on the notification settings routes', async
       .sign(privateKey);
   const [session, mcp] = await Promise.all([
     mint(config.audience),
-    mint('https://mcp.example.test/mcp'),
+    mint(mcpAudience),
   ]);
   const cli = {
     verify: async () => {

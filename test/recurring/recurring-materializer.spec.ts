@@ -15,6 +15,7 @@ const due: DueOccurrence = {
   asOf: '2024-04-01T00:00:00.000Z',
 };
 const rule: DueRule = {
+  occurrenceId: 'stable-occurrence-id',
   frequency: 'monthly',
   rrule: null,
   behavior: 'confirm_automatically',

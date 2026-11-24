@@ -48,6 +48,7 @@ it.each([
     status,
   ) => {
     const rule: DueRule = {
+      occurrenceId: 'stable-occurrence-id',
       frequency,
       behavior,
       endsAt,

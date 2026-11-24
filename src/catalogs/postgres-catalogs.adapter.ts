@@ -35,6 +35,7 @@ interface CategoryRow extends Record<string, unknown> {
   readonly kind: string;
   readonly icon: string | null;
   readonly colorToken: string | null;
+  readonly essential?: boolean;
   readonly cursorAt?: string;
 }
 
@@ -239,7 +240,7 @@ insert into public.categories (
   kind,
   icon,
   color_token,
-  created_by
+  created_by${command.essential === undefined ? '' : ', essential'}
 )
 values (
   $1::uuid,
@@ -248,7 +249,7 @@ values (
   $4,
   $5,
   $6,
-  $7::uuid
+  $7::uuid${command.essential === undefined ? '' : ', $8'}
 )
 returning
   id::text,
@@ -257,7 +258,8 @@ returning
   parent_id::text as "parentId",
   kind,
   icon,
-  color_token as "colorToken"`;
+  color_token as "colorToken",
+  essential`;
 
     const values = [
       workspaceId,
@@ -267,6 +269,7 @@ returning
       command.icon,
       command.colorToken,
       subject,
+      ...(command.essential === undefined ? [] : [command.essential]),
     ];
 
     try {
@@ -284,6 +287,7 @@ returning
         kind: row.kind as CategoryKind,
         icon: row.icon ?? null,
         colorToken: row.colorToken ?? null,
+        ...(row.essential === true ? { essential: true } : {}),
       };
     } catch (error: unknown) {
       if (typeof error === 'object' && error !== null && 'code' in error) {
@@ -320,6 +324,7 @@ select id::text,
        kind,
        icon,
        color_token as "colorToken",
+       essential,
        to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
   from public.categories
  where workspace_id = $1::uuid
@@ -345,6 +350,7 @@ select id::text,
         kind: row.kind as CategoryKind,
         icon: row.icon ?? null,
         colorToken: row.colorToken ?? null,
+        ...(row.essential === true ? { essential: true } : {}),
       },
       cursorAt: row.cursorAt ?? '',
     }));

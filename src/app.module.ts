@@ -35,6 +35,7 @@ import {
 } from './platform/ledger-writer.port.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { RecurringModule } from './recurring/recurring.module.js';
+import { RecurringOccurrenceActionsModule } from './recurring/recurring-occurrence-actions.module.js';
 import { ReconciliationsModule } from './reconciliations/reconciliations.module.js';
 import { ExportsModule } from './exports/exports.module.js';
 import { ImportsModule } from './imports/imports.module.js';
@@ -426,6 +427,7 @@ const mcpProposals = McpProposalsModule.withPort(proposalImports, {
     CurrenciesModule,
     CatalogsModule,
     RecurringModule,
+    RecurringOccurrenceActionsModule,
     JobsModule,
     ReconciliationsModule,
     ExportsModule,

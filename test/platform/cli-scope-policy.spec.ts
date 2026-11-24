@@ -71,6 +71,22 @@ function fastifyPath(path: string): string {
 }
 
 describe('CLI scope policy parity', () => {
+  it('limits occurrence listing and commands to the corresponding transaction scopes', () => {
+    const list = '/v1/recurring-rules/:ruleId/occurrences';
+    expect(CLI_SCOPE_POLICY.get(`GET ${list}`)).toEqual(['transactions:read']);
+    for (const action of ['confirm', 'skip', 'reschedule']) {
+      expect(
+        CLI_SCOPE_POLICY.get(`POST ${list}/:occurrenceId/${action}`),
+      ).toEqual(['transactions:write']);
+    }
+    expect(CLI_SCOPE_POLICY.get(`PATCH ${list}/:occurrenceId`)).toEqual([
+      'transactions:write',
+    ]);
+    expect(
+      CLI_SCOPE_POLICY.get('POST /v1/recurring-rules/:ruleId/edit-series'),
+    ).toEqual(['transactions:write']);
+  });
+
   it('matches every CLI security requirement in the repository mirror', () => {
     const mirrorOperations = cliOperations(bundleOpenApi(openapiMirror));
     const expected: PolicyEntry[] = mirrorOperations

@@ -19,6 +19,7 @@ describe('CLI scope policy HTTP boundary', () => {
   const ownerId = '11111111-0000-4000-8000-000000000901';
   const viewerId = '22222222-0000-4000-8000-000000000901';
   const editorId = '33333333-0000-4000-8000-000000000901';
+  const unonboardedId = '44444444-0000-4000-8000-000000000901';
   const workspaceId = 'aaaaaaaa-0000-4000-8000-000000000901';
   const accountId = 'cccccccc-0000-4000-8000-000000000901';
   const debtId = 'dddddddd-0000-4000-8000-000000000901';
@@ -28,6 +29,7 @@ describe('CLI scope policy HTTP boundary', () => {
     transactionWrite: 'svt_cli_scope_transaction_write',
     transactionAndBudgetWrite: 'svt_cli_scope_transaction_budget_write',
     any: 'svt_cli_scope_any',
+    unonboarded: 'svt_cli_scope_unonboarded',
   } as const;
 
   async function asSubject<T>(
@@ -62,7 +64,7 @@ describe('CLI scope policy HTTP boundary', () => {
     });
     admin = new Pool({ connectionString: url });
     await admin.query(
-      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6)`,
+      `insert into auth.users (id, email) values ($1, $2), ($3, $4), ($5, $6), ($7, $8)`,
       [
         ownerId,
         'cli-scope-owner@example.test',
@@ -70,6 +72,8 @@ describe('CLI scope policy HTTP boundary', () => {
         'cli-scope-viewer@example.test',
         editorId,
         'cli-scope-editor@example.test',
+        unonboardedId,
+        'cli-scope-new@example.test',
       ],
     );
     for (const [id, email, name] of [
@@ -120,6 +124,7 @@ describe('CLI scope policy HTTP boundary', () => {
       ],
       [tokens.any, ownerId, ['accounts:read']],
       ['svt_cli_scope_viewer_write', viewerId, ['accounts:write']],
+      [tokens.unonboarded, unonboardedId, ['accounts:read']],
     ] as const;
     for (const [index, [token, subjectId, scopes]] of scopeSets.entries()) {
       const deviceCodeHash = createHash('sha256')
@@ -131,7 +136,7 @@ describe('CLI scope policy HTTP boundary', () => {
          values ($1, $2, $3, $4, now() + interval '10 minutes')`,
         [
           deviceCodeHash,
-          `ABCD234${['5', '6', '7', '8', '9', 'A'][index]}`,
+          `ABCD234${['5', '6', '7', '8', '9', 'A', 'B'][index]}`,
           token,
           scopes,
         ],
@@ -153,7 +158,10 @@ describe('CLI scope policy HTTP boundary', () => {
       .overrideProvider(JoseJwtVerifier)
       .useValue({
         verify: async (token: string) => {
-          if (token === 'session-owner') return { subject: ownerId };
+          if (token === 'session-owner')
+            return { subject: ownerId, authMethod: 'session' };
+          if (token === 'session-new')
+            return { subject: unonboardedId, authMethod: 'session' };
           throw new Error('token rejected');
         },
       })
@@ -238,6 +246,103 @@ describe('CLI scope policy HTTP boundary', () => {
     });
     expect(profile.statusCode).toBe(200);
   });
+
+  it.each([
+    {
+      method: 'POST',
+      url: '/v1/onboarding',
+      cli: tokens.unonboarded,
+      session: 'session-new',
+      payload: {
+        email: 'cli-scope-new@example.test',
+        displayName: 'New Session User',
+        locale: 'en-US',
+        countryCode: 'US',
+        timezone: 'UTC',
+        dateFormat: 'YYYY-MM-DD',
+        weekStartsOn: 1,
+        numberFormat: '1,234.56',
+        defaultCurrency: 'USD',
+        workspaceName: 'Personal',
+        baseCurrency: 'USD',
+        privacyModeEnabled: false,
+      },
+      success: 201,
+      body: { profileId: unonboardedId },
+    },
+    {
+      method: 'PATCH',
+      url: '/v1/me',
+      cli: tokens.any,
+      session: 'session-owner',
+      payload: { displayName: 'Session Updated Name' },
+      success: 200,
+      body: { id: ownerId, displayName: 'Session Updated Name' },
+    },
+    {
+      method: 'POST',
+      url: '/v1/workspaces',
+      cli: tokens.any,
+      session: 'session-owner',
+      payload: {
+        name: 'Session Workspace',
+        kind: 'shared',
+        baseCurrency: 'USD',
+      },
+      success: 201,
+      body: { name: 'Session Workspace', role: 'owner', version: 1 },
+    },
+  ] as const)(
+    '$method $url rejects CLI and missing auth but accepts a session JWT',
+    async ({ method, url, cli, session, payload, success, body }) => {
+      const read = () =>
+        Promise.all(
+          ['/v1/me', '/v1/workspaces'].map((url) =>
+            application.inject({ method: 'GET', url, headers: headers(cli) }),
+          ),
+        );
+      const before = await read();
+      const key = randomUUID();
+      const send = (token?: string) =>
+        application.inject({
+          method,
+          url,
+          payload,
+          headers: {
+            'idempotency-key': key,
+            ...(token && { authorization: `Bearer ${token}` }),
+          },
+        });
+      const missing = await send();
+      const rejected = await send(cli);
+      const after = await read();
+      for (const [i, response] of after.entries()) {
+        expect(response.statusCode).toBe(before[i]?.statusCode);
+        expect(response.json()).toEqual(
+          before[i]?.statusCode === 404
+            ? { ...before[i]?.json(), traceId: expect.any(String) }
+            : before[i]?.json(),
+        );
+      }
+      const accepted = await send(session);
+      expect(accepted.statusCode, accepted.payload).toBe(success);
+      expect(accepted.json()).toMatchObject(body);
+      for (const response of [missing, rejected]) {
+        expect(response.statusCode, response.payload).toBe(401);
+        expect(response.headers['content-type']).toMatch(
+          /^application\/problem\+json/,
+        );
+        expect(response.json()).toEqual({
+          type: 'https://savia.app/problems/unauthorized',
+          title: 'Authentication is required',
+          status: 401,
+          code: 'unauthorized',
+          traceId: expect.any(String),
+          instance: url,
+        });
+      }
+    },
+  );
 
   it('leaves JWT sessions unaffected and never widens a viewer role', async () => {
     const session = await application.inject({

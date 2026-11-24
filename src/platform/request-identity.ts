@@ -3,6 +3,7 @@ import type { SaviaScope } from './savia-scopes.js';
 export interface SessionIdentity {
   readonly subject: string;
   readonly authMethod: 'session';
+  readonly sessionId: string;
 }
 
 export interface CliTokenIdentity {

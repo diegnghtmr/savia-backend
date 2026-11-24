@@ -77,6 +77,9 @@ export interface Transaction {
   readonly source?: TransactionSource;
   readonly receiptId: string | null;
   readonly reconciliationId: string | null;
+  readonly archived?: boolean;
+  readonly excludedFromReports?: boolean;
+  readonly extraordinary?: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly version: number;
@@ -232,6 +235,7 @@ export interface UpdateTransactionCommand {
   readonly tagIds?: readonly string[];
   readonly splits?: readonly TransactionSplit[];
   readonly status?: 'draft' | 'pending' | 'confirmed';
+  readonly extraordinary?: boolean;
 }
 
 export const TRANSACTION_UPDATE_OUTCOMES = {

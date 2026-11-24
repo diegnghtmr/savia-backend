@@ -42,12 +42,13 @@ async function harness(audience?: string) {
   registerProblemFilter(app);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
-  return { app, cli, sign: tokens.sign };
+  return { app, cli, ...tokens };
 }
 
 describe('MCP proposal auth boundary', () => {
   it('accepts only the dedicated grant-bound credential; other API guards reject even dual-audience tokens', async () => {
-    const { app, cli, sign } = await harness(proposalAudience);
+    const { app, cli, sign, isActive, sessionId } =
+      await harness(proposalAudience);
     const propose = (token: string) =>
       app.inject({
         method: 'POST',
@@ -59,6 +60,9 @@ describe('MCP proposal auth boundary', () => {
     const dual = await sign(subject, grant, {
       aud: [sessionAudience, proposalAudience],
     });
+    const dualWithoutGrant = await sign(subject, undefined, {
+      aud: [sessionAudience, proposalAudience],
+    });
     try {
       expect((await propose(proposal)).json()).toMatchObject({
         status: 400,
@@ -68,6 +72,7 @@ describe('MCP proposal auth boundary', () => {
         session,
         'svt_cli',
         dual,
+        dualWithoutGrant,
         await sign(subject, grant, { aud: 'wrong-resource' }),
         await sign(subject),
         await sign(subject, 'not-a-uuid'),
@@ -88,7 +93,7 @@ describe('MCP proposal auth boundary', () => {
       }
       expect(cli).not.toHaveBeenCalled();
       expect(CLI_SCOPE_POLICY.has(`POST ${path}`)).toBe(false);
-      for (const token of [proposal, dual]) {
+      for (const token of [proposal, dual, dualWithoutGrant]) {
         const response = await app.inject({
           method: 'POST',
           url: `/v1/approvals/${randomUUID()}/confirm`,
@@ -96,6 +101,7 @@ describe('MCP proposal auth boundary', () => {
         });
         expect(response.statusCode).toBe(401);
       }
+      expect(isActive).not.toHaveBeenCalled();
       const response = await app.inject({
         method: 'GET',
         url: '/v1/approvals',
@@ -105,6 +111,7 @@ describe('MCP proposal auth boundary', () => {
         status: 400,
         title: 'Invalid X-Workspace-Id header',
       });
+      expect(isActive).toHaveBeenCalledExactlyOnceWith(subject, sessionId);
     } finally {
       await app.close();
     }

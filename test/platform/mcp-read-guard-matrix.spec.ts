@@ -114,7 +114,9 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
           },
         });
       const absent = await send();
+      const sessionChecks = signed.isActive.mock.calls.length;
       const response = await send(mcp);
+      expect(signed.isActive).toHaveBeenCalledTimes(sessionChecks);
       if (process.env.SAVIA_GUARD_BASELINE !== '1') {
         if (expected.has(route)) {
           expect(response.statusCode, route).toBe(200);

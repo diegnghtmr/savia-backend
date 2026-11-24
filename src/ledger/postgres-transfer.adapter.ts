@@ -3,6 +3,7 @@ import { enforceDeferredConstraints } from '../platform/deferred-constraints.js'
 import { negateAmountMinor } from '../platform/amount-minor.js';
 import { toIso } from './postgres-transaction.adapter.js';
 import type { CreateTransferCommand, Transfer } from './transfer.port.js';
+import type { LedgerStore } from './transaction.service.js';
 import type {
   TransferAccountRecord,
   TransferStore,
@@ -29,6 +30,10 @@ interface TransferRow extends Record<string, unknown> {
 }
 
 export class PostgresTransferAdapter implements TransferStore {
+  public constructor(
+    private readonly transactions: Pick<LedgerStore, 'createTransaction'>,
+  ) {}
+
   public async readActiveRole(
     client: TransactionClient,
     workspaceId: string,
@@ -107,7 +112,29 @@ export class PostgresTransferAdapter implements TransferStore {
     subject: string,
     command: CreateTransferCommand,
   ): Promise<Transfer> {
-    // 1. Insert transfer header row into public.transfers (transfers never write to public.transactions)
+    // Book the fee separately from the transfer's two legs. Both account
+    // locks and the command's idempotency transaction are already held.
+    const fee = command.fee;
+    const feeTransaction = fee
+      ? await this.transactions.createTransaction(
+          client,
+          workspaceId,
+          subject,
+          {
+            accountId: command.sourceAccountId,
+            type: 'expense',
+            status: 'confirmed',
+            amount: {
+              amountMinor: negateAmountMinor(fee.amountMinor),
+              currency: fee.currency,
+            },
+            occurredAt: command.occurredAt,
+            description: command.description ?? null,
+          },
+        )
+      : null;
+
+    // 1. Insert transfer header row into public.transfers.
     const transferSql = `
 insert into public.transfers (
   workspace_id,
@@ -124,7 +151,8 @@ insert into public.transfers (
   occurred_at,
   status,
   transaction_id,
-  created_by
+  created_by,
+  description
 )
 values (
   $1::uuid,
@@ -141,7 +169,8 @@ values (
   $12::timestamptz,
   $13,
   $14::uuid,
-  $15::uuid
+  $15::uuid,
+  $16
 )
 returning
   id::text,
@@ -176,8 +205,9 @@ returning
       null, // referenceRate (same currency transfer)
       command.occurredAt,
       'confirmed',
-      null, // transaction_id linking fee transaction
+      feeTransaction?.id ?? null,
       subject,
+      command.description ?? null,
     ];
 
     const transferResult = await client.query<TransferRow>(

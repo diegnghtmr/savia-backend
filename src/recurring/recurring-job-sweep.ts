@@ -38,7 +38,8 @@ export class RecurringJobSweep {
             (await this.store.hasJob(client, candidate))
           )
             return false;
-          const { workspaceId, subject, ruleId, scheduledAt } = candidate;
+          const { workspaceId, subject, ruleId, scheduledAt, scheduleVersion } =
+            candidate;
           await this.jobs.createQueuedJob(
             client,
             workspaceId,
@@ -48,6 +49,7 @@ export class RecurringJobSweep {
               ruleId,
               scheduledAt,
               asOf,
+              ...(scheduleVersion !== undefined && { scheduleVersion }),
             },
           );
           return true;

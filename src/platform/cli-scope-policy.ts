@@ -59,6 +59,10 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
       [SAVIA_SCOPES.TRANSACTIONS_READ],
     ],
     [routeKey('GET', '/v1/recurring-rules'), [SAVIA_SCOPES.TRANSACTIONS_READ]],
+    [
+      routeKey('GET', '/v1/recurring-rules/:ruleId/occurrences'),
+      [SAVIA_SCOPES.TRANSACTIONS_READ],
+    ],
     [routeKey('GET', '/v1/report-definitions'), [SAVIA_SCOPES.REPORTS_READ]],
     [
       routeKey('GET', '/v1/report-runs/:reportRunId'),
@@ -101,6 +105,10 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
       [SAVIA_SCOPES.WORKSPACE_ADMIN],
     ],
     [routeKey('POST', '/v1/accounts'), [SAVIA_SCOPES.ACCOUNTS_WRITE]],
+    [
+      routeKey('POST', '/v1/transactions/bulk'),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
     [
       routeKey('POST', '/v1/accounts/:accountId/close'),
       [SAVIA_SCOPES.ACCOUNTS_WRITE],
@@ -159,6 +167,38 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     ],
     [
       routeKey('POST', '/v1/recurring-rules'),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'POST',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId/confirm',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'POST',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId/skip',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'POST',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId/reschedule',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'PATCH',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey('POST', '/v1/recurring-rules/:ruleId/edit-series'),
       [SAVIA_SCOPES.TRANSACTIONS_WRITE],
     ],
     [routeKey('POST', '/v1/report-definitions'), [SAVIA_SCOPES.REPORTS_WRITE]],

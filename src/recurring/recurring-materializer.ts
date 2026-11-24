@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type {
   CreateTransactionCommand,
   LedgerWriter,
@@ -16,9 +15,11 @@ export interface DueOccurrence {
   readonly ruleId: string;
   readonly scheduledAt: string;
   readonly asOf: string;
+  readonly scheduleVersion?: number;
 }
 
 export interface DueRule {
+  readonly occurrenceId: string;
   readonly frequency: RecurringFrequency;
   readonly rrule: string | null;
   readonly behavior: RecurringBehavior;
@@ -26,6 +27,8 @@ export interface DueRule {
   readonly startsAt: Date | string;
   readonly endsAt: Date | string | null;
   readonly anchorDayOfMonth: number;
+  readonly effectiveAt?: string;
+  readonly detached?: boolean;
 }
 
 export interface MaterializedOccurrence {
@@ -33,6 +36,8 @@ export interface MaterializedOccurrence {
   readonly behavior: RecurringBehavior;
   readonly transactionId: string | null;
   readonly nextOccurrenceAt: string | null;
+  readonly skipped?: boolean;
+  readonly detached?: boolean;
 }
 
 export interface OccurrenceStore {
@@ -72,16 +77,7 @@ export class RecurringMaterializer {
     if (!rule) return null;
 
     const scheduledAt = new Date(due.scheduledAt);
-    const { nextOccurrenceAt } = computeNextOccurrence({
-      frequency: rule.frequency,
-      rrule: rule.rrule,
-      currentOccurrence: scheduledAt,
-      anchorDayOfMonth: rule.anchorDayOfMonth,
-      anchorMonth: new Date(rule.startsAt).getUTCMonth(),
-    });
-    const isLast =
-      rule.endsAt !== null && nextOccurrenceAt > new Date(rule.endsAt);
-    const id = randomUUID();
+    const id = rule.occurrenceId;
     const status = statusByBehavior[rule.behavior];
     const transactionId =
       status === null
@@ -94,7 +90,7 @@ export class RecurringMaterializer {
               {
                 ...rule.template,
                 status,
-                occurredAt: scheduledAt.toISOString(),
+                occurredAt: rule.effectiveAt ?? scheduledAt.toISOString(),
                 receiptId: null,
               },
               id,
@@ -106,13 +102,33 @@ export class RecurringMaterializer {
       id,
       behavior: rule.behavior,
       transactionId,
-      nextOccurrenceAt: isLast ? null : nextOccurrenceAt.toISOString(),
+      nextOccurrenceAt: rule.detached ? null : followingSlot(rule, scheduledAt),
+      ...(rule.detached && { detached: true }),
     });
     return id;
   }
 }
 
+export function followingSlot(rule: DueRule, scheduledAt: Date): string | null {
+  const { nextOccurrenceAt } = computeNextOccurrence({
+    frequency: rule.frequency,
+    rrule: rule.rrule,
+    currentOccurrence: scheduledAt,
+    anchorDayOfMonth: rule.anchorDayOfMonth,
+    anchorMonth: new Date(rule.startsAt).getUTCMonth(),
+  });
+  return rule.endsAt !== null && nextOccurrenceAt > new Date(rule.endsAt)
+    ? null
+    : nextOccurrenceAt.toISOString();
+}
+
 function requireCreatedId(outcome: unknown): string {
+  const id = createdTransactionId(outcome);
+  if (id !== undefined) return id;
+  throw new Error('Recurring occurrence transaction was not created.');
+}
+
+export function createdTransactionId(outcome: unknown): string | undefined {
   if (
     typeof outcome === 'object' &&
     outcome !== null &&
@@ -126,5 +142,5 @@ function requireCreatedId(outcome: unknown): string {
   ) {
     return outcome.transaction.id;
   }
-  throw new Error('Recurring occurrence transaction was not created.');
+  return undefined;
 }

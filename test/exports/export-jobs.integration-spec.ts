@@ -2540,6 +2540,117 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       }
     });
 
+    it('exports one exact fee expense row without turning transfer legs into transactions', async () => {
+      const destination = randomUUID();
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, created_by)
+         values ($1, $2, 'Transfer destination', 'checking', 'USD', $3)`,
+        [destination, workspace1Id, ownerId],
+      );
+      const headers = {
+        authorization: 'Bearer owner-token',
+        'x-workspace-id': workspace1Id,
+      };
+      const day = '2026-10-06';
+      const occurredAt = `${day}T14:00:00.000Z`;
+      const post = (route: string, payload: Record<string, unknown>) =>
+        application.inject({
+          method: 'POST',
+          url: route,
+          headers: { ...headers, 'idempotency-key': randomUUID() },
+          payload,
+        });
+      const balances = () =>
+        Promise.all(
+          [acct1Usd, destination].map(async (id) => {
+            const response = await application.inject({
+              method: 'GET',
+              url: `/v1/accounts/${id}/balance?asOf=${encodeURIComponent(occurredAt)}`,
+              headers,
+            });
+            expect(response.statusCode, response.payload).toBe(200);
+            const body = response.json<{
+              nativeBalance: { amountMinor: string };
+            }>();
+            return body.nativeBalance.amountMinor;
+          }),
+        );
+      const exportTransactions = async () => {
+        const queued = await post('/v1/export-jobs', {
+          resource: 'transactions',
+          format: 'csv',
+          from: day,
+          to: day,
+        });
+        expect(queued.statusCode, queued.payload).toBe(202);
+        const { id } = queued.json<{ id: string }>();
+        const { rows } = await admin.query<{ job_id: string }>(
+          `select job_id from public.export_jobs where workspace_id = $1 and id = $2`,
+          [workspace1Id, id],
+        );
+        expect(await drainUntilJobTerminal(rows[0].job_id)).toEqual({
+          status: 'completed',
+          error: null,
+        });
+        const artifact = inMemoryStorage.uploaded.get(
+          `${workspace1Id}/${id}.csv`,
+        );
+        expect(artifact?.contentType).toBe('text/csv');
+        return artifact?.content.toString('utf8');
+      };
+      const transfer = {
+        sourceAccountId: acct1Usd,
+        destinationAccountId: destination,
+        amount: { amountMinor: '130', currency: 'USD' },
+        occurredAt,
+      };
+      expect(await balances()).toEqual(['5000', '0']);
+      const noFee = await post('/v1/transfers', transfer);
+      expect(noFee.statusCode, noFee.payload).toBe(201);
+      expect(await balances()).toEqual(['4870', '130']);
+      expect(await exportTransactions()).toBe('');
+
+      const withFee = await post('/v1/transfers', {
+        ...transfer,
+        fee: { amountMinor: '13', currency: 'USD' },
+        description: 'Transfer fee, "October"',
+      });
+      expect(withFee.statusCode, withFee.payload).toBe(201);
+      expect(await balances()).toEqual(['4727', '260']);
+      const { transactionId } = withFee.json<{ transactionId: string }>();
+      const fee = await application.inject({
+        method: 'GET',
+        url: `/v1/transactions/${transactionId}`,
+        headers,
+      });
+      expect(fee.statusCode, fee.payload).toBe(200);
+      const { createdAt, updatedAt } = fee.json<{
+        createdAt: string;
+        updatedAt: string;
+      }>();
+      expect(await exportTransactions()).toBe(
+        'id,accountId,type,status,amount,occurredAt,categoryId,payeeId,description,notes,tagIds,receiptId,reconciliationId,createdAt,updatedAt,version\n' +
+          [
+            `"${transactionId}"`,
+            `"${acct1Usd}"`,
+            '"expense"',
+            '"confirmed"',
+            '"{""amountMinor"":""-13"",""currency"":""USD""}"',
+            `"${occurredAt}"`,
+            '""',
+            '""',
+            '"Transfer fee, ""October"""',
+            '""',
+            '""',
+            '""',
+            '""',
+            `"${createdAt}"`,
+            `"${updatedAt}"`,
+            '"1"',
+          ].join(','),
+      );
+    });
+
     it('keeps job_id predicate on resource transitions so mismatched job_id updates zero rows', async () => {
       const adapter = workerModule.get(PostgresExportAdapter);
       const exportId = randomUUID();

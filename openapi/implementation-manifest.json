@@ -303,6 +303,36 @@
       "path": "/v1/recurring-rules"
     },
     {
+      "operationId": "listRecurringOccurrences",
+      "method": "GET",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences"
+    },
+    {
+      "operationId": "confirmRecurringOccurrence",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/confirm"
+    },
+    {
+      "operationId": "skipRecurringOccurrence",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/skip"
+    },
+    {
+      "operationId": "rescheduleRecurringOccurrence",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/reschedule"
+    },
+    {
+      "operationId": "editRecurringOccurrence",
+      "method": "PATCH",
+      "path": "/v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}"
+    },
+    {
+      "operationId": "editRecurringSeries",
+      "method": "POST",
+      "path": "/v1/recurring-rules/{ruleId}/edit-series"
+    },
+    {
       "operationId": "listSubscriptions",
       "method": "GET",
       "path": "/v1/subscriptions"
@@ -546,6 +576,31 @@
       "operationId": "setDefaultAIModel",
       "method": "PUT",
       "path": "/v1/ai/default-model"
+    },
+    {
+      "operationId": "listMySessions",
+      "method": "GET",
+      "path": "/v1/me/sessions"
+    },
+    {
+      "operationId": "revokeOtherSessions",
+      "method": "POST",
+      "path": "/v1/me/sessions/revoke-others"
+    },
+    {
+      "operationId": "getDashboardPreferences",
+      "method": "GET",
+      "path": "/v1/me/dashboard-preferences"
+    },
+    {
+      "operationId": "updateDashboardPreferences",
+      "method": "PUT",
+      "path": "/v1/me/dashboard-preferences"
+    },
+    {
+      "operationId": "bulkUpdateTransactions",
+      "method": "POST",
+      "path": "/v1/transactions/bulk"
     }
   ]
 }

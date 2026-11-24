@@ -156,9 +156,9 @@ group by acct.id, acct.currency`;
 
   /**
    * 4.4 debts:
-   * Sum of the outstanding balances of non-archived debts, using the SAME derivation
-   * as src/debts/postgres-debt.adapter.ts (principal minus confirmed principal payments, clamped at zero).
-   * Extracted to src/platform/debt-balance-query.ts so both callers share identical derivation.
+   * Non-archived principal minus posted principal payments, clamped at zero.
+   * Reuse the historical reporting rule without a date cutoff so excluded
+   * payments and voids do not reduce the outstanding balance.
    */
   public async readDebtOutstandingBalances(
     client: TransactionClient,
@@ -466,7 +466,7 @@ from public.budget_allocations allocation
 join public.budgets budget
   on budget.workspace_id = allocation.workspace_id
  and budget.id = allocation.budget_id
-join lateral (${buildCategorySpendSql()} and not transaction.excluded_from_reports) spend on true
+join lateral (${buildCategorySpendSql(true)}) spend on true
 where allocation.workspace_id = $1::uuid
   and budget.period_start <= $3::date
   and budget.period_end >= $2::date

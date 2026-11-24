@@ -40,13 +40,31 @@ export function serializeCsv(
     if (/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value)) return value;
     return /^[=+\-@]|^[\t\r\n]/.test(value) ? `'${value}` : value;
   };
-  const esc = (v: unknown) => escapeCsvField(v, neutralize);
+  const esc = (column: string, value: unknown) => {
+    // Keep the amount column without losing Money to String(object).
+    if (
+      column === 'amount' &&
+      typeof value === 'object' &&
+      value !== null &&
+      'amountMinor' in value &&
+      typeof value.amountMinor === 'string' &&
+      'currency' in value &&
+      typeof value.currency === 'string'
+    ) {
+      const { amountMinor, currency } = value;
+      return escapeCsvField(
+        JSON.stringify({ amountMinor, currency }),
+        neutralize,
+      );
+    }
+    return escapeCsvField(value, neutralize);
+  };
   const lines: string[] = [cols.join(',')];
   for (let index = 0; index < rows.length; index += 1) {
     throwIfRenderBudgetExhausted(options);
     const row = rows[index];
     if (row === undefined) continue;
-    lines.push(cols.map((c) => esc(row[c])).join(','));
+    lines.push(cols.map((column) => esc(column, row[column])).join(','));
   }
   return Buffer.from(lines.join('\n'));
 }

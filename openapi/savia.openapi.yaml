@@ -12,7 +12,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Supabase Auth session JWT.
+      description: Supabase Auth session JWT. Savia rejects JWTs whose session is no longer active at the provider, even before token expiry. If active session status cannot be verified, Savia does not grant access.
     cliTokenAuth:
       type: http
       scheme: bearer
@@ -64,6 +64,34 @@ components:
       in: header
       required: false
       schema: { type: string, examples: ['"7"'] }
+    RecurringRuleId:
+      name: ruleId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    RecurringOccurrenceId:
+      name: occurrenceId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Opaque cursor returned by a previous page.
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
   headers:
     ETag:
       description: Current resource version.
@@ -74,6 +102,15 @@ components:
         type: integer
         minimum: 0
   responses:
+    RecurringOccurrenceResult:
+      description: Updated recurring occurrence.
+      headers:
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RecurringOccurrence'
     BadRequest:
       description: Bad request.
       content:
@@ -733,7 +770,6 @@ components:
           uniqueItems: true
     Transaction:
       type: object
-      additionalProperties: false
       required:
         - id
         - type
@@ -746,22 +782,19 @@ components:
         - version
       properties:
         id:
-          type: string
-          format: uuid
+          $ref: '#/components/schemas/Uuid'
         type:
           $ref: '#/components/schemas/TransactionType'
         status:
           $ref: '#/components/schemas/TransactionStatus'
         accountId:
-          type: string
-          format: uuid
+          $ref: '#/components/schemas/Uuid'
         amount:
           $ref: '#/components/schemas/Money'
         baseCurrencyAmount:
           $ref: '#/components/schemas/ConvertedMoney'
         occurredAt:
-          type: string
-          format: date-time
+          $ref: '#/components/schemas/DateTime'
         categoryId:
           type:
             - string
@@ -785,8 +818,7 @@ components:
         tagIds:
           type: array
           items:
-            type: string
-            format: uuid
+            $ref: '#/components/schemas/Uuid'
           uniqueItems: true
         splits:
           type: array
@@ -812,15 +844,26 @@ components:
             - string
             - 'null'
           format: uuid
+        archived:
+          type: boolean
+          default: false
+          description: Visual archive flag. It does not change ledger postings or report inclusion.
+        excludedFromReports:
+          type: boolean
+          default: false
+          description: Excludes the transaction from report and analytics aggregates without changing the ledger.
+        extraordinary:
+          type: boolean
+          default: false
+          description: Manual extraordinary classification independent of the category's essential flag.
         createdAt:
-          type: string
-          format: date-time
+          $ref: '#/components/schemas/DateTime'
         updatedAt:
-          type: string
-          format: date-time
+          $ref: '#/components/schemas/DateTime'
         version:
           type: integer
           minimum: 1
+      additionalProperties: false
     CreateTransactionRequest:
       type: object
       additionalProperties: false
@@ -886,8 +929,7 @@ components:
       type: object
       properties:
         occurredAt:
-          type: string
-          format: date-time
+          $ref: '#/components/schemas/DateTime'
         categoryId:
           type:
             - string
@@ -911,8 +953,7 @@ components:
         tagIds:
           type: array
           items:
-            type: string
-            format: uuid
+            $ref: '#/components/schemas/Uuid'
           uniqueItems: true
         splits:
           type: array
@@ -924,6 +965,9 @@ components:
             - draft
             - pending
             - confirmed
+        extraordinary:
+          type: boolean
+          description: Sets or clears the manual extraordinary classification; omit to leave unchanged.
       additionalProperties: false
       minProperties: 1
     VoidTransactionRequest:
@@ -1120,30 +1164,43 @@ components:
           type: boolean
           default: false
     Category:
-      allOf:
-        - $ref: '#/components/schemas/NamedResource'
-        - type: object
-          properties:
-            parentId:
-              type:
-                - string
-                - 'null'
-              format: uuid
-            kind:
-              type: string
-              enum:
-                - income
-                - expense
-                - transfer
-                - other
-            icon:
-              type:
-                - string
-                - 'null'
-            colorToken:
-              type:
-                - string
-                - 'null'
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        name:
+          type: string
+        archived:
+          type: boolean
+          default: false
+        parentId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        kind:
+          type: string
+          enum:
+            - income
+            - expense
+            - transfer
+            - other
+        icon:
+          type:
+            - string
+            - 'null'
+        colorToken:
+          type:
+            - string
+            - 'null'
+        essential:
+          type: boolean
+          default: false
+          description: Marks expenses in this category as essential rather than discretionary.
+      additionalProperties: false
     Tag:
       allOf:
         - $ref: '#/components/schemas/NamedResource'
@@ -1162,7 +1219,6 @@ components:
           maxLength: 120
     CreateCategoryRequest:
       type: object
-      additionalProperties: false
       required:
         - name
         - kind
@@ -1191,6 +1247,10 @@ components:
           type:
             - string
             - 'null'
+        essential:
+          type: boolean
+          default: false
+      additionalProperties: false
     RecurringRule:
       type: object
       additionalProperties: false
@@ -1277,6 +1337,122 @@ components:
             - string
             - 'null'
           format: date-time
+    RecurringOccurrenceStatus:
+      type: string
+      description: >-
+        Scheduled occurrences are not yet materialized. Reminders are materialized without a booking.
+        A skipped occurrence remains skipped even when it is linked to a voided transaction.
+      enum:
+        - scheduled
+        - reminder
+        - draft
+        - pending
+        - confirmed
+        - reconciled
+        - voided
+        - skipped
+    RecurringOccurrence:
+      type: object
+      required:
+        - id
+        - ruleId
+        - originalScheduledAt
+        - scheduledAt
+        - status
+        - transactionId
+        - amount
+        - description
+        - categoryId
+        - etag
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+          description: Stable occurrence identifier, retained when the occurrence is materialized or rescheduled.
+        ruleId:
+          $ref: '#/components/schemas/Uuid'
+        originalScheduledAt:
+          $ref: '#/components/schemas/DateTime'
+          description: Original slot on the recurring rule's schedule.
+        scheduledAt:
+          $ref: '#/components/schemas/DateTime'
+          description: Effective occurrence time, including any reschedule.
+        status:
+          $ref: '#/components/schemas/RecurringOccurrenceStatus'
+        transactionId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        amount:
+          $ref: '#/components/schemas/Money'
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+        categoryId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        etag:
+          type: string
+          description: Current occurrence version, usable as If-Match on occurrence commands.
+      additionalProperties: false
+    RescheduleRecurringOccurrenceRequest:
+      type: object
+      required:
+        - scheduledAt
+      properties:
+        scheduledAt:
+          $ref: '#/components/schemas/DateTime'
+      additionalProperties: false
+    RecurringTemplateChanges:
+      type: object
+      minProperties: 1
+      properties:
+        amount:
+          $ref: '#/components/schemas/Money'
+          description: Positive amount in the currency of the rule's account.
+        description:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+          description: Pass null to clear the description.
+        categoryId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: A category in the rule's workspace. Pass null to clear the category.
+      additionalProperties: false
+    EditRecurringSeriesRequest:
+      type: object
+      required:
+        - effectiveFrom
+        - changes
+      properties:
+        effectiveFrom:
+          $ref: '#/components/schemas/DateTime'
+          description: Inclusive original schedule boundary. Must not be in the past when first accepted.
+        changes:
+          $ref: '#/components/schemas/RecurringTemplateChanges'
+      additionalProperties: false
+    EditRecurringSeriesResult:
+      type: object
+      required:
+        - ruleId
+        - effectiveFrom
+        - changes
+      properties:
+        ruleId:
+          $ref: '#/components/schemas/Uuid'
+        effectiveFrom:
+          $ref: '#/components/schemas/DateTime'
+        changes:
+          $ref: '#/components/schemas/RecurringTemplateChanges'
+      additionalProperties: false
     Subscription:
       type: object
       additionalProperties: false
@@ -2865,6 +3041,270 @@ components:
             Do not convert amounts to apply the limit.
           anyOf: [{ $ref: '#/components/schemas/Money' }, { type: 'null' }]
         expiresAt: { type: [string, 'null'], format: date-time }
+      additionalProperties: false
+    UserSession:
+      type: object
+      required:
+        - id
+        - createdAt
+        - lastActiveAt
+        - current
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        createdAt:
+          $ref: '#/components/schemas/DateTime'
+        lastActiveAt:
+          $ref: '#/components/schemas/DateTime'
+        userAgent:
+          type: string
+        current:
+          type: boolean
+      additionalProperties: false
+    DashboardPreferences:
+      type: object
+      required:
+        - cards
+        - period
+        - presentationCurrency
+        - version
+      properties:
+        cards:
+          $ref: '#/components/schemas/DashboardCards'
+        period:
+          $ref: '#/components/schemas/DashboardPeriod'
+        presentationCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        version:
+          type: integer
+          minimum: 1
+          readOnly: true
+      additionalProperties: false
+    DashboardCards:
+      type: array
+      description: Cards in display order. Each card ID may appear at most once, regardless of visibility.
+      uniqueItems: true
+      items:
+        type: object
+        required:
+          - id
+          - visible
+        properties:
+          id:
+            type: string
+            enum:
+              - net_worth
+              - assets
+              - debts
+              - income
+              - expenses
+              - savings_capacity
+              - budget_utilization
+              - account_balances
+              - upcoming_operations
+              - alerts
+              - reconciliation_status
+          visible:
+            type: boolean
+        additionalProperties: false
+    DashboardPeriod:
+      oneOf:
+        - type: object
+          description: Calendar period in the workspace time zone.
+          required:
+            - preset
+          properties:
+            preset:
+              type: string
+              enum:
+                - this_month
+                - this_quarter
+                - this_year
+          additionalProperties: false
+        - type: object
+          description: Inclusive workspace-local date range. The start must be on or before the end.
+          required:
+            - preset
+            - from
+            - to
+          properties:
+            preset:
+              const: custom
+            from:
+              $ref: '#/components/schemas/Date'
+            to:
+              $ref: '#/components/schemas/Date'
+          additionalProperties: false
+    UpdateDashboardPreferencesRequest:
+      type: object
+      required:
+        - cards
+        - period
+        - presentationCurrency
+      properties:
+        cards:
+          $ref: '#/components/schemas/DashboardCards'
+        period:
+          $ref: '#/components/schemas/DashboardPeriod'
+        presentationCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+      additionalProperties: false
+    BulkUpdateTransactionsRequest:
+      type: object
+      required:
+        - targets
+        - action
+      properties:
+        targets:
+          type: array
+          description: Transaction IDs must be unique across the batch, even if their expected versions differ.
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items:
+            type: object
+            required:
+              - id
+              - expectedVersion
+            properties:
+              id:
+                $ref: '#/components/schemas/Uuid'
+              expectedVersion:
+                type: integer
+                minimum: 1
+            additionalProperties: false
+        action:
+          $ref: '#/components/schemas/BulkTransactionAction'
+      additionalProperties: false
+    BulkTransactionAction:
+      oneOf:
+        - $ref: '#/components/schemas/BulkCategorizeAction'
+        - $ref: '#/components/schemas/BulkTagAction'
+        - $ref: '#/components/schemas/BulkStatusOrVisibilityAction'
+        - $ref: '#/components/schemas/BulkSetPayeeAction'
+        - $ref: '#/components/schemas/BulkConvertImportedAction'
+        - $ref: '#/components/schemas/BulkSetExtraordinaryAction'
+      discriminator:
+        propertyName: type
+        mapping:
+          categorize: '#/components/schemas/BulkCategorizeAction'
+          tag: '#/components/schemas/BulkTagAction'
+          confirm: '#/components/schemas/BulkStatusOrVisibilityAction'
+          archive: '#/components/schemas/BulkStatusOrVisibilityAction'
+          unarchive: '#/components/schemas/BulkStatusOrVisibilityAction'
+          setPayee: '#/components/schemas/BulkSetPayeeAction'
+          excludeFromReports: '#/components/schemas/BulkStatusOrVisibilityAction'
+          includeInReports: '#/components/schemas/BulkStatusOrVisibilityAction'
+          convertImported: '#/components/schemas/BulkConvertImportedAction'
+          setExtraordinary: '#/components/schemas/BulkSetExtraordinaryAction'
+    BulkCategorizeAction:
+      type: object
+      required:
+        - type
+        - categoryId
+      properties:
+        type:
+          const: categorize
+        categoryId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Use null to clear the category.
+      additionalProperties: false
+    BulkTagAction:
+      type: object
+      required:
+        - type
+        - tagIds
+      properties:
+        type:
+          const: tag
+        tagIds:
+          type: array
+          description: Add these tags without removing existing tags or duplicating an existing assignment.
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Uuid'
+      additionalProperties: false
+    BulkStatusOrVisibilityAction:
+      type: object
+      description: Confirm applies the normal transaction confirmation rules. Archive and unarchive only change visual visibility. ExcludeFromReports and includeInReports only change inclusion in report and analytics aggregates.
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum:
+            - confirm
+            - archive
+            - unarchive
+            - excludeFromReports
+            - includeInReports
+      additionalProperties: false
+    BulkSetPayeeAction:
+      type: object
+      required:
+        - type
+        - payeeId
+      properties:
+        type:
+          const: setPayee
+        payeeId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Use null to clear the payee.
+      additionalProperties: false
+    BulkConvertImportedAction:
+      type: object
+      description: Reclassifies an imported adjustment in place, preserving ledger postings and import provenance. Income requires a positive amount and expense requires a negative amount. An incompatible sign or zero on any target rejects the entire batch with 422.
+      required:
+        - type
+        - targetType
+      properties:
+        type:
+          const: convertImported
+        targetType:
+          type: string
+          enum:
+            - income
+            - expense
+      additionalProperties: false
+    BulkSetExtraordinaryAction:
+      type: object
+      required:
+        - type
+        - extraordinary
+      properties:
+        type:
+          const: setExtraordinary
+        extraordinary:
+          type: boolean
+      additionalProperties: false
+    BulkUpdateTransactionsResult:
+      type: object
+      required:
+        - updated
+      properties:
+        updated:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            required:
+              - id
+              - version
+            properties:
+              id:
+                $ref: '#/components/schemas/Uuid'
+              version:
+                type: integer
+                minimum: 1
+            additionalProperties: false
       additionalProperties: false
 # `paths` stays the final block: the OpenAPI authority suite proves the verifier
 # rejects undocumented operations by appending a path to the end of this file.
@@ -4593,6 +5033,7 @@ paths:
         requiredScopes:
           - transactions:write
       x-idempotency-required: true
+      description: Use extraordinary to set or clear the transaction's manual extraordinary classification.
   /v1/transactions/{transactionId}/void:
     post:
       operationId: voidTransaction
@@ -5531,6 +5972,301 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/recurring-rules/{ruleId}/occurrences:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    get:
+      operationId: listRecurringOccurrences
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:read
+      summary: List recurring rule occurrences
+      description: Lists recorded occurrences and the next unmaterialized occurrence of an active rule, in original schedule order.
+      tags:
+        - Recurring
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor returned by a previous page.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RecurringOccurrenceStatus'
+      responses:
+        '200':
+          description: Recurring occurrence page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - items
+                  - pageInfo
+                  - ruleEtag
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RecurringOccurrence'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+                  ruleEtag:
+                    type: string
+                    description: Current template version, usable as If-Match when editing the series.
+                additionalProperties: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/RecurringOccurrenceId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: confirmRecurringOccurrence
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Confirm a recurring occurrence
+      description: >-
+        The rule creator with a workspace write role can confirm a reminder by booking a confirmed transaction,
+        or confirm the existing draft or pending transaction in place. Any other state conflicts with this command.
+      tags:
+        - Recurring
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          $ref: '#/components/responses/RecurringOccurrenceResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/skip:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/RecurringOccurrenceId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: skipRecurringOccurrence
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Skip a recurring occurrence
+      description: >-
+        The rule creator with a workspace write role can skip a scheduled occurrence, a reminder,
+        or a draft or pending occurrence. A linked draft or pending transaction is voided through the ledger
+        and remains linked for audit. A skipped occurrence is never materialized again. Confirmed, reconciled,
+        voided and already skipped occurrences conflict with this command.
+      tags:
+        - Recurring
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          $ref: '#/components/responses/RecurringOccurrenceResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}/reschedule:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/RecurringOccurrenceId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: rescheduleRecurringOccurrence
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Reschedule one recurring occurrence
+      description: >-
+        The rule creator with a workspace write role can move a scheduled occurrence, reminder, draft or pending
+        occurrence without changing its ID, original schedule slot or the rule cadence. A linked draft or pending
+        booking date is updated in place. The original time will not produce a second occurrence. A target time
+        occupied by another occurrence of this rule, or any other occurrence state, conflicts with this command.
+      tags:
+        - Recurring
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RescheduleRecurringOccurrenceRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/RecurringOccurrenceResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/recurring-rules/{ruleId}/occurrences/{occurrenceId}:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/RecurringOccurrenceId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    patch:
+      operationId: editRecurringOccurrence
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Edit one recurring occurrence before booking
+      description: >-
+        The rule creator with a workspace write role can override the amount, description or category on a scheduled
+        occurrence or reminder without changing the series template. An already booked or skipped occurrence conflicts
+        with this command. Omitted fields are unchanged.
+      tags:
+        - Recurring
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecurringTemplateChanges'
+      responses:
+        '200':
+          $ref: '#/components/responses/RecurringOccurrenceResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      x-idempotency-required: true
+  /v1/recurring-rules/{ruleId}/edit-series:
+    parameters:
+      - $ref: '#/components/parameters/RecurringRuleId'
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    post:
+      operationId: editRecurringSeries
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Edit a recurring series from a future boundary
+      description: >-
+        The rule creator with a workspace write role can change the template amount, description or category
+        for occurrences not yet materialized whose original schedule slot is at or after effectiveFrom.
+        Earlier slots, existing reminders and ledger bookings are unchanged. Occurrence-specific overrides
+        take precedence over the template.
+      tags:
+        - Recurring
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditRecurringSeriesRequest'
+      responses:
+        '200':
+          description: Series template change accepted.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditRecurringSeriesResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
       x-idempotency-required: true
@@ -8992,3 +9728,174 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /v1/me/sessions:
+    get:
+      operationId: listMySessions
+      security:
+        - bearerAuth: []
+      summary: List the current user's active sessions
+      description: Returns only active sessions owned by the authenticated subject, including whether each is the current session. The list is read-only and never returns access or refresh tokens.
+      tags:
+        - Profile
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Active session page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - items
+                  - pageInfo
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserSession'
+                  pageInfo:
+                    $ref: '#/components/schemas/PageInfo'
+                additionalProperties: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /v1/me/sessions/revoke-others:
+    post:
+      operationId: revokeOtherSessions
+      security:
+        - bearerAuth: []
+      summary: Close the current user's other sessions
+      description: Revokes all other active sessions of the authenticated subject and leaves the current session active. This operation is idempotent; it returns 204 even if there are no other sessions. To close all sessions, including the current one, clients use Supabase Auth global sign-out. Savia does not offer per-session revocation.
+      tags:
+        - Profile
+      responses:
+        '204':
+          description: No other sessions remain active.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /v1/me/dashboard-preferences:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceIdHeader'
+    get:
+      operationId: getDashboardPreferences
+      security:
+        - bearerAuth: []
+      summary: Get the current user's dashboard preferences for a workspace
+      description: Returns effective preferences with a version and ETag even if the user has not saved preferences yet.
+      tags:
+        - Profile
+      responses:
+        '200':
+          description: Effective dashboard preferences for the authenticated subject and selected workspace.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardPreferences'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      operationId: updateDashboardPreferences
+      security:
+        - bearerAuth: []
+      summary: Replace the current user's dashboard preferences for a workspace
+      description: Replaces the authenticated subject's preferences only for the selected workspace. An authorized replay with the same Idempotency-Key, If-Match and request returns the original result. A new request with a missing, invalid or stale If-Match is rejected without saving changes.
+      tags:
+        - Profile
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: If-Match
+          in: header
+          required: true
+          description: Supply one strong ETag from the dashboard preferences response.
+          schema:
+            type: string
+            examples:
+              - '"7"'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDashboardPreferencesRequest'
+      responses:
+        '200':
+          description: Updated dashboard preferences.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardPreferences'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+          description: If-Match is missing, invalid or does not match the current ETag.
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+          description: Invalid preferences, including duplicate card IDs, invalid date range or unsupported currency.
+  /v1/transactions/bulk:
+    post:
+      operationId: bulkUpdateTransactions
+      security:
+        - bearerAuth: []
+        - cliTokenAuth:
+            - transactions:write
+      summary: Apply one action atomically to multiple transactions
+      description: A workspace writer can apply the same action to 1 to 100 distinct transactions in the selected workspace. Authorization, eligibility and expected versions are checked for all targets. All updates commit together, or none do; any affected ledger postings must remain balanced. An authorized replay of the same Idempotency-Key and request returns the original result without applying the action again. A stale expectedVersion on any target returns 412. Reusing a key with a different request returns 409.
+      tags:
+        - Transactions
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkUpdateTransactionsRequest'
+      responses:
+        '200':
+          description: Updated transaction IDs and resulting versions, in target order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkUpdateTransactionsResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+          description: At least one expectedVersion does not match its current transaction version.
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+          description: Invalid targets or action, including duplicate target IDs or an ineligible transaction.
+      x-idempotency-required: true

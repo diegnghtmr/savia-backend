@@ -27,6 +27,7 @@ const ALLOWED_CATEGORY_FIELDS = [
   'parentId',
   'icon',
   'colorToken',
+  'essential',
 ] as const;
 
 export function createNamedResourceCommand(
@@ -107,6 +108,9 @@ export function createCategoryCommand(input: unknown): CreateCategoryCommand {
     'colorToken',
     violations,
   );
+  if ('essential' in body && typeof body.essential !== 'boolean') {
+    add(violations, 'essential', 'invalid-type', 'must be a boolean');
+  }
 
   if (violations.length > 0) {
     throw new CatalogCommandValidationError(sortViolations(violations));
@@ -118,6 +122,9 @@ export function createCategoryCommand(input: unknown): CreateCategoryCommand {
     parentId,
     icon,
     colorToken,
+    ...(typeof body.essential === 'boolean'
+      ? { essential: body.essential }
+      : {}),
   };
 }
 

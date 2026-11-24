@@ -6,6 +6,7 @@ import {
   Patch,
   Req,
   Res,
+  UseFilters,
   UseGuards,
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
@@ -24,6 +25,7 @@ import {
 } from './profile-update-command.js';
 import { parseIfMatch } from '../platform/if-match.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { SessionOnlyProblemFilter } from './session-only-problem.filter.js';
 
 @Controller('v1/me')
 @UseGuards(JwtAuthGuard)
@@ -50,6 +52,7 @@ export class ProfileController {
   }
 
   @Patch()
+  @UseFilters(SessionOnlyProblemFilter)
   public async updateProfile(
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,

@@ -1,3 +1,8 @@
+import {
+  FastifyAdapter,
+  type NestFastifyApplication,
+} from '@nestjs/platform-fastify';
+import { Test } from '@nestjs/testing';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -21,6 +26,9 @@ import {
 } from '../../src/platform/pg-transaction.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
+import { AppModule } from '../../src/app.module.js';
+import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -36,6 +44,7 @@ describe('TransferService createTransfer database boundary', () => {
   let transaction: PgTransaction;
   let service: TransferService;
   let transactionService: TransactionService;
+  let app: NestFastifyApplication;
 
   const subjectOwner = subject(851);
   const subjectAdmin = subject(852);
@@ -53,13 +62,36 @@ describe('TransferService createTransfer database boundary', () => {
   const accountActiveEURId = id(7006);
   const absentAccountId = id(7999);
 
+  const headers = {
+    authorization: `Bearer ${subjectOwner}`,
+    'x-workspace-id': workspace1Id,
+  };
+  const usd = (amountMinor: string) => ({ amountMinor, currency: 'USD' });
+
+  function postTransfer(command: CreateTransferCommand, key: string) {
+    return app.inject({
+      method: 'POST',
+      url: '/v1/transfers',
+      headers: { ...headers, 'idempotency-key': key },
+      payload: command,
+    });
+  }
+
+  function getBalance(accountId: string, asOf: string) {
+    return app.inject({
+      method: 'GET',
+      url: `/v1/accounts/${accountId}/balance?asOf=${encodeURIComponent(asOf)}`,
+      headers,
+    });
+  }
+
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
     pool = new PostgresPool(PostgresConfig.fromUrl(url));
     transaction = new PgTransaction(pool, { callbackTimeoutMs: 3_000 });
     service = new TransferService(
       transaction,
-      new PostgresTransferAdapter(),
+      new PostgresTransferAdapter(new PostgresTransactionAdapter()),
       new PostgresIdempotencyAdapter(),
     );
     transactionService = new TransactionService(
@@ -160,9 +192,28 @@ describe('TransferService createTransfer database boundary', () => {
         accountActiveEURId,
       ],
     );
+
+    Object.assign(process.env, {
+      JWT_ISSUER: 'https://issuer.example.test',
+      JWT_AUDIENCE: 'savia-api',
+      JWT_JWKS_URI: 'https://issuer.example.test/jwks',
+      JWT_ALGORITHMS: 'RS256',
+    });
+    const module = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(JoseJwtVerifier)
+      .useValue({
+        verify: (token: string) => Promise.resolve({ subject: token }),
+      })
+      .compile();
+    app = module.createNestApplication<NestFastifyApplication>(
+      new FastifyAdapter({ exposeHeadRoutes: false }),
+    );
+    registerProblemFilter(app);
+    await app.init();
   });
 
   afterAll(async () => {
+    await app?.close();
     await admin.query(`delete from public.workspaces where id in ($1, $2)`, [
       workspace1Id,
       workspace2Id,
@@ -179,6 +230,75 @@ describe('TransferService createTransfer database boundary', () => {
     );
     await pool.end();
     await admin.end();
+  });
+
+  it('pins exact no-fee HTTP response and balance bytes', async () => {
+    const occurredAt = '2026-08-24T00:00:00.000Z';
+    const transferId = id(7009);
+    // Pin otherwise nondeterministic fields so the HTTP bytes can be compared
+    // verbatim across implementations. Only this fixture slot is affected.
+    await admin.query(`
+      create function public.pin_transfer_parity_fixture() returns trigger
+      language plpgsql as $$ begin
+        new.id := '${transferId}';
+        new.created_at := new.occurred_at;
+        new.updated_at := new.occurred_at;
+        return new;
+      end $$;
+      create trigger pin_transfer_parity_fixture before insert on public.transfers
+      for each row when (new.occurred_at = '${occurredAt}'::timestamptz)
+      execute function public.pin_transfer_parity_fixture();
+    `);
+    const response = await postTransfer(
+      {
+        sourceAccountId: accountActiveUSD1Id,
+        destinationAccountId: accountActiveUSD2Id,
+        amount: usd('700'),
+        occurredAt,
+        description: 'No-fee description stays out of the response',
+      },
+      '00000000-0000-4000-8000-000000001000',
+    );
+    expect(response.statusCode, response.payload).toBe(201);
+    expect(response.headers.etag).toBeUndefined();
+    expect(response.payload).toBe(
+      JSON.stringify({
+        id: transferId,
+        sourceAccountId: accountActiveUSD1Id,
+        destinationAccountId: accountActiveUSD2Id,
+        sourceAmount: usd('700'),
+        destinationAmount: usd('700'),
+        occurredAt,
+        status: 'confirmed',
+        createdAt: occurredAt,
+        updatedAt: occurredAt,
+        version: 1,
+      }),
+    );
+
+    for (const [accountId, amount] of [
+      [accountActiveUSD1Id, '-700'],
+      [accountActiveUSD2Id, '700'],
+    ] as const) {
+      const balance = await getBalance(accountId, occurredAt);
+      expect(balance.statusCode, balance.payload).toBe(200);
+      expect(balance.payload).toBe(
+        JSON.stringify({
+          accountId,
+          nativeBalance: usd(amount),
+          pendingBalance: usd('0'),
+          reconciledBalance: usd('0'),
+          baseCurrencyEquivalent: {
+            original: usd(amount),
+            converted: usd(amount),
+            rate: '1',
+            rateDate: '2026-08-24',
+            rateSource: 'identity',
+          },
+          asOf: '2026-08-24T00:00:00.000000Z',
+        }),
+      );
+    }
   });
 
   it('201 happy path: writes transfers row AND balanced ledger_postings pair summing to zero across the two accounts', async () => {
@@ -232,6 +352,7 @@ describe('TransferService createTransfer database boundary', () => {
     expect(transferRows.rows[0].fee_amount_minor).toBeNull();
     expect(transferRows.rows[0].fee_currency).toBeNull();
     expect(transferRows.rows[0].transaction_id).toBeNull();
+    expect(transferRows.rows[0].description).toBe(command.description);
 
     // Verify ledger_postings rows in DB: both legs have transfer_id set and transaction_id null
     const postingRows = await admin.query<{
@@ -279,7 +400,7 @@ describe('TransferService createTransfer database boundary', () => {
     expect(sumResult.rows[0].sum).toBe('0');
   });
 
-  it('201 with optional fee: writes fee in transfer row and emits fee in Transfer body', async () => {
+  it('debits a linked fee expense once and exposes its description by transaction ID', async () => {
     const key = '00000000-0000-4000-8000-000000001002';
     const command: CreateTransferCommand = {
       sourceAccountId: accountActiveUSD1Id,
@@ -290,18 +411,52 @@ describe('TransferService createTransfer database boundary', () => {
       description: 'Transfer with fee',
     };
 
-    const outcome = await service.create(
-      subjectOwner,
-      workspace1Id,
-      command,
-      key,
-    );
-    expect(outcome.kind).toBe(TRANSFER_CREATE_OUTCOMES.CREATED);
-    const created = (outcome as TransferCreateCreated).transfer;
-    expect(created.fee).toEqual({
-      amountMinor: '50',
-      currency: 'USD',
+    const nativeBalance = async (accountId: string) => {
+      const read = await getBalance(accountId, command.occurredAt);
+      expect(read.statusCode, read.payload).toBe(200);
+      const body = read.json<{ nativeBalance: { amountMinor: string } }>();
+      return BigInt(body.nativeBalance.amountMinor);
+    };
+    const balances = () =>
+      Promise.all([
+        nativeBalance(accountActiveUSD1Id),
+        nativeBalance(accountActiveUSD2Id),
+      ]);
+    const [sourceBefore, destinationBefore] = await balances();
+    const response = await postTransfer(command, key);
+    expect(response.statusCode, response.payload).toBe(201);
+    expect(response.headers.etag).toBeUndefined();
+    const created = response.json<TransferCreateCreated['transfer']>();
+    expect(created.fee).toEqual(usd('50'));
+    expect(created.transactionId).toEqual(expect.any(String));
+    expect(created).not.toHaveProperty('description');
+    const fee = await app.inject({
+      method: 'GET',
+      url: `/v1/transactions/${created.transactionId}`,
+      headers,
     });
+    expect(fee.statusCode, fee.payload).toBe(200);
+    expect(fee.json()).toMatchObject({
+      id: created.transactionId,
+      accountId: accountActiveUSD1Id,
+      type: 'expense',
+      status: 'confirmed',
+      amount: usd('-50'),
+      description: command.description,
+      occurredAt: command.occurredAt,
+    });
+    const expected = [sourceBefore - 3050n, destinationBefore + 3000n];
+    expect(await balances()).toEqual(expected);
+    const replay = await postTransfer(command, key);
+    expect(replay.statusCode, replay.payload).toBe(201);
+    expect(replay.json()).toEqual(created);
+    const rejected = await postTransfer({ ...command, fee: usd('51') }, key);
+    expect(rejected.statusCode, rejected.payload).toBe(409);
+    expect(rejected.json()).toMatchObject({
+      title: 'Idempotency key reused with different payload',
+      status: 409,
+    });
+    expect(await balances()).toEqual(expected);
 
     const transferRows = await admin.query(
       `select fee_amount_minor, fee_currency, transaction_id from public.transfers where id = $1::uuid`,
@@ -309,96 +464,185 @@ describe('TransferService createTransfer database boundary', () => {
     );
     expect(transferRows.rows[0].fee_amount_minor).toBe('50');
     expect(transferRows.rows[0].fee_currency).toBe('USD');
+    expect(transferRows.rows[0].transaction_id).toBe(created.transactionId);
   });
 
-  it('atomicity by fault injection: failure between transfer insert and postings insert leaves neither transfer nor postings in production path', async () => {
-    let generatedTransferId: string | undefined;
-    const realAdapter = new PostgresTransferAdapter();
-
-    const wrappingAdapter: TransferStore = {
-      readActiveRole: (client: TransactionClient, ws: string) =>
-        realAdapter.readActiveRole(client, ws),
-      lockAndReadAccounts: (
-        client: TransactionClient,
-        ws: string,
-        src: string,
-        dst: string,
-      ) => realAdapter.lockAndReadAccounts(client, ws, src, dst),
-      createTransfer: async (
-        client: TransactionClient,
-        ws: string,
-        sub: string,
-        cmd: CreateTransferCommand,
-      ) => {
-        const interceptedClient: TransactionClient = {
-          query: async <Row extends Record<string, unknown>>(
-            text: string,
-            values?: readonly unknown[],
-          ) => {
-            const res = await client.query<Row>(text, values);
-            const firstRow = res.rows[0] as Record<string, unknown> | undefined;
-            if (
-              typeof text === 'string' &&
-              text.includes('insert into public.transfers') &&
-              typeof firstRow?.id === 'string'
-            ) {
-              generatedTransferId = firstRow.id;
-            }
-            if (
-              typeof text === 'string' &&
-              text.includes('insert into public.ledger_postings')
-            ) {
-              throw new Error(
-                'Injected postings insert failure for transfer atomicity',
-              );
-            }
-            return res;
-          },
-        };
-        return realAdapter.createTransfer(interceptedClient, ws, sub, cmd);
-      },
-    };
-
-    const faultyService = new TransferService(
-      transaction,
-      wrappingAdapter,
-      new PostgresIdempotencyAdapter(),
-    );
-
+  // Reviewer regression (verify mwstka7i). Add inside the existing describe in test/ledger/transfers-create.integration-spec.ts.
+  it('books one fee when identical transfer requests overlap', async () => {
     const command: CreateTransferCommand = {
       sourceAccountId: accountActiveUSD1Id,
       destinationAccountId: accountActiveUSD2Id,
-      amount: { amountMinor: '7777', currency: 'USD' },
-      occurredAt: '2026-08-25T12:00:00.000Z',
-      description: 'Atomic Fault Injection Test',
+      amount: usd('130'),
+      fee: usd('11'),
+      occurredAt: '2026-10-06T14:00:00.000Z',
     };
+    const key = '00000000-0000-4000-8000-000000002021';
+    const sourceBalance = async () => {
+      const response = await getBalance(
+        accountActiveUSD1Id,
+        command.occurredAt,
+      );
+      expect(response.statusCode, response.payload).toBe(200);
+      return BigInt(
+        response.json<{ nativeBalance: { amountMinor: string } }>()
+          .nativeBalance.amountMinor,
+      );
+    };
+    const before = await sourceBalance();
+    const holder = await admin.connect();
+    let pending:
+      | Promise<Awaited<ReturnType<typeof postTransfer>>[]>
+      | undefined;
+    try {
+      await holder.query('begin');
+      await holder.query(
+        'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [accountActiveUSD1Id],
+      );
+      const {
+        rows: [{ pid }],
+      } = await holder.query<{ pid: number }>('select pg_backend_pid() as pid');
+      pending = Promise.all([
+        postTransfer(command, key),
+        postTransfer(command, key),
+      ]);
+      const deadline = Date.now() + 400;
+      do {
+        const {
+          rows: [{ waiting }],
+        } = await admin.query<{ waiting: boolean }>(
+          `select exists (
+             select 1 from pg_locks x join pg_locks h
+               using (locktype, database, classid, objid, objsubid)
+              where h.pid = $1 and h.granted and not x.granted
+           ) as waiting`,
+          [pid],
+        );
+        if (waiting) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } while (Date.now() < deadline);
+    } finally {
+      await holder.query('rollback');
+      holder.release();
+    }
 
-    await expect(
-      faultyService.create(
-        subjectOwner,
-        workspace1Id,
-        command,
-        '00000000-0000-4000-8000-000000001099',
-      ),
-    ).rejects.toThrow(
-      'Injected postings insert failure for transfer atomicity',
+    const [first, second] = await pending!;
+    expect([first.statusCode, second.statusCode]).toEqual([201, 201]);
+    expect(second.json()).toEqual(first.json());
+    const { rows } = await admin.query(
+      `select count(*)::int as transfers, count(transaction_id)::int as fees
+         from public.transfers where workspace_id = $1 and occurred_at = $2`,
+      [workspace1Id, command.occurredAt],
     );
-
-    expect(generatedTransferId).toBeDefined();
-
-    // Assert by the generated transfer identity that NEITHER public.transfers NOR public.ledger_postings retained any row
-    const transferCheck = await admin.query(
-      'select * from public.transfers where id = $1::uuid',
-      [generatedTransferId],
-    );
-    expect(transferCheck.rows).toHaveLength(0);
-
-    const postingsCheck = await admin.query(
-      'select * from public.ledger_postings where transfer_id = $1::uuid',
-      [generatedTransferId],
-    );
-    expect(postingsCheck.rows).toHaveLength(0);
+    expect(rows).toEqual([{ transfers: 1, fees: 1 }]);
+    expect(before - (await sourceBalance())).toBe(141n);
   });
+
+  it.each([undefined, usd('25')])(
+    'rolls back transfer, postings and any fee after a transfer-leg failure (%j)',
+    async (fee) => {
+      let generatedTransferId: string | undefined;
+      let generatedFeeId: string | undefined;
+      const realAdapter = new PostgresTransferAdapter(
+        new PostgresTransactionAdapter(),
+      );
+
+      const wrappingAdapter: TransferStore = {
+        readActiveRole: (client: TransactionClient, ws: string) =>
+          realAdapter.readActiveRole(client, ws),
+        lockAndReadAccounts: (
+          client: TransactionClient,
+          ws: string,
+          src: string,
+          dst: string,
+        ) => realAdapter.lockAndReadAccounts(client, ws, src, dst),
+        createTransfer: async (
+          client: TransactionClient,
+          ws: string,
+          sub: string,
+          cmd: CreateTransferCommand,
+        ) => {
+          const interceptedClient: TransactionClient = {
+            query: async <Row extends Record<string, unknown>>(
+              text: string,
+              values?: readonly unknown[],
+            ) => {
+              const res = await client.query<Row>(text, values);
+              const id = res.rows[0]?.id;
+              if (typeof id === 'string') {
+                if (text.includes('insert into public.transfers')) {
+                  generatedTransferId = id;
+                } else if (text.includes('insert into public.transactions')) {
+                  generatedFeeId = id;
+                }
+              }
+              if (
+                text.includes('insert into public.ledger_postings') &&
+                text.includes('transfer_id')
+              ) {
+                throw new Error(
+                  'Injected postings insert failure for transfer atomicity',
+                );
+              }
+              return res;
+            },
+          };
+          return realAdapter.createTransfer(interceptedClient, ws, sub, cmd);
+        },
+      };
+
+      const faultyService = new TransferService(
+        transaction,
+        wrappingAdapter,
+        new PostgresIdempotencyAdapter(),
+      );
+
+      const command: CreateTransferCommand = {
+        sourceAccountId: accountActiveUSD1Id,
+        destinationAccountId: accountActiveUSD2Id,
+        amount: { amountMinor: '7777', currency: 'USD' },
+        occurredAt: '2026-08-25T12:00:00.000Z',
+        description: 'Atomic Fault Injection Test',
+        ...(fee && { fee }),
+      };
+      const key = `00000000-0000-4000-8000-00000000109${fee ? 8 : 9}`;
+
+      await expect(
+        faultyService.create(subjectOwner, workspace1Id, command, key),
+      ).rejects.toThrow(
+        'Injected postings insert failure for transfer atomicity',
+      );
+
+      expect(generatedTransferId).toBeDefined();
+      const transferCheck = await admin.query(
+        'select * from public.transfers where id = $1::uuid',
+        [generatedTransferId],
+      );
+      expect(transferCheck.rows).toHaveLength(0);
+
+      const postingsCheck = await admin.query(
+        'select * from public.ledger_postings where transfer_id = $1::uuid',
+        [generatedTransferId],
+      );
+      expect(postingsCheck.rows).toHaveLength(0);
+      if (fee) {
+        expect(generatedFeeId).toEqual(expect.any(String));
+        const feeCheck = await admin.query(
+          `select id from public.transactions where id = $1::uuid
+           union all select id from public.ledger_postings where transaction_id = $1::uuid`,
+          [generatedFeeId],
+        );
+        expect(feeCheck.rows).toHaveLength(0);
+        const retry = await service.create(
+          subjectOwner,
+          workspace1Id,
+          command,
+          key,
+        );
+        expect(retry.kind).toBe(TRANSFER_CREATE_OUTCOMES.CREATED);
+      }
+    },
+  );
 
   it('serializes concurrent transfers and transactions using sorted per-account advisory locks', async () => {
     // 1. Session A: a raw admin client takes advisory lock on accountActiveUSD1Id and leaves transaction open

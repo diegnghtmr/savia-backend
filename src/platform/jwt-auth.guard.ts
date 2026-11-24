@@ -23,6 +23,7 @@ import {
   type McpReadAdmission,
   type McpReadDeclaration,
 } from './mcp-read-auth.js';
+import { SessionStatusUnavailableError } from './postgres-session.store.js';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -39,12 +40,24 @@ export class JwtAuthGuard implements CanActivate {
     const token = extractBearerToken(request.headers.authorization);
     if (token === undefined) throw new UnauthorizedException();
 
+    // The session verifier does not establish identity until its signed
+    // session_id has been checked against Supabase's current session state.
     let identity: RequestIdentity;
     try {
       identity = await (token.startsWith('svt_')
         ? this.cliTokenVerifier.verify(token)
         : this.verifier.verify(token));
-    } catch {
+    } catch (error) {
+      if (error instanceof SessionStatusUnavailableError) {
+        const route = request.routeOptions.url;
+        if (
+          route === '/v1/me/sessions' ||
+          route === '/v1/me/sessions/revoke-others'
+        ) {
+          throw error;
+        }
+        throw new UnauthorizedException();
+      }
       if (token.startsWith('svt_') || !this.admitMcpRead)
         throw new UnauthorizedException();
       const declaration = Reflect.getOwnMetadata(
