@@ -287,6 +287,7 @@ describe('TransferService createTransfer database boundary', () => {
           accountId,
           nativeBalance: usd(amount),
           pendingBalance: usd('0'),
+          availableBalance: usd(amount),
           reconciledBalance: usd('0'),
           baseCurrencyEquivalent: {
             original: usd(amount),

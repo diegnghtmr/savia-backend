@@ -2162,6 +2162,52 @@ describe('Approvals integration contract and endpoint suite', () => {
       expect(await transactions()).toEqual(posted);
     });
 
+    it('serializes an MCP withdrawal against another subject’s HTTP withdrawal', async () => {
+      const toolName = 'withdraw_from_fund';
+      const source = await account();
+      const destination = await account();
+      const fundId = await createFund();
+      const path = `/v1/funds/${fundId}`;
+      const amount = { amountMinor: '25', currency: 'USD' };
+      const body = { accountId: destination, amount, reason: 'Repair' };
+      expect(
+        (
+          await request('POST', `${path}/contributions`, {
+            accountId: source,
+            amount,
+            occurredAt,
+          })
+        ).statusCode,
+      ).toBe(201);
+      const allowed = await grant(
+        [destination],
+        editorId,
+        '25',
+        [toolName],
+        ['transactions:write', 'budgets:write'],
+      );
+      const pending = await proposal(allowed.token, {
+        toolName,
+        arguments: { fundId, body },
+      });
+      const [mcp, http] = await Promise.all([
+        confirm(pending.id, pending.argumentsHash),
+        request('POST', `${path}/withdrawals`, body, 'owner-token'),
+      ]);
+      expect([mcp.statusCode, http.statusCode]).toEqual(
+        mcp.statusCode === 200 ? [200, 422] : [422, 201],
+      );
+      expect(await get(pending.id)).toMatchObject({
+        status: mcp.statusCode === 200 ? 'consumed' : 'pending',
+      });
+      expect(await balance(destination)).toBe('25');
+      const state = await request('GET', path);
+      expect(state.statusCode).toBe(200);
+      expect(state.json()).toMatchObject({
+        currentAmount: { amountMinor: '0', currency: 'USD' },
+      });
+    });
+
     it('returns the explicit deferred receipt problem without reserving the proposal key', async () => {
       const { token } = await grant([], editorId, null, ['scan_receipt']);
       const key = randomUUID();

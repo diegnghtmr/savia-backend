@@ -1,6 +1,5 @@
 // Migrations under test: 202609170022_l11_subscriptions_debts.sql
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
@@ -9,7 +8,6 @@ import { Test } from '@nestjs/testing';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
-import { resolve } from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -23,6 +21,7 @@ import { PostgresIdempotencyAdapter } from '../../src/platform/postgres-idempote
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
+import { bundleOpenApi, openapiMirror } from '../helpers/openapi-bundle.js';
 
 const subject = (number: number) =>
   `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
@@ -799,14 +798,11 @@ describe('AccountsService getAccountBalance database boundary', () => {
 
 describe('getAccountBalance OpenAPI contract specification', () => {
   it('6. RULING 43 caveat is documented in OpenAPI mirror description', () => {
-    const openapiPath = resolve(__dirname, '../../openapi/savia.openapi.yaml');
-    const content = readFileSync(openapiPath, 'utf8');
-    const balanceOpMatch = content.match(
-      /\/v1\/accounts\/\{accountId\}\/balance:[\s\S]*?get:[\s\S]*?description:\s*([^\n]+(?:\n\s+[^\n]+)*)/,
+    const { paths } = bundleOpenApi(openapiMirror) as {
+      paths: Record<string, { get: { description?: string } }>;
+    };
+    expect(paths['/v1/accounts/{accountId}/balance']?.get.description).toBe(
+      'Retrieves the account balance. Note that the asOf parameter filters ledger postings with occurred_at <= asOf using their current status; historical status point-in-time reconstitution is not performed.',
     );
-    expect(balanceOpMatch).toBeDefined();
-    const description = balanceOpMatch?.[1] ?? '';
-    expect(description.toLowerCase()).toContain('asof');
-    expect(description.toLowerCase()).toContain('current status');
   });
 });

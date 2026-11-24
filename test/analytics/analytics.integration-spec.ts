@@ -1732,7 +1732,8 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
         },
       ],
     });
-    expect(missingData.join(' ')).toMatch(/recurr/i);
+    // Recurring history is available in the integrated schema; none of these bookings are linked.
+    expect(missingData).toEqual([]);
   });
 
   it('L16 debt evolution separates principal, interest and fees and labels unknown outlook', async () => {
@@ -2152,8 +2153,53 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
     ]);
   });
 
+  it('excludes a booking from summary assets without changing the account balance', async () => {
+    const id = await seedTransaction({
+      type: 'income',
+      amountMinor: 1234,
+      occurredAt: '2026-06-05T12:00:00Z',
+      includeInAccountBalance: true,
+    });
+    const headers = {
+      authorization: 'Bearer owner-token',
+      'x-workspace-id': ws1Id,
+    };
+    const get = (url: string) =>
+      application.inject({ method: 'GET', url, headers });
+    const summary = () =>
+      get('/v1/analytics/summary?from=2026-06-01&to=2026-06-30');
+    const ledger = () =>
+      get(
+        `/v1/accounts/${acctCheckingId}/balance?asOf=2027-01-01T00:00:00.000Z`,
+      );
+    const before = await summary();
+    const balance = await ledger();
+    expect([before.statusCode, balance.statusCode]).toEqual([200, 200]);
+    const excluded = await application.inject({
+      method: 'POST',
+      url: '/v1/transactions/bulk',
+      headers: { ...headers, 'idempotency-key': randomUUID() },
+      payload: {
+        targets: [{ id, expectedVersion: 1 }],
+        action: { type: 'excludeFromReports' },
+      },
+    });
+    expect(excluded.statusCode).toBe(200);
+    const after = await summary();
+    expect(after.statusCode).toBe(200);
+    for (const field of ['assets', 'netWorth', 'income']) {
+      expect(
+        BigInt(before.json()[field].amountMinor) -
+          BigInt(after.json()[field].amountMinor),
+      ).toBe(1234n);
+    }
+    const finalBalance = await ledger();
+    expect(finalBalance.statusCode).toBe(200);
+    expect(finalBalance.body).toBe(balance.body);
+  });
+
   it('excludes booked expenses and payment costs from analytics but not the actual account balance', async () => {
-    const occurredAt = '2075-02-12T12:00:00.000Z';
+    const occurredAt = '2024-10-12T12:00:00.000Z';
     const headers = {
       authorization: 'Bearer owner-token',
       'x-workspace-id': ws1Id,
@@ -2163,12 +2209,12 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
       expect(result.statusCode, result.payload).toBe(200);
       return result;
     };
-    const range = 'from=2075-02-01&to=2075-02-28';
+    const range = 'from=2024-10-01&to=2024-10-31';
     const summary = () => get(`/v1/analytics/summary?${range}`);
     const costs = () =>
       get(`/v1/analytics/advanced?${range}&metric=debt_cost_evolution`);
     const balance = () =>
-      get(`/v1/accounts/${acctCheckingId}/balance?asOf=2075-03-01T00:00:00Z`);
+      get(`/v1/accounts/${acctCheckingId}/balance?asOf=2024-11-01T00:00:00Z`);
     const original = (await summary()).json<{
       assets: { amountMinor: string };
       debts: { amountMinor: string };
@@ -2208,8 +2254,8 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
     );
     await seedBudgetAndAllocation({
       name: 'Exclusion test budget',
-      periodStart: '2075-02-01',
-      periodEnd: '2075-02-28',
+      periodStart: '2024-10-01',
+      periodEnd: '2024-10-31',
       categoryId: catGroceriesId,
       plannedMinor: 800,
     });

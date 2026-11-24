@@ -5604,6 +5604,8 @@ paths:
         - mcpOAuth:
             - accounts:read
       summary: Get account balance
+      description: >-
+        Retrieves the account balance. Note that the asOf parameter filters ledger postings with occurred_at <= asOf using their current status; historical status point-in-time reconstitution is not performed.
       tags:
         - Accounts
       responses:

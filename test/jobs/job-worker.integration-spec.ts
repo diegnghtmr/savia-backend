@@ -528,6 +528,7 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
         expect.objectContaining({
           frequency: 'monthly',
           status: 'detected',
+          etag: '"1"',
           currentAmount: { currency: 'USD', amountMinor: '1000' },
           increasePercent: 0,
         }),
@@ -565,6 +566,8 @@ describe('Job worker runtime (S2): claim, validate, run as creator under RLS', (
       expect(updated).toEqual([
         {
           ...initial[0],
+          // B18 versions changed detection terms so a stale decision cannot confirm them.
+          etag: '"2"',
           payeeName: 'Stream Plus',
           currentAmount: { currency: 'USD', amountMinor: '1100' },
           increasePercent: 10,

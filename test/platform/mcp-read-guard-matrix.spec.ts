@@ -9,9 +9,11 @@ import { of } from 'rxjs';
 import { expect, it, vi } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { CLI_SCOPE_POLICY } from '../../src/platform/cli-scope-policy.js';
 import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import { SessionStatusUnavailableError } from '../../src/platform/postgres-session.store.js';
 import type {
   McpProposalIdentity,
   RequestIdentity,
@@ -47,6 +49,8 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
   for (const [name, value] of Object.entries(mcpAuthEnvironment))
     vi.stubEnv(name, value);
   vi.stubEnv('CLI_DEVICE_VERIFICATION_URI', 'https://app.example.test/device');
+  let liveGrant = true;
+  let omittedCliScope: string | undefined;
   const policy = {
     workspaceId,
     role: 'owner',
@@ -58,7 +62,7 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
   const run = async (
     _actor: string,
     callback: (tx: unknown) => Promise<unknown>,
-  ) => callback({ query: async () => ({ rows: [policy] }) });
+  ) => callback({ query: async () => ({ rows: liveGrant ? [policy] : [] }) });
   const routes = new Map<
     string,
     { method: InjectOptions['method']; url: string }
@@ -84,7 +88,12 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
         return {
           subject,
           authMethod: 'cli_token',
-          scopes: token === 'svt_full' ? Object.values(SAVIA_SCOPES) : [],
+          scopes:
+            token === 'svt_full'
+              ? Object.values(SAVIA_SCOPES).filter(
+                  (scope) => scope !== omittedCliScope,
+                )
+              : [],
         };
       },
     })
@@ -126,13 +135,32 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
     const expected = new Set(
       [...authorityMcpReads().keys()].filter((route) => routes.has(route)),
     );
-    if (process.env.SAVIA_GUARD_BASELINE !== '1') {
+    const integrated = process.env.SAVIA_GUARD_BASELINE !== '1';
+    if (integrated) {
       expect(expected.size).toBe(14);
       expect(expected).toEqual(declared);
     }
     expected.add(proposalRoute);
     const exercised = new Set<string>();
     const observedReads = new Set<string>();
+    const oauthClient = await signed.sign(subject, undefined, {
+      aud: mcpAuthEnvironment.JWT_AUDIENCE,
+      client_id: 'third-party',
+    });
+    const publicRoutes = new Set([
+      'GET /health',
+      'POST /v1/cli/device/authorize',
+      'POST /v1/cli/device/token',
+    ]);
+    const sessionRoutes = new Set([
+      'GET /v1/me/sessions',
+      'POST /v1/me/sessions/revoke-others',
+    ]);
+    const cliAllowed = new Set<string>();
+    if (integrated) {
+      expect(routes.size).toBe(120);
+      expect(CLI_SCOPE_POLICY.size).toBe(89);
+    }
     for (const [route, { method, url }] of [...routes].sort(([a], [b]) =>
       a.localeCompare(b),
     )) {
@@ -147,10 +175,49 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
           },
         });
       const absent = await send();
+      if (integrated) {
+        const noSession = publicRoutes.has(route) ? 200 : 401;
+        expect(absent.statusCode, route).toBe(noSession);
+        const cli = await send('svt_full');
+        if (cli.headers[observedIdentityHeader] === 'cli_token')
+          cliAllowed.add(route);
+        const required = CLI_SCOPE_POLICY.get(route);
+        if (required) {
+          expect(cli.statusCode, route).toBe(200);
+          for (const scope of required) {
+            omittedCliScope = scope;
+            expect(
+              (await send('svt_full')).statusCode,
+              `${route} minus ${scope}`,
+            ).toBe(403);
+          }
+          omittedCliScope = undefined;
+        }
+        signed.isActive.mockResolvedValue(true);
+        expect((await send(session)).statusCode, route).toBe(
+          route === proposalRoute ? 401 : 200,
+        );
+        signed.isActive.mockResolvedValue(false);
+        expect((await send(session)).statusCode, route).toBe(noSession);
+        signed.isActive.mockRejectedValue(new SessionStatusUnavailableError());
+        const outage = await send(session);
+        expect(outage.statusCode, route).toBe(
+          sessionRoutes.has(route) ? 503 : noSession,
+        );
+        if (outage.statusCode === 503)
+          expect(outage.json().title).toBe(
+            'Session status could not be verified',
+          );
+        if (outage.statusCode === 401)
+          expect(outage.json().title).toBe('Authentication is required');
+        const checks = signed.isActive.mock.calls.length;
+        expect((await send(oauthClient)).statusCode, route).toBe(noSession);
+        expect(signed.isActive).toHaveBeenCalledTimes(checks);
+      }
       const sessionChecks = signed.isActive.mock.calls.length;
       const response = await send(mcp);
       expect(signed.isActive).toHaveBeenCalledTimes(sessionChecks);
-      if (process.env.SAVIA_GUARD_BASELINE !== '1') {
+      if (integrated) {
         const identity = response.headers[observedIdentityHeader];
         if (identity === 'mcp_read') observedReads.add(route);
         if (expected.has(route)) {
@@ -159,6 +226,12 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
             route === proposalRoute ? 'mcp_proposal' : 'mcp_read',
           );
           exercised.add(route);
+          if (route !== proposalRoute) {
+            liveGrant = false;
+            expect((await send(mcp)).statusCode, route).toBe(403);
+            expect(signed.isActive).toHaveBeenCalledTimes(sessionChecks);
+            liveGrant = true;
+          }
         } else {
           expect(response.statusCode, route).toBe(absent.statusCode);
           expect(identity, route).toBe(absent.headers[observedIdentityHeader]);
@@ -166,6 +239,7 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
         }
       }
       if (process.env.SAVIA_CAPTURE_ROUTE_GUARDS === '1') {
+        signed.isActive.mockResolvedValue(true);
         for (const [credential, token] of Object.entries(legacy)) {
           const r = await send(token);
           process.stdout.write(
@@ -174,9 +248,10 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
         }
       }
     }
-    if (process.env.SAVIA_GUARD_BASELINE !== '1') {
+    if (integrated) {
       expect(exercised).toEqual(expected);
       expect(observedReads).toEqual(declared);
+      expect(cliAllowed).toEqual(new Set(CLI_SCOPE_POLICY.keys()));
     }
   } finally {
     await app.close();
