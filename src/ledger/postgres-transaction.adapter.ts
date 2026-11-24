@@ -18,10 +18,12 @@ import {
   FundContributionVoidConflict,
   TransactionCategoryNotFoundError,
   TransactionPayeeNotFoundError,
+  type CreateFieldValidity,
   type LedgerAccountRecord,
   type LedgerStore,
   type TransactionFilterOptions,
   type TransactionItem,
+  type TransactionWriteFields,
 } from './transaction.service.js';
 
 interface TransactionRow extends Record<string, unknown> {
@@ -186,6 +188,37 @@ export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
       return undefined;
     }
     return { status: accountRow.status, currency: accountRow.currency };
+  }
+
+  public async readCreateFieldValidity(
+    client: TransactionClient,
+    workspaceId: string,
+    command: TransactionWriteFields,
+  ): Promise<CreateFieldValidity> {
+    // Match the insert's timestamp cast, composite FK targets and receipt index,
+    // without issuing a ledger write. Execution still relies on the constraints.
+    const result = await client.query<
+      CreateFieldValidity & Record<string, unknown>
+    >(
+      `select ($2::text is null or pg_input_is_valid($2::text, 'timestamp with time zone')) as "validDate",
+         ($3::uuid is null or exists (select 1 from public.categories
+           where workspace_id = $1::uuid and id = $3::uuid)) as "validCategory",
+         ($4::uuid is null or exists (select 1 from public.payees
+           where workspace_id = $1::uuid and id = $4::uuid)) as "validPayee",
+         not exists (select 1 from public.transactions
+           where workspace_id = $1::uuid and receipt_id = $5::uuid) as "receiptAvailable"`,
+      [
+        workspaceId,
+        command.occurredAt ?? null,
+        command.categoryId ?? null,
+        command.payeeId ?? null,
+        command.receiptId ?? null,
+      ],
+    );
+    const fields = result.rows[0];
+    if (!fields)
+      throw new Error('Transaction field validation returned no row.');
+    return fields;
   }
 
   public async createTransaction(

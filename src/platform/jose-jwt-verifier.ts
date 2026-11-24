@@ -5,7 +5,11 @@ import {
   type JWTVerifyOptions,
 } from 'jose';
 import { AuthConfig } from './auth-config.js';
-import type { RequestIdentity } from './request-identity.js';
+import type {
+  McpProposalIdentity,
+  RequestIdentity,
+} from './request-identity.js';
+import { UUID_PATTERN } from './uuid.js';
 const JWKS_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
 const JWKS_COOLDOWN_DURATION_MS = 30 * 1000;
 const JWKS_TIMEOUT_DURATION_MS = 5 * 1000;
@@ -23,7 +27,10 @@ export class IdentityVerificationError extends Error {
 export class JoseJwtVerifier {
   private readonly verificationOptions: JWTVerifyOptions;
   private readonly jwks: ReturnType<typeof createRemoteJWKSet>;
-  public constructor(config: AuthConfig, options: JoseJwtVerifierOptions = {}) {
+  public constructor(
+    private readonly config: AuthConfig,
+    options: JoseJwtVerifierOptions = {},
+  ) {
     this.verificationOptions = {
       algorithms: [...config.algorithms],
       audience: config.audience,
@@ -44,12 +51,43 @@ export class JoseJwtVerifier {
         this.jwks,
         this.verificationOptions,
       );
-      if (typeof payload.sub !== 'string' || payload.sub.trim() === '') {
+      if (
+        typeof payload.sub !== 'string' ||
+        payload.sub.trim() === '' ||
+        Object.hasOwn(payload, 'mcp_grant_id') ||
+        (this.config.mcpProposalAudience !== undefined &&
+          [payload.aud].flat().includes(this.config.mcpProposalAudience))
+      ) {
         throw new IdentityVerificationError();
       }
       return { subject: payload.sub, authMethod: 'session' };
     } catch (error) {
       if (error instanceof IdentityVerificationError) throw error;
+      throw new IdentityVerificationError();
+    }
+  }
+
+  public async verifyProposal(token: string): Promise<McpProposalIdentity> {
+    const audience = this.config.mcpProposalAudience;
+    if (!audience) throw new IdentityVerificationError();
+    try {
+      const { payload } = await jwtVerify(token, this.jwks, {
+        ...this.verificationOptions,
+        audience,
+        requiredClaims: ['sub', 'exp', 'mcp_grant_id'],
+      });
+      const { sub, mcp_grant_id: grantId } = payload;
+      if (
+        [payload.aud].flat().length !== 1 ||
+        typeof sub !== 'string' ||
+        !UUID_PATTERN.test(sub) ||
+        typeof grantId !== 'string' ||
+        !UUID_PATTERN.test(grantId)
+      ) {
+        throw new IdentityVerificationError();
+      }
+      return { subject: sub.toLowerCase(), grantId: grantId.toLowerCase() };
+    } catch {
       throw new IdentityVerificationError();
     }
   }

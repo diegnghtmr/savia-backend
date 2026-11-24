@@ -12,6 +12,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { McpRead } from '../platform/mcp-read-auth.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
@@ -154,6 +155,7 @@ export class ScenariosController {
   }
 
   @Post(':scenarioId/runs')
+  @McpRead('run_scenario', ['reports:read'])
   public async run(
     @Param('scenarioId') scenarioId: string,
     @Req() req: AuthenticatedRequest,

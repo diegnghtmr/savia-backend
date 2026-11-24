@@ -438,6 +438,11 @@
       "path": "/v1/report-runs/{reportRunId}"
     },
     {
+      "operationId": "listApprovals",
+      "method": "GET",
+      "path": "/v1/approvals"
+    },
+    {
       "operationId": "getApproval",
       "method": "GET",
       "path": "/v1/approvals/{approvalId}"
@@ -491,6 +496,11 @@
       "operationId": "revokeMcpGrant",
       "method": "DELETE",
       "path": "/v1/mcp/grants/{grantId}"
+    },
+    {
+      "operationId": "createMcpProposal",
+      "method": "POST",
+      "path": "/v1/mcp/proposals"
     },
     {
       "operationId": "listAIProviders",

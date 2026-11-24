@@ -77,6 +77,7 @@ export interface WorkspaceStore {
     subject: string,
     cursor: WorkspaceCursor | undefined,
     limit: number,
+    workspaceIds?: readonly string[],
   ): Promise<readonly WorkspaceItem[]>;
   createWorkspace(
     client: TransactionClient,
@@ -159,6 +160,9 @@ export class WorkspaceService implements WorkspacePort {
         subject,
         query.cursor,
         query.limit + 1,
+        ...(query.workspaceIds === undefined
+          ? []
+          : ([query.workspaceIds] as const)),
       );
       const hasNextPage = rows.length > query.limit;
       const visible = hasNextPage ? rows.slice(0, query.limit) : rows;

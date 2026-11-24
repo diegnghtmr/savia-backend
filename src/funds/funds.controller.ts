@@ -13,6 +13,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { McpRead } from '../platform/mcp-read-auth.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { canonicalJson } from '../platform/idempotency.service.js';
@@ -190,6 +191,7 @@ export class FundsController {
   }
 
   @Get(':fundId')
+  @McpRead('get_sinking_fund', ['budgets:read'])
   public async detail(
     @Param('fundId') rawFundId: string,
     @Req() req: AuthenticatedRequest,

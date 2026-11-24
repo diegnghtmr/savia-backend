@@ -11,6 +11,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { McpRead } from '../platform/mcp-read-auth.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import {
@@ -35,6 +36,7 @@ export class AnalyticsController {
   ) {}
 
   @Get('summary')
+  @McpRead('get_financial_summary', ['reports:read'])
   public async getSummary(
     @Req() req: AuthenticatedRequest,
     @Res() reply: FastifyReply,

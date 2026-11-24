@@ -1,9 +1,12 @@
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
   ApprovalClaim,
+  ApprovalListQuery,
   ApprovalRecord,
   ApprovalStatus,
   ApprovalStore,
+  ApprovalAction,
+  McpApprovalSnapshot,
   CreateApprovalCommand,
   RiskClass,
 } from './approval.port.js';
@@ -12,6 +15,9 @@ interface ApprovalRow extends Record<string, unknown> {
   readonly id: string;
   readonly workspaceId: string;
   readonly toolName: string;
+  readonly channel: ApprovalRecord['channel'];
+  readonly mcpGrantId: string | null;
+  readonly mcpArguments: ApprovalAction['arguments'] | null;
   readonly riskClass: string;
   readonly argumentsHash: string;
   readonly preview: Record<string, unknown> | string;
@@ -29,6 +35,10 @@ function mapApproval(row: ApprovalRow): ApprovalRecord {
     id: row.id,
     workspaceId: row.workspaceId,
     toolName: row.toolName,
+    channel: row.channel ?? null,
+    ...(row.mcpGrantId && row.mcpArguments
+      ? { mcp: { grantId: row.mcpGrantId, arguments: row.mcpArguments } }
+      : {}),
     riskClass: row.riskClass as RiskClass,
     argumentsHash: row.argumentsHash,
     preview:
@@ -52,7 +62,8 @@ function mapApproval(row: ApprovalRow): ApprovalRecord {
 }
 
 const approvalColumns = `id,
-  workspace_id as "workspaceId", tool_name as "toolName",
+  workspace_id as "workspaceId", tool_name as "toolName", channel,
+  mcp_grant_id as "mcpGrantId", mcp_arguments as "mcpArguments",
   risk_class as "riskClass", arguments_hash as "argumentsHash", preview, status,
   expires_at as "expiresAt", decided_by as "decidedBy", decided_at as "decidedAt",
   decision_reason as "decisionReason", created_by as "createdBy", created_at as "createdAt"`;
@@ -61,15 +72,18 @@ export class PostgresApprovalAdapter implements ApprovalStore {
   public async insertApproval(
     client: TransactionClient,
     workspaceId: string,
-    command: Omit<CreateApprovalCommand, 'arguments'>,
+    command: Omit<CreateApprovalCommand, 'arguments'> & {
+      readonly mcp?: McpApprovalSnapshot;
+    },
     argumentsHash: string,
   ): Promise<ApprovalRecord | undefined> {
-    const { toolName, riskClass, preview, expiresAt, channel } = command;
+    const { toolName, riskClass, preview, expiresAt, channel, mcp } = command;
     const result = await client.query<ApprovalRow>(
       `insert into public.approvals
-        (workspace_id, tool_name, risk_class, arguments_hash, preview, status, expires_at, created_by, channel)
+        (workspace_id, tool_name, risk_class, arguments_hash, preview, status, expires_at, created_by, channel,
+         mcp_grant_id, mcp_arguments)
        select $1::uuid, $2, $3, $4, $5::jsonb, 'pending', $6::timestamptz,
-              nullif(current_setting('app.subject_id', true), '')::uuid, $7
+              nullif(current_setting('app.subject_id', true), '')::uuid, $7, $8::uuid, $9::jsonb
         where $6::timestamptz > clock_timestamp()
        returning ${approvalColumns}`,
       [
@@ -80,6 +94,8 @@ export class PostgresApprovalAdapter implements ApprovalStore {
         JSON.stringify(preview),
         expiresAt,
         channel,
+        mcp?.grantId ?? null,
+        mcp ? JSON.stringify(mcp.arguments) : null,
       ],
     );
     const row = result.rows[0];
@@ -110,6 +126,38 @@ export class PostgresApprovalAdapter implements ApprovalStore {
       [workspaceId],
     );
     return result.rows[0]?.role ?? undefined;
+  }
+
+  public async listApprovals(
+    client: TransactionClient,
+    workspaceId: string,
+    { status, limit, cursor }: ApprovalListQuery,
+    now: Date,
+  ): Promise<readonly (ApprovalRecord & { readonly cursorAt: string })[]> {
+    const result = await client.query<ApprovalRow & { cursorAt: string }>(
+      `select ${approvalColumns},
+              to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
+         from public.approvals
+        where workspace_id = $1::uuid
+          and created_by = nullif(current_setting('app.subject_id', true), '')::uuid
+          and case when status = 'pending' and expires_at <= $3::timestamptz
+                   then 'expired' else status end = $2
+          and ($4::timestamptz is null or (created_at, id) > ($4::timestamptz, $5::uuid))
+        order by created_at, id
+        limit $6`,
+      [
+        workspaceId,
+        status,
+        now,
+        cursor?.createdAt ?? null,
+        cursor?.id ?? null,
+        limit + 1,
+      ],
+    );
+    return result.rows.map((row) => ({
+      ...mapApproval(row),
+      cursorAt: row.cursorAt,
+    }));
   }
 
   public async findApprovalById(

@@ -6,6 +6,11 @@ import {
   type FieldViolation,
 } from '../platform/field-validation.js';
 import type { CreateMcpGrantCommand, Money } from './mcp-grant.port.js';
+import {
+  MCP_MINOR_UNITS,
+  parseGrantSchedule,
+  parseToolAllowlist,
+} from './mcp-grant-restrictions.js';
 
 // Derived from every x-savia-mcp-tool.requiredScopes in docs/savia-openapi.yaml; re-run the brief's Python extraction command.
 export const MCP_GRANT_SCOPES = [
@@ -30,6 +35,8 @@ const FIELDS = [
   'scopes',
   'workspaceIds',
   'accountIds',
+  'toolAllowlist',
+  'schedule',
   'maxWriteAmount',
   'expiresAt',
 ] as const;
@@ -102,6 +109,16 @@ export function createMcpGrantCommand(input: unknown): CreateMcpGrantCommand {
     body.accountIds === undefined
       ? undefined
       : uniqueIds(body.accountIds, 'accountIds', false, violations);
+  const toolAllowlist = parseToolAllowlist(
+    body.toolAllowlist === undefined ? [] : body.toolAllowlist,
+  );
+  if ('code' in toolAllowlist)
+    add(violations, 'toolAllowlist', toolAllowlist.code, toolAllowlist.message);
+  const schedule = parseGrantSchedule(
+    body.schedule === undefined ? [] : body.schedule,
+  );
+  if ('code' in schedule)
+    add(violations, 'schedule', schedule.code, schedule.message);
   let maxWriteAmount: Money | null = null;
   if (body.maxWriteAmount !== undefined && body.maxWriteAmount !== null) {
     const rawMoney = body.maxWriteAmount;
@@ -148,7 +165,7 @@ export function createMcpGrantCommand(input: unknown): CreateMcpGrantCommand {
             'required',
             'must be a non-empty string',
           );
-        else if (!/^-?[0-9]+$/.test(money.amountMinor))
+        else if (!MCP_MINOR_UNITS.test(money.amountMinor))
           add(
             violations,
             'maxWriteAmount.amountMinor',
@@ -200,7 +217,11 @@ export function createMcpGrantCommand(input: unknown): CreateMcpGrantCommand {
       );
     else expiresAt = body.expiresAt;
   }
-  if (violations.length)
+  if (
+    violations.length ||
+    !('value' in toolAllowlist) ||
+    !('value' in schedule)
+  )
     throw new McpGrantCommandValidationError(
       Object.freeze(sortViolations(violations)),
     );
@@ -209,6 +230,8 @@ export function createMcpGrantCommand(input: unknown): CreateMcpGrantCommand {
     scopes,
     workspaceIds,
     ...(accountIds === undefined ? {} : { accountIds }),
+    toolAllowlist: toolAllowlist.value,
+    schedule: schedule.value,
     maxWriteAmount,
     expiresAt,
   };

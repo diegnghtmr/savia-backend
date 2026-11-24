@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { MCP_TOOL_ANNOTATIONS } from '../src/mcp/mcp-tools.js';
 
 const root = process.cwd();
 const verifier = resolve(root, 'scripts/verify-openapi.mjs');
@@ -185,7 +186,7 @@ describe('executable OpenAPI authority', () => {
   });
 
   it.skipIf(!authorityAvailable)(
-    'semantically mirrors backup, L12 fund and notification settings operations, budget response schemas, and MCP OAuth scopes',
+    'mirrors backup, funds, notification settings, budget responses, and MCP grants, proposals, OAuth and annotations',
     () => {
       const bundle = (path: string) => {
         const directory = mkdtempSync(
@@ -208,18 +209,18 @@ describe('executable OpenAPI authority', () => {
       };
       const authority = bundle(authorityPath);
       const mirror = bundle(resolve(root, 'openapi/savia.openapi.yaml'));
-      const pick = (document: Record<string, unknown>) => {
-        const paths = document.paths as Record<
+      const pathsOf = (document: Record<string, unknown>) =>
+        document.paths as Record<
           string,
           Record<string, Record<string, unknown>>
         >;
+      const pick = (document: Record<string, unknown>) => {
+        const paths = pathsOf(document);
+        const confirm = paths['/v1/approvals/{approvalId}/confirm']?.post;
         const schemas = document.components as Record<
           string,
           Record<string, unknown>
         >;
-        const oauth = schemas.securitySchemes?.mcpOAuth as
-          | { flows?: { authorizationCode?: { scopes?: unknown } } }
-          | undefined;
         const responseContent = (responses: unknown) =>
           Object.fromEntries(
             Object.entries(
@@ -254,8 +255,6 @@ describe('executable OpenAPI authority', () => {
           backupCreate: paths['/v1/backup-jobs'],
           backupPoll: paths['/v1/backup-jobs/{backupJobId}'],
           backupSchema: schemas.schemas?.WorkspaceBackupJob,
-          // Compare the OAuth scope vocabulary, not the deployment URLs.
-          oauthScopes: oauth?.flows?.authorizationCode?.scopes,
           notificationPreferences: paths['/v1/me/notification-preferences'],
           pushDevices: paths['/v1/me/push-devices'],
           pushDevice: paths['/v1/me/push-devices/{deviceId}'],
@@ -266,9 +265,51 @@ describe('executable OpenAPI authority', () => {
             'RegisterPushDeviceRequest',
             'PushDeviceRegistration',
           ].map((name) => schemas.schemas?.[name]),
+          proposal: paths['/v1/mcp/proposals']?.post,
+          confirmDescription: confirm?.description,
+          confirmationPrecondition: (
+            confirm?.responses as Record<string, unknown>
+          )?.['412'],
+          mcpOAuth: schemas.securitySchemes?.mcpOAuth,
+          grantSchemas: Object.fromEntries(
+            [
+              'CreateMcpGrantRequest',
+              'CreateMcpProposalRequest',
+              'McpProposalApproval',
+              'McpGrant',
+              'McpGrantSchedule',
+              'McpToolAllowlist',
+              'McpToolName',
+              'McpWeeklyWindow',
+              'SaviaScope',
+            ].map((name) => [name, schemas.schemas?.[name]]),
+          ),
         };
       };
       expect(pick(mirror)).toEqual(pick(authority));
+      const authorityPaths = pathsOf(authority);
+      const annotations: [string, Record<string, unknown>][] = [];
+      for (const [path, item] of Object.entries(pathsOf(mirror))) {
+        for (const [method, operation] of Object.entries(item)) {
+          if (typeof operation?.operationId !== 'string') continue;
+          const source = authorityPaths[path]?.[method];
+          expect(source?.operationId).toBe(operation.operationId);
+          const tool = source?.['x-savia-mcp-tool'] as
+            | ({ name: string } & Record<string, unknown>)
+            | undefined;
+          if (operation['x-savia-mcp-tool'] !== undefined) {
+            expect(operation['x-savia-mcp-tool']).toEqual(tool);
+          }
+          if (tool) {
+            const { name, ...annotation } = tool;
+            annotations.push([name, annotation]);
+          }
+        }
+      }
+      expect(annotations).toHaveLength(MCP_TOOL_ANNOTATIONS.size);
+      expect(Object.fromEntries(MCP_TOOL_ANNOTATIONS)).toEqual(
+        Object.fromEntries(annotations),
+      );
     },
     30_000,
   );

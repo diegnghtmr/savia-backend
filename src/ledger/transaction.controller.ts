@@ -40,6 +40,7 @@ import type { AuthenticatedRequest } from '../platform/authenticated-request.js'
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { parseIfMatch } from '../platform/if-match.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { McpRead } from '../platform/mcp-read-auth.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
@@ -52,6 +53,7 @@ export class TransactionController {
   ) {}
 
   @Get()
+  @McpRead('search_transactions', ['transactions:read'], 'account-query')
   public async listTransactions(
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,

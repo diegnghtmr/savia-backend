@@ -222,6 +222,33 @@ select a.id::text,
     };
   }
 
+  public async canCreateAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateAccountCommand,
+  ): Promise<boolean> {
+    // Check both currency invariants without inserting a row. The triggers
+    // still enforce them at confirmation.
+    const {
+      rows: [row],
+    } = await client.query<{ allowed: boolean }>(
+      `select ($3::text is null or pg_input_is_valid($3, 'date')) and not exists (
+         select 1 from (
+           select base_currency as currency from public.workspaces where id = $1::uuid
+           union
+           select currency from public.budgets where workspace_id = $1::uuid
+         ) target
+         where target.currency <> $2 and not exists (
+           select 1 from public.exchange_rates rate
+           where rate.workspace_id = $1::uuid and rate.base_currency = $2
+             and rate.quote_currency = target.currency
+         )
+       ) as allowed`,
+      [workspaceId, command.currency, command.openingBalanceDate ?? null],
+    );
+    return row?.allowed === true;
+  }
+
   public async createAccount(
     client: TransactionClient,
     workspaceId: string,

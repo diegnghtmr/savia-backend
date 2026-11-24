@@ -10,6 +10,11 @@ import {
   type TransferPort,
 } from './transfer.port.js';
 
+type CreateAccountFailure =
+  | 'account_unresolved'
+  | 'account_closed'
+  | 'currency_mismatch';
+
 export interface TransferAccountRecord {
   readonly id: string;
   readonly status: string;
@@ -53,120 +58,133 @@ export class TransferService implements TransferPort {
     command: CreateTransferCommand,
     idempotencyKey: string,
   ): Promise<TransferCreateOutcome> {
+    return this.transaction.run(subject, (client) =>
+      this.createWithin(client, subject, workspaceId, command, idempotencyKey),
+    );
+  }
+
+  public async checkCreateAccounts(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateTransferCommand,
+  ): Promise<CreateAccountFailure | undefined> {
+    const { sourceAccount, destinationAccount } =
+      await this.store.lockAndReadAccounts(
+        client,
+        workspaceId,
+        command.sourceAccountId,
+        command.destinationAccountId,
+      );
+    if (!sourceAccount || !destinationAccount)
+      return TRANSFER_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED;
+    if (
+      sourceAccount.status === 'closed' ||
+      destinationAccount.status === 'closed'
+    ) {
+      return TRANSFER_CREATE_OUTCOMES.ACCOUNT_CLOSED;
+    }
+    if (
+      sourceAccount.currency !== destinationAccount.currency ||
+      command.amount.currency !== sourceAccount.currency ||
+      (command.fee !== undefined &&
+        command.fee.currency !== sourceAccount.currency)
+    ) {
+      return TRANSFER_CREATE_OUTCOMES.CURRENCY_MISMATCH;
+    }
+    return undefined;
+  }
+
+  public async createWithin(
+    client: TransactionClient,
+    subject: string,
+    workspaceId: string,
+    command: CreateTransferCommand,
+    idempotencyKey: string,
+  ): Promise<TransferCreateOutcome> {
     const route = 'POST /v1/transfers';
     const fingerprint = computeRequestFingerprint(command);
+    // 1. Role check: owner, administrator, editor
+    const role = await this.store.readActiveRole(client, workspaceId);
+    if (
+      role === undefined ||
+      !['owner', 'administrator', 'editor'].includes(role)
+    ) {
+      return { kind: TRANSFER_CREATE_OUTCOMES.FORBIDDEN };
+    }
 
-    return this.transaction.run(subject, async (client) => {
-      // 1. Role check: owner, administrator, editor
-      const role = await this.store.readActiveRole(client, workspaceId);
-      if (
-        role === undefined ||
-        !['owner', 'administrator', 'editor'].includes(role)
-      ) {
-        return { kind: TRANSFER_CREATE_OUTCOMES.FORBIDDEN };
+    // 2. Idempotency read
+    const existing = await this.idempotencyStore.read(
+      client,
+      subject,
+      route,
+      idempotencyKey,
+      workspaceId,
+    );
+    if (existing !== undefined) {
+      if (existing.requestFingerprint !== fingerprint) {
+        return { kind: TRANSFER_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT };
       }
+      return {
+        kind: TRANSFER_CREATE_OUTCOMES.REPLAYED,
+        status: existing.responseStatus,
+        etag: existing.responseEtag,
+        body: existing.responseBody,
+      };
+    }
 
-      // 2. Idempotency read
-      const existing = await this.idempotencyStore.read(
+    // Lock and validate both accounts before writing or reserving the key.
+    const failure = await this.checkCreateAccounts(
+      client,
+      workspaceId,
+      command,
+    );
+    if (failure) return { kind: failure };
+
+    // 4. Create transfer via store
+    const transfer = await this.store.createTransfer(
+      client,
+      workspaceId,
+      subject,
+      command,
+    );
+
+    // 5. Write idempotency record (NO ETag response header for createTransfer)
+    const written = await this.idempotencyStore.write(
+      client,
+      subject,
+      route,
+      idempotencyKey,
+      fingerprint,
+      201,
+      null,
+      transfer,
+      workspaceId,
+    );
+
+    if (!written) {
+      const reread = await this.idempotencyStore.read(
         client,
         subject,
         route,
         idempotencyKey,
         workspaceId,
       );
-      if (existing !== undefined) {
-        if (existing.requestFingerprint !== fingerprint) {
+      if (reread !== undefined) {
+        if (reread.requestFingerprint !== fingerprint) {
           return { kind: TRANSFER_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT };
         }
         return {
           kind: TRANSFER_CREATE_OUTCOMES.REPLAYED,
-          status: existing.responseStatus,
-          etag: existing.responseEtag,
-          body: existing.responseBody,
+          status: reread.responseStatus,
+          etag: reread.responseEtag,
+          body: reread.responseBody,
         };
       }
+    }
 
-      // 3. Lock and read both accounts in workspace (locks acquired in sorted order)
-      const { sourceAccount, destinationAccount } =
-        await this.store.lockAndReadAccounts(
-          client,
-          workspaceId,
-          command.sourceAccountId,
-          command.destinationAccountId,
-        );
-
-      if (sourceAccount === undefined || destinationAccount === undefined) {
-        return { kind: TRANSFER_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED };
-      }
-
-      if (
-        sourceAccount.status === 'closed' ||
-        destinationAccount.status === 'closed'
-      ) {
-        return { kind: TRANSFER_CREATE_OUTCOMES.ACCOUNT_CLOSED };
-      }
-
-      // 4. Same currency check (currency conversion is Épica 3; refuse rather than convert)
-      if (
-        sourceAccount.currency !== destinationAccount.currency ||
-        command.amount.currency !== sourceAccount.currency
-      ) {
-        return { kind: TRANSFER_CREATE_OUTCOMES.CURRENCY_MISMATCH };
-      }
-
-      if (
-        command.fee !== undefined &&
-        command.fee.currency !== sourceAccount.currency
-      ) {
-        return { kind: TRANSFER_CREATE_OUTCOMES.CURRENCY_MISMATCH };
-      }
-
-      // 5. Create transfer via store
-      const transfer = await this.store.createTransfer(
-        client,
-        workspaceId,
-        subject,
-        command,
-      );
-
-      // 6. Write idempotency record (NO ETag response header for createTransfer)
-      const written = await this.idempotencyStore.write(
-        client,
-        subject,
-        route,
-        idempotencyKey,
-        fingerprint,
-        201,
-        null,
-        transfer,
-        workspaceId,
-      );
-
-      if (!written) {
-        const reread = await this.idempotencyStore.read(
-          client,
-          subject,
-          route,
-          idempotencyKey,
-          workspaceId,
-        );
-        if (reread !== undefined) {
-          if (reread.requestFingerprint !== fingerprint) {
-            return { kind: TRANSFER_CREATE_OUTCOMES.IDEMPOTENCY_CONFLICT };
-          }
-          return {
-            kind: TRANSFER_CREATE_OUTCOMES.REPLAYED,
-            status: reread.responseStatus,
-            etag: reread.responseEtag,
-            body: reread.responseBody,
-          };
-        }
-      }
-
-      return {
-        kind: TRANSFER_CREATE_OUTCOMES.CREATED,
-        transfer,
-      };
-    });
+    return {
+      kind: TRANSFER_CREATE_OUTCOMES.CREATED,
+      transfer,
+    };
   }
 }

@@ -140,6 +140,7 @@ export interface WorkspacePage {
 export interface WorkspaceListQuery {
   readonly cursor?: WorkspaceCursor;
   readonly limit: number;
+  readonly workspaceIds?: readonly string[];
 }
 
 export const WORKSPACE_DELETE_OUTCOME_KINDS = {

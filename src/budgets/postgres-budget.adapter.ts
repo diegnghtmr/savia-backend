@@ -75,6 +75,23 @@ export class PostgresBudgetAdapter implements BudgetStore, ExportReader {
     );
     return r.rows[0]?.currency;
   }
+  public async canCreateBudget(
+    c: TransactionClient,
+    w: string,
+    command: CreateBudgetRequest,
+    currency: string,
+  ): Promise<boolean> {
+    const { rows } = await c.query<{ allowed: boolean }>(
+      `select pg_input_is_valid($3, 'date') and pg_input_is_valid($4, 'date') and not exists (
+         select 1 from public.accounts a where a.workspace_id = $1::uuid and a.currency <> $2
+           and not exists (select 1 from public.exchange_rates r where r.workspace_id = $1::uuid
+             and r.base_currency = a.currency and r.quote_currency = $2)
+       ) as allowed`,
+      [w, currency, command.periodStart, command.periodEnd],
+    );
+    return rows[0]?.allowed === true;
+  }
+
   public async createBudget(
     c: TransactionClient,
     w: string,
@@ -94,9 +111,10 @@ export class PostgresBudgetAdapter implements BudgetStore, ExportReader {
     c: TransactionClient,
     w: string,
     id: string,
+    lock = false,
   ): Promise<Budget | undefined> {
     const r = await c.query<Row>(
-      `select id::text,name,method,to_char(period_start,'YYYY-MM-DD') as "periodStart",to_char(period_end,'YYYY-MM-DD') as "periodEnd",currency,version from public.budgets where workspace_id=$1::uuid and id=$2::uuid`,
+      `select id::text,name,method,to_char(period_start,'YYYY-MM-DD') as "periodStart",to_char(period_end,'YYYY-MM-DD') as "periodEnd",currency,version from public.budgets where workspace_id=$1::uuid and id=$2::uuid${lock ? ' for share' : ''}`,
       [w, id],
     );
     const row = r.rows[0];
