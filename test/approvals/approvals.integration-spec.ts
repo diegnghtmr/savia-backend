@@ -22,6 +22,7 @@ import {
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { createTransactionCommand } from '../../src/ledger/transaction-command.js';
 import { createTransferCommand } from '../../src/ledger/transfer-command.js';
+import type { NotificationPage } from '../../src/notifications/notification.port.js';
 import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { SAVIA_SCOPES } from '../../src/platform/savia-scopes.js';
@@ -2821,27 +2822,48 @@ describe('Approvals integration contract and endpoint suite', () => {
     }
 
     it('notifies only the agent approval requester when a pending approval is created', async () => {
-      await createPending('agent');
-      await createPending('mcp');
-      for (const token of ['editor-token', 'owner-token']) {
+      const inbox = async (token: string) => {
         const response = await application.inject({
           method: 'GET',
           url: '/v1/notifications',
           headers: { authorization: `Bearer ${token}` },
         });
         expect(response.statusCode).toBe(200);
-        expect(response.json().items).toEqual(
-          token === 'editor-token'
-            ? [
-                expect.objectContaining({
-                  type: 'approval_requested',
-                  title: 'Agent action pending approval',
-                  read: false,
-                }),
-              ]
-            : [],
+        const page = response.json<NotificationPage>();
+        expect(page.pageInfo.hasNextPage).toBe(false);
+        return page.items;
+      };
+      const snapshot = () =>
+        Promise.all(
+          [
+            'editor-token',
+            'owner-token',
+            'admin-token',
+            'viewer-token',
+            'dual-member-token',
+            'other-owner-token',
+            'non-member-token',
+          ].map(inbox),
         );
-      }
+
+      // Other agent approvals in this suite already notified the editor.
+      const [before, ...otherInboxes] = await snapshot();
+      const existingIds = new Set(before.map(({ id }) => id));
+      await createPending('agent');
+      const [afterAgent, ...othersAfterAgent] = await snapshot();
+      expect(afterAgent.filter(({ id }) => !existingIds.has(id))).toEqual([
+        expect.objectContaining({
+          type: 'approval_requested',
+          title: 'Agent action pending approval',
+          read: false,
+        }),
+      ]);
+      const priorItems = afterAgent.filter(({ id }) => existingIds.has(id));
+      expect(priorItems).toEqual(before);
+      expect(othersAfterAgent).toEqual(otherInboxes);
+
+      await createPending('mcp');
+      expect(await snapshot()).toEqual([afterAgent, ...otherInboxes]);
     });
 
     it('commits a pending approval when notification insertion is blocked', async () => {

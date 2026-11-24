@@ -390,6 +390,7 @@ describe('TransactionService updateTransaction database boundary', () => {
     asOf: string,
     native: string,
     pending = '0',
+    available = native,
   ) {
     const response = await app.inject({
       method: 'GET',
@@ -400,9 +401,9 @@ describe('TransactionService updateTransaction database boundary', () => {
     expect(response.json()).toMatchObject({
       nativeBalance: usd(native),
       pendingBalance: usd(pending),
+      availableBalance: usd(available),
       reconciledBalance: usd('0'),
     });
-    expect(response.json()).not.toHaveProperty('availableBalance');
   }
 
   describe('atomic bulk transaction actions', () => {
@@ -1225,7 +1226,15 @@ describe('TransactionService updateTransaction database boundary', () => {
       expect(balance.json().nativeBalance).toEqual(usd('0'));
       const justBefore = new Date(Date.parse(future) - 1).toISOString();
       await expectBalance(booking.accountId, justBefore, '0', '0');
-      await expectBalance(booking.accountId, future, '0', '0');
+      // The pending pair nets to zero, but only the negative reversal
+      // counts toward available balance once both postings are effective.
+      await expectBalance(
+        booking.accountId,
+        future,
+        '0',
+        '0',
+        status === 'pending' ? '-1234' : '0',
+      );
       const { rows } = await admin.query(
         `select status, occurred_at from public.ledger_postings
           where transaction_id = $1`,
