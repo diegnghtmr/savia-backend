@@ -52,6 +52,18 @@ export interface ApprovalDecisionCommand {
   readonly reason?: string | null;
 }
 
+export interface ApprovalAction {
+  readonly toolName: string;
+  readonly arguments: Readonly<Record<string, unknown>>;
+}
+
+export interface CreateApprovalCommand extends ApprovalAction {
+  readonly channel: 'agent' | 'mcp';
+  readonly riskClass: RiskClass;
+  readonly preview: Record<string, unknown>;
+  readonly expiresAt: Date;
+}
+
 export const APPROVAL_OUTCOMES = {
   OK: 'ok',
   REPLAYED: 'replayed',
@@ -86,7 +98,33 @@ export type ApprovalDecisionOutcome =
   | { readonly kind: typeof APPROVAL_OUTCOMES.FORBIDDEN }
   | { readonly kind: typeof APPROVAL_OUTCOMES.NOT_FOUND };
 
+export type ApprovalExecutionOutcome<T> =
+  | { readonly kind: typeof APPROVAL_OUTCOMES.OK; readonly result: T }
+  | { readonly kind: typeof APPROVAL_OUTCOMES.FORBIDDEN }
+  | { readonly kind: typeof APPROVAL_OUTCOMES.CONFLICT };
+
+export type ApprovalCreationOutcome =
+  | Extract<ApprovalGetOutcome, { kind: 'ok' | 'forbidden' }>
+  | { readonly kind: typeof APPROVAL_OUTCOMES.CONFLICT };
+
+export type ApprovalClaim = ApprovalExecutionOutcome<never>['kind'];
+
 export interface ApprovalStore {
+  insertApproval(
+    client: TransactionClient,
+    workspaceId: string,
+    command: Omit<CreateApprovalCommand, 'arguments'>,
+    argumentsHash: string,
+  ): Promise<ApprovalRecord | undefined>;
+
+  claimApproval(
+    client: TransactionClient,
+    workspaceId: string,
+    approvalId: string,
+    toolName: string,
+    argumentsHash: string,
+  ): Promise<ApprovalClaim>;
+
   readActiveRole(
     client: TransactionClient,
     workspaceId: string,
@@ -110,6 +148,25 @@ export interface ApprovalStore {
 }
 
 export interface ApprovalsPort {
+  createApproval(
+    subject: string,
+    workspaceId: string,
+    command: CreateApprovalCommand,
+  ): Promise<ApprovalCreationOutcome>;
+
+  // The action uses the supplied arguments and transaction, not a nested
+  // transaction or external side effects. A thrown error rolls back the claim.
+  executeApprovedAction<T>(
+    subject: string,
+    workspaceId: string,
+    approvalId: string,
+    action: ApprovalAction,
+    execute: (
+      client: TransactionClient,
+      args: ApprovalAction['arguments'],
+    ) => Promise<T>,
+  ): Promise<ApprovalExecutionOutcome<T>>;
+
   getApproval(
     subject: string,
     workspaceId: string,

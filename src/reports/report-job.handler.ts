@@ -11,6 +11,7 @@ import {
   type RenderingJobHandler,
 } from '../platform/job-handler.port.js';
 import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
+import type { NotificationWriter } from '../platform/notification-writer.port.js';
 import {
   PDF_RENDERER,
   type PdfRenderer,
@@ -102,6 +103,7 @@ export class ReportJobHandler
     @Inject(PDF_RENDERER) private readonly pdfRenderer: PdfRenderer,
     clock: (() => Date) | undefined,
     public readonly renderSettleTimeoutMs: number,
+    private readonly notifications?: NotificationWriter,
   ) {
     this.clock = clock ?? (() => new Date());
   }
@@ -331,6 +333,13 @@ export class ReportJobHandler
         fxRatesUsed: computed.fxRatesUsed,
       },
     );
+    await this.notifications?.publish(client, {
+      workspaceId: context.workspaceId,
+      recipientId: context.actorId,
+      resourceId: context.payload.reportRunId,
+      type: 'report_completed',
+      title: 'Report available',
+    });
     return context.payload.reportRunId;
   }
 }

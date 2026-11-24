@@ -7,6 +7,15 @@ import { PostgresDebtAdapter } from './debts/postgres-debt.adapter.js';
 import { ForecastJobHandler } from './forecasts/forecast-job.handler.js';
 import { ForecastWorkerModule } from './forecasts/forecast-worker.module.js';
 import { PostgresJobsAdapter } from './jobs/postgres-jobs.adapter.js';
+import {
+  NotificationDeliverySweep,
+  PostgresNotificationDeliveryStore,
+} from './notifications/notification-delivery-sweep.js';
+import {
+  ExpoPushAdapter,
+  ResendEmailAdapter,
+} from './notifications/notification-providers.adapter.js';
+import { NotificationWriterModule } from './notifications/notification-writer.module.js';
 import { JOB_HANDLERS, type JobHandler } from './platform/job-handler.port.js';
 import { JOB_QUEUE, type JobQueue } from './platform/job-queue.port.js';
 import { JobRunner } from './platform/job-runner.js';
@@ -50,6 +59,7 @@ class ScheduledWorkerRunner extends JobRunner {
 @Module({
   imports: [
     WorkerPlatformModule,
+    NotificationWriterModule,
     ForecastWorkerModule,
     ReportWorkerModule,
     ExportWorkerModule.withReaders({
@@ -91,6 +101,24 @@ class ScheduledWorkerRunner extends JobRunner {
         ),
     },
     { provide: JobRunner, useClass: ScheduledWorkerRunner },
+    {
+      provide: NotificationDeliverySweep,
+      inject: [PgTransaction],
+      useFactory: (transaction: PgTransaction) => {
+        const email =
+          process.env.SAVIA_RESEND_API_KEY?.trim() ||
+          process.env.SAVIA_NOTIFICATION_FROM_EMAIL?.trim()
+            ? new ResendEmailAdapter({
+                baseUrl: process.env.SAVIA_RESEND_BASE_URL,
+              })
+            : undefined;
+        return new NotificationDeliverySweep(
+          new PostgresNotificationDeliveryStore(transaction),
+          email,
+          new ExpoPushAdapter({ baseUrl: process.env.SAVIA_EXPO_BASE_URL }),
+        );
+      },
+    },
   ],
   exports: [WorkerPlatformModule, JOB_WRITER, JobRunner, ReportWorkerModule],
 })

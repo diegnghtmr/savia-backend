@@ -52,6 +52,59 @@ class RecordingClient implements PgClient {
   }
 }
 
+describe('PgTransaction per-query statement timeout', () => {
+  it.each([undefined, 3_000])(
+    'caps one write without changing subsequent queries (lifetime %s)',
+    async (lifetime) => {
+      const pool = new RecordingPool(0);
+      const transaction = new PgTransaction(pool, { persistTimeoutMs: 850 });
+      const query = vi.spyOn(pool.client, 'query');
+      const clock = vi.spyOn(process.hrtime, 'bigint').mockReturnValue(0n);
+      const subject = '00000000-0000-0000-0000-000000000001';
+      try {
+        await transaction.run(
+          subject,
+          async (client) => {
+            query.mockClear();
+            await client.query('select 1', undefined, {
+              statementTimeoutMs: 200,
+            });
+            await client.query('select 2');
+            await client.query('select 3', undefined, {
+              statementTimeoutMs: 1_200,
+            });
+            clock.mockReturnValue(BigInt((lifetime ?? 850) - 100) * 1_000_000n);
+            await client.query('select 4', undefined, {
+              statementTimeoutMs: 200,
+            });
+            clock.mockReturnValue(0n);
+          },
+          undefined,
+          undefined,
+          lifetime,
+        );
+        const set = (ms: number) => [
+          'select set_config($1, $2::text, true)',
+          ['statement_timeout', `${ms}ms`],
+        ];
+        expect(query.mock.calls).toEqual([
+          set(200),
+          ['select 1', undefined],
+          set(850),
+          ['select 2', undefined],
+          set(850),
+          ['select 3', undefined],
+          set(100),
+          ['select 4', undefined],
+          ['COMMIT'],
+        ]);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+});
+
 describe('PgTransaction lifetime checkout resilience', () => {
   it('fails closed when pool checkout completes after the lifetime deadline (run)', async () => {
     const pool = new RecordingPool(60);

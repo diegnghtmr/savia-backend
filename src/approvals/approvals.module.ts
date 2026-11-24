@@ -5,6 +5,10 @@ import { ApprovalService } from './approval.service.js';
 import { PostgresApprovalAdapter } from './postgres-approval.adapter.js';
 import { PlatformModule } from '../platform/platform.module.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
+import {
+  NOTIFICATION_WRITER,
+  type NotificationWriter,
+} from '../platform/notification-writer.port.js';
 import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
 
 @Module({
@@ -19,12 +23,15 @@ import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.ada
         PgTransaction,
         PostgresApprovalAdapter,
         PostgresIdempotencyAdapter,
+        NOTIFICATION_WRITER,
       ],
       useFactory: (
         tx: PgTransaction,
         store: PostgresApprovalAdapter,
         idempotency: PostgresIdempotencyAdapter,
-      ) => new ApprovalService(tx, store, idempotency),
+        notifications: NotificationWriter,
+      ) =>
+        new ApprovalService(tx, store, idempotency, undefined, notifications),
     },
     { provide: APPROVALS_PORT, useExisting: ApprovalService },
   ],

@@ -1,17 +1,23 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
+import type { NotificationWriter } from '../platform/notification-writer.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
   APPROVAL_OUTCOMES,
   APPROVAL_STORE,
+  type ApprovalAction,
+  type ApprovalCreationOutcome,
   type ApprovalDecisionCommand,
   type ApprovalDecisionOutcome,
+  type ApprovalExecutionOutcome,
   type ApprovalGetOutcome,
+  type ApprovalRecord,
   type ApprovalRequestPayload,
   type ApprovalsPort,
   type ApprovalStatus,
   type ApprovalStore,
+  type CreateApprovalCommand,
 } from './approval.port.js';
 import { Inject } from '@nestjs/common';
 
@@ -22,6 +28,81 @@ export function timingSafeHashMatch(a: string, b: string): boolean {
     return false;
   }
   return timingSafeEqual(bufA, bufB);
+}
+
+function canonicalArguments(args: ApprovalAction['arguments']): string {
+  const invalid = () =>
+    new TypeError('Approval arguments must be plain JSON data');
+  const ancestors = new Set<object>();
+
+  function readDataProperty(object: object, key: string): unknown {
+    const property = Object.getOwnPropertyDescriptor(object, key);
+    if (!property?.enumerable || !Object.hasOwn(property, 'value')) {
+      throw invalid();
+    }
+    return copy(property.value);
+  }
+
+  function copy(value: unknown): unknown {
+    if (
+      value === null ||
+      typeof value === 'boolean' ||
+      typeof value === 'string' ||
+      (typeof value === 'number' && Number.isFinite(value))
+    ) {
+      return value;
+    }
+    if (typeof value !== 'object' || ancestors.has(value)) throw invalid();
+    const array = Array.isArray(value);
+    const prototype: unknown = Object.getPrototypeOf(value);
+    if (
+      prototype !== null &&
+      prototype !== (array ? Array.prototype : Object.prototype)
+    ) {
+      throw invalid();
+    }
+    ancestors.add(value);
+    try {
+      const keys = Reflect.ownKeys(value);
+      if (array) {
+        if (keys.length !== value.length + 1) throw invalid();
+        return Array.from({ length: value.length }, (_, i) =>
+          readDataProperty(value, String(i)),
+        );
+      }
+      if (!keys.every((key) => typeof key === 'string')) throw invalid();
+      const entries = keys
+        .sort()
+        .map((key) => [key, readDataProperty(value, key)] as const);
+      // Keep every JSON key (including __proto__) without invoking toJSON.
+      return Object.setPrototypeOf(Object.fromEntries(entries), null);
+    } finally {
+      ancestors.delete(value);
+    }
+  }
+
+  if (!args || typeof args !== 'object' || Array.isArray(args)) throw invalid();
+  return JSON.stringify(copy(args));
+}
+
+function hashArguments(canonical: string): string {
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+function toPayload(
+  approval: ApprovalRecord,
+  status = approval.status,
+): ApprovalRequestPayload {
+  return {
+    id: approval.id,
+    toolName: approval.toolName,
+    riskClass: approval.riskClass,
+    argumentsHash: approval.argumentsHash,
+    preview: approval.preview,
+    status,
+    expiresAt: approval.expiresAt.toISOString(),
+    createdAt: approval.createdAt.toISOString(),
+  };
 }
 
 export class ApprovalDecisionRollbackError extends Error {
@@ -53,7 +134,72 @@ export class ApprovalService implements ApprovalsPort {
     @Inject(APPROVAL_STORE) private readonly store: ApprovalStore,
     private readonly idempotency: IdempotencyStore,
     private readonly clock: () => Date = () => new Date(),
+    private readonly notifications?: NotificationWriter,
   ) {}
+
+  public async createApproval(
+    subject: string,
+    workspaceId: string,
+    { arguments: args, ...command }: CreateApprovalCommand,
+  ): Promise<ApprovalCreationOutcome> {
+    const hash = hashArguments(canonicalArguments(args));
+    const expiresAt = new Date(command.expiresAt.getTime());
+    return this.tx.run(subject, async (client) => {
+      const role = await this.store.readActiveRole(client, workspaceId);
+      if (
+        !['owner', 'administrator'].includes(role ?? '') &&
+        !(role === 'editor' && command.riskClass !== 'administrative')
+      ) {
+        return { kind: APPROVAL_OUTCOMES.FORBIDDEN };
+      }
+      if (!(expiresAt.getTime() > this.clock().getTime())) {
+        return { kind: APPROVAL_OUTCOMES.CONFLICT };
+      }
+      const approval = await this.store.insertApproval(
+        client,
+        workspaceId,
+        { ...command, expiresAt },
+        hash,
+      );
+      if (!approval) return { kind: APPROVAL_OUTCOMES.CONFLICT };
+      if (command.channel === 'agent') {
+        await this.notifications?.publish(client, {
+          workspaceId,
+          recipientId: subject,
+          resourceId: approval.id,
+          type: 'approval_requested',
+          title: 'Agent action pending approval',
+        });
+      }
+      return { kind: APPROVAL_OUTCOMES.OK, approval: toPayload(approval) };
+    });
+  }
+
+  public async executeApprovedAction<T>(
+    subject: string,
+    workspaceId: string,
+    approvalId: string,
+    { toolName, arguments: args }: ApprovalAction,
+    execute: (
+      client: TransactionClient,
+      args: ApprovalAction['arguments'],
+    ) => Promise<T>,
+  ): Promise<ApprovalExecutionOutcome<T>> {
+    const canonical = canonicalArguments(args);
+    const hash = hashArguments(canonical);
+    const snapshot = JSON.parse(canonical) as ApprovalAction['arguments'];
+    return this.tx.run(subject, async (client) => {
+      const kind = await this.store.claimApproval(
+        client,
+        workspaceId,
+        approvalId,
+        toolName,
+        hash,
+      );
+      if (kind !== APPROVAL_OUTCOMES.OK) return { kind };
+      return { kind, result: await execute(client, snapshot) };
+    });
+  }
 
   public async getApproval(
     subject: string,
@@ -86,20 +232,9 @@ export class ApprovalService implements ApprovalsPort {
         effectiveStatus = 'expired';
       }
 
-      const payload: ApprovalRequestPayload = {
-        id: approval.id,
-        toolName: approval.toolName,
-        riskClass: approval.riskClass,
-        argumentsHash: approval.argumentsHash,
-        preview: approval.preview,
-        status: effectiveStatus,
-        expiresAt: approval.expiresAt.toISOString(),
-        createdAt: approval.createdAt.toISOString(),
-      };
-
       return {
         kind: APPROVAL_OUTCOMES.OK,
-        approval: payload,
+        approval: toPayload(approval, effectiveStatus),
       };
     });
   }
@@ -260,16 +395,7 @@ export class ApprovalService implements ApprovalsPort {
           return { kind: APPROVAL_OUTCOMES.CONFLICT };
         }
 
-        const responsePayload: ApprovalRequestPayload = {
-          id: updated.id,
-          toolName: updated.toolName,
-          riskClass: updated.riskClass,
-          argumentsHash: updated.argumentsHash,
-          preview: updated.preview,
-          status: updated.status,
-          expiresAt: updated.expiresAt.toISOString(),
-          createdAt: updated.createdAt.toISOString(),
-        };
+        const responsePayload = toPayload(updated);
 
         const written = await this.idempotency.write(
           client,

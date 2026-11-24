@@ -185,7 +185,7 @@ describe('executable OpenAPI authority', () => {
   });
 
   it.skipIf(!authorityAvailable)(
-    'mirrors backup operations, budget response schemas, L12 fund operations, and MCP OAuth scopes',
+    'semantically mirrors backup, L12 fund and notification settings operations, budget response schemas, and MCP OAuth scopes',
     () => {
       const bundle = (path: string) => {
         const directory = mkdtempSync(
@@ -218,7 +218,7 @@ describe('executable OpenAPI authority', () => {
           Record<string, unknown>
         >;
         const oauth = schemas.securitySchemes?.mcpOAuth as
-          | { flows: { authorizationCode: { scopes: unknown } } }
+          | { flows?: { authorizationCode?: { scopes?: unknown } } }
           | undefined;
         const responseContent = (responses: unknown) =>
           Object.fromEntries(
@@ -254,8 +254,18 @@ describe('executable OpenAPI authority', () => {
           backupCreate: paths['/v1/backup-jobs'],
           backupPoll: paths['/v1/backup-jobs/{backupJobId}'],
           backupSchema: schemas.schemas?.WorkspaceBackupJob,
-          // B19 has no MCP routes. Compare the vocabulary, not the deployment URLs.
-          oauthScopes: oauth?.flows.authorizationCode.scopes,
+          // Compare the OAuth scope vocabulary, not the deployment URLs.
+          oauthScopes: oauth?.flows?.authorizationCode?.scopes,
+          notificationPreferences: paths['/v1/me/notification-preferences'],
+          pushDevices: paths['/v1/me/push-devices'],
+          pushDevice: paths['/v1/me/push-devices/{deviceId}'],
+          notificationSchemas: [
+            'NotificationPreferences',
+            'NotificationQuietHours',
+            'NotificationLocalTime',
+            'RegisterPushDeviceRequest',
+            'PushDeviceRegistration',
+          ].map((name) => schemas.schemas?.[name]),
         };
       };
       expect(pick(mirror)).toEqual(pick(authority));

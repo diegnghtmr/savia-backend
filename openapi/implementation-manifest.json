@@ -3,6 +3,26 @@
   "clientGenerationInput": "openapi/savia.openapi.yaml",
   "implementedOperations": [
     {
+      "operationId": "getNotificationPreferences",
+      "method": "GET",
+      "path": "/v1/me/notification-preferences"
+    },
+    {
+      "operationId": "updateNotificationPreferences",
+      "method": "PUT",
+      "path": "/v1/me/notification-preferences"
+    },
+    {
+      "operationId": "registerPushDevice",
+      "method": "POST",
+      "path": "/v1/me/push-devices"
+    },
+    {
+      "operationId": "unregisterPushDevice",
+      "method": "DELETE",
+      "path": "/v1/me/push-devices/{deviceId}"
+    },
+    {
       "operationId": "startCliDeviceAuthorization",
       "method": "POST",
       "path": "/v1/cli/device/authorize"

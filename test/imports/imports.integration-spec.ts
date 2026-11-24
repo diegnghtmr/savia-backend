@@ -766,6 +766,14 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       payload: command,
     });
     expect(committed.statusCode).toBe(202);
+    const replay = await app.inject({
+      method: 'POST',
+      url: `/v1/import-jobs/${id}/commit`,
+      headers,
+      payload: command,
+    });
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json()).toEqual(committed.json());
     const conflict = await app.inject({
       method: 'POST',
       url: `/v1/import-jobs/${id}/commit`,
@@ -807,7 +815,67 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       payload: command,
     });
     expect(missing.statusCode).toBe(404);
+    const notifications = await app.inject({
+      method: 'GET',
+      url: '/v1/notifications',
+      headers: { authorization: headers.authorization },
+    });
+    expect(notifications.statusCode).toBe(200);
+    expect(notifications.json().items).toEqual([
+      expect.objectContaining({
+        type: 'import_completed',
+        title: 'Import completed',
+        read: false,
+      }),
+    ]);
   });
+  it('commits an import promptly when notification insertion is blocked', async () => {
+    const uploaded = await upload(
+      app,
+      Buffer.from(
+        'date,amount,description\n2026-02-03,10,Locked notification\n',
+      ),
+      'lock-notification.csv',
+      '00000000-0000-4000-8000-000000005533',
+      'csv',
+    );
+    expect(uploaded.statusCode).toBe(202);
+    const { id } = uploaded.json<{ id: string }>();
+    const locker = await admin.connect();
+    try {
+      await locker.query('begin');
+      await locker.query('lock table public.notifications in share mode');
+      const start = performance.now();
+      const committed = await app.inject({
+        method: 'POST',
+        url: `/v1/import-jobs/${id}/commit`,
+        headers: {
+          authorization: 'Bearer accepted-token',
+          'x-workspace-id': workspace,
+          'idempotency-key': '00000000-0000-4000-8000-000000005534',
+        },
+        payload: {
+          accountId,
+          columnMapping: {
+            date: 'date',
+            amount: 'amount',
+            description: 'description',
+          },
+        },
+      });
+      expect(committed.statusCode).toBe(202);
+      expect(performance.now() - start).toBeLessThan(850);
+      const result = await admin.query(
+        `select status, (select count(*)::int from public.notifications where workspace_id = $1 and resource_id = $2) as notifications
+           from public.import_jobs where workspace_id = $1 and id = $2`,
+        [workspace, id],
+      );
+      expect(result.rows).toEqual([{ status: 'completed', notifications: 0 }]);
+    } finally {
+      await locker.query('rollback').finally(() => locker.release());
+    }
+  });
+
   it('replays idempotently with exactly one job and one row set', async () => {
     const key = '00000000-0000-4000-8000-000000005517';
     const first = await upload(
