@@ -70,23 +70,19 @@ export class BulkTransactionService {
               : { kind: 'conflict' };
 
           const ids = command.targets.map(({ id }) => id);
-          const visible = await client.query<{
-            accountId: string;
-            status: string;
-          }>(
-            `select account_id::text as "accountId", status from public.transactions
+          const visible = await client.query<{ accountId: string }>(
+            `select account_id::text as "accountId" from public.transactions
            where workspace_id = $1::uuid and id = any($2::uuid[])`,
             [workspaceId, ids],
           );
           if (visible.rows.length !== ids.length) return { kind: 'not-found' };
-          if (visible.rows.some(({ status }) => status === 'voided'))
-            return { kind: 'ineligible' };
 
           // Follow account-before-header order used by posting writers. Acquire
           // each lock set in a stable order regardless of target response order.
           const accounts = [
             ...new Set(visible.rows.map(({ accountId }) => accountId)),
           ].sort();
+          let accountsEligible = true;
           for (const id of accounts) {
             const account = await this.ledger.lockAndReadAccount(
               client,
@@ -97,7 +93,7 @@ export class BulkTransactionService {
               !account ||
               (command.action.type === 'confirm' && account.status === 'closed')
             )
-              return { kind: 'ineligible' };
+              accountsEligible = false;
           }
           const locked = await client.query<TargetRow>(
             `select t.id::text, t.version, t.status, t.type,
@@ -109,16 +105,37 @@ export class BulkTransactionService {
             order by t.id for no key update of t`,
             [workspaceId, ids],
           );
-          if (locked.rows.length !== ids.length) return { kind: 'ineligible' };
           const versions = new Map(
             command.targets.map(({ id, expectedVersion }) => [
               id,
               expectedVersion,
             ]),
           );
-          if (locked.rows.some((row) => row.version !== versions.get(row.id)))
+          const lockedIds = new Set(locked.rows.map(({ id }) => id));
+          const missing = ids.filter((id) => !lockedIds.has(id));
+          // Update RLS excludes voided rows even from SELECT FOR UPDATE. They
+          // are terminal, and the account locks serialize us against voiding.
+          const voided = missing.length
+            ? (
+                await client.query<{ id: string; version: number }>(
+                  `select id::text, version from public.transactions
+                    where workspace_id = $1::uuid and id = any($2::uuid[]) and status = 'voided'`,
+                  [workspaceId, missing],
+                )
+              ).rows
+            : [];
+          if (voided.length !== missing.length) return { kind: 'not-found' };
+          if (
+            [...locked.rows, ...voided].some(
+              (row) => row.version !== versions.get(row.id),
+            )
+          )
             return { kind: 'stale' };
-          if (locked.rows.some((row) => !eligible(row, command.action)))
+          if (
+            voided.length > 0 ||
+            !accountsEligible ||
+            locked.rows.some((row) => !eligible(row, command.action))
+          )
             return { kind: 'ineligible' };
 
           const mutation = await assignment(

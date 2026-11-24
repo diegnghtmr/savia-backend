@@ -1,5 +1,6 @@
 // Migrations under test: 202609170028_standalone_transaction_posting_updates.sql,
-// 202609170031_l16_classification_bulk.sql.
+// 202609170031_l16_classification_bulk.sql,
+// 202609170035_normalize_imported_transaction_amounts.sql.
 import { randomUUID } from 'node:crypto';
 import {
   FastifyAdapter,
@@ -492,6 +493,134 @@ describe('TransactionService updateTransaction database boundary', () => {
       }
     });
 
+    it('returns 412 when a void made any target version stale', async () => {
+      const first = await createBookedIncome();
+      const second = await createBookedIncome();
+      const voided = await app.inject({
+        method: 'POST',
+        url: `/v1/transactions/${second.id}/void`,
+        headers: { ...balanceHeaders, 'idempotency-key': randomUUID() },
+        payload: { reason: 'Duplicate ledger entry' },
+      });
+      expect(voided.statusCode, voided.payload).toBe(200);
+      const voidedVersion = voided.json<Transaction>().version;
+      expect(voidedVersion).toBe(second.version + 1);
+
+      const ids = [first.id, second.id];
+      const key = randomUUID();
+      const state = async () =>
+        (
+          await admin.query(
+            `select md5(jsonb_build_array(
+              (select jsonb_agg(to_jsonb(t) order by t.id)
+                 from public.transactions t where id = any($1::uuid[])),
+              (select jsonb_agg(to_jsonb(p) order by p.id)
+                 from public.ledger_postings p where transaction_id = any($1::uuid[])),
+              (select to_jsonb(r) from public.command_idempotency_records r
+                 where r.workspace_id = $2 and r.subject_id = $3 and r.idempotency_key = $4)
+            )::text) as digest`,
+            [ids, workspace2Id, subjectOwner, key],
+          )
+        ).rows;
+      const before = await state();
+      for (const [expectedVersion, status, title] of [
+        [second.version, 412, 'Transaction version mismatch'],
+        [voidedVersion, 422, 'Ineligible transaction or action'],
+      ] as const) {
+        const result = await postBulk(
+          {
+            targets: [
+              { id: first.id, expectedVersion: first.version },
+              { id: second.id, expectedVersion },
+            ],
+            action: { type: 'archive' },
+          },
+          key,
+        );
+        expect(await state()).toEqual(before);
+        expect(result.statusCode, result.payload).toBe(status);
+        expect(result.json()).toMatchObject({ title, status });
+      }
+    });
+
+    it('confirms 100 pending transactions in target order and applies set and clear actions', async () => {
+      const ids = await transaction.run(subjectOwner, async (client) => {
+        const { rows } = await client.query<{ id: string }>(
+          `insert into public.transactions
+             (workspace_id, account_id, type, status, amount_minor, currency, occurred_at, created_by)
+           select $1,$2,'income','pending',1,'USD',$4,$3
+             from generate_series(1,100) returning id`,
+          [workspace1Id, accountActiveId, subjectOwner, past],
+        );
+        await client.query(
+          `insert into public.ledger_postings
+             (workspace_id, transaction_id, account_id, leg_kind, amount_minor, currency, status, occurred_at)
+           select $1,t.id,leg.aid,leg.kind,leg.amount,'USD','pending',$4
+             from unnest($3::uuid[]) as t(id)
+             cross join (values ($2::uuid,'account',1),(null,'external',-1))
+               leg(aid,kind,amount)`,
+          [workspace1Id, accountActiveId, rows.map(({ id }) => id), past],
+        );
+        return rows.map(({ id }) => id).reverse();
+      });
+      const tagIds = [randomUUID(), randomUUID()];
+      await admin.query(
+        `insert into public.tags(id,workspace_id,name,created_by)
+         values ($1,$3,'review tag 1',$4),($2,$3,'review tag 2',$4)`,
+        [...tagIds, workspace1Id, subjectOwner],
+      );
+      const headers = { ...balanceHeaders, 'x-workspace-id': workspace1Id };
+      let version = 1;
+      for (const action of [
+        { type: 'confirm' },
+        { type: 'categorize', categoryId: category1Id },
+        { type: 'categorize', categoryId: null },
+        { type: 'setPayee', payeeId: payee1Id },
+        { type: 'setPayee', payeeId: null },
+        { type: 'tag', tagIds },
+        { type: 'tag', tagIds: [tagIds[0]] },
+        { type: 'archive' },
+        { type: 'unarchive' },
+      ]) {
+        const response = await postBulk(
+          {
+            targets: ids.map((id) => ({ id, expectedVersion: version })),
+            action,
+          },
+          randomUUID(),
+          headers,
+        );
+        expect(response.statusCode, response.payload).toBe(200);
+        version++;
+        expect(response.json()).toEqual({
+          updated: ids.map((id) => ({ id, version })),
+        });
+      }
+      const result = await app.inject({
+        method: 'GET',
+        url: `/v1/transactions/${ids[0]}`,
+        headers,
+      });
+      expect(result.statusCode, result.payload).toBe(200);
+      expect(result.json()).toMatchObject({
+        status: 'confirmed',
+        categoryId: null,
+        payeeId: null,
+        tagIds,
+        version,
+      });
+      expect(result.json()).not.toHaveProperty('archived');
+      expect(
+        (
+          await admin.query(
+            `select count(*)::int as legs from public.ledger_postings
+             where transaction_id = any($1::uuid[]) and status = 'confirmed'`,
+            [ids],
+          )
+        ).rows,
+      ).toEqual([{ legs: 200 }]);
+    });
+
     it('rejects empty, duplicate (case insensitive), oversized and unsupported requests without mutation', async () => {
       const txn = await createBookedIncome();
       const target = { id: txn.id, expectedVersion: 1 };
@@ -616,6 +745,33 @@ describe('TransactionService updateTransaction database boundary', () => {
           throw new Error(`Missing imported transaction ${amountMinor}`);
         return row;
       }
+      const readSummary = async () => {
+        const response = await app.inject({
+          method: 'GET',
+          url: '/v1/analytics/summary?from=2020-01-01&to=2020-01-01',
+          headers: balanceHeaders,
+        });
+        expect(response.statusCode, response.payload).toBe(200);
+        const body = response.json<{
+          income: { amountMinor: string };
+          expenses: { amountMinor: string };
+          savingsCapacity: { amountMinor: string };
+        }>();
+        return {
+          income: BigInt(body.income.amountMinor),
+          expenses: BigInt(body.expenses.amountMinor),
+          savings: BigInt(body.savingsCapacity.amountMinor),
+        };
+      };
+      const beforeConversion = await readSummary();
+      const postings = async () =>
+        (
+          await admin.query(
+            'select * from public.ledger_postings where transaction_id = any($1::uuid[]) order by id',
+            [rows.map(({ id }) => id)],
+          )
+        ).rows;
+      const originalPostings = await postings();
       const positive = atAmount('500');
       const negative = atAmount('-900');
       const zero = atAmount('0');
@@ -665,14 +821,26 @@ describe('TransactionService updateTransaction database boundary', () => {
         expect(response.json()).toEqual({
           updated: [{ id: txn.id, version: 2 }],
         });
-        expect((await read(txn.id)).json()).toMatchObject({
+        const converted = await read(txn.id);
+        expect(converted.statusCode, converted.payload).toBe(200);
+        expect(converted.json()).toMatchObject({
           type,
-          amount: txn.amount,
           description: txn.description,
           version: 2,
         });
+        expect(await postings()).toEqual(originalPostings);
       }
       await expectBalance(accountId, future, '-400');
+      const afterConversion = await readSummary();
+      expect(afterConversion.expenses - beforeConversion.expenses).toBe(900n);
+      expect(afterConversion.income - beforeConversion.income).toBe(500n);
+      expect(afterConversion.savings - beforeConversion.savings).toBe(-400n);
+      expect((await read(negative.id)).json()).toMatchObject({
+        amount: usd('900'),
+      });
+      expect((await read(positive.id)).json()).toMatchObject({
+        amount: usd('500'),
+      });
       const rollback = await app.inject({
         method: 'POST',
         url: `/v1/import-jobs/${jobId}/rollback`,

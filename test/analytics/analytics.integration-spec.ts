@@ -1248,4 +1248,99 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
     });
     expect(viewerCashFlow.statusCode).toBe(200);
   });
+
+  it('excludes booked expenses and payment costs from analytics but not the actual account balance', async () => {
+    const occurredAt = '2075-02-12T12:00:00.000Z';
+    const headers = {
+      authorization: 'Bearer owner-token',
+      'x-workspace-id': ws1Id,
+    };
+    const get = async (url: string) => {
+      const result = await application.inject({ method: 'GET', url, headers });
+      expect(result.statusCode, result.payload).toBe(200);
+      return result;
+    };
+    const range = 'from=2075-02-01&to=2075-02-28';
+    const summary = () => get(`/v1/analytics/summary?${range}`);
+    const costs = () =>
+      get(`/v1/analytics/advanced?${range}&metric=debt_cost_evolution`);
+    const balance = () =>
+      get(`/v1/accounts/${acctCheckingId}/balance?asOf=2075-03-01T00:00:00Z`);
+    const original = (await summary()).json<{
+      assets: { amountMinor: string };
+      debts: { amountMinor: string };
+    }>();
+    const assets = BigInt(original.assets.amountMinor);
+    const debts = BigInt(original.debts.amountMinor);
+    const debt = await seedDebt({
+      name: 'Exclusion test loan',
+      principalMinor: 5000,
+    });
+    const booked = await application.inject({
+      method: 'POST',
+      url: '/v1/transactions',
+      headers: { ...headers, 'idempotency-key': randomUUID() },
+      payload: {
+        type: 'expense',
+        amount: { amountMinor: '400', currency: 'USD' },
+        occurredAt,
+        accountId: acctCheckingId,
+        categoryId: catGroceriesId,
+        status: 'confirmed',
+      },
+    });
+    expect(booked.statusCode, booked.payload).toBe(201);
+    const expense = booked.json<{ id: string }>().id;
+    const payment = await seedTransaction({
+      type: 'debt_payment',
+      amountMinor: -1070,
+      occurredAt,
+      includeInAccountBalance: true,
+    });
+    await admin.query(
+      `insert into public.debt_payments
+         (id,workspace_id,debt_id,transaction_id,principal_minor,interest_minor,fee_minor,created_at)
+       values ($1,$2,$3,$4,1000,50,20,$5)`,
+      [randomUUID(), ws1Id, debt, payment, occurredAt],
+    );
+    await seedBudgetAndAllocation({
+      name: 'Exclusion test budget',
+      periodStart: '2075-02-01',
+      periodEnd: '2075-02-28',
+      categoryId: catGroceriesId,
+      plannedMinor: 800,
+    });
+
+    const initialBalance = (await balance()).payload;
+    expect((await summary()).json()).toMatchObject({
+      assets: { amountMinor: String(assets - 670n) },
+      expenses: { amountMinor: '400' },
+      debts: { amountMinor: String(debts + 4000n) },
+      budgetUtilizationPercent: 50,
+    });
+    expect((await costs()).json()).toMatchObject({
+      data: { totalInterestMinor: '50', totalFeeMinor: '20' },
+    });
+
+    const result = await application.inject({
+      method: 'POST',
+      url: '/v1/transactions/bulk',
+      headers: { ...headers, 'idempotency-key': randomUUID() },
+      payload: {
+        targets: [expense, payment].map((id) => ({ id, expectedVersion: 1 })),
+        action: { type: 'excludeFromReports' },
+      },
+    });
+    expect(result.statusCode, result.payload).toBe(200);
+    expect((await summary()).json()).toMatchObject({
+      assets: { amountMinor: String(assets) },
+      expenses: { amountMinor: '0' },
+      debts: { amountMinor: String(debts + 5000n) },
+      budgetUtilizationPercent: 0,
+    });
+    expect((await costs()).json()).toMatchObject({
+      data: { totalInterestMinor: '0', totalFeeMinor: '0' },
+    });
+    expect((await balance()).payload).toBe(initialBalance);
+  });
 });

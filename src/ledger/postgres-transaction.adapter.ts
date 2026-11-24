@@ -760,21 +760,21 @@ returning
    excluded_from_reports as "excludedFromReports",
    extraordinary,
    voided_at as "voidedAt",
+   import_job_id::text as "importJobId",
    created_at as "createdAt",
    updated_at as "updatedAt",
    version`;
 
-    const result = await client.query<TransactionRow & { voidedAt: Date }>(
-      sql,
-      [
-        workspaceId,
-        transactionId,
-        versionParam,
-        ...(expectedOccurrenceState === undefined
-          ? []
-          : [expectedOccurrenceState]),
-      ],
-    );
+    const result = await client.query<
+      TransactionRow & { voidedAt: Date; importJobId: string | null }
+    >(sql, [
+      workspaceId,
+      transactionId,
+      versionParam,
+      ...(expectedOccurrenceState === undefined
+        ? []
+        : [expectedOccurrenceState]),
+    ]);
     const row = result.rows[0];
     if (!row) {
       return undefined;
@@ -800,6 +800,20 @@ returning
       // Keep the void instant for past postings, but never reverse future
       // postings before they take effect. Linked headers can have a different
       // date from their legs, so use the actual posting cutoff.
+      let bookedAmount = String(row.amountMinor);
+      if (row.type === 'expense' && row.importJobId) {
+        // Conversion normalizes the header but leaves the signed legs intact.
+        const booked = await client.query<{ amount: string | null }>(
+          `select sum(amount_minor)::text as amount from public.ledger_postings
+            where workspace_id = $1::uuid and transaction_id = $2::uuid
+              and account_id = $3::uuid and leg_kind = 'account'`,
+          [workspaceId, row.id, row.accountId],
+        );
+        const amount = booked.rows[0]?.amount;
+        if (amount == null)
+          throw new Error('Imported expense account posting is missing.');
+        bookedAmount = amount;
+      }
       const postingsSql = `
 with reversal_cutoff as (
   select greatest($7::timestamptz, max(p.occurred_at)) as occurred_at
@@ -825,11 +839,11 @@ select $1::uuid, $2::uuid, leg.account_id, leg.kind, leg.amount, $5, $6, cutoff.
         workspaceId,
         row.id,
         row.accountId,
-        negateAmountMinor(String(row.amountMinor)),
+        negateAmountMinor(bookedAmount),
         row.currency,
         postingStatus,
         row.voidedAt,
-        String(row.amountMinor),
+        bookedAmount,
       ];
 
       await client.query(postingsSql, postingsValues);

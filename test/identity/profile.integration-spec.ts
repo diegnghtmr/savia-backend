@@ -349,6 +349,99 @@ describe('session and dashboard HTTP database boundary', () => {
         .statusCode,
     ).toBe(403);
   });
+
+  it('denies access when the real session liveness function is unavailable', async () => {
+    const fn = 'public.savia_session_is_active(uuid)';
+    expect(
+      (await app.inject({ method: 'GET', url: '/v1/me', headers })).statusCode,
+    ).toBe(200);
+    await admin.query(
+      `revoke execute on function ${fn} from savia_application`,
+    );
+    try {
+      for (const [method, url, status, title] of [
+        ['GET', '/v1/me', 401, 'Authentication is required'],
+        [
+          'GET',
+          '/v1/me/dashboard-preferences',
+          401,
+          'Authentication is required',
+        ],
+        ['GET', '/v1/me/sessions', 503, 'Session status could not be verified'],
+        [
+          'POST',
+          '/v1/me/sessions/revoke-others',
+          503,
+          'Session status could not be verified',
+        ],
+      ] as const) {
+        const response = await app.inject({ method, url, headers });
+        expect(response.statusCode, response.payload).toBe(status);
+        expect(response.json()).toMatchObject({ title, status });
+      }
+    } finally {
+      await admin.query(`grant execute on function ${fn} to savia_application`);
+    }
+  });
+
+  it('rejects dashboard replay after membership removal without changing rows', async () => {
+    const viewer = {
+      ...headers,
+      authorization: `Bearer ${await sign(other, foreignSession)}`,
+    };
+    const key = randomUUID();
+    const request = () =>
+      app.inject({
+        method: 'PUT',
+        url: '/v1/me/dashboard-preferences',
+        headers: { ...viewer, 'idempotency-key': key, 'if-match': '"1"' },
+        payload: {
+          cards: [{ id: 'assets', visible: false }],
+          period: { preset: 'this_year' },
+          presentationCurrency: 'USD',
+        },
+      });
+
+    const initial = await request();
+    expect(initial.statusCode, initial.payload).toBe(200);
+    const membership = [workspace, other];
+    const digest = async () =>
+      (
+        await admin.query(
+          `select md5(jsonb_build_array(
+            (select to_jsonb(p) from public.dashboard_preferences p
+              where p.workspace_id = $1 and p.profile_id = $2),
+            (select to_jsonb(r) from public.command_idempotency_records r
+              where r.workspace_id = $1 and r.subject_id = $2 and r.idempotency_key = $3)
+          )::text) as digest`,
+          [...membership, key],
+        )
+      ).rows;
+
+    const before = await digest();
+    await admin.query(
+      'delete from public.workspace_memberships where workspace_id=$1 and profile_id=$2',
+      membership,
+    );
+    try {
+      const denied = await request();
+      expect(denied.statusCode, denied.payload).toBe(403);
+      expect(denied.json()).toMatchObject({
+        title: 'Workspace access forbidden',
+      });
+      expect(await digest()).toEqual(before);
+    } finally {
+      await admin.query(
+        `insert into public.workspace_memberships(workspace_id,profile_id,role,status)
+         values ($1,$2,'viewer','active')`,
+        membership,
+      );
+      await admin.query(
+        'delete from public.dashboard_preferences where workspace_id=$1 and profile_id=$2',
+        membership,
+      );
+    }
+  });
 });
 
 describe('PostgresProfileAdapter database boundary', () => {
