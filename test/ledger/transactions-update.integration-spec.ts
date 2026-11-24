@@ -29,6 +29,10 @@ import {
 import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
+import { PostgresReportAdapter } from '../../src/reports/postgres-report.adapter.js';
+import { buildReportGrid } from '../../src/reports/report-engine.js';
+import { PostgresExportAdapter } from '../../src/exports/postgres-export.adapter.js';
+import { serializeJsonBackup } from '../../src/exports/export-serializers.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -322,6 +326,9 @@ describe('TransactionService updateTransaction database boundary', () => {
 
   afterAll(async () => {
     await app?.close();
+    await admin.query('delete from public.budgets where workspace_id = $1', [
+      workspace2Id,
+    ]);
     await admin.query(`delete from public.workspaces where id in ($1, $2)`, [
       workspace1Id,
       workspace2Id,
@@ -541,6 +548,81 @@ describe('TransactionService updateTransaction database boundary', () => {
         expect(result.statusCode, result.payload).toBe(status);
         expect(result.json()).toMatchObject({ title, status });
       }
+    });
+
+    it('checks versions after a concurrent void ahead of bulk at the account lock', async () => {
+      const first = await createBookedIncome();
+      const second = await createBookedIncome();
+      const lock = await admin.connect();
+      const pid = (
+        await lock.query<{ pid: number }>('select pg_backend_pid() as pid')
+      ).rows[0].pid;
+
+      const waitFor = async (count: number) => {
+        const deadline = Date.now() + 700;
+        while (Date.now() < deadline) {
+          const { rows } = await admin.query<{ count: number }>(
+            `select count(*)::int
+               from pg_locks held
+               join pg_locks waiter using (locktype,database,classid,objid,objsubid)
+              where held.pid=$1 and held.locktype='advisory'
+                and held.granted and not waiter.granted`,
+            [pid],
+          );
+          if (rows[0].count === count) return;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        throw new Error(`expected ${count} blocked requests`);
+      };
+
+      const headers = {
+        ...balanceHeaders,
+        authorization: 'Bearer session-other-writer',
+        'idempotency-key': randomUUID(),
+      };
+      const payload = {
+        targets: [first, second].map(({ id, version }) => ({
+          id,
+          expectedVersion: version,
+        })),
+        action: { type: 'archive' },
+      };
+      const firstBefore = (await read(first.id)).payload;
+      const key = randomUUID();
+      let voiding;
+      let bulk;
+      try {
+        await lock.query('begin');
+        await lock.query(
+          'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [second.accountId],
+        );
+        voiding = app.inject({
+          method: 'POST',
+          url: `/v1/transactions/${second.id}/void`,
+          headers,
+          payload: { reason: 'race' },
+        });
+        await waitFor(1);
+        bulk = postBulk(payload, key);
+        await waitFor(2);
+      } finally {
+        await lock.query('rollback');
+        lock.release();
+      }
+
+      expect((await voiding!).statusCode).toBe(200);
+      const rejected = await bulk!;
+      expect((await read(first.id)).payload).toBe(firstBefore);
+      expect(rejected.statusCode, rejected.payload).toBe(412);
+      expect(rejected.json()).toMatchObject({
+        title: 'Transaction version mismatch',
+      });
+      const retry = await postBulk(
+        { ...payload, targets: [payload.targets[0]] },
+        key,
+      );
+      expect(retry.statusCode, retry.payload).toBe(200);
     });
 
     it('confirms 100 pending transactions in target order and applies set and clear actions', async () => {
@@ -841,6 +923,133 @@ describe('TransactionService updateTransaction database boundary', () => {
       expect((await read(positive.id)).json()).toMatchObject({
         amount: usd('500'),
       });
+      const nativeCategory = randomUUID();
+      const importedCategory = randomUUID();
+      const budgetId = randomUUID();
+      const date = '2020-01-01';
+
+      await admin.query(
+        `insert into public.categories(id,workspace_id,name,kind,created_by)
+         values ($1,$3,'Native expense control','expense',$4),
+                ($2,$3,'Imported expense','expense',$4)`,
+        [nativeCategory, importedCategory, workspace2Id, subjectOwner],
+      );
+
+      const nativeIds: string[] = [];
+      for (const [type, amountMinor] of [
+        ['expense', '900'],
+        ['income', '500'],
+      ] as const) {
+        const created = await app.inject({
+          method: 'POST',
+          url: '/v1/transactions',
+          headers: { ...balanceHeaders, 'idempotency-key': randomUUID() },
+          payload: {
+            type,
+            amount: usd(amountMinor),
+            occurredAt: past,
+            accountId: accountWorkspace2Id,
+            status: 'confirmed',
+            ...(type === 'expense' ? { categoryId: nativeCategory } : {}),
+          },
+        });
+        expect(created.statusCode, created.payload).toBe(201);
+        nativeIds.push(created.json<Transaction>().id);
+      }
+
+      const categorized = await postBulk({
+        targets: [{ id: negative.id, expectedVersion: 2 }],
+        action: { type: 'categorize', categoryId: importedCategory },
+      });
+      expect(categorized.statusCode, categorized.payload).toBe(200);
+
+      await admin.query(
+        `insert into public.budgets(id,workspace_id,name,method,period_start,period_end,currency,created_by)
+         values ($1,$2,'Imported parity budget','envelope',$3,'2020-01-31','USD',$4)`,
+        [budgetId, workspace2Id, date, subjectOwner],
+      );
+      await admin.query(
+        `insert into public.budget_allocations
+           (workspace_id,budget_id,category_id,planned_minor,rollover_policy)
+         values ($1,$2,$3,1500,'none'),($1,$2,$4,1500,'none')`,
+        [workspace2Id, budgetId, nativeCategory, importedCategory],
+      );
+
+      await transaction.runRead(subjectOwner, async (client) => {
+        const source = await new PostgresReportAdapter().readReportSourceRows(
+          client,
+          workspace2Id,
+          date,
+          date,
+          new Date(past),
+        );
+        const exportRows = await new PostgresExportAdapter().readRows(
+          client,
+          workspace2Id,
+          {
+            format: 'json_backup',
+            resource: 'transactions',
+            resourceId: null,
+            from: date,
+            to: date,
+          },
+        );
+        const exported = JSON.parse(
+          serializeJsonBackup(exportRows, { asOf: past }).toString(),
+        ).transactions as Transaction[];
+        const grid = (ids: string[]) =>
+          buildReportGrid({
+            rows: source.filter((row) => ids.includes(row.transactionId)),
+            dimensions: ['transaction_type'],
+            measures: ['sum'],
+            baseCurrency: 'USD',
+            budgetedMinorByBucket: new Map(),
+          });
+        expect.soft(grid([negative.id, positive.id])).toEqual(grid(nativeIds));
+        expect
+          .soft(
+            exported
+              .filter((row) => [negative.id, positive.id].includes(row.id))
+              .map(({ type, amount }) => ({ type, amount })),
+          )
+          .toEqual(
+            expect.arrayContaining([
+              { type: 'expense', amount: usd('900') },
+              { type: 'income', amount: usd('500') },
+            ]),
+          );
+      });
+
+      const access = await admin.query(
+        `select has_column_privilege(
+           'savia_application','public.transactions','amount_minor','UPDATE'
+         ) as direct`,
+      );
+      expect(access.rows).toEqual([{ direct: false }]);
+
+      const budget = await app.inject({
+        method: 'GET',
+        url: `/v1/budgets/${budgetId}`,
+        headers: balanceHeaders,
+      });
+      expect(budget.statusCode, budget.payload).toBe(200);
+      const { allocations } = budget.json<{
+        allocations: { categoryId: string; actual: { amountMinor: string } }[];
+      }>();
+      const actual = (id: string) =>
+        allocations.find((row) => row.categoryId === id)?.actual.amountMinor;
+      expect(actual(nativeCategory)).toBe('900');
+      expect.soft(actual(importedCategory)).toBe(actual(nativeCategory));
+      const utilization = await app.inject({
+        method: 'GET',
+        url: `/v1/analytics/summary?from=${date}&to=${date}`,
+        headers: balanceHeaders,
+      });
+      expect(utilization.statusCode, utilization.payload).toBe(200);
+      expect.soft(utilization.json()).toMatchObject({
+        budgetUtilizationPercent: 60,
+      });
+
       const rollback = await app.inject({
         method: 'POST',
         url: `/v1/import-jobs/${jobId}/rollback`,
