@@ -39,6 +39,7 @@ import {
   PgTransaction,
   type TransactionClient,
 } from '../../src/platform/pg-transaction.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
 import { PostgresPool } from '../../src/platform/postgres-pool.js';
 import { WorkerConfig } from '../../src/platform/worker-config.js';
 import { WorkerModule } from '../../src/worker.module.js';
@@ -831,61 +832,77 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       expect(await runner.drainOnce()).toBe(0);
     });
 
-    // Reviewer regression (verify mwrb1ac8).
-    it('preserves a definitive completion failure when ZIP deletion stalls', async () => {
-      const { id, createdAt } = (await create()).json<Job>();
-      const config = workerModule.get(WorkerConfig);
-      const originalTimeout = config.persistTimeoutMs;
-      Object.defineProperty(config, 'persistTimeoutMs', { value: 1_000 });
-      const remove = vi
-        .spyOn(inMemoryStorage, 'remove')
-        .mockImplementation(() => new Promise<void>(() => undefined));
+    it.each(['ok', 'rejected', 'stalled'] as const)(
+      'preserves a definitive completion failure with ZIP deletion %s',
+      async (mode) => {
+        const { id, createdAt } = (await create()).json<Job>();
+        const config = workerModule.get(WorkerConfig);
+        const originalTimeout = config.persistTimeoutMs;
+        if (mode === 'stalled')
+          Object.defineProperty(config, 'persistTimeoutMs', { value: 1_000 });
+        const before = [...inMemoryStorage.uploaded.keys()];
+        const remove = vi.spyOn(inMemoryStorage, 'remove');
+        if (mode === 'rejected')
+          remove.mockRejectedValue(new Error('Private storage rejection'));
+        if (mode === 'stalled')
+          remove.mockImplementation(() => new Promise<void>(() => undefined));
 
-      const connect = PostgresPool.prototype.connect;
-      let rejected = 0;
-      const fault = vi
-        .spyOn(PostgresPool.prototype, 'connect')
-        .mockImplementation(async function (this: PostgresPool) {
-          const client = await connect.call(this);
-          return {
-            release: client.release.bind(client),
-            async query<Row extends Record<string, unknown>>(
-              sql: string,
-              args?: readonly unknown[],
-            ) {
-              if (
-                sql.includes(
-                  'update public.workspace_backups b set download_url',
-                ) &&
-                args?.[0] === id
+        const connect = PostgresPool.prototype.connect;
+        let rejected = 0;
+        const fault = vi
+          .spyOn(PostgresPool.prototype, 'connect')
+          .mockImplementation(async function (this: PostgresPool) {
+            const client = await connect.call(this);
+            return {
+              release: client.release.bind(client),
+              async query<Row extends Record<string, unknown>>(
+                sql: string,
+                args?: readonly unknown[],
               ) {
-                rejected++;
-                return client.query<Row>('select 1 / 0');
-              }
-              return client.query<Row>(sql, args);
-            },
-          };
-        });
+                if (
+                  sql.includes(
+                    'update public.workspace_backups b set download_url',
+                  ) &&
+                  args?.[0] === id
+                ) {
+                  rejected++;
+                  return client.query<Row>('select 1 / 0');
+                }
+                return client.query<Row>(sql, args);
+              },
+            };
+          });
 
-      try {
-        await runner.drainOnce();
-        expect(rejected).toBe(1);
-        const response = await poll(id);
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({
-          id,
-          createdAt,
-          status: 'failed',
-          ...noLink,
-        });
-      } finally {
-        fault.mockRestore();
-        remove.mockRestore();
-        Object.defineProperty(config, 'persistTimeoutMs', {
-          value: originalTimeout,
-        });
-      }
-    });
+        try {
+          await runner.drainOnce();
+          expect(rejected).toBe(1);
+          const response = await poll(id);
+          expect(response.statusCode).toBe(200);
+          expect(response.json()).toEqual({
+            id,
+            createdAt,
+            status: 'failed',
+            ...noLink,
+          });
+          // Completion is database-only; retention handles unlinked archives.
+          expect(remove).not.toHaveBeenCalled();
+          expect([...inMemoryStorage.uploaded.keys()]).toEqual([
+            ...before,
+            expect.stringMatching(
+              new RegExp(`^backups/${workspace1Id}/${id}/`),
+            ),
+          ]);
+        } finally {
+          fault.mockRestore();
+          remove.mockRestore();
+          if (mode === 'stalled') {
+            Object.defineProperty(config, 'persistTimeoutMs', {
+              value: originalTimeout,
+            });
+          }
+        }
+      },
+    );
 
     // Reviewer regressions (verify mwreiolm, PASS).
     it('preserves a readable ZIP when PostgreSQL commits but the acknowledgement is lost', async () => {
@@ -1405,6 +1422,64 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
           finishDelete.resolve();
           await active;
           await remove.mock.results[0]?.value;
+        }
+      });
+
+      it('keeps the retention lock through pool shutdown while DELETE is pending', async () => {
+        const pool = new PostgresPool(PostgresConfig.fromUrl(url));
+        const tx = new PgTransaction(
+          pool,
+          {},
+          {
+            workerMode: true,
+            poolCloseGraceMs: 100,
+          },
+        );
+        const storage = new InMemoryArtifactStorage();
+        const first = new BackupRetentionTask(tx, storage, {});
+        const contender = task(storage);
+        const path = orphanKey(randomUUID());
+        await put(storage, path);
+        const entered = Promise.withResolvers<AbortSignal>();
+        const settle = Promise.withResolvers<void>();
+        const removeObject = storage.remove.bind(storage);
+        const remove = vi
+          .spyOn(storage, 'remove')
+          .mockImplementationOnce(async (key, signal) => {
+            entered.resolve(signal!);
+            await settle.promise;
+            await removeObject(key);
+          });
+        const active = first.runOnce();
+        try {
+          const signal = await entered.promise;
+          const started = performance.now();
+          await first.beforeApplicationShutdown();
+          expect(performance.now() - started).toBeLessThan(1_500);
+          expect(signal.aborted).toBe(true);
+
+          await tx.onApplicationShutdown();
+          const { rows } = await workerModule
+            .get(PgTransaction)
+            .runAsQueueConsumer((client) =>
+              client.query(
+                'select pg_try_advisory_xact_lock(1935767145, 1) as acquired',
+              ),
+            );
+          expect(rows).toEqual([{ acquired: false }]);
+          await contender.runOnce();
+          expect(remove.mock.calls.map(([key]) => key)).toEqual([path]);
+
+          settle.resolve();
+          await active;
+          await contender.runOnce();
+          expect(storage.uploaded.has(path)).toBe(false);
+          expect(remove.mock.calls.map(([key]) => key)).toEqual([path]);
+        } finally {
+          settle.resolve();
+          await active;
+          await remove.mock.results[0]?.value;
+          await pool.end();
         }
       });
 

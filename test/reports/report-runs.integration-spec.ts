@@ -1852,6 +1852,89 @@ describe('Report runs integration contract and endpoint suite', () => {
       expect(reread.json()).toEqual(first.json());
     });
 
+    it('selects the last report quote before the frozen instant', async () => {
+      const rate = '1.234567890123456789';
+      const effectiveAt = new Date();
+      const rateIds: string[] = [];
+      const insertRate = async (value: string, at: Date) => {
+        const { rows } = await admin.query<{ id: string }>(
+          `insert into public.exchange_rates
+             (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+           values ($1, 'EUR', 'USD', $2, $3, 'manual', $4) returning id`,
+          [workspace1Id, value, at, ownerId],
+        );
+        rateIds.push(rows[0].id);
+      };
+      try {
+        await insertRate(rate, effectiveAt);
+        const headers = {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+        };
+        const queued = await application.inject({
+          method: 'POST',
+          url: '/v1/report-runs',
+          headers: { ...headers, 'idempotency-key': randomUUID() },
+          payload: {
+            preset: 'expenses',
+            format: 'json',
+            filters: { from: '2026-06-15', to: '2026-06-15' },
+          },
+        });
+        expect(queued.statusCode, queued.payload).toBe(202);
+        const { id } = queued.json<{ id: string }>();
+        const {
+          rows: [job],
+        } = await admin.query<{ asOf: string }>(
+          `select j.payload->>'asOf' as "asOf"
+             from public.jobs j join public.report_runs r on r.job_id = j.id
+            where r.id = $1`,
+          [id],
+        );
+        await insertRate(
+          '9.876543210123456789',
+          new Date(Date.parse(job.asOf) + 1),
+        );
+        expect(await drainUntilRunTerminal(id)).toMatchObject({
+          runStatus: 'completed',
+          jobStatus: 'completed',
+        });
+        const response = await application.inject({
+          method: 'GET',
+          url: `/v1/report-runs/${id}`,
+          headers,
+        });
+        expect(response.statusCode, response.payload).toBe(200);
+        expect(response.json().fxRatesUsed).toEqual([
+          {
+            baseCurrency: 'EUR',
+            quoteCurrency: 'USD',
+            rate,
+            rateDate: effectiveAt.toISOString().slice(0, 10),
+            source: 'manual',
+            freshness: 'fresh',
+          },
+        ]);
+        const uploaded = inMemoryStorage.uploaded.get(
+          `${workspace1Id}/${id}.json`,
+        );
+        expect(uploaded).toBeDefined();
+        const grid = JSON.parse(
+          uploaded!.content.toString('utf8'),
+        ) as ReportGrid;
+        expect(
+          grid.rows
+            .find((row) => row.key.includes(catExpenseId))
+            ?.cells.find((cell) => cell.measure === 'converted_value')?.value,
+        ).toBe('12346');
+      } finally {
+        await admin.query(
+          'delete from public.exchange_rates where id = any($1::uuid[])',
+          [rateIds],
+        );
+      }
+    });
+
     it('rolls back the report run completion when persist throws after writing', async () => {
       const handlers = workerModule.get<readonly JobHandler[] | JobHandler>(
         JOB_HANDLERS,

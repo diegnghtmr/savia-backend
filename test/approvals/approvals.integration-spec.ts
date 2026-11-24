@@ -883,6 +883,297 @@ describe('Approvals integration contract and endpoint suite', () => {
       rolloverPolicy: 'none',
     });
 
+    const replaySnapshot = () =>
+      Promise.all(
+        [
+          'mcp_grants',
+          'approvals',
+          'command_idempotency_records',
+          'accounts',
+          'transactions',
+          'transfers',
+          'ledger_postings',
+          'budgets',
+          'budget_allocations',
+          'funds',
+          'fund_contributions',
+          'report_definitions',
+        ].map(async (table) => {
+          const { rows } = await admin.query<{ hash: string }>(
+            `select md5(coalesce(string_agg(to_jsonb(t)::text, chr(10)
+               order by to_jsonb(t)::text), '')) as hash from public.${table} t`,
+          );
+          return rows[0].hash;
+        }),
+      );
+
+    const expectReplayProblem = (
+      response: Awaited<ReturnType<typeof request>>,
+      status: 403 | 409,
+    ) => {
+      const code = status === 409 ? 'conflict' : 'forbidden';
+      expect.soft(response.statusCode).toBe(status);
+      expect
+        .soft(response.headers['content-type'])
+        .toContain('application/problem+json');
+      expect.soft(response.json()).toEqual({
+        type: `https://savia.app/problems/${code}`,
+        title:
+          status === 409
+            ? 'MCP proposal conflict'
+            : 'MCP grant does not authorize the proposal',
+        status,
+        code,
+        instance: route,
+        traceId: expect.any(String),
+      });
+    };
+
+    it.each([
+      'create_transaction',
+      'create_transfer',
+      'update_transaction',
+      'void_transaction',
+      'create_account',
+      'create_cross_currency_transfer',
+      'create_budget',
+      'update_budget',
+      'update_budget_allocations',
+      'create_sinking_fund',
+      'contribute_to_fund',
+      'create_report_definition',
+    ])(
+      'S12: %s replay requires live grant policy without recalculating amounts',
+      async (toolName) => {
+        const money = { amountMinor: '25', currency: 'USD' };
+        const source = await account();
+        let accounts = [source];
+        let scopes = ['transactions:write'];
+        let actor = editorId;
+        let cap: string | null = '25';
+        let args: Record<string, unknown> = transaction(
+          source,
+          '-25',
+        ).arguments;
+        let drift: (() => ReturnType<typeof request>) | undefined;
+        const create = async (
+          path: string,
+          body: Record<string, unknown>,
+          session?: string,
+        ) => {
+          const response = await request('POST', path, body, session);
+          expect(response.statusCode, response.payload).toBe(201);
+          return {
+            id: response.json<{ id: string }>().id,
+            etag: response.headers.etag,
+          };
+        };
+        if (toolName === 'create_transfer') {
+          accounts = [source, await account()];
+          args = transfer(source, accounts[1]).arguments;
+        } else if (
+          toolName === 'update_transaction' ||
+          toolName === 'void_transaction'
+        ) {
+          const tx = await create('/v1/transactions', args);
+          args = {
+            transactionId: tx.id,
+            ifMatch: tx.etag,
+            body:
+              toolName === 'update_transaction'
+                ? { description: 'Replay probe' }
+                : { reason: 'Replay probe' },
+          };
+          if (toolName === 'update_transaction') {
+            drift = () =>
+              request('PATCH', `/v1/transactions/${tx.id}`, {
+                notes: 'Changed after proposal',
+              });
+          }
+        } else if (toolName === 'create_account') {
+          actor = ownerId;
+          scopes = ['accounts:write'];
+          accounts = [];
+          args = {
+            name: randomUUID(),
+            type: 'cash',
+            currency: 'USD',
+            openingBalance: money,
+          };
+        } else if (toolName === 'create_cross_currency_transfer') {
+          await admin.query(
+            `insert into public.exchange_rates
+             (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+           values ($1, 'EUR', 'USD', 1.2, now(), 'manual', $2) on conflict do nothing`,
+            [workspace1Id, ownerId],
+          );
+          const eur = await create(
+            '/v1/accounts',
+            {
+              name: 'Replay EUR',
+              type: 'cash',
+              currency: 'EUR',
+            },
+            'owner-token',
+          );
+          accounts = [source, eur.id];
+          cap = null;
+          args = {
+            sourceAccountId: source,
+            destinationAccountId: eur.id,
+            sourceAmount: money,
+            destinationAmount: { amountMinor: '20', currency: 'EUR' },
+            executedRate: '0.8',
+            occurredAt,
+          };
+        } else if (toolName.includes('budget')) {
+          scopes = ['budgets:write'];
+          accounts = [];
+          const budget = await create('/v1/budgets', budgetInput());
+          const category = await budgetCategory();
+          const path = `/v1/budgets/${budget.id}`;
+          if (toolName === 'create_budget') {
+            const allocate = (amount: string) =>
+              request('PUT', `${path}/allocations`, {
+                allocations: [planned(category, amount)],
+              });
+            expect((await allocate('25')).statusCode).toBe(200);
+            drift = () => allocate('26');
+            args = { ...budgetInput(), copyFromBudgetId: budget.id };
+          } else {
+            args = {
+              budgetId: budget.id,
+              ifMatch: (await request('GET', path)).headers.etag,
+              body:
+                toolName === 'update_budget'
+                  ? { name: randomUUID() }
+                  : { allocations: [planned(category)] },
+            };
+          }
+        } else if (
+          toolName === 'create_sinking_fund' ||
+          toolName === 'contribute_to_fund'
+        ) {
+          scopes =
+            toolName === 'create_sinking_fund'
+              ? ['budgets:write']
+              : ['transactions:write', 'budgets:write'];
+          args = {
+            name: randomUUID(),
+            currency: 'USD',
+            targetAmount: money,
+            linkedAccountId: source,
+          };
+          if (toolName === 'contribute_to_fund') {
+            const fund = await create('/v1/funds', args);
+            args = {
+              fundId: fund.id,
+              body: { accountId: source, amount: money, occurredAt },
+            };
+          }
+        } else if (toolName === 'create_report_definition') {
+          scopes = ['reports:write'];
+          accounts = [];
+          cap = null;
+          args = {
+            name: randomUUID(),
+            dimensions: ['category'],
+            measures: ['sum'],
+            visualization: 'table',
+          };
+        }
+        scopes.push('accounts:read');
+        const extra = ['create_transaction', 'create_transfer'].includes(
+          toolName,
+        )
+          ? []
+          : [toolName];
+        const { id, token: editorJwt } = await grant(
+          accounts,
+          actor,
+          cap,
+          extra,
+          scopes,
+        );
+        const token =
+          actor === ownerId ? await signed.sign(actor, id) : editorJwt;
+        const key = randomUUID();
+        const send = (jwt = token, requestKey = key) =>
+          request(
+            'POST',
+            route,
+            { toolName, arguments: args },
+            jwt,
+            requestKey,
+          );
+        const first = await send();
+        expect(first.statusCode, first.payload).toBe(201);
+        const beforeReplay = await replaySnapshot();
+        const authorized = await send();
+        expect(authorized.statusCode).toBe(201);
+        expect(authorized.json()).toEqual(first.json());
+        expect(await replaySnapshot()).toEqual(beforeReplay);
+
+        for (const [reason, change, parameters] of [
+          ['revoked', "status = 'revoked', revoked_at = now()", [id]],
+          ['expired', "expires_at = now() - interval '1 second'", [id]],
+          [
+            'missing scope',
+            'scopes = array_remove(scopes, $2)',
+            [id, scopes[0]],
+          ],
+          [
+            'missing tool',
+            'tool_allowlist = array_remove(tool_allowlist, $2)',
+            [id, toolName],
+          ],
+        ] as const) {
+          await admin.query(
+            `update public.mcp_grants set ${change} where id = $1`,
+            [...parameters],
+          );
+          const before = await replaySnapshot();
+          expectReplayProblem(await send(), 403);
+          expectReplayProblem(await send(token, randomUUID()), 403);
+          expect(await replaySnapshot(), reason).toEqual(before);
+          await admin.query(
+            `update public.mcp_grants set status = 'active', revoked_at = null,
+             expires_at = null, scopes = $2, tool_allowlist = $3 where id = $1`,
+            [id, scopes, ['create_transaction', 'create_transfer', ...extra]],
+          );
+        }
+        if (toolName === 'create_transaction') {
+          const other = await grant(accounts);
+          const refreshed = await signed.sign(actor, id, { jti: randomUUID() });
+          const replay = await send(refreshed);
+          expect(replay.statusCode).toBe(201);
+          expect(replay.json()).toEqual(first.json());
+          const before = await replaySnapshot();
+          expectReplayProblem(await send(other.token), 409);
+          const absent = await signed.sign(actor, randomUUID());
+          expectReplayProblem(await send(absent, randomUUID()), 403);
+          expect(await replaySnapshot()).toEqual(before);
+        }
+        if (drift) {
+          expect((await drift()).statusCode).toBe(200);
+          const { id: approvalId } = first.json<{ id: string }>();
+          const approval = await get(approvalId);
+          const before = await replaySnapshot();
+          const replay = await send();
+          expect(replay.statusCode).toBe(201);
+          expect(replay.json()).toEqual(first.json());
+          if (toolName === 'create_budget') {
+            expectReplayProblem(await send(token, randomUUID()), 403);
+          }
+          const stale = await confirm(approvalId, approval.argumentsHash);
+          expect(stale.statusCode).toBe(412);
+          expect(stale.json().title).toBe('Precondition failed');
+          expect(await get(approvalId)).toEqual(approval);
+          expect(await replaySnapshot()).toEqual(before);
+        }
+      },
+    );
+
     it('proposes a normal empty budget without a copy source', async () => {
       const toolName = 'create_budget';
       const { token } = await grant(

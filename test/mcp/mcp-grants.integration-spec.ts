@@ -303,6 +303,288 @@ describe('MCP grants over Fastify HTTP and disposable PostgreSQL', () => {
     });
   });
 
+  describe('L17 independent grant-bound read checks (S11/S12)', () => {
+    const send = (
+      method: 'GET' | 'POST',
+      path: string,
+      token: string,
+      workspaceId = workspace,
+      payload?: Record<string, unknown>,
+      extraHeaders: Record<string, string> = {},
+    ) =>
+      app.inject({
+        method,
+        url: path,
+        headers: {
+          ...auth(token),
+          'x-workspace-id': workspaceId,
+          ...extraHeaders,
+        },
+        ...(payload === undefined ? {} : { payload }),
+      });
+    const deny = async (
+      response: ReturnType<typeof send>,
+      status: 401 | 403,
+    ) => {
+      const result = await response;
+      const code = status === 401 ? 'unauthorized' : 'forbidden';
+      expect(result.statusCode).toBe(status);
+      expect(result.headers['content-type']).toContain(
+        'application/problem+json',
+      );
+      expect(result.json()).toEqual({
+        type: `https://savia.app/problems/${code}`,
+        code,
+        status,
+        title: status === 401 ? 'Authentication is required' : 'Forbidden',
+        instance: expect.any(String),
+        traceId: expect.any(String),
+      });
+    };
+
+    it('rechecks live transaction-read policy and cannot use read admission on writes', async () => {
+      await admin.query(
+        `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+         values ($1, $2, 'owner', 'active')`,
+        [foreignWorkspace, owner],
+      );
+      const second = randomUUID();
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, status, created_by)
+         values ($1, $2, 'Unlisted same-workspace account', 'checking', 'USD', 'active', $3)`,
+        [second, workspace, owner],
+      );
+      const expense = (accountId: string, day: string) => ({
+        accountId,
+        type: 'expense',
+        amount: { currency: 'USD', amountMinor: '-7' },
+        occurredAt: `2026-01-${day}T00:00:00Z`,
+      });
+      const insert = async (
+        accountId: string,
+        day: string,
+        workspaceId = workspace,
+      ) => {
+        const result = await send(
+          'POST',
+          '/v1/transactions',
+          'owner',
+          workspaceId,
+          expense(accountId, day),
+        );
+        expect(result.statusCode, result.payload).toBe(201);
+        return result.json<{ id: string }>().id;
+      };
+      const older = await insert(account, '01');
+      const newer = await insert(account, '02');
+      await insert(second, '03');
+      await insert(outsideAccount, '04', foreignWorkspace);
+      const { id } = await created(
+        body([workspace], {
+          scopes: ['transactions:read', 'transactions:write', 'accounts:read'],
+          toolAllowlist: [
+            'search_transactions',
+            'get_account_balance',
+            'create_transaction',
+          ],
+          schedule: fullWeek,
+          accountIds: [account],
+        }),
+      );
+      const token = await signed.sign(owner, id);
+      const pageUrl = `/v1/transactions?accountId=${account}&limit=1`;
+      const page = async (url: string) => {
+        const result = await send('GET', url, token);
+        expect(result.statusCode, result.payload).toBe(200);
+        return result.json<{
+          items: { id: string }[];
+          pageInfo: { nextCursor: string | null };
+        }>();
+      };
+      const first = await page(pageUrl);
+      expect(first.items.map(({ id }) => id)).toEqual([newer]);
+      expect(first.pageInfo.nextCursor).toBeTruthy();
+      const next = await page(
+        `${pageUrl}&cursor=${encodeURIComponent(first.pageInfo.nextCursor!)}`,
+      );
+      expect(next.items.map(({ id }) => id)).toEqual([older]);
+      expect(next.pageInfo.nextCursor).toBeNull();
+
+      await deny(
+        send(
+          'GET',
+          `/v1/transactions?accountId=${outsideAccount}`,
+          token,
+          foreignWorkspace,
+        ),
+        403,
+      );
+      for (const path of [
+        `/v1/transactions?accountId=${second}`,
+        `/v1/transactions?accountId=${account}&accountId=${second}`,
+        '/v1/transactions',
+        `/v1/accounts/${second}/balance`,
+      ])
+        await deny(send('GET', path, token), 403);
+      await deny(send('GET', pageUrl, await signed.sign(other, id)), 403);
+      const unrelated = await mcpTokens();
+      await deny(send('GET', pageUrl, await unrelated.sign(owner, id)), 401);
+      await deny(
+        send('GET', pageUrl, await signed.sign(owner), workspace, undefined, {
+          'x-mcp-grant-id': id,
+        }),
+        401,
+      );
+      await deny(
+        send('GET', pageUrl, await signed.sign(owner, 'invalid')),
+        401,
+      );
+
+      const rowHashes = async () =>
+        (
+          await admin.query(
+            `select (select md5(coalesce(string_agg(to_jsonb(t)::text, '' order by id), ''))
+                   from public.transactions t where workspace_id = $1) as transactions,
+                (select md5(coalesce(string_agg(to_jsonb(t)::text, '' order by id), ''))
+                   from public.command_idempotency_records t where workspace_id = $1) as commands`,
+            [workspace],
+          )
+        ).rows;
+      const beforeWrite = await rowHashes();
+      await deny(
+        send(
+          'POST',
+          '/v1/transactions',
+          token,
+          workspace,
+          expense(account, '05'),
+        ),
+        401,
+      );
+      expect(await rowHashes()).toEqual(beforeWrite);
+
+      await admin.query(
+        `update public.mcp_grants set tool_allowlist = array['get_account_balance'] where id = $1`,
+        [id],
+      );
+      await deny(send('GET', pageUrl, token), 403);
+      await admin.query(
+        `update public.mcp_grants set tool_allowlist = array['search_transactions'],
+        scopes = array['accounts:read'] where id = $1`,
+        [id],
+      );
+      await deny(send('GET', pageUrl, token), 403);
+      await admin.query(
+        `update public.mcp_grants set scopes = array['transactions:read'] where id = $1`,
+        [id],
+      );
+      expect(await page(pageUrl)).toEqual(first);
+      await admin.query(
+        `update public.mcp_grants set expires_at = clock_timestamp() where id = $1`,
+        [id],
+      );
+      await deny(send('GET', pageUrl, token), 403);
+      expect(await rowHashes()).toEqual(beforeWrite);
+    });
+
+    it('filters both discovery pages before limiting, then refuses the same cursor after revocation', async () => {
+      const later = randomUUID();
+      try {
+        await admin.query(
+          `insert into public.workspaces (id, name, kind, base_currency, created_at)
+           values ($1, 'Granted second workspace', 'shared', 'USD', '2030-01-03')`,
+          [later],
+        );
+        await admin.query(
+          `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+           values ($1,$3,'owner','active'), ($2,$3,'owner','active')`,
+          [foreignWorkspace, later, owner],
+        );
+        await admin.query(
+          `update public.workspaces set created_at = case when id = $1 then
+           '2030-01-02'::timestamptz else '2030-01-01'::timestamptz end where id in ($1,$2)`,
+          [workspace, foreignWorkspace],
+        );
+        const { id } = await created(
+          body([workspace, later], {
+            schedule: fullWeek,
+            toolAllowlist: ['list_workspaces'],
+          }),
+        );
+        const token = await signed.sign(owner, id);
+        const url = '/v1/workspaces?limit=1';
+        const response = await send('GET', url, token);
+        expect(response.statusCode).toBe(200);
+        const first = response.json<{
+          items: { id: string }[];
+          pageInfo: { nextCursor: string };
+        }>();
+        expect(first.items.map(({ id }) => id)).toEqual([workspace]);
+        expect(first.pageInfo.nextCursor).toBeTruthy();
+        const nextUrl = `${url}&cursor=${encodeURIComponent(first.pageInfo.nextCursor)}`;
+        const next = await send('GET', nextUrl, token);
+        expect(next.statusCode).toBe(200);
+        expect(next.json()).toMatchObject({
+          items: [{ id: later }],
+          pageInfo: { hasNextPage: false, nextCursor: null },
+        });
+        expect(
+          (await request('DELETE', `/v1/mcp/grants/${id}`)).statusCode,
+        ).toBe(204);
+        await deny(send('GET', nextUrl, token), 403);
+      } finally {
+        await admin.query('delete from public.workspaces where id = $1', [
+          later,
+        ]);
+      }
+    });
+
+    it('reads budget, analytics, provider catalog, and scenario runs with the exact scopes', async () => {
+      const { id } = await created(
+        body([workspace], {
+          scopes: ['budgets:read', 'reports:read', 'workspace:admin'],
+          schedule: fullWeek,
+          toolAllowlist: [
+            'get_budget_status',
+            'get_financial_summary',
+            'list_ai_providers',
+            'run_scenario',
+          ],
+        }),
+      );
+      const token = await signed.sign(owner, id);
+      const budget = await send('POST', '/v1/budgets', 'owner', workspace, {
+        name: 'L17 budget',
+        method: 'envelope',
+        periodStart: '2030-01-01',
+        periodEnd: '2030-01-31',
+      });
+      expect(budget.statusCode).toBe(201);
+      for (const path of [
+        `/v1/budgets/${budget.json<{ id: string }>().id}`,
+        '/v1/analytics/summary?from=2030-01-01&to=2030-01-31',
+        '/v1/ai/providers',
+      ]) {
+        const result = await send('GET', path, token);
+        const session = await send('GET', path, 'owner');
+        expect(result.statusCode, path).toBe(200);
+        expect(result.body, path).toBe(session.body);
+      }
+      const scenario = await send('POST', '/v1/scenarios', 'owner', workspace, {
+        name: 'L17 scenario',
+        assumptions: [{ type: 'income_change', value: { amountMinor: '500' } }],
+      });
+      expect(scenario.statusCode).toBe(201);
+      const run = `/v1/scenarios/${scenario.json<{ id: string }>().id}/runs`;
+      expect((await send('POST', run, token)).statusCode).toBe(200);
+      await admin.query(
+        `update public.mcp_grants set scopes = array['budgets:read','workspace:admin'] where id = $1`,
+        [id],
+      );
+      await deny(send('POST', run, token), 403);
+    });
+  });
+
   it('round-trips grant fields on create, replay and list; omitted restrictions are empty', async () => {
     const defaultGrant = await create();
     expect(defaultGrant.statusCode).toBe(201);

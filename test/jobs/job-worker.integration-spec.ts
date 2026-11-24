@@ -22,6 +22,9 @@ import {
 import { NestFactory } from '@nestjs/core';
 
 import { WorkerModule } from '../../src/worker.module.js';
+import { buildSubscriptionPriceIncreases } from '../../src/analytics/advanced-metrics.js';
+import { PostgresAnalyticsAdapter } from '../../src/analytics/postgres-analytics.adapter.js';
+import { SubscriptionDetectionSweep } from '../../src/recurring/subscription-detection-sweep.js';
 import { FrankfurterRateJob } from '../../src/currencies/frankfurter-rate-job.js';
 import { PostgresJobsAdapter } from '../../src/jobs/postgres-jobs.adapter.js';
 import {
@@ -2985,6 +2988,209 @@ function registerRecurringAndAlertTests(
     ]);
     await b6Sweep();
     expect(await alerts()).toEqual(emitted);
+  });
+
+  it('S6 budget publisher accepts only worker execution and binds rows to the active creator', async () => {
+    const rows = async (sql: string, values: unknown[] = []) =>
+      (await admin.query(sql, values)).rows;
+    const proc = 'public.publish_budget_thresholds(uuid,uuid,date,integer[])';
+    expect(
+      await rows(
+        `select p.prosecdef, p.proconfig, array(
+      select coalesce(r.rolname::text, 'PUBLIC') from aclexplode(p.proacl) a
+      left join pg_roles r on r.oid=a.grantee where a.grantee<>p.proowner and a.privilege_type='EXECUTE'
+      order by 1) as executors,
+      has_any_column_privilege('savia_worker','public.notifications','INSERT') as worker_can_insert
+      from pg_proc p where p.oid=$1::regprocedure`,
+        [proc],
+      ),
+    ).toEqual([
+      {
+        prosecdef: true,
+        proconfig: ['search_path=pg_catalog, public'],
+        executors: ['savia_worker'],
+        worker_can_insert: false,
+      },
+    ]);
+    const budget = id(9603);
+    await admin.query(
+      `insert into public.budgets (id,workspace_id,created_by,name,method,period_start,period_end,currency)
+       values ($1,$2,$3,'ACL fixture','envelope','2026-01-01','2026-01-31','USD')`,
+      [budget, ws1Id, viewerA],
+    );
+    const sql = 'select public.publish_budget_thresholds($1,$2,$3,$4)';
+    const valid = [ws1Id, budget, '2026-01-31', [80, 80, 100, 50, null]];
+    const publish = (values: unknown[]) =>
+      transaction.runAsQueueConsumer((client) => client.query(sql, values));
+    const alerts = () =>
+      rows(
+        `select workspace_id,subject_id,type,title
+      from public.notifications where resource_id=$1 order by type`,
+        [budget],
+      );
+    await expect(
+      transaction.run(viewerA, (client) => client.query(sql, valid)),
+    ).rejects.toMatchObject({
+      code: '42501',
+      message: 'permission denied for function publish_budget_thresholds',
+    });
+    const direct = `insert into public.notifications (workspace_id,subject_id,type,resource_id,title)
+      values ($1,$2,'budget_threshold_80',$3,'forged')`;
+    const args = [ws1Id, viewerA, budget];
+    await expect(
+      transaction.run(viewerA, (client) => client.query(direct, args)),
+    ).rejects.toMatchObject({
+      code: '42501',
+      message:
+        'new row violates row-level security policy for table "notifications"',
+    });
+    await expect(
+      transaction.runAsQueueConsumer((client) => client.query(direct, args)),
+    ).rejects.toMatchObject({
+      code: '42501',
+      message: 'permission denied for table notifications',
+    });
+    await publish([ws2Id, budget, '2026-01-31', [80]]);
+    await publish([ws1Id, budget, '2026-02-01', [80]]);
+    await publish([ws1Id, budget, '2026-01-01', [50, null]]);
+    await admin.query(
+      'delete from public.workspace_memberships where workspace_id=$1 and profile_id=$2',
+      [ws1Id, viewerA],
+    );
+    try {
+      await publish(valid);
+      expect(await alerts()).toEqual([]);
+    } finally {
+      await admin.query(
+        `insert into public.workspace_memberships (workspace_id,profile_id,role,status)
+         values ($1,$2,'viewer','active')`,
+        [ws1Id, viewerA],
+      );
+    }
+    await Promise.all([publish(valid), publish(valid)]);
+    expect(await alerts()).toEqual(
+      [100, 80].map((n) => ({
+        workspace_id: ws1Id,
+        subject_id: viewerA,
+        type: `budget_threshold_${n}`,
+        title: `Budget “ACL fixture” reached ${n}%`,
+      })),
+    );
+  });
+
+  it('S6 reports a cadence change once across concurrent sweeps, never on first or irregular evidence', async () => {
+    const title = 'Concurrent cadence';
+    const charge = async (days: number) =>
+      expect((await b6Charge(title, days, '1000')).kind).toBe('created');
+    const analytics = new PostgresAnalyticsAdapter();
+    const createSweep = () =>
+      new SubscriptionDetectionSweep(
+        transaction,
+        new PostgresNotificationAdapter(),
+        async (client, workspace) =>
+          buildSubscriptionPriceIncreases(
+            await analytics.readSubscriptionsWithPreviousAmount(
+              client,
+              workspace,
+            ),
+          ).items,
+        5_000,
+      );
+    const sweep = async () =>
+      expect(
+        await Promise.all([createSweep().sweep(), createSweep().sweep()]),
+      ).toEqual([2, 2]);
+    const alerts = async () =>
+      (
+        await admin.query(
+          `select title from public.notifications where workspace_id=$1
+       and type='subscription_frequency_change' and title like $2`,
+          [ws1Id, `Subscription “${title}”%`],
+        )
+      ).rows;
+    const series = async () =>
+      (
+        await admin.query(
+          'select id,frequency from public.subscriptions where workspace_id=$1 and payee_name=$2',
+          [ws1Id, title],
+        )
+      ).rows;
+    for (const day of [-75, -45, -15]) await charge(day);
+    await sweep();
+    const initial = await series();
+    expect(initial).toEqual([{ id: expect.any(String), frequency: 'monthly' }]);
+    expect(await alerts()).toEqual([]);
+    await charge(-8);
+    await sweep();
+    expect(await series()).toEqual(initial);
+    expect(await alerts()).toEqual([]);
+    await charge(-1);
+    await sweep();
+    await sweep();
+    expect(await series()).toEqual([
+      { id: initial[0].id, frequency: 'weekly' },
+    ]);
+    expect(await alerts()).toEqual([
+      { title: `Subscription “${title}” changed from monthly to weekly` },
+    ]);
+  });
+
+  it('S6 atomically deduplicates concurrent price events to different active recipients', async () => {
+    const setRole = (role: string) =>
+      admin.query(
+        'update public.workspace_memberships set role=$3 where workspace_id=$1 and profile_id=$2',
+        [ws1Id, viewerA, role],
+      );
+    await setRole('editor');
+    const firstInserted = Promise.withResolvers<number>();
+    const secondReady = Promise.withResolvers<number>();
+    const release = Promise.withResolvers<void>();
+    const resource = id(9604);
+    const insert = (client: TransactionClient, actor: string) =>
+      client.query(
+        `insert into public.notifications (workspace_id,subject_id,type,resource_id,title)
+       values ($1,$2,'subscription_price_increase',$3,'Concurrent price fixture')`,
+        [ws1Id, actor, resource],
+      );
+    const readPid = async (client: TransactionClient) =>
+      (await client.query<{ pid: number }>('select pg_backend_pid() as pid'))
+        .rows[0].pid;
+    const first = transaction.run(ownerA, async (client) => {
+      const pid = await readPid(client);
+      const result = await insert(client, ownerA);
+      firstInserted.resolve(pid);
+      await release.promise;
+      return result.rowCount;
+    });
+    void first.catch(firstInserted.reject);
+    let second: Promise<number | null> | undefined;
+    try {
+      const firstPid = await firstInserted.promise;
+      second = transaction.run(viewerA, async (client) => {
+        secondReady.resolve(await readPid(client));
+        return (await insert(client, viewerA)).rowCount;
+      });
+      void second.catch(secondReady.reject);
+      const secondPid = await secondReady.promise;
+      await vi.waitFor(async () => {
+        const { rows } = await admin.query(
+          'select $1::int = any(pg_blocking_pids($2)) as blocked',
+          [firstPid, secondPid],
+        );
+        expect(rows).toEqual([{ blocked: true }]);
+      });
+      release.resolve();
+      expect(await Promise.all([first, second])).toEqual([1, 0]);
+      const { rows } = await admin.query(
+        'select subject_id from public.notifications where resource_id=$1',
+        [resource],
+      );
+      expect(rows).toEqual([{ subject_id: ownerA }]);
+    } finally {
+      release.resolve();
+      await Promise.allSettled(second ? [first, second] : [first]);
+      await setRole('viewer');
+    }
   });
 
   it('S6 preserves populated 0017 subscription IDs and does not replay their price alerts after the 0018 upgrade', async () => {

@@ -2026,6 +2026,132 @@ describe('Analytics integration suite against disposable PostgreSQL', () => {
     ).toBeNull();
   });
 
+  it('separates cash-flow fallback from historical analytics FX', async () => {
+    await admin.query(
+      `insert into public.exchange_rates
+         (workspace_id, base_currency, quote_currency, rate, effective_at, source, manual, created_by)
+       values ($1, 'USD', 'CAD', 1.01, '2022-12-29T00:00Z', 'manual', true, $2),
+              ($1, 'USD', 'CAD', 1.234567890123456789, '2022-12-31T00:00Z', 'manual', true, $2),
+              ($1, 'USD', 'CAD', 9, '2023-01-01T00:00Z', 'manual', true, $2),
+              ($1, 'USD', 'GBP', 2.000000000000000003, '2023-01-01T00:00Z', 'frankfurter', false, null),
+              ($1, 'USD', 'GBP', 9, '2023-01-02T00:00Z', 'manual', true, $2)`,
+      [ws1Id, ownerId],
+    );
+    await seedTransaction({
+      type: 'expense',
+      amountMinor: 123,
+      occurredAt: '2022-12-31T12:00:00Z',
+      categoryId: catGroceriesId,
+    });
+    const read = (path: string, currency: string) =>
+      application.inject({
+        method: 'GET',
+        url: `/v1/analytics/${path}&from=2022-12-31&to=2022-12-31&presentationCurrency=${currency}`,
+        headers: {
+          authorization: 'Bearer viewer-token',
+          'x-workspace-id': ws1Id,
+        },
+      });
+    const priorRate = {
+      baseCurrency: 'USD',
+      quoteCurrency: 'CAD',
+      rate: '1.234567890123456789',
+      rateDate: '2022-12-31',
+      source: 'manual',
+      freshness: 'fresh',
+    };
+    const prior = await read('cash-flow?granularity=day', 'CAD');
+    expect(prior.statusCode, prior.payload).toBe(200);
+    expect(prior.json()).toMatchObject({
+      series: [
+        {
+          period: '2022-12-31',
+          value: { amountMinor: '-152', currency: 'CAD' },
+        },
+      ],
+      fxRatesUsed: [priorRate],
+    });
+    for (const currency of ['CAD', 'GBP']) {
+      const historical = await read(
+        'advanced?metric=weekday_heatmap',
+        currency,
+      );
+      expect(historical.statusCode, historical.payload).toBe(200);
+      const body = historical.json();
+      expect(body.data.series[5]).toEqual({
+        weekday: 6,
+        transactionCount: currency === 'CAD' ? 1 : 0,
+        totalMinor: currency === 'CAD' ? '152' : '0',
+      });
+      if (currency === 'CAD') {
+        expect(body.fxRatesUsed).toEqual([priorRate]);
+        expect(body.missingData).toEqual([]);
+      } else {
+        expect(body).not.toHaveProperty('fxRatesUsed');
+        expect(body.missingData).toEqual([
+          'No historical exchange rate USD → GBP effective by 2022-12-31.',
+        ]);
+      }
+    }
+    const fallback = await read('cash-flow?granularity=day', 'GBP');
+    expect(fallback.statusCode, fallback.payload).toBe(200);
+    expect(fallback.json()).toMatchObject({
+      series: [
+        {
+          period: '2022-12-31',
+          value: { amountMinor: '-246', currency: 'GBP' },
+        },
+      ],
+      fxRatesUsed: [
+        {
+          baseCurrency: 'USD',
+          quoteCurrency: 'GBP',
+          rate: '2.000000000000000003',
+          rateDate: '2023-01-01',
+          source: 'frankfurter',
+          freshness: 'unknown',
+        },
+      ],
+    });
+  });
+
+  it('compares adjacent partial quarters over UTC New Year', async () => {
+    for (const [occurredAt, amountMinor] of [
+      ['2023-01-01T01:59:59.999+02:00', 800],
+      ['2023-01-01T00:00:00.000Z', 1000],
+    ] as const) {
+      await seedTransaction({
+        type: 'income',
+        amountMinor,
+        occurredAt,
+        accountId: acctSavingsId,
+      });
+    }
+    const response = await application.inject({
+      method: 'GET',
+      url: `/v1/analytics/advanced?metric=quarterly_average_comparison&from=2022-12-15&to=2023-01-15&accountIds=${acctSavingsId}`,
+      headers: {
+        authorization: 'Bearer viewer-token',
+        'x-workspace-id': ws1Id,
+      },
+    });
+    expect(response.statusCode, response.payload).toBe(200);
+    expect(response.json().data.series).toMatchObject([
+      {
+        quarter: '2022-Q4',
+        monthsCounted: 1,
+        averageMonthlySavingsCapacityMinor: '800',
+        savingsCapacityDeltaPercentVsPreviousQuarter: null,
+      },
+      {
+        quarter: '2023-Q1',
+        monthsCounted: 1,
+        averageMonthlySavingsCapacityMinor: '1000',
+        savingsCapacityDeltaPercentVsPreviousQuarter: 25,
+      },
+    ]);
+  });
+
   it('excludes booked expenses and payment costs from analytics but not the actual account balance', async () => {
     const occurredAt = '2075-02-12T12:00:00.000Z';
     const headers = {

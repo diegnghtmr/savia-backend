@@ -4,7 +4,7 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import type { ExecutionContext } from '@nestjs/common';
-import type { FastifyReply, InjectOptions } from 'fastify';
+import type { FastifyReply, FastifyRequest, InjectOptions } from 'fastify';
 import { of } from 'rxjs';
 import { expect, it, vi } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
@@ -12,12 +12,35 @@ import { registerProblemFilter } from '../../src/identity/onboarding-problem.fil
 import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { PgTransaction } from '../../src/platform/pg-transaction.js';
+import type {
+  McpProposalIdentity,
+  RequestIdentity,
+} from '../../src/platform/request-identity.js';
 import { SAVIA_SCOPES } from '../../src/platform/savia-scopes.js';
 import { mcpAuthEnvironment, mcpTokens } from '../helpers/mcp-jwt.js';
 import { authorityMcpReads } from '../helpers/openapi-bundle.js';
 
 const subject = '11111111-1111-4111-8111-111111111111';
 const workspaceId = '22222222-2222-4222-8222-222222222222';
+// Independent reviewer allowlist: an authority change alone must not widen it.
+const declared = new Set([
+  'GET /v1/workspaces',
+  'GET /v1/accounts',
+  'GET /v1/accounts/:accountId/balance',
+  'GET /v1/transactions',
+  'GET /v1/budgets/:budgetId',
+  'GET /v1/funds/:fundId',
+  'GET /v1/debts/:debtId/projection',
+  'GET /v1/analytics/summary',
+  'POST /v1/forecasts/balance',
+  'GET /v1/forecasts/:forecastId',
+  'POST /v1/scenarios/:scenarioId/runs',
+  'POST /v1/report-runs',
+  'GET /v1/report-runs/:reportRunId',
+  'GET /v1/ai/providers',
+]);
+const proposalRoute = 'POST /v1/mcp/proposals';
+const observedIdentityHeader = 'x-test-mcp-identity';
 
 it('admits MCP only on declared reads and the existing proposal endpoint', async () => {
   const signed = await mcpTokens();
@@ -70,11 +93,19 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
   // Capture the result after all real guards, but before domain transports or DB I/O.
   app.useGlobalInterceptors({
     intercept(context: ExecutionContext) {
-      void context
-        .switchToHttp()
-        .getResponse<FastifyReply>()
-        .code(200)
-        .send({ admitted: true });
+      const http = context.switchToHttp();
+      const request = http.getRequest<
+        FastifyRequest & {
+          identity?: RequestIdentity;
+          proposalIdentity?: McpProposalIdentity;
+        }
+      >();
+      const reply = http.getResponse<FastifyReply>();
+      const identity =
+        request.identity?.authMethod ??
+        (request.proposalIdentity ? 'mcp_proposal' : undefined);
+      if (identity) void reply.header(observedIdentityHeader, identity);
+      void reply.code(200).send({ admitted: true });
       return of(undefined);
     },
   });
@@ -97,9 +128,11 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
     );
     if (process.env.SAVIA_GUARD_BASELINE !== '1') {
       expect(expected.size).toBe(14);
+      expect(expected).toEqual(declared);
     }
-    expected.add('POST /v1/mcp/proposals');
+    expected.add(proposalRoute);
     const exercised = new Set<string>();
+    const observedReads = new Set<string>();
     for (const [route, { method, url }] of [...routes].sort(([a], [b]) =>
       a.localeCompare(b),
     )) {
@@ -118,11 +151,18 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
       const response = await send(mcp);
       expect(signed.isActive).toHaveBeenCalledTimes(sessionChecks);
       if (process.env.SAVIA_GUARD_BASELINE !== '1') {
+        const identity = response.headers[observedIdentityHeader];
+        if (identity === 'mcp_read') observedReads.add(route);
         if (expected.has(route)) {
           expect(response.statusCode, route).toBe(200);
+          expect(identity, route).toBe(
+            route === proposalRoute ? 'mcp_proposal' : 'mcp_read',
+          );
           exercised.add(route);
         } else {
           expect(response.statusCode, route).toBe(absent.statusCode);
+          expect(identity, route).toBe(absent.headers[observedIdentityHeader]);
+          expect(identity, route).not.toBe('mcp_proposal');
         }
       }
       if (process.env.SAVIA_CAPTURE_ROUTE_GUARDS === '1') {
@@ -136,6 +176,7 @@ it('admits MCP only on declared reads and the existing proposal endpoint', async
     }
     if (process.env.SAVIA_GUARD_BASELINE !== '1') {
       expect(exercised).toEqual(expected);
+      expect(observedReads).toEqual(declared);
     }
   } finally {
     await app.close();

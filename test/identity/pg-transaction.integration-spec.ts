@@ -123,6 +123,65 @@ describe('PgTransaction', () => {
     }
   });
 
+  it.each([
+    ['checked-out', 'terminate'],
+    ['released', 'terminate'],
+    ['checked-out', 'transaction_timeout'],
+    ['released', 'transaction_timeout'],
+  ] as const)('discards a %s client after %s exactly once', async (ownership, fault) => {
+    const admin = new Pool({ connectionString: url, max: 1 });
+    const pool = new PostgresPool(PostgresConfig.fromUrl(url, { DATABASE_POOL_MAX: '1' }));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const client = await pool.connect();
+    const pidOf = async (checkout: PgClient) =>
+      (await checkout.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid;
+    let released = false;
+    try {
+      const pid = await pidOf(client);
+      if (fault === 'transaction_timeout') {
+        await client.query("set transaction_timeout = '150ms'");
+        await client.query('begin');
+      }
+      if (ownership === 'released') {
+        client.release();
+        released = true;
+      }
+      if (fault === 'terminate') {
+        const { rows } = await admin.query('select pg_terminate_backend($1) as killed', [pid]);
+        expect(rows).toEqual([{ killed: true }]);
+      }
+      await vi.waitFor(() => expect(warn.mock.calls).toEqual([
+        [`PostgreSQL ${ownership} connection failed; discarded.`],
+      ]));
+      if (!released) {
+        await expect(client.query('select 1')).rejects.toMatchObject({
+          code: fault === 'terminate' ? '57P01' : '25P04',
+        });
+      }
+      expect(() => client.release()).not.toThrow();
+      released = true;
+      expect(() => client.release()).not.toThrow();
+
+      const readPid = async () => {
+        const replacement = await pool.connect();
+        try {
+          return await pidOf(replacement);
+        } finally {
+          replacement.release();
+        }
+      };
+      const replacement = await readPid();
+      expect(replacement).not.toBe(pid);
+      expect(await readPid()).toBe(replacement);
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      if (!released) client.release();
+      warn.mockRestore();
+      await pool.end();
+      await admin.end();
+    }
+  });
+
   it('discards and logs a server-terminated checkout without exposing the backend error', async () => {
     const pool = new PostgresPool(PostgresConfig.fromUrl(url, { DATABASE_POOL_MAX: '1' }));
     const tx = new PgTransaction(pool, { callbackTimeoutMs: 500, idleTransactionTimeoutMs: 3_000 });
