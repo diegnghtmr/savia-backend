@@ -66,7 +66,7 @@ Open `http://localhost:3000/health`. Unknown routes return `404`. Start `pnpm st
 
 ## Architecture
 
-The API verifies the caller's JWT and uses PostgreSQL for workspace and financial records. The worker polls PostgreSQL-backed queues and uses Supabase Storage for artifacts. Onboarding returns `201` for creation, `200` for an identical replay, and `409` for a conflicting setup. The [OpenAPI provenance](openapi/provenance.json) records the local planning-source constants. Backend CI cannot access, authenticate, or independently re-hash this local source; it validates only these committed constants and executable contract identity.
+The API verifies the caller's JWT and uses PostgreSQL for workspace and financial records. The worker polls PostgreSQL-backed queues and uses Supabase Storage for artifacts. Onboarding returns `201` for creation, `200` for an identical replay, and `409` for a conflicting setup.
 
 ```mermaid
 flowchart LR
@@ -79,6 +79,15 @@ flowchart LR
     API -->|"Stages files"| Storage["Supabase Storage"]
     Worker -->|"Reads inputs and writes artifacts"| Storage
 ```
+
+## OpenAPI contract
+
+The committed contract includes `GET /health` and operations under `/v1`,
+including onboarding, accounts, and transactions.
+
+`openapi/savia.openapi.yaml` is the client-generation input. Its provenance records
+the local planning source constants. Backend CI cannot access, authenticate, or independently
+re-hash that local source; it validates only committed constants and executable contract identity.
 
 ## Tech stack
 
