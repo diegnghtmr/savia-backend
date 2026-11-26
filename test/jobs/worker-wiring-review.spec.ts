@@ -23,19 +23,32 @@ it('injects the FX companion separately from the job sweeps', async () => {
       provider.provide === JobRunner,
   );
   expect(runner).toBeDefined();
+  const start = vi.fn();
+  const claim = vi.fn().mockResolvedValue([]);
+  const sweep = vi.fn().mockResolvedValue(0);
   const stop = vi.fn().mockResolvedValue(undefined);
   const testing = await Test.createTestingModule({
     providers: [
       runner!,
-      { provide: JOB_QUEUE, useValue: {} },
+      { provide: JOB_QUEUE, useValue: { claim } },
       { provide: PgTransaction, useValue: {} },
       { provide: JOB_WRITER, useValue: {} },
-      { provide: WorkerConfig, useValue: new WorkerConfig(1, 300, 1000, 1) },
+      { provide: WorkerConfig, useValue: new WorkerConfig(1, 300, 60_000, 1) },
       { provide: JOB_HANDLERS, useValue: [] },
-      { provide: JOB_SWEEP, useValue: [] },
-      { provide: FrankfurterRateJob, useValue: { stop } },
+      { provide: JOB_SWEEP, useValue: [{ sweep }] },
+      { provide: FrankfurterRateJob, useValue: { start, stop } },
     ],
   }).compile();
-  await testing.close();
+  try {
+    expect(start).not.toHaveBeenCalled();
+    expect(sweep).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+    await testing.get(JobRunner).start();
+    expect(start).toHaveBeenCalledOnce();
+    expect(sweep).toHaveBeenCalledOnce();
+    expect(claim).toHaveBeenCalledOnce();
+  } finally {
+    await testing.close();
+  }
   expect(stop).toHaveBeenCalledOnce();
 });
