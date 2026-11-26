@@ -47,16 +47,16 @@ pnpm build
 
 Set these values in the API or worker process environment as applicable:
 
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `DATABASE_URL` | PostgreSQL connection URL for persisted operations. | None |
-| `JWT_ISSUER` | Expected token issuer. | None |
-| `JWT_AUDIENCE` | Expected audience for application access tokens. | None |
-| `JWT_ALGORITHMS` | Comma-separated list of accepted asymmetric signing algorithms; use the issuer's algorithm. | None |
-| `JWT_JWKS_URI` | HTTPS URL of the issuer's public signing keys. | None |
-| `PORT` | API listener port. | `3000` |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Storage project URL and private service credential for file operations. | None |
-| `SAVIA_CREDENTIAL_KEY` | Base64-encoded 32-byte key for encrypted AI credentials. | None |
+| Variable                                    | Purpose                                                                                     | Default |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------- | ------- |
+| `DATABASE_URL`                              | PostgreSQL connection URL for persisted operations.                                         | None    |
+| `JWT_ISSUER`                                | Expected token issuer.                                                                      | None    |
+| `JWT_AUDIENCE`                              | Expected audience for application access tokens.                                            | None    |
+| `JWT_ALGORITHMS`                            | Comma-separated list of accepted asymmetric signing algorithms; use the issuer's algorithm. | None    |
+| `JWT_JWKS_URI`                              | HTTPS URL of the issuer's public signing keys.                                              | None    |
+| `PORT`                                      | API listener port.                                                                          | `3000`  |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Storage project URL and private service credential for file operations.                     | None    |
+| `SAVIA_CREDENTIAL_KEY`                      | Base64-encoded 32-byte key for encrypted AI credentials.                                    | None    |
 
 ```sh
 pnpm start
@@ -82,11 +82,11 @@ flowchart LR
 
 ## Tech stack
 
-| Layer | Technology |
-| --- | --- |
-| Runtime | Node.js 24.18.0, TypeScript 5.9.3 |
-| HTTP | NestJS 11.1.28, Fastify 5.10.0, jose |
-| Persistence | PostgreSQL 17 locally, `pg` 8.22.0, pgmq |
+| Layer                | Technology                                 |
+| -------------------- | ------------------------------------------ |
+| Runtime              | Node.js 24.18.0, TypeScript 5.9.3          |
+| HTTP                 | NestJS 11.1.28, Fastify 5.10.0, jose       |
+| Persistence          | PostgreSQL 17 locally, `pg` 8.22.0, pgmq   |
 | Contract and quality | OpenAPI, Redocly CLI 2.39.0, Vitest 4.1.10 |
 
 ## Testing
