@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 if (( $# != 1 )); then
   exit 64
 fi
@@ -97,13 +98,10 @@ case "$spec" in
   test/cli-device/cli-scope.integration-spec.ts) ;;
   *) exit 64 ;;
 esac
+fi
 
-workdir="$(mktemp -d)"
-project_id="savia-postgres-pool-${CI_RUN_ID:-local}-$$"
-diagnostic_dir=""
-source_config_hash="$(sha256sum supabase/config.toml)"
 redact() { perl -0pe 's{postgres(?:ql)?://\S+}{postgresql://[REDACTED]}ig; s{\beyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){1,2}\b}{[REDACTED_JWT]}g; s{\bsb_secret_[A-Za-z0-9_-]+}{[REDACTED_SECRET]}ig; s{-----BEGIN [^-]+-----.*?-----END [^-]+-----}{[REDACTED_KEY]}gs; s{(?i)\b([A-Z_]*(?:PASSWORD|SECRET|TOKEN|KEY)[A-Z_]*=)\S+}{$1[REDACTED]}g; s{(?i)\b(authorization:\s*)\S+}{$1[REDACTED]}g'; }
- source "$(dirname "$0")/retain-disposable-database-errors.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/retain-disposable-database-errors.sh"
 # The credential scan below remains deliberately independent of diagnostic
 # retention: a failed scan still means the diagnostics may contain credentials.
 has_credentials() { local status=0; grep -R -Eiqi 'eyJ[A-Za-z0-9_-]+\.|sb_secret_|-----BEGIN |postgres(ql)?://[^[:space:]\[]|(password|secret|token|key)=[^[]' "$diagnostic_dir" || status=$?; (( status != 1 )); }
@@ -145,57 +143,77 @@ cleanup() {
       || printf 'cleanup=uncertain\n' >> "$diagnostic_dir/cleanup-status"
   fi
 }
-# Propagate the signal as the conventional 128+N status. `trap cleanup EXIT`
-# still fires, so resources are released either way, but exiting 0 here would
-# report a cancelled or timed-out CI run as a passing gate.
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap cleanup EXIT
+init_disposable_database() {
+  project_id="$1"
+  diagnostic_dir=""
+  workdir="$(mktemp -d)"
+}
 
-if [[ "${SAVIA_DISPOSABLE_CLEANUP_PROBE:-}" == 1 ]]; then
-  : "${SAVIA_CLEANUP_RECORD:?}"
-  docker create --name "$project_id" --label savia.cleanup.proof=1 alpine:latest >/dev/null
-  printf '%s:%s\n' "$workdir" "$project_id" > "$SAVIA_CLEANUP_RECORD"
-  while :; do sleep 1; done
-fi
+start_disposable_database() {
+  local source_config_hash config start_log start_status
+  source_config_hash="$(sha256sum supabase/config.toml)"
+  mkdir -p "$workdir/supabase/migrations"
+  cp supabase/config.toml "$workdir/supabase/config.toml"
+  cp supabase/migrations/*.sql "$workdir/supabase/migrations/"
+  sed -i "s/^project_id = .*/project_id = \"$project_id\"/" "$workdir/supabase/config.toml"
+  config="$workdir/supabase/config.toml"
+  (( $(grep -Ec '^\[realtime\]$' "$config" || true) == 0 )) || { printf 'Disposable config already defines Realtime.\n' >&2; exit 70; }
+  perl -0pi -e 's/\z/\n[realtime]\nenabled = false\n/ or die "Cannot disable Realtime\n"' "$config"
+  (( $(perl -0777 -ne '$count = () = /^\[realtime\]\nenabled = false$/mg; print $count' "$config") == 1 )) && [[ "$source_config_hash" == "$(sha256sum supabase/config.toml)" ]] || { printf 'Disposable Realtime disablement proof failed.\n' >&2; exit 70; }
+  start_log="$workdir/start.log"
+  pnpm exec supabase --workdir "$workdir" start > "$start_log" 2>&1 || { start_status=$?; diagnostic_dir="$(mktemp -d "${TMPDIR:-/tmp}/savia-start-failure-${project_id}-XXXXXX")"; { printf 'supabase_start_status=%s\n' "$start_status"; redact < "$start_log" | retain_errors; } > "$diagnostic_dir/start-errors.log"; if has_credentials; then rm -rf "$diagnostic_dir"; diagnostic_dir=""; printf 'Supabase start failed; unsafe diagnostics deleted.\n' >&2; else printf 'Supabase start failed (status %s); sanitized diagnostics retained at %s\n' "$start_status" "$diagnostic_dir" >&2; fi; exit "$start_status"; }
+  rm -f "$start_log"
+  eval "$(pnpm exec supabase --workdir "$workdir" status -o env)"
+  : "${DB_URL:?Supabase status did not export DB_URL}"
+}
 
-mkdir -p "$workdir/supabase/migrations"
-cp supabase/config.toml "$workdir/supabase/config.toml"
-cp supabase/migrations/*.sql "$workdir/supabase/migrations/"
-sed -i "s/^project_id = .*/project_id = \"$project_id\"/" "$workdir/supabase/config.toml"
-config="$workdir/supabase/config.toml"
-(( $(grep -Ec '^\[realtime\]$' "$config" || true) == 0 )) || { printf 'Disposable config already defines Realtime.\n' >&2; exit 70; }
-perl -0pi -e 's/\z/\n[realtime]\nenabled = false\n/ or die "Cannot disable Realtime\n"' "$config"
-(( $(perl -0777 -ne '$count = () = /^\[realtime\]\nenabled = false$/mg; print $count' "$config") == 1 )) && [[ "$source_config_hash" == "$(sha256sum supabase/config.toml)" ]] || { printf 'Disposable Realtime disablement proof failed.\n' >&2; exit 70; }
-start_log="$workdir/start.log"
-pnpm exec supabase --workdir "$workdir" start > "$start_log" 2>&1 || { start_status=$?; diagnostic_dir="$(mktemp -d "${TMPDIR:-/tmp}/savia-start-failure-${project_id}-XXXXXX")"; { printf 'supabase_start_status=%s\n' "$start_status"; redact < "$start_log" | retain_errors; } > "$diagnostic_dir/start-errors.log"; if has_credentials; then rm -rf "$diagnostic_dir"; diagnostic_dir=""; printf 'Supabase start failed; unsafe diagnostics deleted.\n' >&2; else printf 'Supabase start failed (status %s); sanitized diagnostics retained at %s\n' "$start_status" "$diagnostic_dir" >&2; fi; exit "$start_status"; }
-rm -f "$start_log"
-eval "$(pnpm exec supabase --workdir "$workdir" status -o env)"
-: "${DB_URL:?Supabase status did not export DB_URL}"
-if owned_realtime_running; then printf 'Realtime must be stopped before reset.\n' >&2; exit 70; fi
-reset_log="$workdir/reset.log"
-realtime_guard="$workdir/realtime-guard"
-(while :; do owned_realtime_running && { : > "$realtime_guard"; exit; }; sleep .05; done) & realtime_guard_pid=$!
-set +e
-pnpm exec supabase --workdir "$workdir" db reset --no-seed 2>&1 | redact | tee "$reset_log"
-reset_status=${PIPESTATUS[0]}
-set -e
-kill "$realtime_guard_pid" 2>/dev/null || true; wait "$realtime_guard_pid" 2>/dev/null || true; realtime_guard_pid=""
-[[ ! -e "$realtime_guard" ]] && ! owned_realtime_running || { printf 'Realtime started during reset.\n' >&2; exit 70; }
-if (( reset_status != 0 )); then
-  diagnostic_dir="$(mktemp -d "${TMPDIR:-/tmp}/savia-reset-failure-${project_id}-XXXXXX")"
-  retain_errors < "$reset_log" > "$diagnostic_dir/reset-errors.log"
-  mapfile -t owned_containers < <(docker ps -aq --filter "label=com.supabase.cli.project=$project_id")
-  for container in "${owned_containers[@]}"; do
-    docker inspect --format '{{.Name}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} project={{index .Config.Labels "com.supabase.cli.project"}}' "$container" | redact > "$diagnostic_dir/container-$container-state" || true
-    docker logs --timestamps "$container" 2>&1 | redact | retain_errors > "$diagnostic_dir/container-$container-errors.log" || true
-  done
-  if has_credentials; then rm -rf "$diagnostic_dir"; diagnostic_dir=""; printf 'Supabase reset failed; unsafe diagnostics deleted.\n' >&2
-  else printf 'Supabase reset failed; sanitized diagnostics retained at %s\n' "$diagnostic_dir" >&2; fi
-  exit "$reset_status"
-fi
-if [[ -n "${VITEST_PATTERN:-}" ]]; then
-  DATABASE_URL="$DB_URL" pnpm exec vitest run --config vitest.integration.config.ts "$spec" --testNamePattern "$VITEST_PATTERN"
-else
-  DATABASE_URL="$DB_URL" pnpm exec vitest run --config vitest.integration.config.ts "$spec"
+reset_disposable_database() {
+  local reset_status container
+  local reset_log="$workdir/reset.log" realtime_guard="$workdir/realtime-guard"
+  local -a owned_containers
+  if owned_realtime_running; then printf 'Realtime must be stopped before reset.\n' >&2; return 70; fi
+  (while :; do owned_realtime_running && { : > "$realtime_guard"; exit; }; sleep .05; done) & realtime_guard_pid=$!
+  set +e
+  pnpm exec supabase --workdir "$workdir" db reset --no-seed 2>&1 | redact | tee "$reset_log"
+  reset_status=${PIPESTATUS[0]}
+  set -e
+  kill "$realtime_guard_pid" 2>/dev/null || true; wait "$realtime_guard_pid" 2>/dev/null || true; realtime_guard_pid=""
+  [[ ! -e "$realtime_guard" ]] && ! owned_realtime_running || { printf 'Realtime started during reset.\n' >&2; return 70; }
+  if (( reset_status != 0 )); then
+    diagnostic_dir="$(mktemp -d "${TMPDIR:-/tmp}/savia-reset-failure-${project_id}-XXXXXX")"
+    retain_errors < "$reset_log" > "$diagnostic_dir/reset-errors.log"
+    mapfile -t owned_containers < <(docker ps -aq --filter "label=com.supabase.cli.project=$project_id")
+    for container in "${owned_containers[@]}"; do
+      docker inspect --format '{{.Name}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} project={{index .Config.Labels "com.supabase.cli.project"}}' "$container" | redact > "$diagnostic_dir/container-$container-state" || true
+      docker logs --timestamps "$container" 2>&1 | redact | retain_errors > "$diagnostic_dir/container-$container-errors.log" || true
+    done
+    if has_credentials; then rm -rf "$diagnostic_dir"; diagnostic_dir=""; printf 'Supabase reset failed; unsafe diagnostics deleted.\n' >&2
+    else printf 'Supabase reset failed; sanitized diagnostics retained at %s\n' "$reset_status" "$diagnostic_dir" >&2; fi
+  fi
+  return "$reset_status"
+}
+
+run_disposable_spec() {
+  local -a args=(run --config vitest.integration.config.ts "$1")
+  if [[ -n "${VITEST_PATTERN:-}" ]]; then args+=(--testNamePattern "$VITEST_PATTERN"); fi
+  DATABASE_URL="$DB_URL" pnpm exec vitest "${args[@]}"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  init_disposable_database "savia-postgres-pool-${CI_RUN_ID:-local}-$$"
+  # Propagate signals without masking failure; EXIT still tears down the stack.
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap cleanup EXIT
+
+  if [[ "${SAVIA_DISPOSABLE_CLEANUP_PROBE:-}" == 1 ]]; then
+    : "${SAVIA_CLEANUP_RECORD:?}"
+    docker create --name "$project_id" --label savia.cleanup.proof=1 alpine:latest >/dev/null
+    printf '%s:%s\n' "$workdir" "$project_id" > "$SAVIA_CLEANUP_RECORD"
+    while :; do sleep 1; done
+  fi
+
+  start_disposable_database
+  reset_disposable_database
+  run_disposable_spec "$spec"
 fi

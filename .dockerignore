@@ -1,0 +1,15 @@
+**
+!package.json
+!pnpm-lock.yaml
+!tsconfig.json
+!vitest*.ts
+!src/
+!src/**
+!test/
+!test/fixtures/**
+!test/support/**
+!test/setup.ts
+!test/forecasts/**
+!test/receipts/**
+!test/platform/tesseract-real-engine.integration-spec.ts
+**/.env*
