@@ -1,4 +1,3 @@
-import { Logger } from '@nestjs/common';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -111,7 +110,9 @@ describe('PgTransaction', () => {
       const gate = Promise.withResolvers<void>();
       try {
         await expect(
-          tx.runAsQueueConsumer(() => {
+          tx.runAsQueueConsumer(async (client) => {
+            // Exercise the application deadline without racing a server FATAL.
+            await client.query('SET LOCAL transaction_timeout = 0');
             entered = true;
             return gate.promise;
           }, options),
@@ -131,13 +132,34 @@ describe('PgTransaction', () => {
   ] as const)('discards a %s client after %s exactly once', async (ownership, fault) => {
     const admin = new Pool({ connectionString: url, max: 1 });
     const pool = new PostgresPool(PostgresConfig.fromUrl(url, { DATABASE_POOL_MAX: '1' }));
-    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const warn = vi.spyOn(pool['logger'], 'warn').mockImplementation(() => undefined);
     const client = await pool.connect();
     const pidOf = async (checkout: PgClient) =>
       (await checkout.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid;
+    const terminate = async (pid: number) => {
+      const { rows } = await admin.query('select pg_terminate_backend($1) as killed', [pid]);
+      expect(rows).toEqual([{ killed: true }]);
+    };
     let released = false;
     try {
       const pid = await pidOf(client);
+      if (ownership === 'checked-out' && fault === 'terminate') {
+        // A different pool can discard a released client during this assertion window.
+        const unrelated = await source.connect();
+        const unrelatedPid = await pidOf(unrelated).finally(() => unrelated.release());
+        const unrelatedPool = source['pool']!;
+        const onError = vi.fn();
+        unrelatedPool.on('error', onError);
+        try {
+          await terminate(unrelatedPid);
+          await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(
+            expect.objectContaining({ code: '57P01' }),
+            expect.objectContaining({ processID: unrelatedPid }),
+          ));
+        } finally {
+          unrelatedPool.off('error', onError);
+        }
+      }
       if (fault === 'transaction_timeout') {
         await client.query("set transaction_timeout = '150ms'");
         await client.query('begin');
@@ -146,10 +168,7 @@ describe('PgTransaction', () => {
         client.release();
         released = true;
       }
-      if (fault === 'terminate') {
-        const { rows } = await admin.query('select pg_terminate_backend($1) as killed', [pid]);
-        expect(rows).toEqual([{ killed: true }]);
-      }
+      if (fault === 'terminate') await terminate(pid);
       await vi.waitFor(() => expect(warn.mock.calls).toEqual([
         [`PostgreSQL ${ownership} connection failed; discarded.`],
       ]));
@@ -186,7 +205,7 @@ describe('PgTransaction', () => {
     const pool = new PostgresPool(PostgresConfig.fromUrl(url, { DATABASE_POOL_MAX: '1' }));
     const tx = new PgTransaction(pool, { callbackTimeoutMs: 500, idleTransactionTimeoutMs: 3_000 });
     const gate = Promise.withResolvers<void>();
-    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const warn = vi.spyOn(pool['logger'], 'warn').mockImplementation(() => undefined);
     const pidSql = 'select pg_backend_pid() as pid';
     let terminatedPid: number | undefined;
     try {
