@@ -141,6 +141,28 @@ describe('Notifications integration contract and endpoint suite', () => {
       );
     });
 
+    it('matches the former lookup for the complete PostgreSQL timezone corpus', async () => {
+      const { rows } = await admin.query<{ zone: string | null }>(`
+        with names as materialized (select name from pg_catalog.pg_timezone_names),
+        inputs(zone) as (
+          select name from names
+          union select abbrev from pg_catalog.pg_timezone_abbrevs
+          union select zone from (values
+            ('America/Bogota'), ('america/bogota'), ('PST'), ('EST'),
+            ('EST5EDT'), ('UTC+5'), ('GMT+3'), ('America/Bogota '),
+            ('Mars/Olympus'), (''), (null)
+          ) as samples(zone)
+        )
+        select i.zone
+          from inputs i
+          left join names n on n.name = i.zone
+         where public.notification_delivery_timezone(i.zone)
+               is distinct from coalesce(n.name, 'UTC')
+         order by i.zone
+      `);
+      expect(rows).toEqual([]);
+    });
+
     it('does not enumerate pg_timezone_names per lookup', async () => {
       const { rows } = await admin.query<{ definition: string }>(
         `select pg_get_functiondef('public.notification_delivery_timezone(text)'::regprocedure)
