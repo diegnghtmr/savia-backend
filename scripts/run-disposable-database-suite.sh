@@ -113,7 +113,7 @@ stop_disposable_stack() {
   # never released, and the bound silently stops bounding: an observed local run
   # sat in this line for over eleven minutes. SIGKILL cannot be caught, blocked,
   # or re-stopped, so it is the only escalation that makes the 30s a real limit.
-  [[ "${SAVIA_DISPOSABLE_CLEANUP_PROBE:-}" == 1 ]] || timeout -k 5 30 pnpm exec supabase --workdir "$workdir" stop --no-backup || true
+  [[ "${1:-}" == labels-only || "${SAVIA_DISPOSABLE_CLEANUP_PROBE:-}" == 1 ]] || timeout -k 5 30 pnpm exec supabase --workdir "$workdir" stop --no-backup || true
   # A killed `supabase stop` leaves its containers running, so removing only
   # "$project_id" would leak the whole stack -- which then holds port 54322 and
   # fails the next run's start with status 70. Reap by the CLI's own project
@@ -138,7 +138,7 @@ stop_disposable_stack() {
 }
 cleanup() {
   [[ -z "${realtime_guard_pid:-}" ]] || { kill "$realtime_guard_pid" 2>/dev/null || true; wait "$realtime_guard_pid" 2>/dev/null || true; }
-  stop_disposable_stack
+  stop_disposable_stack "$@"
   rm -rf "$workdir"
   if [[ -n "$diagnostic_dir" ]]; then
     { ! docker ps -aq --filter "label=com.supabase.cli.project=$project_id" | grep -q . && [[ ! -e "$workdir" ]]; } \

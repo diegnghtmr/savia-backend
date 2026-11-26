@@ -109,6 +109,7 @@
     "test:integration:all": "bash scripts/run-integration-suites.sh all",
     "test:integration:ocr": "bash scripts/run-integration-suites.sh ocr",
     "test:runner-isolation": "bash test/scripts/runner-storage-isolation.probe.sh",
+    "test:docker-context": "bash test/scripts/docker-build-context.probe.sh",
     "test:schema-contract": "vitest run --config vitest.integration.config.ts test/schema/identity-tables.integration-spec.ts",
     "test:mutation:transaction": "bash scripts/run-pg-transaction-mutations.sh",
     "build": "tsc -p tsconfig.build.json",

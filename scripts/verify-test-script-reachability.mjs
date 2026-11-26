@@ -40,6 +40,11 @@ export const COVERAGE_ALLOWLIST = [
     reason:
       'Local Docker probe for Storage isolation between suites in the shared runner, which CI does not use',
   },
+  {
+    script: 'test:docker-context',
+    reason:
+      'Local Docker probe for the OCR image build context; CI does not build that image',
+  },
 ];
 
 function escapeRegex(string) {

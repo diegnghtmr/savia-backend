@@ -13,12 +13,15 @@
 !test/receipts/**
 !test/platform/tesseract-real-engine.integration-spec.ts
 
-# Keep credential-like files out even inside the re-included subtrees above.
-**/*.pem
-**/*.key
-**/*.p12
-**/*.pfx
-**/.env*
-**/*secret*
-**/credentials*
-**/auth.json
+# Docker globs are case-sensitive; match every case after the re-includes.
+**/*.[pP][eE][mM]
+**/*.[kK][eE][yY]
+**/*.[pP]12
+**/*.[pP][fF][xX]
+**/.[eE][nN][vV]*
+**/*[sS][eE][cC][rR][eE][tT]*
+**/[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*
+**/[aA][uU][tT][hH].[jJ][sS][oO][nN]
+
+# This exact path is application code needed by PlatformModule, not data.
+!src/platform/credential-crypto.ts

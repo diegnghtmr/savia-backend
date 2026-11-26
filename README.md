@@ -36,8 +36,9 @@ pnpm test:integration:ocr
 local Supabase stack, reapplies all migrations without seed data, and clears
 Storage files before each database suite. Suites run serially, and the runner
 prints a summary and tears the stack down on exit, including after failure or
-interruption. The
-standalone PDF renderer suite still requires Playwright Chromium on the host
+interruption. The runner refuses to clear Storage unless the mounted volume
+belongs to this disposable project. The standalone PDF renderer suite still
+requires Playwright Chromium on the host
 (`pnpm exec playwright-core install chromium`). The schema contract and SQL
 migration/rollback gates are separate because they build and check deliberately
 different database states; CI still runs them separately.
@@ -48,6 +49,8 @@ English and Spanish data. No host Tesseract installation is required. The first
 build downloads public packages; subsequent builds reuse cached layers. The OCR
 DB suites use Linux Docker host networking to reach the disposable Supabase
 stack. Run one OCR suite with `pnpm test:integration:ocr receipt-ocr-engine`.
+Run `pnpm test:docker-context` to verify credential-like paths are excluded
+from the Docker build context using only empty synthetic files.
 
 The full and OCR runners hold `/tmp/savia-db.lock` through teardown. Existing
 `pnpm run test:integration:<name>` commands are unchanged. If running a legacy

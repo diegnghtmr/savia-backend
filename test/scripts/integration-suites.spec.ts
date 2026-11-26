@@ -83,12 +83,19 @@ it('starts once, resets DB and Storage for each suite, and tears down once', () 
         mode: 0o700,
       });
     fake('flock', 'printf "lock\\n" >> "$TRACE"');
+    fake('node', '[[ "$2" == wait ]] || exec "$REAL_NODE" "$@"');
     fake(
       'docker',
       `case "$1" in
   inspect)
     storage="$6"
     printf '%s volume:%s\\n' "\${storage#supabase_storage_}" "$storage"
+    ;;
+  volume)
+    if [[ "$2" == inspect ]]; then
+      [[ "$3 $4" == '--format {{index .Labels "com.supabase.cli.project"}}' ]] || exit 70
+      printf '%s\\n' "\${5#supabase_storage_}"
+    fi
     ;;
   exec)
     [[ "$2 $3" == supabase_storage_savia-integration-*' sh' ]] || exit 70
@@ -115,6 +122,7 @@ esac`,
       ...process.env,
       PATH: `${scratch}:${process.env.PATH}`,
       TRACE: trace,
+      REAL_NODE: process.execPath,
     });
     expect(result).toEqual({
       status: 1,
@@ -132,6 +140,66 @@ esac`,
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+it.each(['other-project', ''])(
+  'preserves a correctly named Storage volume with project label %j',
+  (owner) => {
+    const scratch = mkdtempSync(join(tmpdir(), 'savia-storage-owner-'));
+    try {
+      const trace = join(scratch, 'trace');
+      writeFileSync(trace, '');
+      const fake = (name: string, body: string) =>
+        writeFileSync(join(scratch, name), `#!/usr/bin/env bash\n${body}\n`, {
+          mode: 0o700,
+        });
+      fake('flock', 'exit 0');
+      fake('node', '[[ "$2" == wait ]] || exec "$REAL_NODE" "$@"');
+      fake(
+        'docker',
+        `case "$1 $2 $3" in
+  'inspect --type container')
+    name="$6"
+    printf '%s volume:%s\\n' "\${name#supabase_storage_}" "$name";;
+  'volume inspect --format') printf '%s\\n' "$VOLUME_OWNER";;
+  'volume rm '*) printf 'volume removed\\n' >> "$TRACE";;
+  'exec '*) printf 'wipe\\n' >> "$TRACE";;
+esac`,
+      );
+      fake(
+        'pnpm',
+        `case "$1 $2" in
+  'exec supabase')
+    case "$5" in
+      status) printf 'DB_URL=postgresql://fixture.invalid/db\\n';;
+      stop) printf 'CLI stop could remove unverified volume\\n' >> "$TRACE";;
+    esac;;
+  'exec vitest') printf 'suite\\n' >> "$TRACE";;
+esac`,
+      );
+      expect(
+        run(['all', 'postgres-pool'], {
+          ...process.env,
+          PATH: `${scratch}:${process.env.PATH}`,
+          TMPDIR: scratch,
+          REAL_NODE: process.execPath,
+          TRACE: trace,
+          VOLUME_OWNER: owner,
+        }),
+      ).toEqual({
+        status: 1,
+        stdout:
+          '==> postgres-pool\n\nIntegration summary:\n' +
+          '  NOT RUN postgres-pool\n0 passed, 0 failed, 1 not run\n',
+        stderr:
+          'Refusing to reset Storage: the mounted volume is not owned by the disposable project.\n' +
+          'Aborting: clean Storage reset failed before postgres-pool.\n',
+      });
+      expect(readFileSync(trace, 'utf8')).toBe('');
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
 
 it.each([
   {

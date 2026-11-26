@@ -15,6 +15,7 @@ source scripts/run-disposable-database-suite.sh
 
 project_id="savia-integration-$$-$RANDOM"
 workdir=""
+cleanup_mode=""
 image="savia-test-runner:local"
 image_ready=false
 container_active=false
@@ -24,7 +25,7 @@ durations=()
 finish() {
   local result=$? index name status passed=0 failed=0 pending=0
   if [[ -n "$workdir" ]]; then
-    cleanup
+    cleanup "$cleanup_mode"
   elif "$container_active"; then
     docker rm -f "$project_id" >/dev/null 2>&1 || true
   fi
@@ -67,15 +68,24 @@ run_in_container() {
 }
 
 reset_disposable_storage() {
-  local storage="supabase_storage_$project_id" owned_mount
+  local storage="supabase_storage_$project_id" owned_mount volume_owner
   # db reset clears metadata, not file bytes. Only wipe the CLI's project-owned
   # volume: never treat an arbitrary environment path or bind mount as scratch.
   local mount_format='{{index .Config.Labels "com.supabase.cli.project"}} {{range .Mounts}}{{if eq .Destination "/mnt"}}{{.Type}}:{{.Name}}{{end}}{{end}}'
+  # If ownership cannot be proven, avoid CLI stop --no-backup: cleanup must
+  # select resources by project label rather than assuming names are owned.
+  cleanup_mode=labels-only
   owned_mount="$(docker inspect --type container --format "$mount_format" "$storage")" || return
   if [[ "$owned_mount" != "$project_id volume:$storage" ]]; then
     printf 'Refusing to reset Storage: %s does not have the expected disposable volume.\n' "$storage" >&2
     return 70
   fi
+  volume_owner="$(docker volume inspect --format '{{index .Labels "com.supabase.cli.project"}}' "$storage")" || return
+  if [[ "$volume_owner" != "$project_id" ]]; then
+    printf 'Refusing to reset Storage: the mounted volume is not owned by the disposable project.\n' >&2
+    return 70
+  fi
+  cleanup_mode=""
   docker exec "$storage" sh -eu -c '
     backend=${FILE_STORAGE_BACKEND_PATH:?}
     if [ "$backend" != /mnt ] || [ ! -d "$backend" ] || [ -L "$backend" ]; then
