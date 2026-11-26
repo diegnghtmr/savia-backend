@@ -35,6 +35,11 @@ export const COVERAGE_ALLOWLIST = [
     reason:
       'Local Docker wrapper; CI uses distro OCR packages and calls the same suites directly',
   },
+  {
+    script: 'test:runner-isolation',
+    reason:
+      'Local Docker probe for Storage isolation between suites in the shared runner, which CI does not use',
+  },
 ];
 
 function escapeRegex(string) {

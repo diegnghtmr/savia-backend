@@ -33,9 +33,10 @@ pnpm test:integration:ocr
 ```
 
 `test:integration:all` runs every `test:integration:<name>` suite. It starts one
-local Supabase stack and resets its database with all migrations and no seed
-before each database suite. Suites run serially, and the runner prints a summary
-and tears the stack down on exit, including after failure or interruption. The
+local Supabase stack, reapplies all migrations without seed data, and clears
+Storage files before each database suite. Suites run serially, and the runner
+prints a summary and tears the stack down on exit, including after failure or
+interruption. The
 standalone PDF renderer suite still requires Playwright Chromium on the host
 (`pnpm exec playwright-core install chromium`). The schema contract and SQL
 migration/rollback gates are separate because they build and check deliberately
@@ -53,6 +54,10 @@ The full and OCR runners hold `/tmp/savia-db.lock` through teardown. Existing
 DB command alongside the full or OCR runner, acquire the same lock explicitly,
 for example `flock /tmp/savia-db.lock pnpm run test:integration:workspace`.
 Do not wrap the full or OCR command in a second `flock`.
+
+Run `pnpm test:runner-isolation` to check that a Storage object written in one
+suite is absent before the next suite starts. The probe requires `curl` and uses
+the shared runner's lock.
 
 All disposable DB runners wait up to 30 seconds for the host ports declared in
 `supabase/config.toml` to become free before starting Supabase. If Docker reports

@@ -41,8 +41,9 @@ export function extractHostPorts(config) {
   return [...new Set(ports)];
 }
 
-const portAllocationError =
-  /address already in use|port is already allocated|programming external connectivity/i;
+// Docker's connectivity wrapper is generic; the underlying bind error must
+// identify a port conflict, not a firewall or another networking failure.
+const portAllocationError = /address already in use|port is already allocated/i;
 
 export function shouldRetryStart(log, attempt) {
   return attempt === 1 && portAllocationError.test(log);

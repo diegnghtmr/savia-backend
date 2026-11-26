@@ -66,6 +66,26 @@ run_in_container() {
   return "$result"
 }
 
+reset_disposable_storage() {
+  local storage="supabase_storage_$project_id" owned_mount
+  # db reset clears metadata, not file bytes. Only wipe the CLI's project-owned
+  # volume: never treat an arbitrary environment path or bind mount as scratch.
+  local mount_format='{{index .Config.Labels "com.supabase.cli.project"}} {{range .Mounts}}{{if eq .Destination "/mnt"}}{{.Type}}:{{.Name}}{{end}}{{end}}'
+  owned_mount="$(docker inspect --type container --format "$mount_format" "$storage")" || return
+  if [[ "$owned_mount" != "$project_id volume:$storage" ]]; then
+    printf 'Refusing to reset Storage: %s does not have the expected disposable volume.\n' "$storage" >&2
+    return 70
+  fi
+  docker exec "$storage" sh -eu -c '
+    backend=${FILE_STORAGE_BACKEND_PATH:?}
+    if [ "$backend" != /mnt ] || [ ! -d "$backend" ] || [ -L "$backend" ]; then
+      printf "Refusing to reset Storage: unexpected file backend path.\n" >&2
+      exit 70
+    fi
+    find "$backend" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  '
+}
+
 failed=0
 for index in "${!suites[@]}"; do
   IFS=$'\t' read -r name kind target <<< "${suites[index]}"
@@ -84,6 +104,10 @@ for index in "${!suites[@]}"; do
     if ! reset_disposable_database >/dev/null; then
       # No test may run against a failed or partially applied reset.
       printf 'Aborting: clean database reset failed before %s.\n' "$name" >&2
+      exit 1
+    fi
+    if ! reset_disposable_storage; then
+      printf 'Aborting: clean Storage reset failed before %s.\n' "$name" >&2
       exit 1
     fi
   fi

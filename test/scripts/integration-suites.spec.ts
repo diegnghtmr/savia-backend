@@ -74,7 +74,7 @@ it.each(legacySuites)(
   },
 );
 
-it('starts once, resets for each DB suite, summarizes failures, and tears down once', () => {
+it('starts once, resets DB and Storage for each suite, and tears down once', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'savia-integration-runner-test-'));
   try {
     const trace = join(scratch, 'trace');
@@ -83,7 +83,19 @@ it('starts once, resets for each DB suite, summarizes failures, and tears down o
         mode: 0o700,
       });
     fake('flock', 'printf "lock\\n" >> "$TRACE"');
-    fake('docker', 'exit 0');
+    fake(
+      'docker',
+      `case "$1" in
+  inspect)
+    storage="$6"
+    printf '%s volume:%s\\n' "\${storage#supabase_storage_}" "$storage"
+    ;;
+  exec)
+    [[ "$2 $3" == supabase_storage_savia-integration-*' sh' ]] || exit 70
+    printf 'storage wipe\\n' >> "$TRACE"
+    ;;
+esac`,
+    );
     fake(
       'pnpm',
       `case "$1 $2" in
@@ -113,8 +125,8 @@ esac`,
       stderr: '',
     });
     expect(readFileSync(trace, 'utf8')).toBe(
-      'lock\nstart\nstatus -o env\ndb reset --no-seed\nvitest test/identity/postgres-pool.integration-spec.ts\n' +
-        'db reset --no-seed\nvitest test/identity/workspace.integration-spec.ts\nstop --no-backup\n',
+      'lock\nstart\nstatus -o env\ndb reset --no-seed\nstorage wipe\nvitest test/identity/postgres-pool.integration-spec.ts\n' +
+        'db reset --no-seed\nstorage wipe\nvitest test/identity/workspace.integration-spec.ts\nstop --no-backup\n',
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -123,7 +135,7 @@ esac`,
 
 it.each([
   {
-    message: 'driver failed programming external connectivity',
+    message: 'failed programming external connectivity: address already in use',
     retryStatus: 0,
     expectedStatus: 0,
     calls: 'wait\nstart\nstop\nwait\nstart\nstatus\ndb\nvitest\nstop\n',
@@ -133,6 +145,13 @@ it.each([
     retryStatus: 7,
     expectedStatus: 7,
     calls: 'wait\nstart\nstop\nwait\nstart\nstop\n',
+  },
+  {
+    message:
+      'failed programming external connectivity: iptables: Permission denied',
+    retryStatus: 0,
+    expectedStatus: 4,
+    calls: 'wait\nstart\nstop\n',
   },
   {
     message: 'ERROR: migration failed (SQLSTATE 42P01)',

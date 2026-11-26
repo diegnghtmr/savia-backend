@@ -45,7 +45,8 @@ it('reads overrides and optional published ports, but not disabled or internal p
 it.each([
   'bind tcp 0.0.0.0:54324: address already in use',
   'failed to bind host port: Port is already allocated',
-  'driver failed programming external connectivity on endpoint',
+  'driver failed programming external connectivity: address already in use',
+  'driver failed programming external connectivity: port is already allocated',
 ])('retries only the first failure for %s', (message) => {
   expect(shouldRetryStart(message, 1)).toBe(true);
   expect(shouldRetryStart(message, 2)).toBe(false);
@@ -53,6 +54,21 @@ it.each([
 
 it('does not retry a migration failure', () => {
   const log = 'ERROR: migration failed (SQLSTATE 42P01)';
+  expect(shouldRetryStart(log, 1)).toBe(false);
+});
+
+it('does not retry a Docker firewall permission error', () => {
+  expect(
+    shouldRetryStart(
+      'driver failed programming external connectivity on endpoint supabase_db: ' +
+        'failed to add the host port forwarding rule: iptables: Permission denied',
+      1,
+    ),
+  ).toBe(false);
+});
+
+it('does not retry a generic connectivity failure with no allocation cause', () => {
+  const log = 'driver failed programming external connectivity on endpoint';
   expect(shouldRetryStart(log, 1)).toBe(false);
 });
 

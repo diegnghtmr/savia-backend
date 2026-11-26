@@ -12,4 +12,13 @@
 !test/forecasts/**
 !test/receipts/**
 !test/platform/tesseract-real-engine.integration-spec.ts
+
+# Keep credential-like files out even inside the re-included subtrees above.
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
 **/.env*
+**/*secret*
+**/credentials*
+**/auth.json
