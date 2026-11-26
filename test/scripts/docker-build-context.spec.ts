@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 
-it('excludes credentials after broad Docker re-includes with one exact source exception', () => {
+it('excludes credentials after broad Docker re-includes with only TypeScript application source re-included', () => {
   const rules = readFileSync('.dockerignore', 'utf8')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#'));
-  expect(rules.pop()).toBe('!src/platform/credential-crypto.ts');
+  expect(rules.pop()).toBe('!src/**/*.ts');
   const lastInclude = rules.findLastIndex((rule) => rule.startsWith('!'));
   expect(lastInclude).toBeGreaterThanOrEqual(0);
   expect(rules.slice(lastInclude + 1)).toEqual(
@@ -17,7 +17,7 @@ it('excludes credentials after broad Docker re-includes with one exact source ex
       '**/*.[pP][fF][xX]',
       '**/.[eE][nN][vV]*',
       '**/*[sS][eE][cC][rR][eE][tT]*',
-      '**/[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*',
+      '**/*[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*',
       '**/[aA][uU][tT][hH].[jJ][sS][oO][nN]',
     ]),
   );

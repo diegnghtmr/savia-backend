@@ -20,8 +20,9 @@
 **/*.[pP][fF][xX]
 **/.[eE][nN][vV]*
 **/*[sS][eE][cC][rR][eE][tT]*
-**/[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*
+**/*[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*
 **/[aA][uU][tT][hH].[jJ][sS][oO][nN]
 
-# This exact path is application code needed by PlatformModule, not data.
-!src/platform/credential-crypto.ts
+# Tracked TypeScript application code is not credential data, even when a
+# module name mentions credentials (AI credential and crypto modules).
+!src/**/*.ts
