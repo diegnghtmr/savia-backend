@@ -28,6 +28,9 @@ describe('createRecurringRuleCommand validation (RULING 51, 52, 53, 55)', () => 
     vi.useRealTimers();
   });
   it('accepts a valid monthly recurring rule and COMPUTEs nextOccurrenceAt (RULING 51, 54)', () => {
+    // RULING 58 keeps nextOccurrenceAt strictly in the future, so freeze "now" before startsAt.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'));
     const command = createRecurringRuleCommand(VALID_REQUEST);
 
     expect(command.name).toBe('Cloud Hosting');
