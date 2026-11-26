@@ -1,5 +1,6 @@
 // Migrations under test: 202609060003_notifications.sql, 202609170006_notification_production.sql,
-// 202609170016_notification_settings.sql, 202609170020_notification_mute_at_creation.sql
+// 202609170016_notification_settings.sql, 202609170020_notification_mute_at_creation.sql,
+// 202609170038_notification_delivery_timezone_lookup.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -105,6 +106,84 @@ describe('Notifications integration contract and endpoint suite', () => {
     if (admin) {
       await admin.end();
     }
+  });
+
+  describe('notification delivery timezone lookup', () => {
+    it('keeps exact catalog names and falls back to UTC for nonmembers', async () => {
+      // EST5EDT is accepted only if this Postgres installation lists it as a
+      // name. Accepting a value in AT TIME ZONE (e.g. PST or UTC+5) is not enough.
+      const zones = [
+        'America/Bogota',
+        'america/bogota',
+        'EST5EDT',
+        'UTC+5',
+        'PST',
+        'Mars/Olympus',
+        null,
+        '',
+      ];
+      const { rows } = await admin.query<{
+        zone: string | null;
+        actual: string;
+        expected: string;
+      }>(
+        `with zone_names as materialized (select name from pg_catalog.pg_timezone_names)
+         select input.zone, public.notification_delivery_timezone(input.zone) as actual,
+                coalesce(zone_names.name, 'UTC') as expected
+           from unnest($1::text[]) with ordinality as input(zone, position)
+           left join zone_names on zone_names.name = input.zone
+          order by input.position`,
+        [zones],
+      );
+      expect(rows.map(({ zone }) => zone)).toEqual(zones);
+      expect(rows.map(({ actual }) => actual)).toEqual(
+        rows.map(({ expected }) => expected),
+      );
+    });
+
+    it('does not enumerate pg_timezone_names per lookup', async () => {
+      const { rows } = await admin.query<{ definition: string }>(
+        `select pg_get_functiondef('public.notification_delivery_timezone(text)'::regprocedure)
+                as definition`,
+      );
+      expect(rows[0].definition).not.toMatch(/\bpg_timezone_names\b/i);
+    });
+
+    it('keeps the stable invoker function restricted to the delivery role', async () => {
+      const { rows } = await admin.query(`
+        select pg_get_userbyid(p.proowner) as owner, p.provolatile::text as volatility,
+               p.prosecdef as security_definer, p.proconfig as config,
+               array(
+                 select coalesce(r.rolname::text, 'PUBLIC')
+                   from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                   left join pg_roles r on r.oid = a.grantee
+                  where a.privilege_type = 'EXECUTE'
+                  order by 1
+               ) as executors
+          from pg_proc p where p.oid = 'public.notification_delivery_timezone(text)'::regprocedure`);
+      expect(rows).toEqual([
+        {
+          owner: 'savia_notification_delivery',
+          volatility: 's',
+          security_definer: false,
+          config: ['search_path=pg_catalog'],
+          executors: ['savia_notification_delivery'],
+        },
+      ]);
+    });
+
+    it('grants only read access on the lookup table to the delivery role', async () => {
+      const { rows } = await admin.query(`
+        select coalesce(r.rolname::text, 'PUBLIC') as grantee, a.privilege_type
+          from pg_class c cross join lateral aclexplode(c.relacl) a
+          left join pg_roles r on r.oid = a.grantee
+         where c.oid = to_regclass('public.notification_delivery_timezone_names')
+           and a.grantee <> c.relowner
+         order by 1, 2`);
+      expect(rows).toEqual([
+        { grantee: 'savia_notification_delivery', privilege_type: 'SELECT' },
+      ]);
+    });
   });
 
   describe('notification preferences', () => {
