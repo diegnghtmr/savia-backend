@@ -1,5 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
@@ -110,6 +116,111 @@ esac`,
       'lock\nstart\nstatus -o env\ndb reset --no-seed\nvitest test/identity/postgres-pool.integration-spec.ts\n' +
         'db reset --no-seed\nvitest test/identity/workspace.integration-spec.ts\nstop --no-backup\n',
     );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  {
+    message: 'driver failed programming external connectivity',
+    retryStatus: 0,
+    expectedStatus: 0,
+    calls: 'wait\nstart\nstop\nwait\nstart\nstatus\ndb\nvitest\nstop\n',
+  },
+  {
+    message: 'failed to bind: port is already allocated',
+    retryStatus: 7,
+    expectedStatus: 7,
+    calls: 'wait\nstart\nstop\nwait\nstart\nstop\n',
+  },
+  {
+    message: 'ERROR: migration failed (SQLSTATE 42P01)',
+    retryStatus: 0,
+    expectedStatus: 4,
+    calls: 'wait\nstart\nstop\n',
+  },
+])('handles $message (retry status $retryStatus)', (scenario) => {
+  const scratch = mkdtempSync(join(tmpdir(), 'savia-start-policy-test-'));
+  try {
+    const trace = join(scratch, 'trace');
+    const fake = (name: string, body: string) =>
+      writeFileSync(join(scratch, name), `#!/usr/bin/env bash\n${body}\n`, {
+        mode: 0o700,
+      });
+    fake('docker', 'exit 0');
+    fake(
+      'node',
+      `if [[ "$2" == wait ]]; then
+  grep -qx '\\[realtime\\]' "$3" || exit 70
+  printf 'wait\\n' >> "$TRACE"
+else
+  exec "$REAL_NODE" "$@"
+fi`,
+    );
+    fake(
+      'pnpm',
+      `case "$1 $2" in
+  'exec supabase')
+    printf '%s\\n' "$5" >> "$TRACE"
+    case "$5" in
+      start)
+        if [[ ! -e "$TMPDIR/attempted" ]]; then
+          touch "$TMPDIR/attempted"
+          printf '%s\\n' "$START_ERROR" >&2
+          exit 4
+        fi
+        if [[ "$RETRY_STATUS" != 0 ]]; then
+          printf '%s\\n' "$START_ERROR" >&2
+          exit "$RETRY_STATUS"
+        fi
+        ;;
+      status) printf 'DB_URL=postgresql://fixture.invalid/fixture\\n' ;;
+    esac
+    ;;
+  'exec vitest') printf 'vitest\\n' >> "$TRACE" ;;
+  *) exit 70 ;;
+esac`,
+    );
+    const { status, stdout, stderr } = spawnSync(
+      'bash',
+      [legacyRunner, 'test/identity/postgres-pool.integration-spec.ts'],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${scratch}:${process.env.PATH}`,
+          TMPDIR: scratch,
+          TRACE: trace,
+          REAL_NODE: process.execPath,
+          START_ERROR: scenario.message,
+          RETRY_STATUS: String(scenario.retryStatus),
+        },
+      },
+    );
+    expect(status).toBe(scenario.expectedStatus);
+    expect(stdout).toBe('');
+    expect(readFileSync(trace, 'utf8')).toBe(scenario.calls);
+    const diagnostics = readdirSync(scratch).filter((name) =>
+      name.startsWith('savia-start-failure-'),
+    );
+    if (scenario.expectedStatus === 0) {
+      expect(stderr).toBe('');
+      expect(diagnostics).toEqual([]);
+    } else {
+      expect(diagnostics).toHaveLength(1);
+      const dir = join(scratch, diagnostics[0]);
+      expect(stderr).toBe(
+        `Supabase start failed (status ${scenario.expectedStatus}); sanitized diagnostics retained at ${dir}\n`,
+      );
+      expect(readFileSync(join(dir, 'start-errors.log'), 'utf8')).toBe(
+        `supabase_start_status=${scenario.expectedStatus}\n${scenario.message}\n`,
+      );
+      expect(readFileSync(join(dir, 'cleanup-status'), 'utf8')).toBe(
+        'owned_containers=absent\nworkdir=removed\n',
+      );
+    }
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

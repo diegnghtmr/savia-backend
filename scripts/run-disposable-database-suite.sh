@@ -106,8 +106,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/retain-disposable-database-errors.sh"
 # retention: a failed scan still means the diagnostics may contain credentials.
 has_credentials() { local status=0; grep -R -Eiqi 'eyJ[A-Za-z0-9_-]+\.|sb_secret_|-----BEGIN |postgres(ql)?://[^[:space:]\[]|(password|secret|token|key)=[^[]' "$diagnostic_dir" || status=$?; (( status != 1 )); }
 owned_realtime_running() { docker ps --filter "label=com.supabase.cli.project=$project_id" --format '{{.Names}} {{.Label "com.supabase.cli.service"}}' | grep -Eq "^supabase_realtime_${project_id} |^[^[:space:]]+ realtime$"; }
-cleanup() {
-  [[ -z "${realtime_guard_pid:-}" ]] || { kill "$realtime_guard_pid" 2>/dev/null || true; wait "$realtime_guard_pid" 2>/dev/null || true; }
+stop_disposable_stack() {
   # -k escalates to SIGKILL. Plain `timeout` sends SIGTERM plus SIGCONT, which
   # frees an ordinary stopped child -- but a child that stops itself again on
   # resume (a background process looping on SIGTTOU while touching the tty) is
@@ -136,6 +135,10 @@ cleanup() {
   # The CLI labels its volumes with the same project label used above, so this is
   # scoped to this run and cannot touch another project.
   docker volume ls -q --filter "label=com.supabase.cli.project=$project_id" | xargs -r timeout -k 5 30 docker volume rm >/dev/null 2>&1 || true
+}
+cleanup() {
+  [[ -z "${realtime_guard_pid:-}" ]] || { kill "$realtime_guard_pid" 2>/dev/null || true; wait "$realtime_guard_pid" 2>/dev/null || true; }
+  stop_disposable_stack
   rm -rf "$workdir"
   if [[ -n "$diagnostic_dir" ]]; then
     { ! docker ps -aq --filter "label=com.supabase.cli.project=$project_id" | grep -q . && [[ ! -e "$workdir" ]]; } \
@@ -149,8 +152,21 @@ init_disposable_database() {
   workdir="$(mktemp -d)"
 }
 
+fail_disposable_start() {
+  local start_status="$1" start_log="$2"
+  diagnostic_dir="$(mktemp -d "${TMPDIR:-/tmp}/savia-start-failure-${project_id}-XXXXXX")"
+  { printf 'supabase_start_status=%s\n' "$start_status"; redact < "$start_log" | retain_errors; } > "$diagnostic_dir/start-errors.log"
+  if has_credentials; then
+    rm -rf "$diagnostic_dir"; diagnostic_dir=""
+    printf 'Supabase start failed; unsafe diagnostics deleted.\n' >&2
+  else
+    printf 'Supabase start failed (status %s); sanitized diagnostics retained at %s\n' "$start_status" "$diagnostic_dir" >&2
+  fi
+  exit "$start_status"
+}
+
 start_disposable_database() {
-  local source_config_hash config start_log start_status
+  local source_config_hash config start_log start_status attempt policy
   source_config_hash="$(sha256sum supabase/config.toml)"
   mkdir -p "$workdir/supabase/migrations"
   cp supabase/config.toml "$workdir/supabase/config.toml"
@@ -161,7 +177,15 @@ start_disposable_database() {
   perl -0pi -e 's/\z/\n[realtime]\nenabled = false\n/ or die "Cannot disable Realtime\n"' "$config"
   (( $(perl -0777 -ne '$count = () = /^\[realtime\]\nenabled = false$/mg; print $count' "$config") == 1 )) && [[ "$source_config_hash" == "$(sha256sum supabase/config.toml)" ]] || { printf 'Disposable Realtime disablement proof failed.\n' >&2; exit 70; }
   start_log="$workdir/start.log"
-  pnpm exec supabase --workdir "$workdir" start > "$start_log" 2>&1 || { start_status=$?; diagnostic_dir="$(mktemp -d "${TMPDIR:-/tmp}/savia-start-failure-${project_id}-XXXXXX")"; { printf 'supabase_start_status=%s\n' "$start_status"; redact < "$start_log" | retain_errors; } > "$diagnostic_dir/start-errors.log"; if has_credentials; then rm -rf "$diagnostic_dir"; diagnostic_dir=""; printf 'Supabase start failed; unsafe diagnostics deleted.\n' >&2; else printf 'Supabase start failed (status %s); sanitized diagnostics retained at %s\n' "$start_status" "$diagnostic_dir" >&2; fi; exit "$start_status"; }
+  policy="$(dirname "${BASH_SOURCE[0]}")/supabase-start-policy.mjs"
+  node "$policy" wait "$config" > "$start_log" 2>&1 || fail_disposable_start "$?" "$start_log"
+  for attempt in 1 2; do
+    pnpm exec supabase --workdir "$workdir" start > "$start_log" 2>&1 && break
+    start_status=$?
+    node "$policy" should-retry "$start_log" "$attempt" || fail_disposable_start "$start_status" "$start_log"
+    stop_disposable_stack >/dev/null 2>&1
+    node "$policy" wait "$config" >> "$start_log" 2>&1 || fail_disposable_start "$start_status" "$start_log"
+  done
   rm -f "$start_log"
   eval "$(pnpm exec supabase --workdir "$workdir" status -o env)"
   : "${DB_URL:?Supabase status did not export DB_URL}"

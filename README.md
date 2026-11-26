@@ -54,6 +54,12 @@ DB command alongside the full or OCR runner, acquire the same lock explicitly,
 for example `flock /tmp/savia-db.lock pnpm run test:integration:workspace`.
 Do not wrap the full or OCR command in a second `flock`.
 
+All disposable DB runners wait up to 30 seconds for the host ports declared in
+`supabase/config.toml` to become free before starting Supabase. If Docker reports
+a port allocation error, the runner stops the partial stack, checks the ports
+again, and retries once if they become free. Other startup errors are not retried;
+failed starts still retain sanitized diagnostics when safe.
+
 On one Linux Docker host, five DB suites (pool, transaction resilience,
 workspace, transaction creation and receipt foundation; 85 tests) took 7m25s
 with separate stacks and 4m09s with the shared stack. Based on the four warm

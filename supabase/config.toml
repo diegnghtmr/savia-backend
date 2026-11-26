@@ -1,7 +1,21 @@
 project_id = "savia-backend"
 
+# Effective Supabase CLI v2.109.1 defaults, explicit for disposable startup.
+[api]
+port = 54321
+
 [db]
+port = 54322
 major_version = 17
+
+[studio]
+port = 54323
+
+[local_smtp]
+port = 54324
+
+[analytics]
+port = 54327
 
 [storage]
 enabled = true
