@@ -64,6 +64,32 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa util-linux
           dpkg-query -W tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa util-linux
+      # Ten shards starting Supabase at once can hit the public image
+      # registry's rate limit (HTTP 429 / "Data limit exceeded"). Pull the
+      # images once per shard, staggered and with retries, so every suite
+      # below starts from the local Docker cache.
+      - name: pull Supabase images
+        shell: bash
+        run: |
+          workdir="$(mktemp -d)"
+          project_id="savia-images-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.shard }}"
+          cleanup() {
+            pnpm exec supabase --workdir "$workdir" stop --no-backup || true
+            rm -rf "$workdir"
+          }
+          trap cleanup EXIT
+          mkdir -p "$workdir/supabase"
+          cp supabase/config.toml "$workdir/supabase/config.toml"
+          sed -i "s/^project_id = .*/project_id = \"$project_id\"/" "$workdir/supabase/config.toml"
+          sleep $(( (${{ matrix.shard }} - 1) * 15 ))
+          for attempt in 1 2 3 4 5; do
+            if pnpm exec supabase --workdir "$workdir" start; then exit 0; fi
+            pnpm exec supabase --workdir "$workdir" stop --no-backup || true
+            delay=$(( attempt * 45 + RANDOM % 30 ))
+            echo "Supabase image pull failed (attempt $attempt); retrying in ${delay}s"
+            sleep "$delay"
+          done
+          exit 1
       - name: database RLS contract
         if: matrix.shard == 4
         shell: bash
