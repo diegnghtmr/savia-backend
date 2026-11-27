@@ -17,6 +17,18 @@ export class ArtifactStorageClientError extends Error {
   }
 }
 
+export interface ListedArtifact {
+  readonly path: string;
+  readonly createdAt: Date;
+}
+
+export interface ArtifactStorageListOptions {
+  readonly after?: string;
+  readonly before: Date;
+  readonly limit: number;
+  readonly signal: AbortSignal;
+}
+
 export interface ArtifactStorage {
   /**
    * Stores `content` at `path`, overwriting any existing object at that key.
@@ -34,5 +46,10 @@ export interface ArtifactStorage {
     signal?: AbortSignal,
   ): Promise<{ url: string; expiresAt: Date }>;
   download(path: string, signal?: AbortSignal): Promise<Buffer>;
-  remove(path: string): Promise<void>;
+  remove(path: string, signal?: AbortSignal): Promise<void>;
+  /** Optional recursive listing, sorted by key, excluding `after` and objects created at or after `before`. */
+  list?(
+    prefix: string,
+    options: ArtifactStorageListOptions,
+  ): Promise<readonly ListedArtifact[]>;
 }

@@ -2,13 +2,16 @@ import {
   add,
   currencyValue,
   sortViolations,
+  stringValue,
   type FieldViolation,
 } from '../platform/field-validation.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
 import type {
   CreateFundContributionRequest,
   CreateFundRequest,
+  CreateFundWithdrawalRequest,
   Money,
+  UpdateFundRequest,
 } from './fund.port.js';
 
 export class FundCommandValidationError extends Error {
@@ -38,6 +41,7 @@ const INTEGER_PATTERN = /^-?[0-9]+$/;
 const INT64_MIN = -9223372036854775808n;
 const INT64_MAX = 9223372036854775807n;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const STRONG_ETAG = /^"[\x21\x23-\x7e\x80-\xff]*"$/;
 const ISO_DATE_TIME_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/i;
 
@@ -139,6 +143,179 @@ function parseMoney(
     };
   }
   return undefined;
+}
+
+function readBody(input: unknown): Record<string, unknown> {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw new FundCommandValidationError([
+      { field: 'body', code: 'invalid-type', message: 'must be an object' },
+    ]);
+  }
+  return input as Record<string, unknown>;
+}
+
+function parsePositiveAmount(
+  input: unknown,
+  field: string,
+  violations: FieldViolation[],
+): Money | undefined {
+  const amount = parseMoney(input, field, violations);
+  if (amount) {
+    const { amountMinor, currency } = input as Record<string, unknown>;
+    if (amountMinor !== amount.amountMinor || currency !== amount.currency) {
+      add(
+        violations,
+        field,
+        'invalid-format',
+        'must use a positive integer string and uppercase currency',
+      );
+    }
+  }
+  return amount;
+}
+
+function fundUuid(
+  value: unknown,
+  field: string,
+  violations: FieldViolation[],
+): string {
+  if (typeof value === 'string' && UUID_PATTERN.test(value)) {
+    return value.toLowerCase();
+  }
+  add(violations, field, 'invalid-format', 'must be a valid UUID');
+  return '';
+}
+
+function nonBlankFundText(
+  value: unknown,
+  field: string,
+  maxLength: number,
+  violations: FieldViolation[],
+): string {
+  const trimmed = stringValue(value, field, violations);
+  if (typeof value !== 'string' || !trimmed) return '';
+  if ([...value].length > maxLength) {
+    add(
+      violations,
+      field,
+      'max-length',
+      `must be at most ${maxLength} characters`,
+    );
+  }
+  return value;
+}
+
+const UPDATE_FUND_FIELDS = new Set([
+  'name',
+  'objective',
+  'targetAmount',
+  'targetDate',
+  'linkedAccountId',
+  'responsibleMemberIds',
+]);
+
+export function parseFundIfMatch(value: unknown): string | undefined {
+  const ifMatch = typeof value === 'string' ? value.trim() : '';
+  return STRONG_ETAG.test(ifMatch) ? ifMatch : undefined;
+}
+
+export function updateFundCommand(input: unknown): UpdateFundRequest {
+  const body = readBody(input);
+  const violations: FieldViolation[] = [];
+  if (Object.keys(body).length === 0) {
+    add(violations, 'body', 'required', 'at least one field is required');
+  }
+  for (const field of Object.keys(body)) {
+    if (!UPDATE_FUND_FIELDS.has(field)) {
+      add(violations, field, 'not-allowed', 'is not allowed');
+    }
+  }
+
+  const {
+    name,
+    objective,
+    targetAmount,
+    targetDate,
+    linkedAccountId,
+    responsibleMemberIds,
+  } = body;
+  let members: string[] | undefined;
+  if (responsibleMemberIds !== undefined) {
+    if (!Array.isArray(responsibleMemberIds)) {
+      add(
+        violations,
+        'responsibleMemberIds',
+        'invalid-type',
+        'must be an array',
+      );
+    } else {
+      members = responsibleMemberIds.map((id, i) =>
+        fundUuid(id, `responsibleMemberIds.${i}`, violations),
+      );
+      if (new Set(members).size !== members.length) {
+        add(
+          violations,
+          'responsibleMemberIds',
+          'duplicate',
+          'must contain unique membership IDs',
+        );
+      }
+    }
+  }
+  if (
+    targetDate != null &&
+    (!validDate(targetDate) || targetDate.startsWith('0000-'))
+  ) {
+    add(
+      violations,
+      'targetDate',
+      'invalid-format',
+      'must be a valid UTC calendar date (YYYY-MM-DD)',
+    );
+  }
+  const command = {
+    name:
+      name === undefined
+        ? undefined
+        : nonBlankFundText(name, 'name', 120, violations),
+    objective:
+      objective == null
+        ? objective
+        : nonBlankFundText(objective, 'objective', 500, violations),
+    targetAmount:
+      targetAmount === undefined
+        ? undefined
+        : parsePositiveAmount(targetAmount, 'targetAmount', violations),
+    targetDate: targetDate as UpdateFundRequest['targetDate'],
+    linkedAccountId:
+      linkedAccountId == null
+        ? linkedAccountId
+        : fundUuid(linkedAccountId, 'linkedAccountId', violations),
+    responsibleMemberIds: members,
+  };
+  if (violations.length > 0) {
+    throw new FundCommandValidationError(sortViolations(violations));
+  }
+  return command;
+}
+
+export function createFundWithdrawalCommand(
+  input: unknown,
+): CreateFundWithdrawalRequest {
+  const body = readBody(input);
+  const violations: FieldViolation[] = [];
+  for (const field of Object.keys(body)) {
+    if (!['accountId', 'amount', 'reason'].includes(field)) {
+      add(violations, field, 'not-allowed', 'is not allowed');
+    }
+  }
+  const accountId = fundUuid(body.accountId, 'accountId', violations);
+  const amount = parsePositiveAmount(body.amount, 'amount', violations);
+  const reason = nonBlankFundText(body.reason, 'reason', 500, violations);
+  if (violations.length > 0 || amount === undefined) {
+    throw new FundCommandValidationError(sortViolations(violations));
+  }
+  return { accountId, amount, reason };
 }
 
 export function createFundCommand(input: unknown): CreateFundRequest {

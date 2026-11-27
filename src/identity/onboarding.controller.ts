@@ -20,6 +20,7 @@ import {
 } from './bootstrap.port.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { OnboardingProblemFilter } from './onboarding-problem.filter.js';
+import { SessionOnlyProblemFilter } from './session-only-problem.filter.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { IDENTITY_PROBLEM_TYPES } from './identity-problem-types.js';
 
@@ -39,6 +40,7 @@ export class OnboardingController {
   ) {}
 
   @Post()
+  @UseFilters(SessionOnlyProblemFilter)
   public async onboard(
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,

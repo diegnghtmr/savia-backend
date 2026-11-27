@@ -366,7 +366,7 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
       expect(rlsRes.rows[0].relforcerowsecurity).toBe(true);
     });
 
-    it('3. savia_application holds SELECT on every column, INSERT on exactly (account_id, amount_minor, currency, leg_kind, occurred_at, status, transaction_id, transfer_id, workspace_id), UPDATE on exactly (status)', async () => {
+    it('3. savia_application holds SELECT on every column, INSERT on exactly (account_id, amount_minor, currency, leg_kind, occurred_at, status, transaction_id, transfer_id, workspace_id), UPDATE on exactly (occurred_at, status)', async () => {
       const result = await admin.query<{
         column_name: string;
         readable: boolean;
@@ -414,13 +414,12 @@ describe('Ledger postings schema, balanced-postings invariant, RLS, and grants (
         'workspace_id',
       ]);
 
-      // status is the ONLY mutable column, and that is enforced by the GRANT,
-      // not by convention: amount, account, currency and identity are
-      // immutable by grant (idiom: 202607150014:60).
+      // 202609170021_recurring_occurrence_edits.sql granted occurred_at in
+      // addition to status. The date guard still limits when it can change.
       const updatable = result.rows
         .filter((r) => r.updatable)
         .map((r) => r.column_name);
-      expect(updatable).toEqual(['status']);
+      expect(updatable).toEqual(['occurred_at', 'status']);
     });
 
     it('4. The complete column inventory is pinned — ANY added column fails this test', async () => {

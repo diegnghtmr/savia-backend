@@ -53,6 +53,7 @@ describe('DebtsController', () => {
 
   function createMockPort(): DebtsPort {
     return {
+      getProjection: vi.fn(),
       createDebt: vi.fn(async () => ({
         kind: DEBT_OUTCOMES.CREATED,
         debt: dummyDebt,

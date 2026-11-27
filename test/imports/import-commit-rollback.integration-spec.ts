@@ -822,7 +822,7 @@ describe('import commit and rollback against real PostgreSQL', () => {
     expect((await pending).kind).toBe('ok');
   });
 
-  it('commits only rows with valid classification and ignores duplicate or error rows', async () => {
+  it('commits valid and duplicate rows but skips errors when skipping duplicates is disabled', async () => {
     const importId = id(5693);
     await admin.query(
       'insert into public.import_jobs (id,workspace_id,file_name,status,source_columns,created_by) values ($1,$2,$3,$4,$5,$6)',
@@ -857,14 +857,14 @@ describe('import commit and rollback against real PostgreSQL', () => {
       key(5693),
     );
     expect(result.kind).toBe('ok');
-    expect(
-      (
-        await admin.query(
-          'select count(*)::int as count from public.transactions where import_job_id=$1',
-          [importId],
-        )
-      ).rows[0].count,
-    ).toBe(1);
+    const transactions = await admin.query(
+      'select description from public.transactions where import_job_id=$1 order by description',
+      [importId],
+    );
+    expect(transactions.rows).toEqual([
+      { description: 'Duplicate item' },
+      { description: 'Valid item' },
+    ]);
   });
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import ExcelJS from 'exceljs';
 import { DeliveryDeadlineExceededError } from '../../src/platform/delivery-deadline.js';
 import type { ExportRows } from '../../src/exports/export.port.js';
 import { ExportJobHandler } from '../../src/exports/export-job.handler.js';
@@ -71,6 +72,105 @@ function largeExportRows(rowCount = 50_000): ExportRows {
     transactions: largeRows(rowCount - half),
   };
 }
+
+describe('scoped financial resource serialization', () => {
+  describe.each(['budgets', 'debts'] as const)('%s', (resource) => {
+    const row = {
+      name: '=SUM(A1)',
+      money: { amountMinor: '-9007199254740993' },
+    };
+    const rows = {
+      accounts: [],
+      transactions: [],
+      financial: { resource, rows: [row] },
+    };
+
+    it('preserves nested data and uses the existing CSV formula neutralization', async () => {
+      const result = await serialize('csv', rows);
+      expect(result).toEqual({
+        content: Buffer.from(
+          `name,money\n"'=SUM(A1)","{""amountMinor"":""-9007199254740993""}"`,
+        ),
+        contentType: 'text/csv',
+        extension: 'csv',
+      });
+    });
+
+    it('includes only the scoped records with lossless values in the JSON artifact', async () => {
+      const result = await serialize('json_backup', rows, {
+        asOf: PINNED_INSTANT,
+      });
+      expect(result).toMatchObject({
+        contentType: 'application/json',
+        extension: 'json',
+      });
+      expect(JSON.parse(result.content.toString())).toEqual({
+        exportedAt: PINNED_INSTANT,
+        accounts: [],
+        transactions: [],
+        [resource]: [row],
+      });
+    });
+
+    it('writes nested data and formula-like names as XLSX text', async () => {
+      const result = await serialize('xlsx', rows);
+      expect(result).toMatchObject({
+        contentType:
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        extension: 'xlsx',
+      });
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(result.content as never);
+      const sheet = workbook.getWorksheet('export')!;
+      expect(sheet.rowCount).toBe(2);
+      expect(
+        ['A1', 'B1', 'A2', 'B2'].map((cell) => sheet.getCell(cell).value),
+      ).toEqual(['name', 'money', row.name, JSON.stringify(row.money)]);
+    });
+  });
+
+  it('neutralizes formula prefixes in every CSV text field, including LF', async () => {
+    const values = [
+      '\n=1+1',
+      '=1+1',
+      '+1+1',
+      '-1+1',
+      '@SUM(1)',
+      '\t=1+1',
+      '\r=1+1',
+    ];
+    const keys = ['name', 'equals', 'plus', 'minus', 'at', 'tab', 'cr'];
+    const result = await serialize('csv', {
+      accounts: [],
+      transactions: [],
+      financial: {
+        resource: 'budgets',
+        rows: [Object.fromEntries(keys.map((key, i) => [key, values[i]]))],
+      },
+    });
+    expect(result.content.toString()).toBe(
+      `${keys.join(',')}\n${values.map((value) => `"'${value}"`).join(',')}`,
+    );
+  });
+
+  it('stores nested allocation text in a literal XLSX string cell', async () => {
+    const allocations = [{ label: '=1+1', note: '\n@SUM(1)' }];
+    const result = await serialize('xlsx', {
+      accounts: [],
+      transactions: [],
+      financial: { resource: 'budgets', rows: [{ name: '+1+1', allocations }] },
+    });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(result.content as never);
+    const sheet = workbook.getWorksheet('export')!;
+    expect(sheet.getCell('A2').type).toBe(ExcelJS.ValueType.String);
+    expect(sheet.getCell('A2').value).toBe('+1+1');
+    expect(sheet.getCell('B2').type).toBe(ExcelJS.ValueType.String);
+    expect(JSON.parse(sheet.getCell('B2').value as string)).toEqual(
+      allocations,
+    );
+  });
+});
 
 describe('export serializers delivery budget and formatting', () => {
   describe('byte-identity and frozen instant', () => {
@@ -324,4 +424,40 @@ describe('export serializers delivery budget and formatting', () => {
       expect(mockStorage.sign).not.toHaveBeenCalled();
     });
   });
+});
+
+it.each(['accounts', 'transactions'] as const)(
+  'hardens LF-prefixed legacy %s descriptions without changing signed numbers',
+  async (resource) => {
+    const rows = [{ description: '\nhello', amount: '-1.2e+2' }];
+    const result = await serialize('csv', {
+      accounts: resource === 'accounts' ? rows : [],
+      transactions: resource === 'transactions' ? rows : [],
+    });
+
+    expect(result.content.toString('utf8')).toBe(
+      `description,amount\n"'\nhello","-1.2e+2"`,
+    );
+  },
+);
+
+it('writes debt money as exact XLSX text and leaves an undated cell blank', async () => {
+  const principal = { amountMinor: '9007199254740993', currency: 'USD' };
+  const result = await serialize('xlsx', {
+    accounts: [],
+    transactions: [],
+    financial: {
+      resource: 'debts',
+      rows: [{ name: '=2+2', principal, startDate: null }],
+    },
+  });
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(result.content as never);
+  const sheet = workbook.getWorksheet('export')!;
+  expect(sheet.getCell('A2').type).toBe(ExcelJS.ValueType.String);
+  expect(sheet.getCell('A2').value).toBe('=2+2');
+  expect(sheet.getCell('B2').type).toBe(ExcelJS.ValueType.String);
+  expect(sheet.getCell('B2').value).toBe(JSON.stringify(principal));
+  expect(sheet.getCell('C2').value).toBeNull();
 });

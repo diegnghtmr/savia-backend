@@ -37,6 +37,49 @@ interface SubscriptionRow extends Record<string, unknown> {
   readonly nextExpectedAt: Date | string | null;
   readonly status: Subscription['status'];
   readonly cursorAt?: string;
+  readonly version: number;
+  readonly recurringRuleId: string | null;
+  readonly accountId: string | null;
+}
+
+const SUBSCRIPTION_COLUMNS = `s.id::text,
+  s.payee_name as "payeeName",
+  s.current_amount_minor::text as "currentAmountMinor",
+  s.current_currency as "currentCurrency",
+  s.previous_amount_minor::text as "previousAmountMinor",
+  s.previous_currency as "previousCurrency",
+  s.frequency,
+  s.next_expected_at as "nextExpectedAt",
+  s.status,
+  s.version,
+  s.recurring_rule_id::text as "recurringRuleId"`;
+
+function mapSubscription(
+  row: SubscriptionRow,
+): Subscription & { etag: string } {
+  const currentAmount = {
+    amountMinor: String(row.currentAmountMinor),
+    currency: row.currentCurrency,
+  };
+  const previousAmount =
+    row.previousAmountMinor !== null && row.previousCurrency !== null
+      ? {
+          amountMinor: String(row.previousAmountMinor),
+          currency: row.previousCurrency,
+        }
+      : undefined;
+  return {
+    id: row.id,
+    payeeName: row.payeeName,
+    currentAmount,
+    ...(previousAmount !== undefined ? { previousAmount } : {}),
+    increasePercent: computeIncreasePercent(currentAmount, previousAmount),
+    frequency: row.frequency,
+    nextExpectedAt: row.nextExpectedAt ? toIso(row.nextExpectedAt) : null,
+    status: row.status,
+    etag: `"${row.version}"`,
+    ...(row.recurringRuleId ? { recurringRuleId: row.recurringRuleId } : {}),
+  };
 }
 
 export function toIso(value: unknown): string {
@@ -257,6 +300,66 @@ export class PostgresRecurringAdapter implements RecurringStore {
     }));
   }
 
+  public async lockSubscriptionWriter(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<boolean> {
+    const { rows } = await client.query<{ allowed: boolean }>(
+      'select public.lock_recurring_creator_membership($1::uuid) as allowed',
+      [workspaceId],
+    );
+    return rows[0]?.allowed === true;
+  }
+
+  public async lockSubscriptionCandidate(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ) {
+    const { rows } = await client.query<SubscriptionRow>(
+      `
+      select ${SUBSCRIPTION_COLUMNS}, t.account_id::text as "accountId"
+      from public.subscriptions s
+      left join public.transactions t on t.workspace_id = s.workspace_id and t.id = s.detection_observation_id
+      where s.workspace_id = $1::uuid and s.id = $2::uuid
+      for update of s`,
+      [workspaceId, id],
+    );
+    const row = rows[0];
+    return (
+      row && {
+        subscription: mapSubscription(row),
+        accountId: row.accountId,
+        version: row.version,
+      }
+    );
+  }
+
+  public async resolveSubscriptionCandidate(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    recurringRuleId: string | null,
+  ) {
+    const { rows } = await client.query<SubscriptionRow>(
+      `
+      update public.subscriptions s set status = $3, recurring_rule_id = $4::uuid
+      where s.workspace_id = $1::uuid and s.id = $2::uuid and s.status = 'detected'
+      returning ${SUBSCRIPTION_COLUMNS}`,
+      [
+        workspaceId,
+        id,
+        recurringRuleId === null ? 'ignored' : 'confirmed',
+        recurringRuleId,
+      ],
+    );
+    const row = rows[0];
+    if (!row) {
+      throw new Error('Locked subscription candidate could not be resolved.');
+    }
+    return mapSubscription(row);
+  }
+
   public async listSubscriptions(
     client: TransactionClient,
     workspaceId: string,
@@ -265,17 +368,9 @@ export class PostgresRecurringAdapter implements RecurringStore {
     status?: SubscriptionStatus,
   ): Promise<readonly SubscriptionItem[]> {
     const sql = `
-      select id::text,
-             payee_name as "payeeName",
-             current_amount_minor::text as "currentAmountMinor",
-             current_currency as "currentCurrency",
-             previous_amount_minor::text as "previousAmountMinor",
-             previous_currency as "previousCurrency",
-             frequency,
-             next_expected_at as "nextExpectedAt",
-             status,
+      select ${SUBSCRIPTION_COLUMNS},
              to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
-        from public.subscriptions
+        from public.subscriptions s
        where workspace_id = $1::uuid
          and ($2::text is null or status = $2)
          and ($3::timestamptz is null or (created_at, id) > ($3::timestamptz, $4::uuid))
@@ -293,37 +388,9 @@ export class PostgresRecurringAdapter implements RecurringStore {
 
     const result = await client.query<SubscriptionRow>(sql, values);
 
-    return result.rows.map((row) => {
-      const currentAmount = {
-        amountMinor: String(row.currentAmountMinor),
-        currency: row.currentCurrency,
-      };
-      const previousAmount =
-        row.previousAmountMinor !== null && row.previousCurrency !== null
-          ? {
-              amountMinor: String(row.previousAmountMinor),
-              currency: row.previousCurrency,
-            }
-          : undefined;
-
-      const increasePercent = computeIncreasePercent(
-        currentAmount,
-        previousAmount,
-      );
-
-      return {
-        subscription: {
-          id: row.id,
-          payeeName: row.payeeName,
-          currentAmount,
-          ...(previousAmount !== undefined ? { previousAmount } : {}),
-          increasePercent,
-          frequency: row.frequency,
-          nextExpectedAt: row.nextExpectedAt ? toIso(row.nextExpectedAt) : null,
-          status: row.status,
-        },
-        cursorAt: row.cursorAt ?? '',
-      };
-    });
+    return result.rows.map((row) => ({
+      subscription: mapSubscription(row),
+      cursorAt: row.cursorAt ?? '',
+    }));
   }
 }

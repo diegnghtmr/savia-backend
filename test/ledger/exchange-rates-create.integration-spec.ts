@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { CURRENCY_RATE_SELECTION_SQL } from '../../src/platform/currency-conversion.js';
+// Also verifies 202609170007_frankfurter_rate_insert.sql through the worker DB boundary.
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -36,6 +39,27 @@ describe('ExchangeRateService createManualExchangeRate database boundary', () =>
 
   const workspace1Id = id(881);
   const workspace2Id = id(882);
+
+  const frankfurterRate = {
+    workspace_id: workspace1Id,
+    base_currency: 'USD',
+    quote_currency: 'SEK',
+    effective_on: '2026-08-31',
+    rate: '10.00000000000000008900',
+  };
+  const append = (rates: readonly (typeof frankfurterRate)[]) =>
+    transaction.runAsQueueConsumer((client) =>
+      client.query('select public.append_frankfurter_rates($1::jsonb)', [
+        JSON.stringify(rates),
+      ]),
+    );
+
+  const readPair = (workspaceId: string, quoteCurrency: string) =>
+    service.list(subjectOwner, {
+      workspaceId,
+      baseCurrency: 'USD',
+      quoteCurrency,
+    });
 
   beforeAll(async () => {
     admin = new Pool({ connectionString: url });
@@ -388,6 +412,145 @@ describe('ExchangeRateService createManualExchangeRate database boundary', () =>
     );
   });
 
+  it('appends precise rates per workspace and publication date without replacing manual history on retry', async () => {
+    const command = {
+      baseCurrency: 'USD',
+      quoteCurrency: 'SEK',
+      rate: '9.9000',
+      effectiveAt: '2026-08-31T00:00:00.000Z',
+      notes: 'Independent manual quote',
+    };
+    const manual = await service.createManual(
+      subjectOwner,
+      workspace1Id,
+      command,
+      '00000000-0000-4000-8000-000000002011',
+    );
+    if (manual.kind !== EXCHANGE_RATE_CREATE_OUTCOMES.CREATED) {
+      throw new Error('Expected manual rate to be created.');
+    }
+    await append([
+      frankfurterRate,
+      { ...frankfurterRate, workspace_id: workspace2Id },
+    ]);
+    const original = await readPair(workspace1Id, 'SEK');
+    expect(original).toEqual({
+      kind: 'ok',
+      exchangeRates: expect.arrayContaining([
+        manual.exchangeRate,
+        {
+          id: expect.any(String),
+          baseCurrency: 'USD',
+          quoteCurrency: 'SEK',
+          rate: frankfurterRate.rate,
+          effectiveAt: command.effectiveAt,
+          source: 'frankfurter',
+          manual: false,
+        },
+      ]),
+    });
+    if (original.kind !== 'ok')
+      throw new Error('Expected pair to be readable.');
+    expect(original.exchangeRates).toHaveLength(2);
+
+    await append([{ ...frankfurterRate, rate: '11.00' }]);
+    expect(await readPair(workspace1Id, 'SEK')).toEqual(original);
+    await append([
+      { ...frankfurterRate, effective_on: '2026-09-01', rate: '12.00' },
+    ]);
+    expect(await readPair(workspace1Id, 'SEK')).toEqual({
+      kind: 'ok',
+      exchangeRates: [
+        expect.objectContaining({
+          rate: '12.00',
+          effectiveAt: '2026-09-01T00:00:00.000Z',
+        }),
+        ...original.exchangeRates,
+      ],
+    });
+    expect(await readPair(workspace2Id, 'SEK')).toEqual({
+      kind: 'ok',
+      exchangeRates: [
+        expect.objectContaining({
+          rate: frankfurterRate.rate,
+          source: 'frankfurter',
+        }),
+      ],
+    });
+  });
+
+  it('rolls back a whole worker batch on one rejected rate and leaves manual rows intact', async () => {
+    const manual = await service.createManual(
+      subjectOwner,
+      workspace1Id,
+      {
+        baseCurrency: 'USD',
+        quoteCurrency: 'NOK',
+        rate: '10.0000',
+        effectiveAt: '2026-08-31T00:00:00.000Z',
+      },
+      '00000000-0000-4000-8000-000000002012',
+    );
+    if (manual.kind !== EXCHANGE_RATE_CREATE_OUTCOMES.CREATED) {
+      throw new Error('Expected manual rate to be created.');
+    }
+    const rate = { ...frankfurterRate, quote_currency: 'NOK' };
+    await expect(
+      append([rate, { ...rate, workspace_id: workspace2Id, rate: '0' }]),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'exchange_rates_rate_positive_check',
+    });
+    expect(await readPair(workspace1Id, 'NOK')).toEqual({
+      kind: 'ok',
+      exchangeRates: [manual.exchangeRate],
+    });
+    expect(await readPair(workspace2Id, 'NOK')).toEqual({
+      kind: 'ok',
+      exchangeRates: [],
+    });
+  });
+
+  it('lets neither the application nor the worker bypass the append boundary', async () => {
+    await expect(
+      transaction.run(subjectOwner, (client) =>
+        client.query('select public.append_frankfurter_rates($1::jsonb)', [
+          JSON.stringify([frankfurterRate]),
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(
+      transaction.run(subjectOwner, (client) =>
+        client.query(
+          `insert into public.exchange_rates
+        (workspace_id, base_currency, quote_currency, rate, effective_at, source, manual, created_by)
+        values ($1, 'USD', 'DKK', 1, '2026-08-31T00:00:00Z', 'frankfurter', false, $2)`,
+          [workspace1Id, subjectOwner],
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'exchange_rates_system_provenance_check',
+    });
+
+    for (const sql of [
+      'select * from public.exchange_rates',
+      `insert into public.exchange_rates
+        (workspace_id, base_currency, quote_currency, rate, effective_at, source, manual)
+        values ('${workspace1Id}', 'USD', 'DKK', 1, '2026-08-31T00:00:00Z', 'frankfurter', false)`,
+      'update public.exchange_rates set rate = 1 where false',
+      'delete from public.exchange_rates where false',
+    ]) {
+      await expect(
+        transaction.runAsQueueConsumer((client) => client.query(sql)),
+      ).rejects.toMatchObject({ code: '42501' });
+    }
+    expect(await readPair(workspace1Id, 'DKK')).toEqual({
+      kind: 'ok',
+      exchangeRates: [],
+    });
+  });
+
   it('persists 500-char notes to database and read projection deliberately omits it', async () => {
     const key = '00000000-0000-4000-8000-000000002010';
     const notes500 = 'x'.repeat(500);
@@ -417,5 +580,97 @@ describe('ExchangeRateService createManualExchangeRate database boundary', () =>
     );
     expect(rows.rows[0].notes).toBe(notes500);
     expect(rows.rows[0].notes.length).toBe(500);
+  });
+
+  it('independent S10: 72-hour-old provider rates must not silently serve live valuation', async () => {
+    const kw = {
+      ...frankfurterRate,
+      base_currency: 'CHF',
+      quote_currency: 'USD',
+      effective_on: '2026-08-31',
+      rate: '1.10100000000000008900',
+    };
+    const liveRate = (asOf: string) =>
+      transaction.runRead(
+        subjectOwner,
+        async (client) =>
+          (
+            await client.query(CURRENCY_RATE_SELECTION_SQL, [
+              workspace1Id,
+              'CHF',
+              'USD',
+              asOf,
+            ])
+          ).rows[0],
+      );
+    const manual = await service.createManual(
+      subjectOwner,
+      workspace1Id,
+      {
+        baseCurrency: 'CHF',
+        quoteCurrency: 'USD',
+        rate: '1.0000',
+        effectiveAt: '2026-08-30T00:00:00.000Z',
+      },
+      '00000000-0000-4000-8000-000000002050',
+    );
+    expect(manual.kind).toBe(EXCHANGE_RATE_CREATE_OUTCOMES.CREATED);
+    expect(await liveRate('2026-09-03T00:00:00.000Z')).toMatchObject({
+      rate: '1.0000',
+      rateSource: 'manual',
+    });
+    await append([kw]);
+    expect(await liveRate('2026-09-02T23:59:59.999Z')).toMatchObject({
+      rate: kw.rate,
+      rateSource: 'frankfurter',
+    });
+    expect(await liveRate('2026-09-03T00:00:00.000Z')).not.toMatchObject({
+      rate: kw.rate,
+      rateSource: 'frankfurter',
+    });
+  });
+
+  it('independent S10: simultaneous batches converge and missing workspace rolls back all bytes', async () => {
+    const first = {
+      ...frankfurterRate,
+      quote_currency: 'CHF',
+      rate: '1.00000000000000008900',
+    };
+    const second = { ...first, workspace_id: workspace2Id };
+    const hash = async () =>
+      createHash('sha256')
+        .update(
+          JSON.stringify(
+            (
+              await admin.query(
+                'select to_jsonb(r)::text as val from public.exchange_rates r order by id',
+              )
+            ).rows,
+          ),
+        )
+        .digest('hex');
+    const before = await hash();
+    const failed = append([first, { ...second, workspace_id: id(999999) }]);
+    await expect(failed).rejects.toMatchObject({
+      code: '23503',
+      message:
+        'insert or update on table "exchange_rates" violates foreign key constraint "exchange_rates_workspace_id_fkey"',
+    });
+    expect(await hash()).toBe(before);
+    await Promise.all([append([first, second]), append([first, second])]);
+    const created = await hash();
+    expect(created).not.toBe(before);
+    const count = await admin.query(
+      "select workspace_id, rate::text as rate from public.exchange_rates where base_currency = 'USD' and quote_currency = 'CHF' and source = 'frankfurter' order by workspace_id",
+    );
+    expect(count.rows).toEqual([
+      { workspace_id: workspace1Id, rate: first.rate },
+      { workspace_id: workspace2Id, rate: second.rate },
+    ]);
+    await append([
+      { ...first, rate: '3.00' },
+      { ...second, rate: '3.00' },
+    ]);
+    expect(await hash()).toBe(created);
   });
 });

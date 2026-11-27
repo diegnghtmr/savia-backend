@@ -1,28 +1,176 @@
-import { Module } from '@nestjs/common';
+import { Inject, Injectable, Module } from '@nestjs/common';
+import { buildSubscriptionPriceIncreases } from './analytics/advanced-metrics.js';
+import { PostgresAnalyticsAdapter } from './analytics/postgres-analytics.adapter.js';
+import { BudgetAlertSweep } from './budgets/budget-alert-sweep.js';
+import { PostgresBudgetAdapter } from './budgets/postgres-budget.adapter.js';
+import { FrankfurterFxAdapter } from './currencies/frankfurter-fx.adapter.js';
+import { FrankfurterRateJob } from './currencies/frankfurter-rate-job.js';
+import { PostgresFrankfurterRateAdapter } from './currencies/postgres-frankfurter-rate.adapter.js';
+import { PostgresDebtAdapter } from './debts/postgres-debt.adapter.js';
 import { ForecastJobHandler } from './forecasts/forecast-job.handler.js';
 import { ForecastWorkerModule } from './forecasts/forecast-worker.module.js';
 import { PostgresJobsAdapter } from './jobs/postgres-jobs.adapter.js';
-import { JOB_HANDLERS } from './platform/job-handler.port.js';
-import { JobRunner } from './platform/job-runner.js';
-import { JOB_WRITER } from './platform/job-writer.port.js';
+import {
+  NotificationDeliverySweep,
+  PostgresNotificationDeliveryStore,
+} from './notifications/notification-delivery-sweep.js';
+import {
+  ExpoPushAdapter,
+  ResendEmailAdapter,
+} from './notifications/notification-providers.adapter.js';
+import { NotificationWriterModule } from './notifications/notification-writer.module.js';
+import { PostgresNotificationAdapter } from './notifications/postgres-notification.adapter.js';
+import { JOB_HANDLERS, type JobHandler } from './platform/job-handler.port.js';
+import { JOB_QUEUE, type JobQueue } from './platform/job-queue.port.js';
+import { JOB_SWEEP, JobRunner, type JobSweep } from './platform/job-runner.js';
+import { JOB_WRITER, type JobWriter } from './platform/job-writer.port.js';
+import {
+  NOTIFICATION_WRITER,
+  type NotificationWriter,
+} from './platform/notification-writer.port.js';
+import { PgTransaction } from './platform/pg-transaction.js';
+import { PostgresIdempotencyAdapter } from './platform/postgres-idempotency.adapter.js';
+import { WorkerConfig } from './platform/worker-config.js';
+import { PostgresTransactionAdapter } from './ledger/postgres-transaction.adapter.js';
+import { TransactionService } from './ledger/transaction.service.js';
 import { WorkerPlatformModule } from './platform/worker-platform.module.js';
 import { ReportJobHandler } from './reports/report-job.handler.js';
 import { ReportWorkerModule } from './reports/report-worker.module.js';
 import { ExportJobHandler } from './exports/export-job.handler.js';
 import { ExportWorkerModule } from './exports/export-worker.module.js';
+import { WorkspaceBackupHandler } from './exports/workspace-backup.handler.js';
 import { ReceiptOcrJobHandler } from './receipts/receipt-ocr-job.handler.js';
 import { ReceiptWorkerModule } from './receipts/receipt-worker.module.js';
+import { RecurringJobSweep } from './recurring/recurring-job-sweep.js';
+import { RecurringJobHandler } from './recurring/recurring-job.handler.js';
+import { RecurringMaterializer } from './recurring/recurring-materializer.js';
+import { PostgresOccurrenceAdapter } from './recurring/postgres-occurrence.adapter.js';
+import { SubscriptionDetectionSweep } from './recurring/subscription-detection-sweep.js';
+
+@Injectable()
+class ScheduledWorkerRunner extends JobRunner {
+  public constructor(
+    @Inject(JOB_QUEUE) queue: JobQueue,
+    transaction: PgTransaction,
+    @Inject(JOB_WRITER) writer: JobWriter,
+    config: WorkerConfig,
+    @Inject(JOB_HANDLERS) handlers: readonly JobHandler[],
+    @Inject(JOB_SWEEP) sweeps: readonly JobSweep[],
+    // Explicit token: JobRunner's inherited parameter metadata marks index 6
+    // as JOB_SWEEP, so an implicit type here would receive the sweep array.
+    @Inject(FrankfurterRateJob) private readonly fx: FrankfurterRateJob,
+  ) {
+    super(queue, transaction, writer, config, handlers, undefined, sweeps);
+  }
+
+  public override start(): Promise<void> {
+    const started = super.start();
+    // Keep application-context creation and one-shot queue drains inert.
+    this.fx.start();
+    return started;
+  }
+
+  public override async stop(): Promise<void> {
+    await Promise.all([super.stop(), this.fx.stop()]);
+  }
+}
 
 @Module({
   imports: [
     WorkerPlatformModule,
+    NotificationWriterModule,
     ForecastWorkerModule,
     ReportWorkerModule,
-    ExportWorkerModule,
+    ExportWorkerModule.withReaders({
+      budgets: new PostgresBudgetAdapter(),
+      debts: new PostgresDebtAdapter(),
+    }),
     ReceiptWorkerModule,
   ],
   providers: [
     PostgresJobsAdapter,
+    PostgresOccurrenceAdapter,
+    {
+      provide: RecurringJobSweep,
+      inject: [
+        PgTransaction,
+        PostgresOccurrenceAdapter,
+        JOB_WRITER,
+        WorkerConfig,
+      ],
+      useFactory: (
+        transaction: PgTransaction,
+        store: PostgresOccurrenceAdapter,
+        jobs: JobWriter,
+        config: WorkerConfig,
+      ) =>
+        new RecurringJobSweep(transaction, store, jobs, config.queueTimeoutMs),
+    },
+    {
+      provide: BudgetAlertSweep,
+      inject: [PgTransaction, PostgresNotificationAdapter, WorkerConfig],
+      useFactory: (
+        transaction: PgTransaction,
+        notifications: PostgresNotificationAdapter,
+        config: WorkerConfig,
+      ) =>
+        new BudgetAlertSweep(
+          transaction,
+          new PostgresBudgetAdapter(),
+          notifications,
+          config.queueTimeoutMs,
+        ),
+    },
+    {
+      provide: SubscriptionDetectionSweep,
+      inject: [PgTransaction, NOTIFICATION_WRITER, WorkerConfig],
+      useFactory: (
+        transaction: PgTransaction,
+        notifications: NotificationWriter,
+        config: WorkerConfig,
+      ) => {
+        const analytics = new PostgresAnalyticsAdapter();
+        return new SubscriptionDetectionSweep(
+          transaction,
+          notifications,
+          async (client, workspaceId) =>
+            buildSubscriptionPriceIncreases(
+              await analytics.readSubscriptionsWithPreviousAmount(
+                client,
+                workspaceId,
+              ),
+            ).items,
+          config.queueTimeoutMs,
+        );
+      },
+    },
+    {
+      provide: JOB_SWEEP,
+      inject: [RecurringJobSweep, BudgetAlertSweep, SubscriptionDetectionSweep],
+      useFactory: (
+        recurring: RecurringJobSweep,
+        budgetAlerts: BudgetAlertSweep,
+        subscriptionDetection: SubscriptionDetectionSweep,
+      ) => [recurring, budgetAlerts, subscriptionDetection],
+    },
+    {
+      provide: RecurringJobHandler,
+      inject: [PgTransaction, PostgresOccurrenceAdapter],
+      useFactory: (
+        transaction: PgTransaction,
+        store: PostgresOccurrenceAdapter,
+      ) =>
+        new RecurringJobHandler(
+          new RecurringMaterializer(
+            store,
+            new TransactionService(
+              transaction,
+              new PostgresTransactionAdapter(),
+              new PostgresIdempotencyAdapter(),
+            ),
+          ),
+        ),
+    },
     {
       provide: JOB_WRITER,
       useExisting: PostgresJobsAdapter,
@@ -33,16 +181,54 @@ import { ReceiptWorkerModule } from './receipts/receipt-worker.module.js';
         ForecastJobHandler,
         ReportJobHandler,
         ExportJobHandler,
+        WorkspaceBackupHandler,
         ReceiptOcrJobHandler,
+        RecurringJobHandler,
       ],
       useFactory: (
         forecast: ForecastJobHandler,
         report: ReportJobHandler,
         exportJob: ExportJobHandler,
+        workspaceBackup: WorkspaceBackupHandler,
         receiptOcr: ReceiptOcrJobHandler,
-      ) => [forecast, report, exportJob, receiptOcr],
+        recurring: RecurringJobHandler,
+      ) => [
+        forecast,
+        report,
+        exportJob,
+        workspaceBackup,
+        receiptOcr,
+        recurring,
+      ],
     },
-    JobRunner,
+    {
+      provide: FrankfurterRateJob,
+      inject: [PgTransaction],
+      useFactory: (transaction: PgTransaction) =>
+        new FrankfurterRateJob(
+          new FrankfurterFxAdapter(process.env.SAVIA_FRANKFURTER_BASE_URL),
+          new PostgresFrankfurterRateAdapter(transaction),
+        ),
+    },
+    { provide: JobRunner, useClass: ScheduledWorkerRunner },
+    {
+      provide: NotificationDeliverySweep,
+      inject: [PgTransaction],
+      useFactory: (transaction: PgTransaction) => {
+        const email =
+          process.env.SAVIA_RESEND_API_KEY?.trim() ||
+          process.env.SAVIA_NOTIFICATION_FROM_EMAIL?.trim()
+            ? new ResendEmailAdapter({
+                baseUrl: process.env.SAVIA_RESEND_BASE_URL,
+              })
+            : undefined;
+        return new NotificationDeliverySweep(
+          new PostgresNotificationDeliveryStore(transaction),
+          email,
+          new ExpoPushAdapter({ baseUrl: process.env.SAVIA_EXPO_BASE_URL }),
+        );
+      },
+    },
   ],
   exports: [WorkerPlatformModule, JOB_WRITER, JobRunner, ReportWorkerModule],
 })

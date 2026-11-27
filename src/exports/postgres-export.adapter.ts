@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { TransactionClient } from '../platform/pg-transaction.js';
+import type { Cursor } from '../platform/cursor.js';
+import type { ExportReaders } from '../platform/export-reader.port.js';
 import { PostgresAccountsAdapter } from '../accounts/postgres-accounts.adapter.js';
 import type { AccountCursor } from '../accounts/accounts.port.js';
 import { PostgresTransactionAdapter } from '../ledger/postgres-transaction.adapter.js';
@@ -56,6 +58,7 @@ export class PostgresExportAdapter implements ExportStore {
   public constructor(
     private readonly accounts = new PostgresAccountsAdapter(),
     private readonly transactions = new PostgresTransactionAdapter(),
+    private readonly financialReaders?: ExportReaders,
   ) {}
   public async readActiveRole(
     client: TransactionClient,
@@ -125,6 +128,28 @@ export class PostgresExportAdapter implements ExportStore {
     workspaceId: string,
     command: CreateExportJobCommand,
   ): Promise<ExportRows> {
+    const { resource, from, to } = command;
+    if (resource === 'budgets' || resource === 'debts') {
+      const reader = this.financialReaders?.[resource];
+      if (!reader) throw new Error(`Missing export reader for ${resource}.`);
+      const rows: Record<string, unknown>[] = [];
+      const limit = 10000;
+      let cursor: Cursor | undefined;
+      for (;;) {
+        const page = await reader.readExportPage(client, {
+          workspaceId,
+          cursor,
+          limit,
+          from: from ?? undefined,
+          to: to ?? undefined,
+        });
+        for (const item of page) rows.push(item.row);
+        if (page.length < limit) break;
+        const last = page[page.length - 1];
+        cursor = { createdAt: last.cursorAt, id: last.id };
+      }
+      return { accounts: [], transactions: [], financial: { resource, rows } };
+    }
     const accounts: Record<string, unknown>[] = [];
     if (command.resource !== 'transactions') {
       let cursor: AccountCursor | undefined;

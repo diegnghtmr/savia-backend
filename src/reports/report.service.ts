@@ -79,12 +79,15 @@ export class ReportService implements ReportsPort {
     workspaceId: string,
     command: CreateReportDefinitionRequest,
     key: string,
+    boundClient?: TransactionClient,
   ): Promise<ReportCreateOutcome> {
     const route = 'POST /v1/report-definitions';
     const fingerprint = computeRequestFingerprint(command);
 
     try {
-      return await this.tx.run(subject, async (client) => {
+      const apply = async (
+        client: TransactionClient,
+      ): Promise<ReportCreateOutcome> => {
         const role = await this.store.readActiveRole(client, workspaceId);
         if (!['owner', 'administrator', 'editor'].includes(role ?? '')) {
           return { kind: REPORT_OUTCOMES.FORBIDDEN };
@@ -152,7 +155,10 @@ export class ReportService implements ReportsPort {
         }
 
         return { kind: REPORT_OUTCOMES.CREATED, reportDefinition };
-      });
+      };
+      return boundClient
+        ? await apply(boundClient)
+        : await this.tx.run(subject, apply);
     } catch (error) {
       if (error instanceof ReportDefinitionCreateRollbackError) {
         if (error.outcome === 'replayed') {

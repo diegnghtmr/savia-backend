@@ -13,6 +13,10 @@ import { PgTransaction } from '../platform/pg-transaction.js';
 import { PostgresPool } from '../platform/postgres-pool.js';
 import { JOB_WRITER, type JobWriter } from '../platform/job-writer.port.js';
 import { LEDGER_WRITER } from '../platform/ledger-writer.port.js';
+import {
+  NOTIFICATION_WRITER,
+  type NotificationWriter,
+} from '../platform/notification-writer.port.js';
 import type { LedgerWriter } from '../platform/ledger-writer.port.js';
 @Module({
   imports: [PlatformModule],
@@ -40,6 +44,7 @@ import type { LedgerWriter } from '../platform/ledger-writer.port.js';
         JOB_WRITER,
         LEDGER_WRITER,
         'IMPORT_COMMIT_TRANSACTION',
+        NOTIFICATION_WRITER,
       ],
       useFactory: (
         tx: PgTransaction,
@@ -48,7 +53,17 @@ import type { LedgerWriter } from '../platform/ledger-writer.port.js';
         jobs: JobWriter,
         ledger: LedgerWriter,
         commitTx: PgTransaction,
-      ) => new ImportService(tx, store, idem, jobs, ledger, commitTx),
+        notifications: NotificationWriter,
+      ) =>
+        new ImportService(
+          tx,
+          store,
+          idem,
+          jobs,
+          ledger,
+          commitTx,
+          notifications,
+        ),
     },
     { provide: IMPORTS_PORT, useExisting: ImportService },
   ],

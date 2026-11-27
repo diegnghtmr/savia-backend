@@ -1,4 +1,6 @@
-// Migration under test: 202609060003_notifications.sql
+// Migrations under test: 202609060003_notifications.sql, 202609170006_notification_production.sql,
+// 202609170016_notification_settings.sql, 202609170020_notification_mute_at_creation.sql,
+// 202609170038_notification_delivery_timezone_lookup.sql
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
@@ -6,10 +8,18 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
+import { SAVIA_SCOPES } from '../../src/platform/savia-scopes.js';
+import {
+  PgTransaction,
+  type TransactionClient,
+} from '../../src/platform/pg-transaction.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
+import { PostgresNotificationAdapter } from '../../src/notifications/postgres-notification.adapter.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -71,6 +81,14 @@ describe('Notifications integration contract and endpoint suite', () => {
           throw new Error('token rejected');
         },
       })
+      .overrideProvider(CliTokenVerifier)
+      .useValue({
+        verify: async () => ({
+          subject: user1Id,
+          authMethod: 'cli_token',
+          scopes: Object.values(SAVIA_SCOPES),
+        }),
+      })
       .compile();
 
     application = moduleRef.createNestApplication<NestFastifyApplication>(
@@ -88,6 +106,650 @@ describe('Notifications integration contract and endpoint suite', () => {
     if (admin) {
       await admin.end();
     }
+  });
+
+  describe('notification delivery timezone lookup', () => {
+    it('keeps exact catalog names and falls back to UTC for nonmembers', async () => {
+      // EST5EDT is accepted only if this Postgres installation lists it as a
+      // name. Accepting a value in AT TIME ZONE (e.g. PST or UTC+5) is not enough.
+      const zones = [
+        'America/Bogota',
+        'america/bogota',
+        'EST5EDT',
+        'UTC+5',
+        'PST',
+        'Mars/Olympus',
+        null,
+        '',
+      ];
+      const { rows } = await admin.query<{
+        zone: string | null;
+        actual: string;
+        expected: string;
+      }>(
+        `with zone_names as materialized (select name from pg_catalog.pg_timezone_names)
+         select input.zone, public.notification_delivery_timezone(input.zone) as actual,
+                coalesce(zone_names.name, 'UTC') as expected
+           from unnest($1::text[]) with ordinality as input(zone, position)
+           left join zone_names on zone_names.name = input.zone
+          order by input.position`,
+        [zones],
+      );
+      expect(rows.map(({ zone }) => zone)).toEqual(zones);
+      expect(rows.map(({ actual }) => actual)).toEqual(
+        rows.map(({ expected }) => expected),
+      );
+    });
+
+    it('matches the former lookup for the complete PostgreSQL timezone corpus', async () => {
+      const { rows } = await admin.query<{ zone: string | null }>(`
+        with names as materialized (select name from pg_catalog.pg_timezone_names),
+        inputs(zone) as (
+          select name from names
+          union select abbrev from pg_catalog.pg_timezone_abbrevs
+          union select zone from (values
+            ('America/Bogota'), ('america/bogota'), ('PST'), ('EST'),
+            ('EST5EDT'), ('UTC+5'), ('GMT+3'), ('America/Bogota '),
+            ('Mars/Olympus'), (''), (null)
+          ) as samples(zone)
+        )
+        select i.zone
+          from inputs i
+          left join names n on n.name = i.zone
+         where public.notification_delivery_timezone(i.zone)
+               is distinct from coalesce(n.name, 'UTC')
+         order by i.zone
+      `);
+      expect(rows).toEqual([]);
+    });
+
+    it('does not enumerate pg_timezone_names per lookup', async () => {
+      const { rows } = await admin.query<{ definition: string }>(
+        `select pg_get_functiondef('public.notification_delivery_timezone(text)'::regprocedure)
+                as definition`,
+      );
+      expect(rows[0].definition).not.toMatch(/\bpg_timezone_names\b/i);
+    });
+
+    it('keeps the stable invoker function restricted to the delivery role', async () => {
+      const { rows } = await admin.query(`
+        select pg_get_userbyid(p.proowner) as owner, p.provolatile::text as volatility,
+               p.prosecdef as security_definer, p.proconfig as config,
+               array(
+                 select coalesce(r.rolname::text, 'PUBLIC')
+                   from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                   left join pg_roles r on r.oid = a.grantee
+                  where a.privilege_type = 'EXECUTE'
+                  order by 1
+               ) as executors
+          from pg_proc p where p.oid = 'public.notification_delivery_timezone(text)'::regprocedure`);
+      expect(rows).toEqual([
+        {
+          owner: 'savia_notification_delivery',
+          volatility: 's',
+          security_definer: false,
+          config: ['search_path=pg_catalog'],
+          executors: ['savia_notification_delivery'],
+        },
+      ]);
+    });
+
+    it('grants only read access on the lookup table to the delivery role', async () => {
+      const { rows } = await admin.query(`
+        select coalesce(r.rolname::text, 'PUBLIC') as grantee, a.privilege_type
+          from pg_class c cross join lateral aclexplode(c.relacl) a
+          left join pg_roles r on r.oid = a.grantee
+         where c.oid = to_regclass('public.notification_delivery_timezone_names')
+           and a.grantee <> c.relowner
+         order by 1, 2`);
+      expect(rows).toEqual([
+        { grantee: 'savia_notification_delivery', privilege_type: 'SELECT' },
+      ]);
+    });
+  });
+
+  describe('notification preferences', () => {
+    const url = '/v1/me/notification-preferences';
+    const defaults = {
+      channels: { in_app: true, push: true, email: true },
+      quietHours: null,
+      digestEnabled: true,
+    };
+    const get = (token = user1Token) =>
+      application.inject({
+        method: 'GET',
+        url,
+        headers: { authorization: `Bearer ${token}` },
+      });
+    const put = (payload: object, key?: string, tag?: string) =>
+      application.inject({
+        method: 'PUT',
+        url,
+        headers: {
+          authorization: `Bearer ${user1Token}`,
+          ...(key === undefined ? {} : { 'idempotency-key': key }),
+          ...(tag === undefined ? {} : { 'if-match': tag }),
+        },
+        payload,
+      });
+
+    it('uses subject-scoped defaults, conditionally replaces them and replays the original representation', async () => {
+      const initial = await get();
+      expect(initial.statusCode).toBe(200);
+      expect(initial.json()).toEqual(defaults);
+      const tag = initial.headers.etag as string;
+      expect(tag).toMatch(/^"\d+"$/);
+      const input = {
+        ...defaults,
+        channels: { in_app: false, push: true, email: false },
+        quietHours: {
+          start: '22:00',
+          end: '07:30',
+          timezone: 'America/Bogota',
+        },
+      };
+      const key = randomUUID();
+      const saved = await put(input, key, tag);
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toEqual(input);
+      expect(saved.headers.etag).not.toBe(tag);
+      expect((await put(defaults, key, tag)).statusCode).toBe(409);
+      const next = await put(
+        defaults,
+        randomUUID(),
+        saved.headers.etag as string,
+      );
+      expect(next.statusCode).toBe(200);
+      const replay = await put(input, key, tag);
+      expect(replay.statusCode).toBe(200);
+      expect(replay.headers.etag).toBe(saved.headers.etag);
+      expect(replay.json()).toEqual(input);
+      expect((await put(input, randomUUID(), tag)).statusCode).toBe(412);
+      const current = await get();
+      expect(current.json()).toEqual(defaults);
+      expect(current.headers.etag).toBe(next.headers.etag);
+      const peer = await get(user2Token);
+      expect(peer.json()).toEqual(defaults);
+      expect(peer.headers.etag).toBe(tag);
+    });
+
+    it('rejects malformed input and invalid quiet hours without changing settings or consuming the key', async () => {
+      const before = await get();
+      const tag = before.headers.etag as string;
+      const key = randomUUID();
+      const quiet = { start: '22:00', end: '07:30', timezone: 'UTC' };
+      expect((await put(defaults)).statusCode).toBe(400);
+      expect((await put(defaults, key, 'W/"0"')).statusCode).toBe(412);
+      for (const [patch, status] of [
+        [{ start: '24:00' }, 400],
+        [{ end: '7:30' }, 400],
+        [{ end: '07:30\n' }, 400],
+        [{ timezone: '+01:00' }, 422],
+        [{ timezone: 'Mars/Olympus' }, 422],
+        [{ end: '22:00' }, 422],
+      ] as const) {
+        const response = await put(
+          { ...defaults, quietHours: { ...quiet, ...patch } },
+          key,
+          tag,
+        );
+        expect(response.statusCode).toBe(status);
+        expect(response.headers['content-type']).toContain(
+          'application/problem+json',
+        );
+        expect(response.json()).toMatchObject({ status });
+        const unchanged = await get();
+        expect(unchanged.headers.etag).toBe(tag);
+        expect(unchanged.json()).toEqual(before.json());
+      }
+      const valid = await put({ ...defaults, quietHours: quiet }, key, '*');
+      expect(valid.statusCode).toBe(200);
+      expect(valid.json()).toEqual({ ...defaults, quietHours: quiet });
+      expect((await put(defaults, randomUUID())).statusCode).toBe(200);
+    });
+
+    it('prevents a second conditional update against the same version', async () => {
+      const initial = await get();
+      const tag = initial.headers.etag as string;
+      const results = await Promise.all([
+        put(defaults, randomUUID(), tag),
+        put({ ...defaults, digestEnabled: false }, randomUUID(), tag),
+      ]);
+      expect(results.map(({ statusCode }) => statusCode).sort()).toEqual([
+        200, 412,
+      ]);
+      const winner = results.find(({ statusCode }) => statusCode === 200)!;
+      const current = await get();
+      expect(current.json()).toEqual(winner.json());
+      expect(current.headers.etag).toBe(winner.headers.etag);
+      expect((await put(defaults, randomUUID())).statusCode).toBe(200);
+    });
+
+    it('keeps existing inbox entries and suppresses new in-app delivery while disabled', async () => {
+      const publish = async (title: string) => {
+        await admin.query(
+          `insert into public.notifications (subject_id, type, title) values ($1, 'system', $2)`,
+          [user1Id, title],
+        );
+      };
+      try {
+        await publish('Before disable');
+        const noInbox = {
+          ...defaults,
+          channels: { ...defaults.channels, in_app: false },
+        };
+        expect((await put(noInbox, randomUUID())).statusCode).toBe(200);
+        await publish('While disabled');
+        expect((await put(defaults, randomUUID())).statusCode).toBe(200);
+        await publish('After enabling');
+        const inbox = await application.inject({
+          method: 'GET',
+          url: '/v1/notifications',
+          headers: { authorization: `Bearer ${user1Token}` },
+        });
+        expect(inbox.statusCode).toBe(200);
+        const titles = inbox
+          .json<{ items: { title: string }[] }>()
+          .items.map(({ title }) => title);
+        expect(titles.sort()).toEqual(['After enabling', 'Before disable']);
+      } finally {
+        await admin.query(
+          'delete from public.notifications where subject_id = $1',
+          [user1Id],
+        );
+      }
+    });
+  });
+
+  it.each([
+    ['GET', '/v1/me/notification-preferences'],
+    ['PUT', '/v1/me/notification-preferences'],
+    ['POST', '/v1/me/push-devices'],
+    ['DELETE', `/v1/me/push-devices/${randomUUID()}`],
+  ] as const)('%s %s requires a session JWT', async (method, url) => {
+    const anonymous = await application.inject({ method, url });
+    expect(anonymous.statusCode).toBe(401);
+    expect(anonymous.json()).toMatchObject({ code: 'unauthorized' });
+    const cli = await application.inject({
+      method,
+      url,
+      headers: { authorization: 'Bearer svt_test' },
+    });
+    expect(cli.statusCode).toBe(401);
+    expect(cli.headers['content-type']).toContain('application/problem+json');
+    expect(cli.json()).toMatchObject({
+      type: 'https://savia.app/problems/unauthorized',
+      code: 'unauthorized',
+      title: 'Authentication is required',
+      status: 401,
+    });
+  });
+
+  it('keeps CLI denial on the existing approval detail route at 403', async () => {
+    const url = `/v1/approvals/${randomUUID()}`;
+    const denied = await application.inject({
+      method: 'GET',
+      url,
+      headers: { authorization: 'Bearer svt_test' },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(denied.json()).toMatchObject({
+      type: 'https://savia.app/problems/forbidden',
+      code: 'forbidden',
+      title: 'Forbidden',
+      status: 403,
+      instance: url,
+    });
+  });
+
+  describe('push devices', () => {
+    const url = '/v1/me/push-devices';
+    const post = (payload: object, token = user1Token) =>
+      application.inject({
+        method: 'POST',
+        url,
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+    const remove = (id: string, token = user1Token) =>
+      application.inject({
+        method: 'DELETE',
+        url: `${url}/${id}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+
+    it('deduplicates concurrent registration, never echoes the token and allows only the owner to remove it', async () => {
+      const expoPushToken = `ExponentPushToken[${randomUUID()}]`;
+      const body = { expoPushToken, platform: 'ios', appVersion: '1.0.0' };
+      const responses = await Promise.all([post(body), post(body)]);
+      expect(responses.map(({ statusCode }) => statusCode).sort()).toEqual([
+        200, 201,
+      ]);
+      const { deviceId } = responses[0].json<{ deviceId: string }>();
+      expect(deviceId).toMatch(/^[0-9a-f-]{36}$/);
+      for (const response of responses)
+        expect(response.json()).toEqual({ deviceId });
+      const update = await post({
+        ...body,
+        platform: 'android',
+        appVersion: '2.0.0',
+      });
+      expect(update.statusCode).toBe(200);
+      expect(update.json()).toEqual({ deviceId });
+      const conflict = await post(body, user2Token);
+      expect(conflict.statusCode).toBe(409);
+      expect(conflict.json()).toMatchObject({ code: 'conflict' });
+      expect(conflict.body).not.toContain(expoPushToken);
+      expect(conflict.body).not.toContain(deviceId);
+      expect((await remove(deviceId, user2Token)).statusCode).toBe(404);
+      expect((await post(body)).json()).toEqual({ deviceId });
+      const removed = await remove(deviceId);
+      expect(removed.statusCode).toBe(204);
+      expect(removed.body).toBe('');
+      expect((await remove(deviceId)).statusCode).toBe(404);
+      const transferred = await post(body, user2Token);
+      expect(transferred.statusCode).toBe(201);
+      expect(transferred.json().deviceId).not.toBe(deviceId);
+      expect(
+        (await remove(transferred.json().deviceId, user2Token)).statusCode,
+      ).toBe(204);
+    });
+
+    it('rejects malformed registrations without reserving their token', async () => {
+      const expoPushToken = `ExpoPushToken[${randomUUID()}]`;
+      const body = { expoPushToken, platform: 'android', appVersion: '1.0.0' };
+      for (const patch of [
+        { expoPushToken: 'native-token' },
+        { expoPushToken: `${expoPushToken}\n` },
+        { expoPushToken: `ExpoPushToken[${'x'.repeat(241)}]` },
+        { platform: 'web' },
+        { appVersion: '' },
+        { appVersion: 'x'.repeat(65) },
+        { other: true },
+      ]) {
+        const rejected = await post({ ...body, ...patch });
+        expect(rejected.statusCode).toBe(400);
+        expect(rejected.json()).toMatchObject({ code: 'bad-request' });
+        expect(rejected.body).not.toContain(expoPushToken);
+      }
+      expect((await remove('invalid-id')).statusCode).toBe(400);
+      const created = await post(body);
+      expect(created.statusCode).toBe(201);
+      expect((await remove(created.json().deviceId)).statusCode).toBe(204);
+    });
+  });
+
+  it('reports an unavailable database without exposing its failure details', async () => {
+    const connect = vi.spyOn(application.get(PostgresPool), 'connect');
+    connect.mockRejectedValueOnce(
+      Object.assign(new Error('Connection details must stay private'), {
+        code: 'ECONNREFUSED',
+      }),
+    );
+    try {
+      const response = await application.inject({
+        method: 'GET',
+        url: '/v1/me/notification-preferences',
+        headers: { authorization: `Bearer ${user1Token}` },
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.headers['retry-after']).toBe('5');
+      expect(response.json()).toMatchObject({
+        status: 503,
+        code: 'dependency-unavailable',
+        title: 'Notification settings unavailable',
+      });
+      expect(response.body).not.toContain('Connection details');
+    } finally {
+      connect.mockRestore();
+    }
+  });
+
+  // Reviewer regressions (verify mwr36929).
+  it('mutes only notifications produced while the push and email channels are off', async () => {
+    const authorization = `Bearer ${user1Token}`;
+    const preferences = '/v1/me/notification-preferences';
+    const expoPushToken = `ExpoPushToken[${randomUUID()}]`;
+    const put = (on: boolean) =>
+      application.inject({
+        method: 'PUT',
+        url: preferences,
+        headers: { authorization, 'idempotency-key': randomUUID() },
+        payload: {
+          channels: { in_app: true, push: on, email: on },
+          quietHours: null,
+          digestEnabled: false,
+        },
+      });
+    const notify = (title: string) =>
+      admin.query(
+        `insert into public.notifications (subject_id, type, title)
+         values ($1, 'system', $2)`,
+        [user1Id, title],
+      );
+    const claims = async () => {
+      const seen: string[] = [];
+      for (let i = 0; i < 8; i++) {
+        const {
+          rows: [claim],
+        } = await admin.query(
+          'select * from public.claim_notification_delivery(true)',
+        );
+        if (!claim) break;
+        seen.push(`${claim.channel}:${claim.title}`);
+        await admin.query(
+          'select public.finish_notification_delivery($1, $2, $3, $4)',
+          [claim.delivery_id, claim.lease_id, 'accepted', 5],
+        );
+      }
+      return seen.sort();
+    };
+    const device = await application.inject({
+      method: 'POST',
+      url: '/v1/me/push-devices',
+      headers: { authorization },
+      payload: { expoPushToken, platform: 'ios', appVersion: '1' },
+    });
+    expect(device.statusCode).toBe(201);
+    try {
+      await admin.query(
+        'update auth.users set email_confirmed_at = now() where id = $1',
+        [user1Id],
+      );
+      expect((await put(true)).statusCode).toBe(200);
+      await notify('Reviewer before mute');
+      expect((await put(false)).statusCode).toBe(200);
+      const whileMuted = await claims();
+      await notify('Reviewer during mute');
+      expect((await put(true)).statusCode).toBe(200);
+      await notify('Reviewer after mute');
+      expect({ whileMuted, afterUnmute: await claims() }).toEqual({
+        whileMuted: ['email:Reviewer before mute', 'push:Reviewer before mute'],
+        afterUnmute: ['email:Reviewer after mute', 'push:Reviewer after mute'],
+      });
+    } finally {
+      await admin.query(
+        'delete from public.notifications where subject_id = $1',
+        [user1Id],
+      );
+      await admin.query(
+        'update auth.users set email_confirmed_at = null where id = $1',
+        [user1Id],
+      );
+      await application.inject({
+        method: 'DELETE',
+        url: `/v1/me/push-devices/${device.json().deviceId}`,
+        headers: { authorization },
+      });
+      await put(true);
+    }
+  });
+
+  it("never lets the peer query another subject's push token under application RLS", async () => {
+    const expoPushToken = `ExpoPushToken[${randomUUID()}]`;
+    const authorization = `Bearer ${user1Token}`;
+    const url = '/v1/me/push-devices';
+    const added = await application.inject({
+      method: 'POST',
+      url,
+      headers: { authorization },
+      payload: { expoPushToken, platform: 'android', appVersion: '1' },
+    });
+    expect(added.statusCode).toBe(201);
+    const { deviceId } = added.json();
+    const tx = new PgTransaction(application.get(PostgresPool));
+    const read = (subject: string) =>
+      tx.runRead(subject, (client) =>
+        client.query(
+          'select expo_token from public.push_devices where id = $1',
+          [deviceId],
+        ),
+      );
+    try {
+      expect((await read(user1Id)).rows).toEqual([
+        { expo_token: expoPushToken },
+      ]);
+      expect((await read(user2Id)).rows).toEqual([]);
+    } finally {
+      await application.inject({
+        method: 'DELETE',
+        url: `${url}/${deviceId}`,
+        headers: { authorization },
+      });
+    }
+  });
+
+  it('deduplicates produced events and hides them after workspace access is lost', async () => {
+    const workspaceId = randomUUID();
+    const otherWorkspaceId = randomUUID();
+    await admin.query(
+      `insert into public.workspaces (id, name, kind, base_currency) values
+       ($1, 'Notifications A', 'shared', 'USD'), ($2, 'Notifications B', 'shared', 'USD')`,
+      [workspaceId, otherWorkspaceId],
+    );
+    await admin.query(
+      `insert into public.workspace_memberships (workspace_id, profile_id, role, status) values
+       ($1, $3, 'editor', 'active'), ($1, $4, 'owner', 'active'), ($2, $3, 'owner', 'active')`,
+      [workspaceId, otherWorkspaceId, user1Id, user2Id],
+    );
+    const tx = new PgTransaction(application.get(PostgresPool), {
+      callbackTimeoutMs: 3_000,
+      statementTimeoutMs: 850,
+      lockTimeoutMs: 650,
+    });
+    const readLimits = async (client: TransactionClient) => {
+      const result =
+        await client.query(`select current_setting('statement_timeout') as statement,
+                                                current_setting('lock_timeout') as lock`);
+      return result.rows[0];
+    };
+    const limits = { statement: '850ms', lock: '650ms' };
+    const writer = application.get(PostgresNotificationAdapter);
+    const event = {
+      workspaceId,
+      recipientId: user1Id,
+      resourceId: randomUUID(),
+      type: 'report_completed',
+      title: 'Report available',
+    };
+    const list = async (token: string) => {
+      const response = await application.inject({
+        method: 'GET',
+        url: '/v1/notifications',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json<{
+        items: { id: string; title: string; read: boolean }[];
+      }>().items;
+    };
+    const markRead = (id: string) =>
+      application.inject({
+        method: 'POST',
+        url: `/v1/notifications/${id}/read`,
+        headers: {
+          authorization: `Bearer ${user1Token}`,
+          'idempotency-key': randomUUID(),
+        },
+      });
+
+    await tx.run(user1Id, async (client) => {
+      expect(await readLimits(client)).toEqual(limits);
+      await writer.publish(client, { ...event, title: '' }); // Constraint failure must not abort this transaction.
+      expect(await readLimits(client)).toEqual(limits);
+      await writer.publish(client, {
+        ...event,
+        recipientId: user2Id,
+        title: 'Forged recipient',
+      });
+      await writer.publish(client, event);
+      expect(await readLimits(client)).toEqual(limits);
+      await writer.publish(client, {
+        ...event,
+        workspaceId: otherWorkspaceId,
+        title: 'Other workspace',
+      });
+      await writer.publish(client, {
+        ...event,
+        type: 'import_completed',
+        title: 'Other event',
+      });
+      await writer.publish(client, {
+        ...event,
+        resourceId: randomUUID(),
+        title: 'Other resource',
+      });
+    });
+    const items = await list(user1Token);
+    expect(items.map(({ title }) => title).sort()).toEqual([
+      'Other event',
+      'Other resource',
+      'Other workspace',
+      'Report available',
+    ]);
+    expect(await list(user2Token)).toEqual([]);
+    const report = items.find(({ title }) => title === event.title)!;
+    expect(report.read).toBe(false);
+    const marked = await markRead(report.id);
+    expect(marked.statusCode).toBe(204);
+    expect(marked.body).toBe('');
+
+    await tx.run(user1Id, (client) =>
+      writer.publish(client, { ...event, title: 'Duplicate' }),
+    );
+    await tx.run(user2Id, (client) =>
+      writer.publish(client, { ...event, recipientId: user2Id }),
+    );
+    expect(await list(user1Token)).toEqual(
+      items.map((item) =>
+        item.id === report.id ? { ...item, read: true } : item,
+      ),
+    );
+    expect(await list(user2Token)).toEqual([
+      expect.objectContaining({ title: event.title, read: false }),
+    ]);
+
+    await admin.query(
+      'delete from public.workspace_memberships where workspace_id = $1 and profile_id = $2',
+      [workspaceId, user1Id],
+    );
+    await tx.run(user1Id, (client) =>
+      writer.publish(client, { ...event, resourceId: randomUUID() }),
+    );
+    expect((await list(user1Token)).map(({ title }) => title)).toEqual([
+      'Other workspace',
+    ]);
+    const hidden = await markRead(report.id);
+    expect(hidden.statusCode).toBe(404);
+    expect(hidden.json()).toMatchObject({ title: 'Notification not found' });
+    const count = await admin.query(
+      'select count(*)::int as count from public.notifications where subject_id = $1',
+      [user1Id],
+    );
+    expect(count.rows[0].count).toBe(4);
   });
 
   describe('Database schema, RLS, and constraints', () => {

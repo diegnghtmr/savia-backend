@@ -82,6 +82,12 @@ export interface BudgetStore {
     client: TransactionClient,
     workspaceId: string,
   ): Promise<string | undefined>;
+  canCreateBudget?(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateBudgetRequest,
+    currency: string,
+  ): Promise<boolean>;
   createBudget(
     client: TransactionClient,
     workspaceId: string,
@@ -93,6 +99,7 @@ export interface BudgetStore {
     client: TransactionClient,
     workspaceId: string,
     id: string,
+    lock?: boolean,
   ): Promise<Budget | undefined>;
   findSourceAllocations(
     client: TransactionClient,
@@ -157,6 +164,7 @@ export type BudgetCreateOutcome =
         | typeof BUDGET_OUTCOMES.FORBIDDEN
         | typeof BUDGET_OUTCOMES.CONFLICT
         | typeof BUDGET_OUTCOMES.INVALID_SOURCE
+        | typeof BUDGET_OUTCOMES.PRECONDITION_FAILED
         | typeof BUDGET_OUTCOMES.TOO_MANY_ALLOCATIONS
         | typeof BUDGET_OUTCOMES.CURRENCY_UNSUPPORTED;
     };

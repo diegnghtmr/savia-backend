@@ -740,9 +740,13 @@ describe('budget creation against disposable PostgreSQL', () => {
       occurredAt: '2026-01-15T12:00:00Z',
       categoryId: IDS.statusCategory,
     });
+    // Bypass the 0028 posting-alignment trigger so the header and its
+    // postings really diverge, which is the state this case reads.
     await f.admin.query(
-      `update public.transactions set status='confirmed' where id=$1`,
-      ['00000000-0000-0000-0000-000000006728'],
+      `begin;
+       set local session_replication_role = replica;
+       update public.transactions set status='confirmed' where id='00000000-0000-0000-0000-000000006728';
+       commit;`,
     );
     const read = await f.service.getBudget(
       IDS.user,

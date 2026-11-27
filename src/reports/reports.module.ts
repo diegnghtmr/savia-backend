@@ -30,6 +30,6 @@ import { JOB_WRITER, type JobWriter } from '../platform/job-writer.port.js';
     },
     { provide: REPORTS_PORT, useExisting: ReportService },
   ],
-  exports: [REPORTS_PORT],
+  exports: [REPORTS_PORT, ReportService],
 })
 export class ReportsModule {}

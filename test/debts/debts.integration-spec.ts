@@ -1,4 +1,5 @@
-// Migrations under test: 202609030002_debts.sql
+// Migrations under test: 202609030002_debts.sql, 202609170022_l11_subscriptions_debts.sql
+import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import {
@@ -126,6 +127,15 @@ describe('Debts integration suite against disposable PostgreSQL', () => {
           if (token === 'non-member-token') return { subject: nonMemberId };
           throw new Error('token rejected');
         },
+      })
+      .overrideProvider(CliTokenVerifier)
+      .useValue({
+        verify: async (token: string) => ({
+          authMethod: 'cli_token',
+          subject: viewerId,
+          scopes:
+            token === 'svt_budget' ? ['budgets:read'] : ['transactions:read'],
+        }),
       })
       .compile();
 
@@ -1726,6 +1736,182 @@ describe('Debts integration suite against disposable PostgreSQL', () => {
         (d: { id: string }) => d.id === debt.id,
       );
       expect(item.outstandingBalance.amountMinor).toBe('0');
+    });
+  });
+
+  describe('debt payoff projections over HTTP', () => {
+    const workspace = randomUUID();
+    const selected = randomUUID();
+    const noTerms = randomUUID();
+    const headers = {
+      authorization: 'Bearer owner-token',
+      'x-workspace-id': workspace,
+    };
+    const project = (
+      query = '',
+      debtId = selected,
+      authorization = headers.authorization,
+    ) =>
+      application.inject({
+        method: 'GET',
+        url: `/v1/debts/${debtId}/projection${query}`,
+        headers: { ...headers, authorization },
+      });
+    const money = (amountMinor: string) => ({ amountMinor, currency: 'USD' });
+    const row = (
+      dueDate: string,
+      payment: string,
+      principal: string,
+      interest: string,
+      remainder: string,
+    ) => ({
+      dueDate,
+      paymentAmount: money(payment),
+      principalAmount: money(principal),
+      interestAmount: money(interest),
+      remainingBalance: money(remainder),
+    });
+
+    beforeAll(async () => {
+      await admin.query(
+        `insert into public.workspaces (id, name, kind, base_currency, created_by)
+        values ($1, 'Projection workspace', 'shared', 'USD', $2)`,
+        [workspace, ownerId],
+      );
+      await admin.query(
+        `insert into public.workspace_memberships (workspace_id, profile_id, role, status)
+        values ($1, $2, 'owner', 'active'), ($1, $3, 'viewer', 'active')`,
+        [workspace, ownerId, viewerId],
+      );
+      await admin.query(
+        `insert into public.debts
+        (id, workspace_id, name, currency, principal_minor, annual_rate, rate_type, minimum_payment_minor, next_payment_at, status)
+        values ($1, $4, 'Selected', 'USD', 10150, .12, 'variable', 4000, '2099-01-31', 'active'),
+               (gen_random_uuid(), $4, 'Small balance', 'USD', 1500, 0, 'fixed', 1000, '2099-01-31', 'active'),
+               (gen_random_uuid(), $4, 'Ignore another currency', 'EUR', 50000, 10, 'fixed', null, '2099-01-31', 'active'),
+               (gen_random_uuid(), $4, 'Ignore inactive debt', 'USD', 50000, 10, 'fixed', null, '2099-01-31', 'archived'),
+               (gen_random_uuid(), $5, 'Ignore another workspace', 'USD', 50000, 10, 'fixed', null, '2099-01-31', 'active'),
+               ($2, $4, 'Missing terms', 'USD', 15000, 0, 'fixed', null, '2099-01-31', 'defaulted'),
+               ($3, $4, 'Cannot amortize', 'USD', 15000, .12, 'fixed', 100, '2099-01-31', 'archived')`,
+        [selected, noTerms, accountWs2Id, workspace, workspace1Id],
+      );
+    });
+
+    it('uses the current annual rate, rounds half up per installment, and clamps month-end dates without drifting', async () => {
+      const response = await project();
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        debtId: selected,
+        strategy: 'minimum_payment',
+        asOf: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        startingBalance: money('10150'),
+        totalInterest: money('188'),
+        totalCost: money('10338'),
+        estimatedPayoffDate: '2099-03-31',
+        schedule: [
+          row('2099-01-31', '4000', '3898', '102', '6252'),
+          row('2099-02-28', '4000', '3937', '63', '2315'),
+          row('2099-03-31', '2338', '2315', '23', '0'),
+        ],
+      });
+      const custom = await project(
+        '?strategy=custom_extra&extraMonthlyPaymentMinor=5000',
+      );
+      expect(custom.statusCode).toBe(200);
+      expect(custom.json()).toMatchObject({
+        totalCost: money('10265'),
+        totalInterest: money('115'),
+        estimatedPayoffDate: '2099-02-28',
+        schedule: [
+          row('2099-01-31', '9000', '8898', '102', '1252'),
+          row('2099-02-28', '1265', '1252', '13', '0'),
+        ],
+      });
+    });
+
+    it('allocates extras and freed minimums among only active same-currency workspace debts without booking payments', async () => {
+      const list = () =>
+        application.inject({ method: 'GET', url: '/v1/debts', headers });
+      const before = await list();
+      const snowball = await project(
+        '?strategy=snowball&extraMonthlyPaymentMinor=1500',
+      );
+      const avalanche = await project(
+        '?strategy=avalanche&extraMonthlyPaymentMinor=1500',
+      );
+      expect(snowball.statusCode).toBe(200);
+      expect(avalanche.statusCode).toBe(200);
+      expect(snowball.json()).toMatchObject({
+        debtId: selected,
+        totalCost: money('10305'),
+        schedule: [
+          row('2099-01-31', '5000', '4898', '102', '5252'),
+          row('2099-02-28', '5305', '5252', '53', '0'),
+        ],
+      });
+      expect(avalanche.json()).toMatchObject({
+        debtId: selected,
+        totalCost: money('10300'),
+        schedule: [
+          row('2099-01-31', '5500', '5398', '102', '4752'),
+          row('2099-02-28', '4800', '4752', '48', '0'),
+        ],
+      });
+      const after = await list();
+      expect(after.statusCode).toBe(200);
+      expect(after.json()).toEqual(before.json());
+    });
+
+    it('requires budgets:read for CLI identity and returns typed problems for rejected queries and terms', async () => {
+      expect(
+        (await project('', selected, 'Bearer svt_budget')).statusCode,
+      ).toBe(200);
+      for (const [query, debtId, auth, status, code] of [
+        ['', selected, 'Bearer svt_wrong', 403, 'forbidden'],
+        ['', selected, 'Bearer non-member-token', 403, 'forbidden'],
+        ['', account1Id, headers.authorization, 404, 'not-found'],
+        [
+          '?strategy=unknown',
+          selected,
+          headers.authorization,
+          400,
+          'bad-request',
+        ],
+        [
+          '?strategy=custom_extra',
+          selected,
+          headers.authorization,
+          422,
+          'unprocessable',
+        ],
+        [
+          '?strategy=custom_extra&extraMonthlyPaymentMinor=0',
+          selected,
+          headers.authorization,
+          422,
+          'unprocessable',
+        ],
+        [
+          '?extraMonthlyPaymentMinor=0',
+          selected,
+          headers.authorization,
+          422,
+          'unprocessable',
+        ],
+        ['', noTerms, headers.authorization, 422, 'unprocessable'],
+        ['', accountWs2Id, headers.authorization, 422, 'unprocessable'],
+      ] as const) {
+        const response = await project(query, debtId, auth);
+        expect(response.statusCode).toBe(status);
+        expect(response.headers['content-type']).toContain(
+          'application/problem+json',
+        );
+        expect(response.json()).toMatchObject({
+          status,
+          type: `https://savia.app/problems/${code}`,
+          code,
+        });
+      }
     });
   });
 });

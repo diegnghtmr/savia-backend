@@ -25,6 +25,7 @@ describe('ApprovalService', () => {
     id: approvalId,
     workspaceId,
     toolName: 'execute_sql',
+    channel: null,
     riskClass: 'destructive',
     argumentsHash: 'hash-abc-123',
     preview: { query: 'DROP TABLE test' },
@@ -75,7 +76,10 @@ describe('ApprovalService', () => {
 
   function createStoreMock(): ApprovalStore {
     return {
+      insertApproval: vi.fn(),
+      claimApproval: vi.fn(),
       readActiveRole: vi.fn().mockResolvedValue('owner'),
+      listApprovals: vi.fn(),
       findApprovalById: vi.fn().mockResolvedValue(samplePendingRecord),
       updateApprovalDecision: vi
         .fn()
@@ -106,6 +110,111 @@ describe('ApprovalService', () => {
     };
   }
 
+  it('rejects non-JSON argument values before hashing or claiming', async () => {
+    const tx = createTxMock();
+    const store = createStoreMock();
+    const idempotency = createIdempotencyMock();
+    const service = new ApprovalService(tx, store, idempotency, clock);
+    const execute = vi.fn();
+    const toJSON = vi.fn().mockReturnValue('2026-09-05T12:00:00.000Z');
+    class Milestone {
+      readonly count = 1;
+    }
+    const invalid = [
+      new Date('2026-09-05T12:00:00.000Z'),
+      new Map(),
+      new Milestone(),
+      { toJSON },
+      undefined,
+      () => null,
+      Symbol('value'),
+      1n,
+      NaN,
+      Infinity,
+      -Infinity,
+    ];
+    for (const value of invalid) {
+      const action = {
+        toolName: samplePendingRecord.toolName,
+        arguments: { nested: [value] },
+      };
+      const creating = service.createApproval(subject, workspaceId, {
+        ...action,
+        channel: 'agent',
+        preview: {},
+        riskClass: 'financial_write',
+        expiresAt: samplePendingRecord.expiresAt,
+      });
+      const executing = service.executeApprovedAction(
+        subject,
+        workspaceId,
+        approvalId,
+        action,
+        execute,
+      );
+      await Promise.all(
+        [creating, executing].map((result) =>
+          expect(result).rejects.toThrow(
+            new TypeError('Approval arguments must be plain JSON data'),
+          ),
+        ),
+      );
+    }
+    expect(toJSON).not.toHaveBeenCalled();
+    expect(tx.run).not.toHaveBeenCalled();
+    expect(store.insertApproval).not.toHaveBeenCalled();
+    expect(store.claimApproval).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(tx.state.events).toEqual([]);
+  });
+
+  it('accepts null-prototype JSON objects without dropping their keys from the binding', async () => {
+    const tx = createTxMock();
+    const store = createStoreMock();
+    const idempotency = createIdempotencyMock();
+    const service = new ApprovalService(tx, store, idempotency, clock);
+    vi.mocked(store.insertApproval).mockResolvedValue(samplePendingRecord);
+    vi.mocked(store.claimApproval).mockResolvedValue('ok');
+    const execute = vi.fn().mockResolvedValue('written');
+    const nested = { ['__proto__']: 'kept', amount: 42 };
+    const action = {
+      toolName: samplePendingRecord.toolName,
+      arguments: { nested: Object.setPrototypeOf(nested, null) },
+    };
+    await expect(
+      service.createApproval(subject, workspaceId, {
+        ...action,
+        channel: 'mcp',
+        preview: {},
+        riskClass: 'financial_write',
+        expiresAt: samplePendingRecord.expiresAt,
+      }),
+    ).resolves.toMatchObject({ kind: 'ok' });
+    await expect(
+      service.executeApprovedAction(
+        subject,
+        workspaceId,
+        approvalId,
+        action,
+        execute,
+      ),
+    ).resolves.toEqual({ kind: 'ok', result: 'written' });
+    const hash = vi.mocked(store.insertApproval).mock.calls[0]?.[3];
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(store.claimApproval).toHaveBeenCalledWith(
+      expect.anything(),
+      workspaceId,
+      approvalId,
+      action.toolName,
+      hash,
+    );
+    expect(execute).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+      nested: { ['__proto__']: 'kept', amount: 42 },
+    });
+    const withoutKey = computeRequestFingerprint({ nested: { amount: 42 } });
+    expect(hash).not.toBe(withoutKey);
+  });
+
   describe('getApproval', () => {
     it('returns OK with approval payload for owner, admin, editor, viewer', async () => {
       for (const role of ['owner', 'administrator', 'editor', 'viewer']) {
@@ -124,6 +233,7 @@ describe('ApprovalService', () => {
           kind: APPROVAL_OUTCOMES.OK,
           approval: {
             id: approvalId,
+            createdBy: subject,
             toolName: 'execute_sql',
             riskClass: 'destructive',
             argumentsHash: 'hash-abc-123',
@@ -399,7 +509,7 @@ describe('ApprovalService', () => {
         kind: APPROVAL_OUTCOMES.REPLAYED,
         status: 200,
         etag: null,
-        body: previousResponse,
+        body: { ...previousResponse, createdBy: subject },
       });
       expect(store.updateApprovalDecision).not.toHaveBeenCalled();
     });
@@ -539,7 +649,7 @@ describe('ApprovalService', () => {
         kind: APPROVAL_OUTCOMES.REPLAYED,
         status: 200,
         etag: null,
-        body: { id: approvalId, status: 'approved' },
+        body: { id: approvalId, status: 'approved', createdBy: subject },
       });
       expect(tx.state.rolledBack).toBe(true);
       expect(tx.state.committed).toBe(false);
@@ -576,7 +686,7 @@ describe('ApprovalService', () => {
   });
 
   describe('rejectApproval', () => {
-    it('rejects pending approval when argumentsHash matches and user is owner or admin', async () => {
+    it('rejects pending approval when argumentsHash matches and the subject is the creator', async () => {
       const tx = createTxMock();
       const store = createStoreMock();
       const idempotency = createIdempotencyMock();
@@ -606,11 +716,15 @@ describe('ApprovalService', () => {
       expect(tx.state.committed).toBe(true);
     });
 
-    it('returns FORBIDDEN for reject when user is editor or viewer', async () => {
-      for (const role of ['editor', 'viewer']) {
+    it('returns FORBIDDEN without writing when the subject is not the creator', async () => {
+      for (const role of ['owner', 'administrator', 'editor', 'viewer']) {
         const tx = createTxMock();
         const store = createStoreMock();
         vi.mocked(store.readActiveRole).mockResolvedValue(role);
+        vi.mocked(store.findApprovalById).mockResolvedValue({
+          ...samplePendingRecord,
+          createdBy: 'aaaa0000-0000-4000-8000-000000000001',
+        });
         const idempotency = createIdempotencyMock();
         const service = new ApprovalService(tx, store, idempotency, clock);
 
@@ -623,6 +737,8 @@ describe('ApprovalService', () => {
         );
 
         expect(outcome).toEqual({ kind: APPROVAL_OUTCOMES.FORBIDDEN });
+        expect(store.updateApprovalDecision).not.toHaveBeenCalled();
+        expect(idempotency.write).not.toHaveBeenCalled();
       }
     });
 

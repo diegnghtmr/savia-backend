@@ -1,6 +1,8 @@
 import { Global, Module } from '@nestjs/common';
 
 import { TransactionController } from './transaction.controller.js';
+import { BulkTransactionController } from './bulk-transaction.controller.js';
+import { BulkTransactionService } from './bulk-transaction.service.js';
 import { TransferController } from './transfer.controller.js';
 import { CurrencyExchangeController } from './currency-exchange.controller.js';
 import { LEDGER_PORT } from './ledger.port.js';
@@ -15,19 +17,29 @@ import { PostgresCurrencyExchangeAdapter } from './postgres-currency-exchange.ad
 import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.adapter.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PlatformModule } from '../platform/platform.module.js';
-import { LEDGER_WRITER } from '../platform/ledger-writer.port.js';
+import {
+  LEDGER_WRITER,
+  OCCURRENCE_LEDGER_WRITER,
+} from '../platform/ledger-writer.port.js';
 
 @Global()
 @Module({
   imports: [PlatformModule],
   controllers: [
     TransactionController,
+    BulkTransactionController,
     TransferController,
     CurrencyExchangeController,
   ],
   providers: [
+    BulkTransactionService,
     PostgresTransactionAdapter,
-    PostgresTransferAdapter,
+    {
+      provide: PostgresTransferAdapter,
+      inject: [PostgresTransactionAdapter],
+      useFactory: (transactions: PostgresTransactionAdapter) =>
+        new PostgresTransferAdapter(transactions),
+    },
     PostgresCurrencyExchangeAdapter,
     {
       provide: TransactionService,
@@ -72,7 +84,15 @@ import { LEDGER_WRITER } from '../platform/ledger-writer.port.js';
     { provide: TRANSFER_PORT, useExisting: TransferService },
     { provide: CURRENCY_EXCHANGE_PORT, useExisting: CurrencyExchangeService },
     { provide: LEDGER_WRITER, useExisting: TransactionService },
+    { provide: OCCURRENCE_LEDGER_WRITER, useExisting: TransactionService },
   ],
-  exports: [LEDGER_WRITER, LEDGER_PORT],
+  exports: [
+    LEDGER_WRITER,
+    LEDGER_PORT,
+    OCCURRENCE_LEDGER_WRITER,
+    TransferService,
+    TransactionService,
+    CurrencyExchangeService,
+  ],
 })
 export class LedgerModule {}

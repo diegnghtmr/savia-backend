@@ -1,3 +1,4 @@
+// 202609170037_revoke_category_essential_update.sql: the exact categories grant pin below proves UPDATE (essential) is revoked while INSERT (essential) from 0031 remains.
 // Migrations under test: 202608290002_catalog_tables.sql
 import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
@@ -233,6 +234,7 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
         'color_token',
         'created_at',
         'created_by',
+        'essential',
         'icon',
         'id',
         'kind',
@@ -310,6 +312,7 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
         'color_token',
         'created_at',
         'created_by',
+        'essential',
         'icon',
         'id',
         'kind',
@@ -325,6 +328,7 @@ describe('Catalog tables schema, RULING 48 composite self-FK, uniqueness constra
         'archived',
         'color_token',
         'created_by',
+        'essential',
         'icon',
         'kind',
         'name',

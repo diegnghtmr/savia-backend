@@ -1,9 +1,21 @@
+import { Logger } from '@nestjs/common';
 import type { Cursor } from '../platform/cursor.js';
-import type { TransactionClient } from '../platform/pg-transaction.js';
+import type {
+  BudgetThreshold,
+  BudgetThresholdNotificationWriter,
+  NotificationEvent,
+  NotificationWriter,
+} from '../platform/notification-writer.port.js';
+import type {
+  ActorWriteTransactionClient,
+  TransactionClient,
+} from '../platform/pg-transaction.js';
 import type {
   NotificationRow,
   NotificationStore,
 } from './notification.port.js';
+
+const NOTIFICATION_INSERT_TIMEOUT_MS = 200;
 
 interface NotificationSqlRow extends Record<string, unknown> {
   readonly id: string;
@@ -16,7 +28,54 @@ interface NotificationSqlRow extends Record<string, unknown> {
   readonly cursorAt: string;
 }
 
-export class PostgresNotificationAdapter implements NotificationStore {
+export class PostgresNotificationAdapter
+  implements
+    NotificationStore,
+    NotificationWriter,
+    BudgetThresholdNotificationWriter
+{
+  private readonly logger = new Logger(PostgresNotificationAdapter.name);
+
+  public async publish(
+    client: ActorWriteTransactionClient,
+    event: NotificationEvent,
+  ): Promise<void> {
+    await client.query('savepoint notification_publish');
+    try {
+      await client.query(
+        `insert into public.notifications (workspace_id, subject_id, type, resource_id, title)
+         values ($1::uuid, $2::uuid, $3, $4::uuid, $5)
+         on conflict (workspace_id, subject_id, type, resource_id) do nothing`,
+        [
+          event.workspaceId,
+          event.recipientId,
+          event.type,
+          event.resourceId,
+          event.title,
+        ],
+        { statementTimeoutMs: NOTIFICATION_INSERT_TIMEOUT_MS },
+      );
+    } catch {
+      // A statement rejection must not leave the caller's transaction aborted.
+      await client.query('rollback to savepoint notification_publish');
+      this.logger.warn('In-app notification insert failed.');
+    }
+    await client.query('release savepoint notification_publish');
+  }
+
+  public async publishBudgetThresholds(
+    client: TransactionClient,
+    workspaceId: string,
+    budgetId: string,
+    day: string,
+    thresholds: readonly BudgetThreshold[],
+  ): Promise<void> {
+    await client.query(
+      'select public.publish_budget_thresholds($1, $2, $3, $4)',
+      [workspaceId, budgetId, day, thresholds],
+    );
+  }
+
   public async listNotifications(
     client: TransactionClient,
     subject: string,

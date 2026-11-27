@@ -11,6 +11,7 @@ import type {
   AccountCursor,
   AccountStatus,
   CreateAccountCommand,
+  InformalDebtDetails,
   UpdateAccountCommand,
 } from './accounts.port.js';
 import type { AccountItem, AccountsStore } from './accounts.service.js';
@@ -31,6 +32,23 @@ interface AccountRow extends Record<string, unknown> {
   readonly updatedAt: Date;
   readonly version: number;
   readonly cursorAt: string;
+  readonly informalCounterpartyName: string | null;
+  readonly informalDirection: InformalDebtDetails['direction'] | null;
+}
+
+const INFORMAL_DEBT_COLUMNS = `informal_counterparty_name as "informalCounterpartyName",
+  informal_direction as "informalDirection"`;
+
+function informalDebtFields(row: AccountRow): Pick<Account, 'informalDebt'> {
+  const { informalCounterpartyName, informalDirection } = row;
+  return informalCounterpartyName && informalDirection
+    ? {
+        informalDebt: {
+          counterpartyName: informalCounterpartyName,
+          direction: informalDirection,
+        },
+      }
+    : {};
 }
 
 // Defence in depth for the counter-leg. The command validator already refuses
@@ -121,6 +139,7 @@ select a.id::text,
        a.created_at as "createdAt",
        a.updated_at as "updatedAt",
        a.version,
+       ${INFORMAL_DEBT_COLUMNS},
        to_char(a.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
   from public.accounts a
  where ${conditions.join('\n   and ')}
@@ -143,6 +162,7 @@ select a.id::text,
         createdAt: toIso(row.createdAt),
         updatedAt: toIso(row.updatedAt),
         version: row.version,
+        ...informalDebtFields(row),
       },
       cursorAt: row.cursorAt,
     }));
@@ -170,6 +190,7 @@ select a.id::text,
        a.created_at as "createdAt",
        a.updated_at as "updatedAt",
        a.version,
+       ${INFORMAL_DEBT_COLUMNS},
        to_char(a.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
   from public.accounts a
  where a.workspace_id = $1::uuid
@@ -197,7 +218,35 @@ select a.id::text,
       createdAt: toIso(row.createdAt),
       updatedAt: toIso(row.updatedAt),
       version: row.version,
+      ...informalDebtFields(row),
     };
+  }
+
+  public async canCreateAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateAccountCommand,
+  ): Promise<boolean> {
+    // Check both currency invariants without inserting a row. The triggers
+    // still enforce them at confirmation.
+    const {
+      rows: [row],
+    } = await client.query<{ allowed: boolean }>(
+      `select ($3::text is null or pg_input_is_valid($3, 'date')) and not exists (
+         select 1 from (
+           select base_currency as currency from public.workspaces where id = $1::uuid
+           union
+           select currency from public.budgets where workspace_id = $1::uuid
+         ) target
+         where target.currency <> $2 and not exists (
+           select 1 from public.exchange_rates rate
+           where rate.workspace_id = $1::uuid and rate.base_currency = $2
+             and rate.quote_currency = target.currency
+         )
+       ) as allowed`,
+      [workspaceId, command.currency, command.openingBalanceDate ?? null],
+    );
+    return row?.allowed === true;
   }
 
   public async createAccount(
@@ -216,9 +265,11 @@ insert into public.accounts (
   masked_number,
   description,
   include_in_net_worth,
-  created_by
+  created_by,
+  informal_counterparty_name,
+  informal_direction
 )
-values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::uuid)
+values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::uuid, $10, $11)
 returning
   id::text,
   name,
@@ -233,7 +284,8 @@ returning
   include_in_net_worth as "includeInNetWorth",
   created_at as "createdAt",
   updated_at as "updatedAt",
-  version`;
+  version,
+  ${INFORMAL_DEBT_COLUMNS}`;
     const values = [
       workspaceId,
       command.name,
@@ -244,6 +296,8 @@ returning
       command.description ?? null,
       command.includeInNetWorth,
       subject,
+      command.informalDebt?.counterpartyName ?? null,
+      command.informalDebt?.direction ?? null,
     ];
     const result = await client.query<AccountRow>(sql, values);
     const row = result.rows[0];
@@ -343,6 +397,7 @@ values
       createdAt: toIso(row.createdAt),
       updatedAt: toIso(row.updatedAt),
       version: row.version,
+      ...informalDebtFields(row),
     };
   }
 
@@ -384,6 +439,13 @@ values
       setClauses.push(`status = $${values.length}`);
     }
 
+    if (command.informalDebt !== undefined) {
+      values.push(command.informalDebt?.counterpartyName ?? null);
+      setClauses.push(`informal_counterparty_name = $${values.length}`);
+      values.push(command.informalDebt?.direction ?? null);
+      setClauses.push(`informal_direction = $${values.length}`);
+    }
+
     const versions =
       typeof expectedVersions === 'number'
         ? [expectedVersions]
@@ -411,7 +473,8 @@ returning
   include_in_net_worth as "includeInNetWorth",
   created_at as "createdAt",
   updated_at as "updatedAt",
-  version`;
+  version,
+  ${INFORMAL_DEBT_COLUMNS}`;
 
     const result = await client.query<AccountRow>(sql, values);
     const row = result.rows[0];
@@ -433,6 +496,7 @@ returning
       createdAt: toIso(row.createdAt),
       updatedAt: toIso(row.updatedAt),
       version: row.version,
+      ...informalDebtFields(row),
     };
   }
 
@@ -466,6 +530,7 @@ select a.currency as "accountCurrency",
     // unreportable and the read fails loudly.
     const balanceSql = buildNativeBalanceSql([
       `coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status = 'pending'), 0)::text as "pendingBalance"`,
+      `coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and (posting.status in ('confirmed', 'reconciled') or (posting.status = 'pending' and posting.amount_minor < 0))), 0)::text as "availableBalance"`,
       `coalesce(sum(posting.amount_minor) filter (where posting.currency = acct.currency and posting.status = 'reconciled'), 0)::text as "reconciledBalance"`,
       `to_char(coalesce($3::timestamptz, now()) at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "effectiveAsOf"`,
     ]);
@@ -473,6 +538,7 @@ select a.currency as "accountCurrency",
     const balanceResult = await client.query<{
       nativeBalance: string;
       pendingBalance: string;
+      availableBalance: string;
       reconciledBalance: string;
       foreignCurrencyLegs: string;
       effectiveAsOf: string;
@@ -559,6 +625,10 @@ select a.currency as "accountCurrency",
         amountMinor: balanceRow.pendingBalance,
         currency: accountCurrency,
       },
+      availableBalance: {
+        amountMinor: balanceRow.availableBalance,
+        currency: accountCurrency,
+      },
       reconciledBalance: {
         amountMinor: balanceRow.reconciledBalance,
         currency: accountCurrency,
@@ -639,7 +709,8 @@ returning
   include_in_net_worth as "includeInNetWorth",
   created_at as "createdAt",
   updated_at as "updatedAt",
-  version`;
+  version,
+  ${INFORMAL_DEBT_COLUMNS}`;
 
     const result = await client.query<AccountRow>(sql, [
       workspaceId,
@@ -665,6 +736,7 @@ returning
       createdAt: toIso(row.createdAt),
       updatedAt: toIso(row.updatedAt),
       version: row.version,
+      ...informalDebtFields(row),
     };
   }
 }

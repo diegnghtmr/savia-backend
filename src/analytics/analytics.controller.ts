@@ -11,6 +11,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { McpRead } from '../platform/mcp-read-auth.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import {
@@ -20,6 +21,7 @@ import {
 } from './analytics.port.js';
 import {
   AnalyticsQueryValidationError,
+  type AnalyticsSelectionInput,
   createAdvancedAnalyticsQuery,
   createAnalyticsSummaryQuery,
   createCashFlowAnalyticsQuery,
@@ -34,6 +36,7 @@ export class AnalyticsController {
   ) {}
 
   @Get('summary')
+  @McpRead('get_financial_summary', ['reports:read'])
   public async getSummary(
     @Req() req: AuthenticatedRequest,
     @Res() reply: FastifyReply,
@@ -99,6 +102,7 @@ export class AnalyticsController {
     @Query('from') fromParam?: string,
     @Query('to') toParam?: string,
     @Query('granularity') granularityParam?: string,
+    @Query() selection?: AnalyticsSelectionInput,
   ): Promise<void> {
     const h = parseWorkspaceHeader(req.headers['x-workspace-id']);
     if (h.kind !== 'ok') {
@@ -116,6 +120,7 @@ export class AnalyticsController {
         fromParam,
         toParam,
         granularityParam,
+        selection,
       });
     } catch (error) {
       if (error instanceof AnalyticsQueryValidationError) {
@@ -158,6 +163,7 @@ export class AnalyticsController {
     @Query('metric') metricParam?: string,
     @Query('from') fromParam?: string,
     @Query('to') toParam?: string,
+    @Query() selection?: AnalyticsSelectionInput,
   ): Promise<void> {
     const h = parseWorkspaceHeader(req.headers['x-workspace-id']);
     if (h.kind !== 'ok') {
@@ -178,6 +184,7 @@ export class AnalyticsController {
           metricParam,
           fromParam,
           toParam,
+          selection,
         },
         this.clock(),
       );

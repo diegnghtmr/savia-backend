@@ -23,6 +23,8 @@ const command = {
   workspaceIds: [workspace],
   maxWriteAmount: null,
   expiresAt: null,
+  toolAllowlist: [],
+  schedule: [],
 } as const;
 const grant: McpGrant = {
   id: '33333333-3333-4333-8333-333333333333',
@@ -193,6 +195,57 @@ describe('McpGrantService', () => {
         'key',
       ),
     ).resolves.toEqual({ kind: 'conflict' });
+  });
+  it.each([
+    { toolAllowlist: ['list_accounts'] },
+    { schedule: [{ dayOfWeek: 5, startTime: '00:00', endTime: '24:00' }] },
+  ])('conflicts when only a grant restriction changes: %o', async (change) => {
+    const h = harness();
+    await h.service.createMcpGrant(subject, command, 'key');
+    await expect(
+      h.service.createMcpGrant(subject, { ...command, ...change }, 'key'),
+    ).resolves.toEqual({ kind: 'conflict' });
+    expect(h.store.createCalls).toBe(1);
+    expect(h.idempotency.writes).toBe(1);
+  });
+  it('replays pre-migration responses with the migrated restrictions and the original response status', async () => {
+    const { toolAllowlist, schedule, ...original } = grant;
+    const oldCommand = {
+      clientName: command.clientName,
+      scopes: command.scopes,
+      workspaceIds: command.workspaceIds,
+      maxWriteAmount: command.maxWriteAmount,
+      expiresAt: command.expiresAt,
+    };
+    const h = harness();
+    h.store.findResult = {
+      ...grant,
+      toolAllowlist,
+      schedule: [{ dayOfWeek: 1, startTime: '00:00', endTime: '24:00' }],
+      status: 'revoked',
+    };
+    h.idempotency.record = {
+      requestFingerprint: computeRequestFingerprint(oldCommand),
+      responseStatus: 201,
+      responseEtag: null,
+      responseBody: original,
+    };
+    await expect(
+      h.service.createMcpGrant(
+        subject,
+        { ...command, toolAllowlist, schedule },
+        'key',
+      ),
+    ).resolves.toEqual({
+      kind: 'created',
+      grant: {
+        ...original,
+        toolAllowlist,
+        schedule: h.store.findResult.schedule,
+      },
+    });
+    expect(h.store.createCalls).toBe(0);
+    expect(h.idempotency.writes).toBe(0);
   });
   it('conflicts when only expiresAt changes under the same idempotency key', async () => {
     const h = harness();

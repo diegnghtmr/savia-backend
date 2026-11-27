@@ -11,6 +11,9 @@ export const AI_OUTCOMES = {
   INVALID: 'invalid',
   PRECONDITION: 'precondition',
 } as const;
+export function isUsableBearerToken(value: string): boolean {
+  return value.length > 0 && !/[^!-~]/.test(value);
+}
 export type OwnerType = 'user' | 'workspace';
 export type CredentialType =
   | 'api_key'
@@ -62,6 +65,12 @@ export interface SetDefaultModelCommand {
   readonly modelRef: string;
   readonly credentialId: string | null;
 }
+type DefaultCredentialRow = {
+  modelRef: string;
+  credentialType: CredentialMetadata['credentialType'] | null;
+  encryptedSecret: string | null;
+  baseUrl: string | null;
+};
 export interface Store {
   createId(): string;
   list(
@@ -93,6 +102,10 @@ export interface Store {
     workspaceId: string,
     id: string,
   ): Promise<boolean>;
+  readDefault(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<DefaultCredentialRow | undefined>;
   setDefault(
     client: TransactionClient,
     workspaceId: string,

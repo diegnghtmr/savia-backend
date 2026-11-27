@@ -1,6 +1,10 @@
-// Migrations under test: 202608290003_recurring_rules.sql
+// Migrations under test: 202608290003_recurring_rules.sql, 202609170005_recurring_occurrences.sql
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PostgresTransactionAdapter } from '../../src/ledger/postgres-transaction.adapter.js';
+import { TransactionService } from '../../src/ledger/transaction.service.js';
+import { RecurringMaterializer } from '../../src/recurring/recurring-materializer.js';
+import { PostgresOccurrenceAdapter } from '../../src/recurring/postgres-occurrence.adapter.js';
 
 import {
   RECURRING_CREATE_OUTCOMES,
@@ -400,6 +404,105 @@ describe('RecurringService createRecurringRule database boundary', () => {
       expect(res.kind).toBe(RECURRING_CREATE_OUTCOMES.TAG_NOT_FOUND);
     });
   });
+
+  it.each(['remind', 'confirm_automatically'] as const)(
+    'materializes %s once even when two deliveries race',
+    async (behavior) => {
+      const ledger = new TransactionService(
+        transaction,
+        new PostgresTransactionAdapter(),
+        new PostgresIdempotencyAdapter(),
+      );
+      const materializer = new RecurringMaterializer(
+        new PostgresOccurrenceAdapter(),
+        ledger,
+      );
+      const scheduledAt = validCommand.nextOccurrenceAt;
+      const created = await service.createRecurringRule(
+        subjectOwner,
+        workspace1Id,
+        {
+          ...validCommand,
+          behavior,
+          endsAt: scheduledAt,
+          template: { ...validCommand.template, description: behavior },
+        },
+        `occurrence-${behavior}`,
+      );
+      if (created.kind !== 'created')
+        throw new Error(`Rule setup: ${created.kind}`);
+      const candidate = {
+        workspaceId: workspace1Id,
+        ruleId: created.rule.id,
+        scheduledAt,
+        subject: subjectOwner,
+        asOf: scheduledAt,
+      };
+      const deliver = (due = candidate) =>
+        transaction.run(due.subject, (client) =>
+          materializer.materialize(client, due),
+        );
+      expect(
+        await deliver({ ...candidate, asOf: validCommand.startsAt }),
+      ).toBeNull();
+      expect(
+        await deliver({ ...candidate, subject: subjectEditor }),
+      ).toBeNull();
+      const results = await Promise.all([deliver(), deliver()]);
+      expect(results).toEqual(
+        expect.arrayContaining([expect.any(String), null]),
+      );
+      expect(await deliver()).toBeNull();
+
+      const listed = await service.listRecurringRules(subjectOwner, {
+        workspaceId: workspace1Id,
+        limit: 50,
+      });
+      expect(listed).toMatchObject({
+        kind: 'ok',
+        page: {
+          items: expect.arrayContaining([
+            expect.objectContaining({
+              id: created.rule.id,
+              active: false,
+              nextOccurrenceAt: scheduledAt,
+            }),
+          ]),
+        },
+      });
+      const booked = await ledger.list(subjectOwner, {
+        workspaceId: workspace1Id,
+        limit: 50,
+        query: behavior,
+      });
+      expect(booked).toMatchObject({
+        kind: 'ok',
+        page: {
+          items:
+            behavior === 'remind'
+              ? []
+              : [
+                  expect.objectContaining({
+                    occurredAt: scheduledAt,
+                    status: 'confirmed',
+                    amount: validCommand.template.amount,
+                  }),
+                ],
+        },
+      });
+      const occurrence = await admin.query(
+        `select id::text, transaction_id::text from public.recurring_occurrences where rule_id = $1`,
+        [created.rule.id],
+      );
+      expect(occurrence.rows).toEqual([
+        {
+          id: results.find(Boolean),
+          transaction_id:
+            booked.kind === 'ok' ? (booked.page.items[0]?.id ?? null) : null,
+        },
+      ]);
+    },
+  );
 
   describe('Idempotency handling', () => {
     it('replays identical response for identical request and key and does not persist duplicate row', async () => {

@@ -860,7 +860,7 @@ describe('PostgresTransactionAdapter.voidTransaction', () => {
       [1],
     ]);
 
-    // 3. Postings insert query must append reversal with negated amount, SAME currency, void instant
+    // 3. Reversal keeps amount and currency semantics and uses the void instant as its earliest cutoff.
     expect(executedQueries[2]!.sql).toContain(
       'insert into public.ledger_postings',
     );
@@ -871,7 +871,7 @@ describe('PostgresTransactionAdapter.voidTransaction', () => {
       '-5000', // Negated account leg amount
       'USD', // Same currency
       'confirmed', // Same status
-      sampleRow.voidedAt, // Void instant occurred_at
+      sampleRow.voidedAt, // Earliest permitted reversal date
       '5000', // Negated external leg amount (compensates original -5000)
     ]);
 

@@ -7,13 +7,23 @@ export class AuthConfig {
     public readonly audience: string,
     public readonly jwksUri: URL,
     public readonly algorithms: readonly AsymmetricJwtAlgorithm[],
+    public readonly mcpProposalAudience: string | undefined,
   ) {}
   public static fromEnvironment(environment: Environment): AuthConfig {
     const issuer = requireNonEmpty(environment.JWT_ISSUER, 'JWT_ISSUER');
     const audience = requireNonEmpty(environment.JWT_AUDIENCE, 'JWT_AUDIENCE');
     const jwksUri = parseHttpsUrl(environment.JWT_JWKS_URI);
     const algorithms = parseAlgorithms(environment.JWT_ALGORITHMS);
-    return new AuthConfig(issuer, audience, jwksUri, algorithms);
+    const proposalAudience = environment.SAVIA_MCP_PROPOSAL_AUDIENCE?.trim();
+    return new AuthConfig(
+      issuer,
+      audience,
+      jwksUri,
+      algorithms,
+      proposalAudience && proposalAudience !== audience
+        ? proposalAudience
+        : undefined,
+    );
   }
 }
 

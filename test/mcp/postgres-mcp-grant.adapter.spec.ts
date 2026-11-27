@@ -3,6 +3,103 @@ import { PostgresMcpGrantAdapter } from '../../src/mcp/postgres-mcp-grant.adapte
 const subject = '11111111-1111-4111-8111-111111111111';
 const id = '22222222-2222-4222-8222-222222222222';
 describe('PostgresMcpGrantAdapter', () => {
+  describe('authorizeMcpGrant', () => {
+    const amount = (amountMinor: string, currency = 'USD') => ({
+      amountMinor,
+      currency,
+    });
+    const call = {
+      grantId: id,
+      subject,
+      workspaceId: subject,
+      toolName: 'create_transfer',
+      accountIds: [subject, id],
+      amounts: [amount('9007199254740993')],
+    };
+    const read = {
+      ...call,
+      toolName: 'get_account_balance',
+      accountIds: [subject],
+      amounts: [],
+    };
+    const policy = {
+      localDay: 7,
+      localTime: '09:00',
+      role: 'editor',
+      toolAllowlist: ['create_transfer'],
+      schedule: [{ dayOfWeek: 7, startTime: '09:00', endTime: '17:00' }],
+      maxWriteAmountMinor: '9007199254740993',
+      maxWriteCurrency: 'USD',
+    };
+    const invalidWindow = {
+      dayOfWeek: 8,
+      startTime: '00:00',
+      endTime: '24:00',
+    };
+    const invalidSchedule = [...policy.schedule, invalidWindow];
+    const readOnly = { ...policy, toolAllowlist: [] };
+    const withAmounts = (...amounts: (typeof call)['amounts']) => ({
+      ...call,
+      amounts,
+    });
+    it.each([
+      ['inclusive start at exact limit', policy, call, true],
+      ['exclusive end', { ...policy, localTime: '17:00' }, call, false],
+      ['wrong weekday', { ...policy, localDay: 1 }, call, false],
+      ['empty schedule', { ...policy, schedule: [] }, call, false],
+      [
+        'invalid stored window',
+        { ...policy, schedule: invalidSchedule },
+        call,
+        false,
+      ],
+      ['read-only grant', readOnly, call, false],
+      ['omitted listed read', policy, read, false],
+      ['read under a read-only grant', readOnly, read, true],
+      [
+        'amount over by a minor unit',
+        policy,
+        withAmounts(amount('9007199254740994')),
+        false,
+      ],
+      [
+        'negative amount over by a minor unit',
+        policy,
+        withAmounts(amount('-9007199254740994')),
+        false,
+      ],
+      [
+        'multiple amounts cannot exceed the cap in aggregate',
+        policy,
+        withAmounts(...call.amounts, amount('-1')),
+        false,
+      ],
+      ['different currency', policy, withAmounts(amount('1', 'EUR')), false],
+      ['no resolved amount', policy, withAmounts(), false],
+      [
+        'only one transfer account',
+        policy,
+        { ...call, accountIds: [subject] },
+        false,
+      ],
+      [
+        'duplicate transfer account',
+        policy,
+        { ...call, accountIds: [subject, subject] },
+        false,
+      ],
+      ['unknown annotation', policy, { ...call, toolName: '__proto__' }, false],
+      ['missing DB authorization context', undefined, call, false],
+    ] as const)('%s', async (_name, row, input, allowed) => {
+      const query = vi.fn().mockResolvedValue({ rows: row ? [row] : [] });
+      await expect(
+        new PostgresMcpGrantAdapter().authorizeMcpGrant(
+          { query } as never,
+          input,
+        ),
+      ).resolves.toBe(allowed);
+    });
+  });
   it('uses subject-bound total-order cursor comparison and ordering', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [] });
     await new PostgresMcpGrantAdapter().list({ query } as never, subject, 2, {
@@ -136,6 +233,8 @@ describe('PostgresMcpGrantAdapter', () => {
         clientName: 'client',
         scopes: ['accounts:read'],
         workspaceIds: [subject],
+        toolAllowlist: [],
+        schedule: [],
         maxWriteAmount: null,
         expiresAt: '2026-01-01T00:00:00.000Z',
       },

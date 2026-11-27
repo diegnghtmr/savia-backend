@@ -149,7 +149,12 @@ describe('architecture fitness tripwires', () => {
       const directory = mkdtempSync(join(tmpdir(), 'savia-tripwire-'));
       const output = join(directory, 'contract.json');
 
-      let bundledDocument: object;
+      let bundledDocument: {
+        paths: Record<
+          string,
+          Record<string, { operationId?: string; 'x-financial'?: boolean }>
+        >;
+      };
       try {
         execFileSync(
           resolve(root, 'node_modules/.bin/redocly'),
@@ -168,9 +173,23 @@ describe('architecture fitness tripwires', () => {
         rmSync(directory, { force: true, recursive: true });
       }
 
-      const violations = findIdempotencyViolations(bundledDocument);
-
-      expect(violations).toEqual([]);
+      const financialOperations = Object.values(bundledDocument.paths)
+        .flatMap((item) => Object.values(item))
+        .filter((operation) => operation['x-financial'] === true)
+        .map((operation) => operation.operationId);
+      expect(financialOperations).toEqual(
+        expect.arrayContaining([
+          'createAccount',
+          'closeAccount',
+          'createTransaction',
+          'updateTransaction',
+          'voidTransaction',
+          'createTransfer',
+          'createCurrencyExchange',
+          'createManualExchangeRate',
+        ]),
+      );
+      expect(findIdempotencyViolations(bundledDocument)).toEqual([]);
     });
   });
 });

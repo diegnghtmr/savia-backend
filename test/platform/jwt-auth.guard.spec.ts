@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { JwtAuthGuard } from '../../src/platform/jwt-auth.guard.js';
+import {
+  SAVIA_SCOPES,
+  type SaviaScope,
+} from '../../src/platform/savia-scopes.js';
 
 function context(
   authorization: string,
@@ -91,5 +95,80 @@ describe('JwtAuthGuard additive CLI scheme', () => {
     await expect(
       guard.canActivate(context('Bearer svt_revoked').context as never),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+});
+
+function authorizeCli(
+  method: string,
+  route: string,
+  scopes: readonly SaviaScope[],
+) {
+  const jwt = { verify: vi.fn() };
+  const cli = {
+    verify: vi.fn().mockResolvedValue({
+      subject: 'cli-subject',
+      authMethod: 'cli_token',
+      scopes,
+    }),
+  };
+  const guard = new JwtAuthGuard(jwt as never, cli as never);
+  return guard.canActivate(
+    context('Bearer svt_opaque', route, method).context as never,
+  );
+}
+
+async function expectCliForbidden(result: Promise<boolean>) {
+  await expect(result).rejects.toSatisfy((error: unknown) => {
+    if (!(error instanceof ForbiddenException)) return false;
+    expect(error.getStatus()).toBe(403);
+    expect(error.getResponse()).toStrictEqual({
+      statusCode: 403,
+      message: 'Forbidden',
+    });
+    return true;
+  });
+}
+
+const d3Routes = [
+  ['GET', '/v1/agent/conversations', 'reports:read', 'workspace:admin'],
+  ['POST', '/v1/agent/conversations', 'reports:read', 'workspace:admin'],
+  [
+    'POST',
+    '/v1/agent/conversations/:conversationId/messages',
+    'reports:read',
+    'workspace:admin',
+  ],
+  ['GET', '/v1/mcp/grants', 'workspace:admin', 'reports:read'],
+  ['DELETE', '/v1/mcp/grants/:grantId', 'workspace:admin', 'reports:read'],
+] as const satisfies ReadonlyArray<
+  readonly [string, string, SaviaScope, SaviaScope]
+>;
+
+describe('CLI scopes for agent conversations and MCP grants', () => {
+  it.each(d3Routes)('allows %s %s with %s', async (method, route, required) => {
+    await expect(authorizeCli(method, route, [required])).resolves.toBe(true);
+  });
+
+  it.each(d3Routes)(
+    'denies %s %s without %s',
+    async (method, route, _required, wrongScope) => {
+      await expectCliForbidden(authorizeCli(method, route, [wrongScope]));
+    },
+  );
+
+  it.each([
+    ['POST', '/v1/mcp/grants'],
+    ['GET', '/v1/ai/credentials'],
+    ['POST', '/v1/ai/credentials'],
+    ['PATCH', '/v1/ai/credentials/:id'],
+    ['DELETE', '/v1/ai/credentials/:id'],
+    ['PUT', '/v1/ai/default-model'],
+    ['GET', '/v1/approvals/:approvalId'],
+    ['POST', '/v1/approvals/:approvalId/confirm'],
+    ['POST', '/v1/approvals/:approvalId/reject'],
+  ])('keeps %s %s unavailable to CLI tokens', async (method, route) => {
+    await expectCliForbidden(
+      authorizeCli(method, route, Object.values(SAVIA_SCOPES)),
+    );
   });
 });

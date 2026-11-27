@@ -10,6 +10,7 @@ import {
   Query,
   Req,
   Res,
+  UseFilters,
   UseGuards,
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
@@ -18,6 +19,7 @@ import type { AuthenticatedRequest } from '../platform/authenticated-request.js'
 import { validateIdempotencyKey } from './idempotency-key.js';
 import { parseIfMatch } from '../platform/if-match.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { McpRead } from '../platform/mcp-read-auth.js';
 import {
   PROBLEM_TYPES,
   sendProblem,
@@ -65,6 +67,7 @@ import {
   type WorkspacePort,
 } from './workspace.port.js';
 import { IDENTITY_PROBLEM_TYPES } from './identity-problem-types.js';
+import { SessionOnlyProblemFilter } from './session-only-problem.filter.js';
 
 @Controller('v1/workspaces')
 @UseGuards(JwtAuthGuard)
@@ -78,6 +81,7 @@ export class WorkspaceController {
   ) {}
 
   @Post()
+  @UseFilters(SessionOnlyProblemFilter)
   public async createWorkspace(
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,
@@ -149,6 +153,7 @@ export class WorkspaceController {
   }
 
   @Get()
+  @McpRead('list_workspaces', [], 'workspace-list')
   public async listWorkspaces(
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,
@@ -169,6 +174,9 @@ export class WorkspaceController {
     const page = await this.workspace.list(request.identity.subject, {
       cursor: listQuery.cursor,
       limit: listQuery.limit,
+      ...(request.identity.authMethod === 'mcp_read'
+        ? { workspaceIds: request.identity.workspaceIds }
+        : {}),
     });
 
     void reply.status(200).send(page);

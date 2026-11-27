@@ -329,6 +329,9 @@ jobs:
         if: matrix.shard == 2
         shell: bash
         run: pnpm test:integration:recurring-rules-list
+      - name: recurring occurrences integration
+        shell: bash
+        run: pnpm test:integration:recurring-occurrences
       - name: subscriptions schema integration
         if: matrix.shard == 6
         shell: bash
