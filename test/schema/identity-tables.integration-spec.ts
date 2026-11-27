@@ -160,12 +160,16 @@ const executeSchemaContract = async () => {
       configPath,
       (await readFile(configPath, 'utf8'))
         .replace(/^project_id = .+$/m, `project_id = "${projectId}"`)
-        .replace('[db]\n', `[api]\nport = ${databasePort + 1}\n\n[db]\n`)
-        .replace(
-          'major_version = 17',
-          `major_version = 17\nport = ${databasePort}`,
-        ),
+        .replace(/^(\[api\]\n)port = \d+$/m, `$1port = ${databasePort + 1}`)
+        .replace(/^(\[db\]\n)port = \d+$/m, `$1port = ${databasePort}`),
     );
+    const rewritten = await readFile(configPath, 'utf8');
+    if (
+      !rewritten.includes(`[api]\nport = ${databasePort + 1}\n`) ||
+      !rewritten.includes(`[db]\nport = ${databasePort}\n`)
+    ) {
+      throw new Error('schema contract could not isolate the api and db ports');
+    }
     await runSupabase(workdir, 'start');
     await runSupabase(workdir, 'db', 'reset', '--no-seed');
     await execute(

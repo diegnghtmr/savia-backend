@@ -25,6 +25,26 @@ export const COVERAGE_ALLOWLIST = [
     reason:
       'CI step "database bootstrap contract" runs identity_bootstrap_rls.test.sql inline',
   },
+  {
+    script: 'test:integration:all',
+    reason:
+      'Local convenience wrapper; CI still invokes every constituent suite separately',
+  },
+  {
+    script: 'test:integration:ocr',
+    reason:
+      'Local Docker wrapper; CI uses distro OCR packages and calls the same suites directly',
+  },
+  {
+    script: 'test:runner-isolation',
+    reason:
+      'Local Docker probe for Storage isolation between suites in the shared runner, which CI does not use',
+  },
+  {
+    script: 'test:docker-context',
+    reason:
+      'Local Docker probe for the OCR image build context; CI does not build that image',
+  },
 ];
 
 function escapeRegex(string) {

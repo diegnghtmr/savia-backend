@@ -1,0 +1,28 @@
+**
+!package.json
+!pnpm-lock.yaml
+!tsconfig.json
+!vitest*.ts
+!src/
+!src/**
+!test/
+!test/fixtures/**
+!test/support/**
+!test/setup.ts
+!test/forecasts/**
+!test/receipts/**
+!test/platform/tesseract-real-engine.integration-spec.ts
+
+# Docker globs are case-sensitive; match every case after the re-includes.
+**/*.[pP][eE][mM]
+**/*.[kK][eE][yY]
+**/*.[pP]12
+**/*.[pP][fF][xX]
+**/.[eE][nN][vV]*
+**/*[sS][eE][cC][rR][eE][tT]*
+**/*[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*
+**/[aA][uU][tT][hH].[jJ][sS][oO][nN]
+
+# Tracked TypeScript application code is not credential data, even when a
+# module name mentions credentials (AI credential and crypto modules).
+!src/**/*.ts

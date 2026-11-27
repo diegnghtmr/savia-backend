@@ -106,7 +106,63 @@ pnpm openapi:verify
 pnpm check
 ```
 
-`pnpm check` includes formatting, lint, architecture checks, type checks, tests, build, and OpenAPI verification and lint. CI also runs PostgreSQL/Supabase row-level security and schema checks and the integration suites, split across ten parallel shards; the required `check` status passes only when `pnpm check` and every shard pass. Each shard installs Tesseract with English and Spanish language data, and the shard with the PDF renderer suite provisions Chromium. See [package.json](package.json) for the `test:database*` and `test:integration:*` entry points.
+`pnpm check` includes formatting, lint, architecture checks, type checks, tests, build, and OpenAPI verification and lint. CI also runs PostgreSQL/Supabase row-level security and schema checks and the integration suites, split across ten parallel shards; the required `check` status passes only when `pnpm check` and every shard pass. Each shard installs Tesseract with English and Spanish language data, and the shard with the PDF renderer suite provisions Chromium. See [package.json](package.json) for the `test:database*` and `test:integration:*` entry points, and [Integration tests](#integration-tests) for the one-stack and containerized OCR runners.
+
+## Integration tests
+
+Run these commands from the checkout on a Linux host with Docker, `flock`, and
+this project's Node and pnpm dependencies installed:
+
+```sh
+pnpm test:integration:all --list
+pnpm test:integration:all
+pnpm test:integration:all postgres-pool workspace
+pnpm test:integration:ocr
+```
+
+`test:integration:all` runs every `test:integration:<name>` suite. It starts one
+local Supabase stack, reapplies all migrations without seed data, and clears
+Storage files before each database suite. Suites run serially, and the runner
+prints a summary and tears the stack down on exit, including after failure or
+interruption. The runner refuses to clear Storage unless the mounted volume
+belongs to this disposable project. The standalone PDF renderer suite still
+requires Playwright Chromium on the host
+(`pnpm exec playwright-core install chromium`). The schema contract and SQL
+migration/rollback gates are separate because they build and check deliberately
+different database states; CI still runs them separately.
+
+The full run and `test:integration:ocr` run `forecasts`, `receipt-ocr`, and
+`receipt-ocr-engine` in a Docker image with pinned Node, pnpm and Tesseract
+English and Spanish data. No host Tesseract installation is required. The first
+build downloads public packages; subsequent builds reuse cached layers. The OCR
+DB suites use Linux Docker host networking to reach the disposable Supabase
+stack. Run one OCR suite with `pnpm test:integration:ocr receipt-ocr-engine`.
+Run `pnpm test:docker-context` to verify credential-like paths are excluded
+from the Docker build context using only empty synthetic files.
+
+The full and OCR runners hold `/tmp/savia-db.lock` through teardown. Existing
+`pnpm run test:integration:<name>` commands are unchanged. If running a legacy
+DB command alongside the full or OCR runner, acquire the same lock explicitly,
+for example `flock /tmp/savia-db.lock pnpm run test:integration:workspace`.
+Do not wrap the full or OCR command in a second `flock`.
+
+Run `pnpm test:runner-isolation` to check that a Storage object written in one
+suite is absent before the next suite starts. The probe requires `curl` and uses
+the shared runner's lock.
+
+All disposable DB runners wait up to 30 seconds for the host ports declared in
+`supabase/config.toml` to become free before starting Supabase. If Docker reports
+a port allocation error, the runner stops the partial stack, checks the ports
+again, and retries once if they become free. Other startup errors are not retried;
+failed starts still retain sanitized diagnostics when safe.
+
+On one Linux Docker host, five DB suites (pool, transaction resilience,
+workspace, transaction creation and receipt foundation; 85 tests) took 7m25s
+with separate stacks and 4m09s with the shared stack. Based on the four warm
+resets, the 88 DB suites project to about 55 minutes, plus the OCR image build
+and standalone suite runtime. This is a projection, not a full-run measurement.
+CI still uses its existing per-suite steps and provisions OCR and Chromium
+separately.
 
 ## Project structure
 
