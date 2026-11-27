@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { FxRateUsed } from '../platform/currency-conversion.js';
 import { DeliveryDeadlineExceededError } from '../platform/delivery-deadline.js';
 import {
   ARTIFACT_STORAGE,
@@ -10,6 +11,7 @@ import {
   type RenderingJobHandler,
 } from '../platform/job-handler.port.js';
 import { JOB_WRITER_TYPES } from '../platform/job-writer.port.js';
+import type { NotificationWriter } from '../platform/notification-writer.port.js';
 import {
   PDF_RENDERER,
   type PdfRenderer,
@@ -64,7 +66,11 @@ function isWriteRole(role: string | undefined): role is ReportWriteRole {
   return WRITE_ROLE_VALUES.includes(role ?? '');
 }
 
-function isSerializedReport(value: unknown): value is SerializedReport {
+type ReportArtifact = SerializedReport & {
+  readonly fxRatesUsed?: readonly FxRateUsed[];
+};
+
+function isSerializedReport(value: unknown): value is ReportArtifact {
   if (typeof value !== 'object' || value === null) {
     return false;
   }
@@ -79,6 +85,7 @@ export interface ReportJobComputed {
   readonly downloadUrl: string;
   readonly expiresAt: Date;
   readonly completedAt: Date;
+  readonly fxRatesUsed?: readonly FxRateUsed[];
 }
 
 @Injectable()
@@ -96,6 +103,7 @@ export class ReportJobHandler
     @Inject(PDF_RENDERER) private readonly pdfRenderer: PdfRenderer,
     clock: (() => Date) | undefined,
     public readonly renderSettleTimeoutMs: number,
+    private readonly notifications?: NotificationWriter,
   ) {
     this.clock = clock ?? (() => new Date());
   }
@@ -160,8 +168,10 @@ export class ReportJobHandler
     context: JobExecutionContext<ReportJobPayload>,
     computed: ReportGrid,
     timeoutMs: number,
-  ): Promise<SerializedReport> {
+  ): Promise<ReportArtifact> {
     const { format } = context.payload;
+    const { fxRatesUsed, ...grid } = computed;
+    const provenance = fxRatesUsed ? { fxRatesUsed } : {};
     if (format === 'pdf') {
       if (computed.rows.length > REPORT_PDF_ROW_CAP) {
         throw new ReportPdfRowCapExceededError(
@@ -172,7 +182,7 @@ export class ReportJobHandler
       return this.runBounded(
         timeoutMs,
         async (signal, remainingMs) => {
-          const html = renderReportHtml(computed, { signal, remainingMs });
+          const html = renderReportHtml(grid, { signal, remainingMs });
           const effectiveTimeout = Math.min(
             timeoutMs,
             Math.max(0, remainingMs()),
@@ -185,6 +195,7 @@ export class ReportJobHandler
             content: pdfBuffer,
             contentType: 'application/pdf',
             extension: 'pdf' as const,
+            ...provenance,
           };
         },
         'Report rendering exceeded the delivery work cap.',
@@ -193,11 +204,10 @@ export class ReportJobHandler
     }
     return this.runBounded(
       timeoutMs,
-      async (signal, remainingMs) =>
-        serializeReport(format, computed, {
-          signal,
-          remainingMs,
-        }),
+      async (signal, remainingMs) => ({
+        ...(await serializeReport(format, grid, { signal, remainingMs })),
+        ...provenance,
+      }),
       'Report rendering exceeded the delivery work cap.',
       0,
     );
@@ -231,6 +241,9 @@ export class ReportJobHandler
           downloadUrl: signature.url,
           expiresAt: signature.expiresAt,
           completedAt,
+          ...(artifact.fxRatesUsed
+            ? { fxRatesUsed: artifact.fxRatesUsed }
+            : {}),
         };
       },
       'Report storage exceeded the delivery work cap.',
@@ -317,8 +330,16 @@ export class ReportJobHandler
         downloadUrl: computed.downloadUrl,
         expiresAt: computed.expiresAt,
         completedAt: computed.completedAt,
+        fxRatesUsed: computed.fxRatesUsed,
       },
     );
+    await this.notifications?.publish(client, {
+      workspaceId: context.workspaceId,
+      recipientId: context.actorId,
+      resourceId: context.payload.reportRunId,
+      type: 'report_completed',
+      title: 'Report available',
+    });
     return context.payload.reportRunId;
   }
 }

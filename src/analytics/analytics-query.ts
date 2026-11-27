@@ -3,9 +3,12 @@ import type { FieldViolation } from '../platform/problem-details.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
 import {
   ADVANCED_METRIC,
+  ANALYTICS_FILTERS,
   CASH_FLOW_GRANULARITY,
   type AdvancedAnalyticsQuery,
   type AdvancedMetric,
+  type AnalyticsFilter,
+  type AnalyticsSelection,
   type AnalyticsSummaryQuery,
   type CashFlowAnalyticsQuery,
   type CashFlowGranularity,
@@ -119,11 +122,62 @@ export function createAnalyticsSummaryQuery(input: {
   };
 }
 
+export type AnalyticsSelectionInput = Partial<
+  Record<AnalyticsFilter | 'presentationCurrency', unknown>
+>;
+
+function parseSelection(
+  input: AnalyticsSelectionInput | undefined,
+  violations: FieldViolation[],
+): AnalyticsSelection {
+  const rawCurrency = input?.presentationCurrency;
+  const currency =
+    typeof rawCurrency === 'string'
+      ? rawCurrency.trim().toUpperCase()
+      : undefined;
+  if (
+    rawCurrency !== undefined &&
+    (!currency || !ACTIVE_CURRENCIES.has(currency))
+  ) {
+    violations.push({
+      field: 'presentationCurrency',
+      code: 'invalid-currency',
+      message: 'presentationCurrency must be an active ISO 4217 currency.',
+    });
+  }
+  const filters: Partial<Record<AnalyticsFilter, readonly string[]>> = {};
+  for (const field of ANALYTICS_FILTERS) {
+    const raw = input?.[field];
+    if (raw === undefined) continue;
+    // OpenAPI form/explode sends one query key per array element.
+    const values: readonly unknown[] = Array.isArray(raw) ? raw : [raw];
+    const ids = new Set<string>();
+    for (const value of values) {
+      if (typeof value === 'string' && UUID_PATTERN.test(value))
+        ids.add(value.toLowerCase());
+    }
+    if (ids.size === 0 || ids.size !== values.length) {
+      violations.push({
+        field,
+        code: 'invalid',
+        message: `${field} must contain unique UUIDs.`,
+      });
+    } else {
+      filters[field] = [...ids];
+    }
+  }
+  return {
+    ...(currency ? { presentationCurrency: currency } : {}),
+    ...(Object.keys(filters).length > 0 ? { filters } : {}),
+  };
+}
+
 export function createCashFlowAnalyticsQuery(input: {
   workspaceId: string;
   fromParam?: string;
   toParam?: string;
   granularityParam?: string;
+  selection?: AnalyticsSelectionInput;
 }): CashFlowAnalyticsQuery {
   const violations: FieldViolation[] = [];
 
@@ -178,10 +232,12 @@ export function createCashFlowAnalyticsQuery(input: {
     });
   }
 
-  // 4.6 Granularity: day | week | month | quarter, default month
   let granularity: CashFlowGranularity = CASH_FLOW_GRANULARITY.MONTH;
   if (input.granularityParam !== undefined) {
-    const raw = input.granularityParam.trim().toLowerCase();
+    const raw =
+      typeof input.granularityParam === 'string'
+        ? input.granularityParam.trim().toLowerCase()
+        : '';
     if (
       Object.values(CASH_FLOW_GRANULARITY).includes(raw as CashFlowGranularity)
     ) {
@@ -195,6 +251,7 @@ export function createCashFlowAnalyticsQuery(input: {
     }
   }
 
+  const selection = parseSelection(input.selection, violations);
   if (violations.length > 0) {
     throw new AnalyticsQueryValidationError(Object.freeze(violations));
   }
@@ -204,6 +261,7 @@ export function createCashFlowAnalyticsQuery(input: {
     from: input.fromParam!,
     to: input.toParam!,
     granularity,
+    ...selection,
   };
 }
 
@@ -213,6 +271,7 @@ export function createAdvancedAnalyticsQuery(
     metricParam?: string;
     fromParam?: string;
     toParam?: string;
+    selection?: AnalyticsSelectionInput;
   },
   nowUtc: Date = new Date(),
 ): AdvancedAnalyticsQuery {
@@ -227,7 +286,10 @@ export function createAdvancedAnalyticsQuery(
   }
 
   let metric: AdvancedMetric | undefined = undefined;
-  if (!input.metricParam || input.metricParam.trim() === '') {
+  if (
+    typeof input.metricParam !== 'string' ||
+    input.metricParam.trim() === ''
+  ) {
     violations.push({
       field: 'metric',
       code: 'required',
@@ -296,6 +358,7 @@ export function createAdvancedAnalyticsQuery(
     });
   }
 
+  const selection = parseSelection(input.selection, violations);
   if (violations.length > 0 || !metric || !from || !to) {
     throw new AnalyticsQueryValidationError(Object.freeze(violations));
   }
@@ -305,5 +368,6 @@ export function createAdvancedAnalyticsQuery(
     metric,
     from,
     to,
+    ...selection,
   };
 }

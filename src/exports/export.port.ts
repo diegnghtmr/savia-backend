@@ -83,6 +83,10 @@ export type ExportGetOutcome =
 export interface ExportRows {
   readonly accounts: readonly Record<string, unknown>[];
   readonly transactions: readonly Record<string, unknown>[];
+  readonly financial?: {
+    readonly resource: 'budgets' | 'debts';
+    readonly rows: readonly Record<string, unknown>[];
+  };
 }
 export interface ExportStore {
   readActiveRole(

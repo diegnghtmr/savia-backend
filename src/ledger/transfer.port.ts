@@ -1,4 +1,6 @@
+import type { CreateTransferCommand } from '../platform/ledger-writer.port.js';
 import type { Money, TransactionStatus } from './ledger.port.js';
+export type { CreateTransferCommand } from '../platform/ledger-writer.port.js';
 
 export const TRANSFER_PORT = Symbol('TransferPort');
 
@@ -17,15 +19,6 @@ export interface Transfer {
   readonly createdAt?: string;
   readonly updatedAt?: string;
   readonly version?: number;
-}
-
-export interface CreateTransferCommand {
-  readonly sourceAccountId: string;
-  readonly destinationAccountId: string;
-  readonly amount: Money;
-  readonly occurredAt: string;
-  readonly fee?: Money;
-  readonly description?: string | null;
 }
 
 export const TRANSFER_CREATE_OUTCOMES = {

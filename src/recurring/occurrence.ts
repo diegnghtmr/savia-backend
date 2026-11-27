@@ -340,6 +340,80 @@ export function computeNextOccurrence(
   };
 }
 
+// Check a proposed move against every future cadence slot, without walking
+// the calendar slot by slot for far-future targets.
+export function isCadenceSlot(options: {
+  frequency: RecurringFrequency;
+  rrule: string | null;
+  first: Date;
+  target: Date;
+  anchorDayOfMonth: number;
+  anchorMonth: number;
+}): boolean {
+  const { frequency, rrule, first, target, anchorDayOfMonth, anchorMonth } =
+    options;
+  const dayMs = 86_400_000;
+  const days = (target.getTime() - first.getTime()) / dayMs;
+  if (days < 0 || !Number.isInteger(days)) return false;
+  if (days === 0) return true;
+  const custom =
+    frequency === 'custom' && rrule ? parseRRule(rrule) : undefined;
+  const interval = custom?.interval ?? 1;
+  switch (custom?.freq ?? frequency) {
+    case 'DAILY':
+    case 'daily':
+      return days % interval === 0;
+    case 'biweekly':
+      return days % 14 === 0;
+    case 'WEEKLY':
+    case 'weekly': {
+      if (!custom?.byDay) return days % (7 * interval) === 0;
+      const weeks = Math.floor((days + first.getUTCDay()) / 7);
+      return (
+        weeks % interval === 0 &&
+        custom.byDay.some((day) => DAY_CODES[day] === target.getUTCDay())
+      );
+    }
+    case 'MONTHLY':
+    case 'monthly': {
+      const months =
+        (target.getUTCFullYear() - first.getUTCFullYear()) * 12 +
+        target.getUTCMonth() -
+        first.getUTCMonth();
+      if (months <= 0 || months % interval !== 0) return false;
+      const base = new Date(target);
+      base.setUTCMonth(base.getUTCMonth() - interval, 1);
+      return (
+        computeSingleOccurrenceStep(
+          base,
+          frequency,
+          custom,
+          anchorDayOfMonth,
+          anchorMonth,
+        ).getTime() === target.getTime()
+      );
+    }
+    case 'YEARLY':
+    case 'yearly': {
+      const years = target.getUTCFullYear() - first.getUTCFullYear();
+      if (years <= 0 || years % interval !== 0) return false;
+      const base = new Date(target);
+      base.setUTCFullYear(base.getUTCFullYear() - interval, 0, 1);
+      return (
+        computeSingleOccurrenceStep(
+          base,
+          frequency,
+          custom,
+          anchorDayOfMonth,
+          anchorMonth,
+        ).getTime() === target.getTime()
+      );
+    }
+    default:
+      return false;
+  }
+}
+
 function computeSingleOccurrenceStep(
   baseDate: Date,
   frequency: RecurringFrequency,

@@ -1,4 +1,4 @@
-// Migrations under test: 202608290004_subscriptions.sql
+// Migrations under test: 202608290004_subscriptions.sql, 202609170017_subscription_detection.sql, 202609170022_l11_subscriptions_debts.sql
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -232,6 +232,36 @@ describe('Subscriptions schema, CHECK constraints, RLS, and grants (202608290004
           nullable: false,
           hasDefault: true,
         },
+        {
+          name: 'detection_key',
+          type: 'text',
+          nullable: true,
+          hasDefault: false,
+        },
+        {
+          name: 'detection_observed_at',
+          type: 'timestamp with time zone',
+          nullable: true,
+          hasDefault: false,
+        },
+        {
+          name: 'detection_observation_id',
+          type: 'uuid',
+          nullable: true,
+          hasDefault: false,
+        },
+        {
+          name: 'version',
+          type: 'integer',
+          nullable: false,
+          hasDefault: true,
+        },
+        {
+          name: 'recurring_rule_id',
+          type: 'uuid',
+          nullable: true,
+          hasDefault: false,
+        },
       ]);
     });
 
@@ -306,6 +336,9 @@ describe('Subscriptions schema, CHECK constraints, RLS, and grants (202608290004
         'created_by',
         'current_amount_minor',
         'current_currency',
+        'detection_key',
+        'detection_observation_id',
+        'detection_observed_at',
         'frequency',
         'next_expected_at',
         'payee_name',
@@ -321,11 +354,14 @@ describe('Subscriptions schema, CHECK constraints, RLS, and grants (202608290004
       expect(updatable).toEqual([
         'current_amount_minor',
         'current_currency',
+        'detection_observation_id',
+        'detection_observed_at',
         'frequency',
         'next_expected_at',
         'payee_name',
         'previous_amount_minor',
         'previous_currency',
+        'recurring_rule_id',
         'status',
       ]);
 

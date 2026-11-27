@@ -6,7 +6,15 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
@@ -23,6 +31,7 @@ import {
   type ArtifactStorage,
 } from '../../src/platform/artifact-storage.port.js';
 import { WorkerModule } from '../../src/worker.module.js';
+import { ReceiptWorkerModule } from '../../src/receipts/receipt-worker.module.js';
 import {
   createReportRunCommand,
   ReportRunCommandValidationError,
@@ -436,7 +445,15 @@ describe('Report runs integration contract and endpoint suite', () => {
       .overrideProvider(ARTIFACT_STORAGE)
       .useValue(inMemoryStorage)
       .compile();
-    await workerModule.init();
+    // This suite runs the real report worker, not the unrelated receipt OCR preflight.
+    const ocrPreflight = vi
+      .spyOn(ReceiptWorkerModule.prototype, 'onModuleInit')
+      .mockResolvedValue(undefined);
+    try {
+      await workerModule.init();
+    } finally {
+      ocrPreflight.mockRestore();
+    }
     runner = workerModule.get(JobRunner);
   });
 
@@ -690,8 +707,74 @@ describe('Report runs integration contract and endpoint suite', () => {
     });
   });
 
+  it('removes excluded ledger movements from rendered report results and restores them on inclusion', async () => {
+    const headers = {
+      authorization: 'Bearer editor-token',
+      'x-workspace-id': workspace1Id,
+    };
+    const txn = await application.inject({
+      method: 'POST',
+      url: '/v1/transactions',
+      headers: { ...headers, 'idempotency-key': randomUUID() },
+      payload: {
+        type: 'expense',
+        accountId: acct1Usd,
+        categoryId: catExpenseId,
+        amount: { amountMinor: '1234', currency: 'USD' },
+        occurredAt: '2026-11-06T12:00:00Z',
+      },
+    });
+    expect(txn.statusCode, txn.payload).toBe(201);
+    const { id } = txn.json<{ id: string }>();
+    async function render(): Promise<ReportGrid> {
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: { from: '2026-11-01', to: '2026-11-30' },
+        },
+      });
+      expect(response.statusCode, response.payload).toBe(202);
+      const { id: runId } = response.json<{ id: string }>();
+      expect((await drainUntilRunTerminal(runId)).runStatus).toBe('completed');
+      const result = inMemoryStorage.uploaded.get(
+        `${workspace1Id}/${runId}.json`,
+      );
+      expect(result).toBeDefined();
+      return JSON.parse(result!.content.toString('utf8')) as ReportGrid;
+    }
+    const cell = (grid: ReportGrid) =>
+      grid.rows
+        .find((row) => row.key.includes(catExpenseId))
+        ?.cells.find((value) => value.measure === 'converted_value')?.value;
+    expect(cell(await render())).toBe('1234');
+    for (const [action, expectedVersion, reported] of [
+      ['excludeFromReports', 1, undefined],
+      ['includeInReports', 2, '1234'],
+    ] as const) {
+      const changed = await application.inject({
+        method: 'POST',
+        url: '/v1/transactions/bulk',
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+        payload: {
+          targets: [{ id, expectedVersion }],
+          action: { type: action },
+        },
+      });
+      expect(changed.statusCode, changed.payload).toBe(200);
+      expect(changed.json()).toEqual({
+        updated: [{ id, version: expectedVersion + 1 }],
+      });
+      expect(cell(await render())).toBe(reported);
+    }
+  });
+
   describe('FIX 1: Exchange rate conversion direction', () => {
     it('converts EUR to USD using the available EUR/USD rate', async () => {
+      const uploadsBeforeEnqueue = inMemoryStorage.uploadCallCount;
       const response = await application.inject({
         method: 'POST',
         url: '/v1/report-runs',
@@ -718,7 +801,7 @@ describe('Report runs integration contract and endpoint suite', () => {
       };
       expect(body.status).toBe('queued');
       expect(body.downloadUrl).toBeNull();
-      expect(inMemoryStorage.uploadCallCount).toBe(0);
+      expect(inMemoryStorage.uploadCallCount).toBe(uploadsBeforeEnqueue);
 
       const finished = await drainUntilRunTerminal(body.id);
       expect(finished.jobStatus).toBe('completed');
@@ -1374,6 +1457,16 @@ describe('Report runs integration contract and endpoint suite', () => {
     });
 
     it('retries a storage 5xx by overwriting the same object key', async () => {
+      const listNotifications = async () => {
+        const response = await application.inject({
+          method: 'GET',
+          url: '/v1/notifications?limit=100',
+          headers: { authorization: 'Bearer editor-token' },
+        });
+        expect(response.statusCode).toBe(200);
+        return response.json<{ items: { type: string }[] }>().items;
+      };
+      const before = await listNotifications();
       inMemoryStorage.failNext = ['unavailable'];
       const uploadsBefore = inMemoryStorage.uploadCallCount;
       const response = await application.inject({
@@ -1392,8 +1485,17 @@ describe('Report runs integration contract and endpoint suite', () => {
       });
       expect(response.statusCode).toBe(202);
       const body = JSON.parse(response.body) as { id: string };
+      expect(await listNotifications()).toEqual(before);
       const finished = await drainUntilRunTerminal(body.id);
       expect(finished.runStatus).toBe('completed');
+      expect(await listNotifications()).toEqual([
+        ...before,
+        expect.objectContaining({
+          type: 'report_completed',
+          title: 'Report available',
+          read: false,
+        }),
+      ]);
       expect(inMemoryStorage.uploadCallCount).toBe(uploadsBefore + 2);
       expect(
         inMemoryStorage.uploaded.has(`${workspace1Id}/${body.id}.json`),
@@ -1685,6 +1787,151 @@ describe('Report runs integration contract and endpoint suite', () => {
         ).toBe(false);
       } finally {
         runner.registerHandler(original);
+      }
+    });
+
+    it('L17 persists the FX snapshot with a completed run and does not re-read rates later', async () => {
+      const effectiveAt = new Date();
+      const rate = '1.234567890123456789';
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+        values ($1,'EUR','USD',$2,$3,'manual',$4)`,
+        [workspace1Id, rate, effectiveAt, ownerId],
+      );
+      const headers = {
+        authorization: 'Bearer editor-token',
+        'x-workspace-id': workspace1Id,
+      };
+      const response = await application.inject({
+        method: 'POST',
+        url: '/v1/report-runs',
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+        payload: {
+          preset: 'expenses',
+          format: 'json',
+          filters: { from: '2026-06-01', to: '2026-06-30' },
+        },
+      });
+      expect(response.statusCode).toBe(202);
+      const queued = response.json();
+      expect(queued).not.toHaveProperty('fxRatesUsed');
+      expect(await drainUntilRunTerminal(queued.id)).toMatchObject({
+        jobStatus: 'completed',
+        runStatus: 'completed',
+      });
+      const read = () =>
+        application.inject({
+          method: 'GET',
+          url: `/v1/report-runs/${queued.id}`,
+          headers,
+        });
+      const first = await read();
+      expect(first.statusCode).toBe(200);
+      expect(first.json()).toMatchObject({
+        status: 'completed',
+        snapshotId: queued.snapshotId,
+        fxRatesUsed: [
+          {
+            baseCurrency: 'EUR',
+            quoteCurrency: 'USD',
+            rate,
+            rateDate: effectiveAt.toISOString().slice(0, 10),
+            source: 'manual',
+            freshness: 'fresh',
+          },
+        ],
+      });
+      const newer = new Date(effectiveAt.getTime() + 1);
+      await admin.query(
+        `insert into public.exchange_rates (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+        values ($1,'EUR','USD',9,$2,'manual',$3)`,
+        [workspace1Id, newer, ownerId],
+      );
+      const reread = await read();
+      expect(reread.statusCode).toBe(200);
+      expect(reread.json()).toEqual(first.json());
+    });
+
+    it('selects the last report quote before the frozen instant', async () => {
+      const rate = '1.234567890123456789';
+      const effectiveAt = new Date();
+      const rateIds: string[] = [];
+      const insertRate = async (value: string, at: Date) => {
+        const { rows } = await admin.query<{ id: string }>(
+          `insert into public.exchange_rates
+             (workspace_id, base_currency, quote_currency, rate, effective_at, source, created_by)
+           values ($1, 'EUR', 'USD', $2, $3, 'manual', $4) returning id`,
+          [workspace1Id, value, at, ownerId],
+        );
+        rateIds.push(rows[0].id);
+      };
+      try {
+        await insertRate(rate, effectiveAt);
+        const headers = {
+          authorization: 'Bearer editor-token',
+          'x-workspace-id': workspace1Id,
+        };
+        const queued = await application.inject({
+          method: 'POST',
+          url: '/v1/report-runs',
+          headers: { ...headers, 'idempotency-key': randomUUID() },
+          payload: {
+            preset: 'expenses',
+            format: 'json',
+            filters: { from: '2026-06-15', to: '2026-06-15' },
+          },
+        });
+        expect(queued.statusCode, queued.payload).toBe(202);
+        const { id } = queued.json<{ id: string }>();
+        const {
+          rows: [job],
+        } = await admin.query<{ asOf: string }>(
+          `select j.payload->>'asOf' as "asOf"
+             from public.jobs j join public.report_runs r on r.job_id = j.id
+            where r.id = $1`,
+          [id],
+        );
+        await insertRate(
+          '9.876543210123456789',
+          new Date(Date.parse(job.asOf) + 1),
+        );
+        expect(await drainUntilRunTerminal(id)).toMatchObject({
+          runStatus: 'completed',
+          jobStatus: 'completed',
+        });
+        const response = await application.inject({
+          method: 'GET',
+          url: `/v1/report-runs/${id}`,
+          headers,
+        });
+        expect(response.statusCode, response.payload).toBe(200);
+        expect(response.json().fxRatesUsed).toEqual([
+          {
+            baseCurrency: 'EUR',
+            quoteCurrency: 'USD',
+            rate,
+            rateDate: effectiveAt.toISOString().slice(0, 10),
+            source: 'manual',
+            freshness: 'fresh',
+          },
+        ]);
+        const uploaded = inMemoryStorage.uploaded.get(
+          `${workspace1Id}/${id}.json`,
+        );
+        expect(uploaded).toBeDefined();
+        const grid = JSON.parse(
+          uploaded!.content.toString('utf8'),
+        ) as ReportGrid;
+        expect(
+          grid.rows
+            .find((row) => row.key.includes(catExpenseId))
+            ?.cells.find((cell) => cell.measure === 'converted_value')?.value,
+        ).toBe('12346');
+      } finally {
+        await admin.query(
+          'delete from public.exchange_rates where id = any($1::uuid[])',
+          [rateIds],
+        );
       }
     });
 

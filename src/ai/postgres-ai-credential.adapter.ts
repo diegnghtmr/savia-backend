@@ -102,6 +102,22 @@ export class PostgresAICredentialAdapter implements Store {
     );
     return r.rowCount === 1;
   }
+  public async readDefault(c: TransactionClient, workspaceId: string) {
+    const result = await c.query<
+      NonNullable<Awaited<ReturnType<Store['readDefault']>>>
+    >(
+      `select d.model_ref as "modelRef", a.credential_type as "credentialType",
+              a.encrypted_secret as "encryptedSecret", a.metadata->>'baseUrl' as "baseUrl"
+         from public.ai_default_models d
+         left join public.ai_credentials a on a.id = d.credential_id
+           and a.workspace_id = d.workspace_id and a.owner_type = 'workspace'
+           and a.provider_id = split_part(d.model_ref, ':', 1) and a.status = 'active'
+           and (a.expires_at is null or a.expires_at > now())
+        where d.workspace_id = $1::uuid and d.credential_id is not null`,
+      [workspaceId],
+    );
+    return result.rows[0];
+  }
   public async setDefault(
     c: TransactionClient,
     w: string,

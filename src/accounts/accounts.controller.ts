@@ -38,6 +38,7 @@ import type { AuthenticatedRequest } from '../platform/authenticated-request.js'
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { parseIfMatch } from '../platform/if-match.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { McpRead } from '../platform/mcp-read-auth.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import { UUID_PATTERN } from '../platform/uuid.js';
@@ -50,6 +51,7 @@ export class AccountsController {
   ) {}
 
   @Get()
+  @McpRead('list_accounts', ['accounts:read'])
   public async listAccounts(
     @Req() request: AuthenticatedRequest,
     @Res() reply: FastifyReply,
@@ -202,6 +204,7 @@ export class AccountsController {
   }
 
   @Get(':accountId/balance')
+  @McpRead('get_account_balance', ['accounts:read'], 'account-path')
   public async getAccountBalance(
     @Param('accountId') accountId: string,
     @Req() request: AuthenticatedRequest,
@@ -422,6 +425,21 @@ export class AccountsController {
         status: 404,
       });
       return;
+    }
+
+    if (outcome.kind === ACCOUNT_UPDATE_OUTCOMES.INFORMAL_DEBT_NOT_ALLOWED) {
+      return sendProblem(reply, {
+        type: PROBLEM_TYPES.UNPROCESSABLE,
+        title: 'Account update validation failed',
+        status: 422,
+        errors: [
+          {
+            field: 'informalDebt',
+            code: 'not-allowed',
+            message: 'requires type informal_debt',
+          },
+        ],
+      });
     }
 
     if (outcome.kind === ACCOUNT_UPDATE_OUTCOMES.VERSION_CONFLICT) {

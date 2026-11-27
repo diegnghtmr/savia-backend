@@ -587,7 +587,7 @@ describe('createAccountCommand', () => {
           field: 'type',
           code: 'unsupported',
           message:
-            'type must be one of cash, savings, checking, digital_wallet, credit_card, loan, investment_manual, receivable, generic',
+            'type must be one of cash, savings, checking, digital_wallet, credit_card, loan, investment_manual, receivable, generic, informal_debt',
         });
       },
     );

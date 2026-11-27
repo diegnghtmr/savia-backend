@@ -54,6 +54,7 @@ describe('DebtService', () => {
 
   function createMockStore(): DebtStore {
     return {
+      readProjectionTerms: vi.fn(),
       readActiveRole: vi.fn(async () => 'owner'),
       createDebt: vi.fn(async () => dummyDebt),
       findDebt: vi.fn(async () => dummyDebt),

@@ -23,6 +23,6 @@ import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.ada
     },
     { provide: FUNDS_PORT, useExisting: FundService },
   ],
-  exports: [FUNDS_PORT],
+  exports: [FUNDS_PORT, FundService],
 })
 export class FundsModule {}

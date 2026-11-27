@@ -81,6 +81,7 @@ values ($1, $2, $3, $4)`,
     subject: string,
     cursor: Cursor | undefined,
     limit: number,
+    workspaceIds?: readonly string[],
   ): Promise<readonly WorkspaceItem[]> {
     const result = await client.query<WorkspaceListRow>(
       cursor === undefined
@@ -94,6 +95,7 @@ values ($1, $2, $3, $4)`,
                   to_char(w.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
              from public.workspaces w
              join public.workspace_memberships m on m.workspace_id = w.id and m.profile_id = $1
+            ${workspaceIds === undefined ? '' : 'where w.id = any($3::uuid[])'}
             order by w.created_at, w.id
             limit $2`
         : `select w.id::text,
@@ -107,11 +109,15 @@ values ($1, $2, $3, $4)`,
              from public.workspaces w
              join public.workspace_memberships m on m.workspace_id = w.id and m.profile_id = $1
             where (w.created_at, w.id) > ($2::timestamptz, $3::uuid)
+              ${workspaceIds === undefined ? '' : 'and w.id = any($5::uuid[])'}
             order by w.created_at, w.id
             limit $4`,
-      cursor === undefined
-        ? [subject, limit]
-        : [subject, cursor.createdAt, cursor.id, limit],
+      [
+        ...(cursor === undefined
+          ? [subject, limit]
+          : [subject, cursor.createdAt, cursor.id, limit]),
+        ...(workspaceIds === undefined ? [] : [workspaceIds]),
+      ],
     );
     return result.rows.map((row) => ({
       workspace: {

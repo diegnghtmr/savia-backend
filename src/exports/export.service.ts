@@ -58,11 +58,7 @@ export class ExportService implements ExportsPort {
     command: CreateExportJobCommand,
     key: string,
   ): Promise<ExportCreateOutcome> {
-    if (
-      command.resource === 'budgets' ||
-      command.resource === 'debts' ||
-      command.resource === 'report'
-    ) {
+    if (command.resource === 'report') {
       return { kind: EXPORT_OUTCOMES.UNSUPPORTED_RESOURCE };
     }
 

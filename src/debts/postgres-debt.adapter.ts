@@ -3,12 +3,18 @@ import { enforceDeferredConstraints } from '../platform/deferred-constraints.js'
 import { negateAmountMinor } from '../platform/amount-minor.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import type {
+  ExportReader,
+  ExportReaderQuery,
+} from '../platform/export-reader.port.js';
+import type {
   CreateDebtPaymentRequest,
   CreateDebtRequest,
   Debt,
   DebtAccountRecord,
   DebtItem,
   DebtListQuery,
+  DebtProjectionInput,
+  DebtProjectionTerms,
   DebtStore,
   DebtTransaction,
 } from './debt.port.js';
@@ -100,7 +106,7 @@ function mapDebt(row: DebtRow): Debt {
   };
 }
 
-export class PostgresDebtAdapter implements DebtStore {
+export class PostgresDebtAdapter implements DebtStore, ExportReader {
   public async readActiveRole(
     client: TransactionClient,
     workspaceId: string,
@@ -236,11 +242,69 @@ where d.workspace_id = $1::uuid
     return mapDebt(row);
   }
 
+  public async readProjectionTerms(
+    client: TransactionClient,
+    input: DebtProjectionInput,
+  ): Promise<readonly DebtProjectionTerms[]> {
+    const { rows } = await client.query<DebtProjectionTerms>(
+      `
+      select d.id::text, to_char(now() at time zone w.timezone, 'YYYY-MM-DD') as "asOf",
+        ${DEBT_OUTSTANDING_BALANCE_EXPRESSION}::text as balance, d.currency,
+        d.annual_rate::text as "annualRate", d.minimum_payment_minor::text as minimum,
+        d.payment_frequency as frequency, to_char(d.next_payment_at, 'YYYY-MM-DD') as "nextDue",
+        to_char(d.start_date, 'YYYY-MM-DD') as "startDate"
+      from public.debts selected
+      join public.debts d on d.workspace_id = selected.workspace_id and d.currency = selected.currency
+      join public.workspaces w on w.id = selected.workspace_id
+      where selected.workspace_id = $1::uuid and selected.id = $2::uuid
+        and (d.id = selected.id or ($3::boolean and d.status = 'active'))`,
+      [
+        input.workspaceId,
+        input.debtId,
+        input.strategy === 'snowball' || input.strategy === 'avalanche',
+      ],
+    );
+    return rows;
+  }
+
   public async listDebts(
     client: TransactionClient,
     query: DebtListQuery,
     limit: number,
   ): Promise<readonly DebtItem[]> {
+    const rows = await this.readDebtPage(client, query, limit);
+    return rows.map((row) => ({
+      debt: mapDebt(row),
+      cursorAt: row.cursorAt ?? '',
+    }));
+  }
+
+  public async readExportPage(
+    client: TransactionClient,
+    query: ExportReaderQuery,
+  ) {
+    const rows = await this.readDebtPage(client, query, query.limit, query);
+    return rows.map((row) => ({
+      id: row.id,
+      cursorAt: row.cursorAt ?? '',
+      row: {
+        ...mapDebt(row),
+        startDate: row.startDate,
+        termMonths: row.termMonths,
+      },
+    }));
+  }
+
+  private async readDebtPage(
+    client: TransactionClient,
+    query: DebtListQuery,
+    limit: number,
+    bounds?: Pick<ExportReaderQuery, 'from' | 'to'>,
+  ): Promise<DebtRow[]> {
+    const filtered = bounds?.from !== undefined || bounds?.to !== undefined;
+    const startDateFilter = filtered
+      ? '\n  and ($5::date is null or d.start_date >= $5::date) and ($6::date is null or d.start_date <= $6::date)'
+      : '';
     const sql = `
 select
   d.id::text,
@@ -262,7 +326,7 @@ select
   ${DEBT_OUTSTANDING_BALANCE_EXPRESSION}::text as "outstandingBalanceMinor"
 from public.debts d
 where d.workspace_id = $1::uuid
-  and ($2::timestamptz is null or (d.created_at, d.id) > ($2::timestamptz, $3::uuid))
+  and ($2::timestamptz is null or (d.created_at, d.id) > ($2::timestamptz, $3::uuid))${startDateFilter}
 order by d.created_at asc, d.id asc
 limit $4`;
 
@@ -272,12 +336,8 @@ limit $4`;
       query.cursor?.id ?? null,
       limit,
     ];
-
-    const result = await client.query<DebtRow>(sql, values);
-    return result.rows.map((row) => ({
-      debt: mapDebt(row),
-      cursorAt: row.cursorAt ?? '',
-    }));
+    if (filtered) values.push(bounds?.from ?? null, bounds?.to ?? null);
+    return (await client.query<DebtRow>(sql, values)).rows;
   }
 
   public async createDebtPayment(

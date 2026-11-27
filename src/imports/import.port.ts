@@ -4,6 +4,9 @@ type Job = Record<string, unknown>;
 export const IMPORTS_PORT = Symbol('ImportsPort');
 export const IMPORT_FORMATS = ['csv', 'xlsx', 'qif', 'ofx', 'qfx'] as const;
 export type ImportFormat = (typeof IMPORT_FORMATS)[number];
+export function isFixedStatementFormat(format: ImportFormat | null): boolean {
+  return format === 'qif' || format === 'ofx' || format === 'qfx';
+}
 export const IMPORT_STATUSES = [
   'uploaded',
   'analyzing',
@@ -20,7 +23,7 @@ export interface ParsedImportRow {
   readonly rowNumber: number;
   readonly rawValues: readonly unknown[];
   readonly parsedDate: string | null;
-  readonly parsedAmountMinor: number | null;
+  readonly parsedAmountMinor: number | string | null;
   readonly parsedDescription: string | null;
   readonly classification: ImportClassification;
   readonly error: Record<string, unknown> | null;
@@ -56,7 +59,7 @@ export interface ImportCommitRow {
   readonly rowNumber: number;
   readonly rawValues: readonly unknown[];
   readonly parsedDate: string | null;
-  readonly parsedAmountMinor: number | null;
+  readonly parsedAmountMinor: number | string | null;
   readonly parsedDescription: string | null;
   readonly classification: ImportClassification;
 }

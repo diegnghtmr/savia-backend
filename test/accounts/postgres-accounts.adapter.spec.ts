@@ -235,7 +235,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
     expect(values).toEqual([workspaceId, accountId]);
   });
 
-  it('calculates balance buckets and returns AccountBalance without availableBalance key', async () => {
+  it('returns all balance buckets without altering existing fields', async () => {
     const client: TransactionClient = {
       query: vi
         .fn()
@@ -247,6 +247,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
             {
               nativeBalance: '15000',
               pendingBalance: '5000',
+              availableBalance: '14000',
               reconciledBalance: '3000',
               foreignCurrencyLegs: '0',
               effectiveAsOf: '2026-07-15T12:00:00.000Z',
@@ -276,6 +277,7 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
         amountMinor: '5000',
         currency: 'USD',
       },
+      availableBalance: { amountMinor: '14000', currency: 'USD' },
       reconciledBalance: {
         amountMinor: '3000',
         currency: 'USD',
@@ -295,9 +297,6 @@ describe('PostgresAccountsAdapter.readAccountBalance', () => {
       },
       asOf: '2026-07-15T12:00:00.000Z',
     });
-
-    // RULING 31: availableBalance key must be ABSENT
-    expect('availableBalance' in result).toBe(false);
 
     expect(client.query).toHaveBeenCalledTimes(2);
     const [balanceSql, balanceValues] = (

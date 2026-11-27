@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { TransactionClient } from '../platform/pg-transaction.js';
-import type {
-  ImportFormat,
-  ImportJob,
-  ImportStore,
-  ParsedImportRow,
+import {
+  isFixedStatementFormat,
+  type ImportFormat,
+  type ImportJob,
+  type ImportStore,
+  type ParsedImportRow,
 } from './import.port.js';
 import { normalizeImportDescription } from './import-parsers.js';
 import { IMPORT_COMMIT_BATCH_SIZE } from '../platform/import-batch-policy.js';
@@ -72,7 +73,7 @@ export class PostgresImportAdapter implements ImportStore {
     error: Record<string, unknown> | null,
   ): Promise<ImportJob> {
     const job = await client.query<JobRow>(
-      `insert into public.import_jobs (id,workspace_id,file_name,status,detected_format,total_rows,valid_rows,duplicate_rows,error_rows,error,created_by,source_columns) values ($1::uuid,$2::uuid,$3,'awaiting_mapping',$4,$5,$6,$7,$8,$9::jsonb,$10::uuid,$11::text[]) returning id::text,status,file_name,account_id,detected_format,total_rows,valid_rows,duplicate_rows,error_rows,created_at,source_columns`,
+      `insert into public.import_jobs (id,workspace_id,file_name,status,detected_format,total_rows,valid_rows,duplicate_rows,error_rows,error,created_by,source_columns) values ($1::uuid,$2::uuid,$3,$12,$4,$5,$6,$7,$8,$9::jsonb,$10::uuid,$11::text[]) returning id::text,status,file_name,account_id,detected_format,total_rows,valid_rows,duplicate_rows,error_rows,created_at,source_columns`,
       [
         id,
         workspaceId,
@@ -85,6 +86,9 @@ export class PostgresImportAdapter implements ImportStore {
         error ? JSON.stringify(error) : null,
         subject,
         sourceColumns,
+        isFixedStatementFormat(detectedFormat)
+          ? 'awaiting_confirmation'
+          : 'awaiting_mapping',
       ],
     );
     const row = job.rows[0];
@@ -180,13 +184,15 @@ export class PostgresImportAdapter implements ImportStore {
     status: 'completed' | 'rolled_back',
   ): Promise<ImportJob | undefined> {
     const result = await client.query<JobRow>(
-      'update public.import_jobs set status=$3,account_id=$4::uuid,completed_at=now() where workspace_id=$1::uuid and id=$2::uuid and status=$5 returning id::text,status,file_name,account_id,detected_format,total_rows,valid_rows,duplicate_rows,error_rows,created_at,source_columns',
+      'update public.import_jobs set status=$3,account_id=$4::uuid,completed_at=now() where workspace_id=$1::uuid and id=$2::uuid and status=any($5::text[]) returning id::text,status,file_name,account_id,detected_format,total_rows,valid_rows,duplicate_rows,error_rows,created_at,source_columns',
       [
         workspaceId,
         importJobId,
         status,
         accountId,
-        status === 'completed' ? 'awaiting_mapping' : 'completed',
+        status === 'completed'
+          ? ['awaiting_mapping', 'awaiting_confirmation']
+          : ['completed'],
       ],
     );
     return result.rows[0] ? map(result.rows[0]) : undefined;

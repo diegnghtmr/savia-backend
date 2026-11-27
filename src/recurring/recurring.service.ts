@@ -2,6 +2,10 @@ import { encodeCursor } from '../platform/cursor.js';
 import type { Cursor } from '../platform/cursor.js';
 import type { IdempotencyStore } from '../platform/idempotency.port.js';
 import { computeRequestFingerprint } from '../platform/idempotency.service.js';
+import {
+  createRecurringRuleCommand,
+  RecurringCommandValidationError,
+} from './recurring-command.js';
 import type { TransactionClient } from '../platform/pg-transaction.js';
 import {
   RECURRING_CREATE_OUTCOMES,
@@ -14,6 +18,8 @@ import {
   type RecurringRulesPort,
   type RecurringRule,
   type Subscription,
+  type SubscriptionDecisionCommand,
+  type SubscriptionDecisionOutcome,
   type SubscriptionListOutcome,
   type SubscriptionListQuery,
   type SubscriptionStatus,
@@ -45,6 +51,12 @@ export interface RecurringRuleItem {
 export interface SubscriptionItem {
   readonly subscription: Subscription;
   readonly cursorAt: string;
+}
+
+interface LockedSubscriptionCandidate {
+  readonly subscription: Subscription;
+  readonly accountId: string | null;
+  readonly version: number;
 }
 
 export interface RecurringStore {
@@ -84,6 +96,24 @@ export interface RecurringStore {
     cursor: Cursor | undefined,
     limit: number,
   ): Promise<readonly RecurringRuleItem[]>;
+
+  lockSubscriptionWriter(
+    client: TransactionClient,
+    workspaceId: string,
+  ): Promise<boolean>;
+
+  lockSubscriptionCandidate(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+  ): Promise<LockedSubscriptionCandidate | undefined>;
+
+  resolveSubscriptionCandidate(
+    client: TransactionClient,
+    workspaceId: string,
+    id: string,
+    recurringRuleId: string | null,
+  ): Promise<Subscription & { etag: string }>;
 
   listSubscriptions(
     client: TransactionClient,
@@ -276,6 +306,121 @@ export class RecurringService implements RecurringRulesPort {
           },
         },
       };
+    });
+  }
+
+  public async decideSubscription(
+    subject: string,
+    command: SubscriptionDecisionCommand,
+  ): Promise<SubscriptionDecisionOutcome> {
+    const { workspaceId, subscriptionId, action, idempotencyKey, ifMatch } =
+      command;
+    const route = `POST /v1/subscriptions/{subscriptionId}/${action}`;
+    const fingerprint = computeRequestFingerprint({ subscriptionId, ifMatch });
+
+    return this.transaction.run(subject, async (client) => {
+      if (!(await this.store.lockSubscriptionWriter(client, workspaceId))) {
+        return { kind: 'forbidden' };
+      }
+      const existing = await this.idempotencyStore.read(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        workspaceId,
+      );
+      if (existing !== undefined) {
+        if (existing.requestFingerprint !== fingerprint) {
+          return { kind: 'idempotency_conflict' };
+        }
+        if (existing.responseEtag === null) {
+          throw new Error('Subscription decision replay ETag is missing.');
+        }
+        return {
+          kind: 'ok',
+          etag: existing.responseEtag,
+          body: existing.responseBody,
+        };
+      }
+      const candidate = await this.store.lockSubscriptionCandidate(
+        client,
+        workspaceId,
+        subscriptionId,
+      );
+      if (!candidate) return { kind: 'not_found' };
+      const { subscription, accountId, version } = candidate;
+      if (subscription.status !== 'detected') return { kind: 'resolved' };
+      const stale =
+        ifMatch !== undefined && ifMatch !== '*' && !ifMatch.includes(version);
+      if (stale) {
+        return { kind: 'stale' };
+      }
+
+      let ruleId: string | null = null;
+      if (action === 'confirm') {
+        if (
+          !accountId ||
+          BigInt(subscription.currentAmount.amountMinor) <= 0n
+        ) {
+          return { kind: 'unprocessable' };
+        }
+        const startsAt =
+          subscription.nextExpectedAt ?? new Date().toISOString();
+        let ruleCommand: CreateRecurringRuleCommand;
+        try {
+          ruleCommand = createRecurringRuleCommand({
+            name: subscription.payeeName,
+            frequency: subscription.frequency,
+            behavior: 'remind',
+            startsAt,
+            template: {
+              type: 'expense',
+              accountId,
+              amount: subscription.currentAmount,
+              occurredAt: startsAt,
+              description: subscription.payeeName,
+            },
+          });
+        } catch (error) {
+          if (error instanceof RecurringCommandValidationError) {
+            return { kind: 'unprocessable' };
+          }
+          throw error;
+        }
+        const rule = await this.store.createRecurringRule(
+          client,
+          workspaceId,
+          subject,
+          ruleCommand,
+        );
+        ruleId = rule.id;
+      }
+
+      const body = await this.store.resolveSubscriptionCandidate(
+        client,
+        workspaceId,
+        subscriptionId,
+        ruleId,
+      );
+      // PgTransaction serializes commands by subject; a replay row cannot win
+      // after this write. Roll back both the decision and the rule if it does.
+      const written = await this.idempotencyStore.write(
+        client,
+        subject,
+        route,
+        idempotencyKey,
+        fingerprint,
+        200,
+        body.etag,
+        body,
+        workspaceId,
+      );
+      if (!written) {
+        throw new Error(
+          'Subscription decision could not be recorded for replay.',
+        );
+      }
+      return { kind: 'ok', etag: body.etag, body };
     });
   }
 

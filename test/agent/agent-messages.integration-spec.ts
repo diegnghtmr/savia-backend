@@ -1,5 +1,9 @@
 // Migration under test: 202609060009_agent_messages.sql
 import { randomUUID } from 'node:crypto';
+import { EventEmitter, once } from 'node:events';
+import { createServer } from 'node:http';
+import https from 'node:https';
+import { Readable } from 'node:stream';
 import { Pool } from 'pg';
 import {
   FastifyAdapter,
@@ -14,6 +18,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
@@ -188,6 +193,228 @@ describe('agent messages over Fastify HTTP and disposable PostgreSQL', () => {
       editor,
     ]);
     await admin?.end();
+  });
+
+  it('uses the workspace credential and replays a redacted failure', async () => {
+    const secret = 'synthetic-gateway-secret';
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/ai/credentials',
+      headers: headers(),
+      payload: {
+        ownerType: 'workspace',
+        providerId: 'openai-compatible',
+        credentialType: 'gateway_token',
+        secret,
+        metadata: { baseUrl: 'https://gateway.example/v1' },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const credentialId = (JSON.parse(created.payload) as { id: string }).id;
+    const configured = await app.inject({
+      method: 'PUT',
+      url: '/v1/ai/default-model',
+      headers: headers(),
+      payload: { modelRef: 'openai-compatible:demo', credentialId },
+    });
+    expect(configured.statusCode).toBe(204);
+    const unauthorized = Object.assign(Readable.from([Buffer.from(secret)]), {
+      statusCode: 401,
+      headers: {},
+    });
+    const respond = (
+      _url: URL,
+      _options: https.RequestOptions,
+      callback: (response: unknown) => void,
+    ) => {
+      const request = new EventEmitter();
+      return Object.assign(request, { end: () => callback(unauthorized) });
+    };
+    const upstream = vi
+      .spyOn(https, 'request')
+      .mockImplementation(respond as unknown as typeof https.request);
+    try {
+      const conversation = await createConversation();
+      const id = key();
+      const failure = await request(conversation, 'prompt', 'owner', id);
+      expect(failure.statusCode).toBe(200);
+      expect(
+        parseEvents(failure.payload).map(({ type, data }) => [type, data]),
+      ).toEqual([
+        ['run_started', {}],
+        ['run_failed', { message: 'Provider HTTP 401' }],
+      ]);
+      const replay = await request(conversation, 'prompt', 'owner', id);
+      expect(replay.statusCode).toBe(200);
+      expect(parseEvents(replay.payload)).toEqual(parseEvents(failure.payload));
+      const auth = { Authorization: `Bearer ${secret}` };
+      expect(upstream).toHaveBeenCalledExactlyOnceWith(
+        new URL('https://gateway.example/v1/chat/completions'),
+        expect.objectContaining({ headers: expect.objectContaining(auth) }),
+        expect.any(Function),
+      );
+    } finally {
+      upstream.mockRestore();
+    }
+  });
+
+  it('reads workspace accounts then persists one bound approval without writing the ledger', async () => {
+    const createAccount = (scope: string, name: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/accounts',
+        headers: headers('owner', key(), scope),
+        payload: { name, type: 'cash', currency: 'USD' },
+      });
+    const local = await createAccount(workspace, 'Local account');
+    const foreign = await createAccount(foreignWorkspace, 'Foreign account');
+    expect(local.statusCode).toBe(201);
+    expect(foreign.statusCode).toBe(201);
+    const accountId = (JSON.parse(local.payload) as { id: string }).id;
+    const foreignId = (JSON.parse(foreign.payload) as { id: string }).id;
+    const args = {
+      type: 'expense',
+      accountId,
+      amount: { amountMinor: '25', currency: 'USD' },
+      occurredAt: '2026-01-02T00:00:00Z',
+    };
+    const turns: { messages?: { role: string; content: string }[] }[] = [];
+    const fake = createServer((req, res) => {
+      let raw = '';
+      req.setEncoding('utf8').on('data', (chunk: string) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        turns.push(JSON.parse(raw) as (typeof turns)[number]);
+        const { name, arguments: input } = [
+          { name: 'list_accounts', arguments: {} },
+          {
+            name: 'create_transaction',
+            arguments: { ...args, accountId: foreignId },
+          },
+          { name: 'create_transaction', arguments: args },
+        ][turns.length - 1] ?? { name: 'list_accounts', arguments: {} };
+        const tool = {
+          index: 0,
+          id: `call_${turns.length}`,
+          type: 'function',
+          function: { name, arguments: JSON.stringify(input) },
+        };
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(
+          `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [tool] }, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`,
+        );
+      });
+    });
+    fake.listen(0, '127.0.0.1');
+    await once(fake, 'listening');
+    try {
+      const address = fake.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Expected fake TCP port');
+      const credential = await app.inject({
+        method: 'POST',
+        url: '/v1/ai/credentials',
+        headers: headers(),
+        payload: {
+          ownerType: 'workspace',
+          providerId: 'local',
+          credentialType: 'local_endpoint',
+          secret: `http://127.0.0.1:${address.port}/v1`,
+        },
+      });
+      expect(credential.statusCode).toBe(201);
+      const credentialId = (JSON.parse(credential.payload) as { id: string })
+        .id;
+      expect(
+        (
+          await app.inject({
+            method: 'PUT',
+            url: '/v1/ai/default-model',
+            headers: headers(),
+            payload: { modelRef: 'local:demo', credentialId },
+          })
+        ).statusCode,
+      ).toBe(204);
+      const conversationId = await createConversation();
+      const idempotency = key();
+      const response = await request(
+        conversationId,
+        'make a proposal',
+        'owner',
+        idempotency,
+      );
+      expect(response.statusCode).toBe(200);
+      const events = parseEvents(response.payload);
+      expect(events.map(({ type }) => type)).toEqual([
+        'run_started',
+        'tool_proposed',
+        'tool_completed',
+        'tool_proposed',
+        'tool_completed',
+        'tool_proposed',
+        'approval_required',
+        'run_completed',
+      ]);
+      expect(turns).toHaveLength(3);
+      const read = turns[1]?.messages?.at(-1);
+      expect(read?.role).toBe('tool');
+      expect(read?.content).toContain(accountId);
+      expect(read?.content).not.toContain(foreignId);
+      expect(turns[2]?.messages?.at(-1)).toMatchObject({
+        role: 'tool',
+        content: '{"error":"Account was not found in the workspace"}',
+      });
+      const { approvalId } =
+        events.find(({ type }) => type === 'approval_required')?.data ?? {};
+      expect(typeof approvalId).toBe('string');
+      const approval = await app.inject({
+        method: 'GET',
+        url: `/v1/approvals/${String(approvalId)}`,
+        headers: headers(),
+      });
+      expect(approval.statusCode).toBe(200);
+      expect(JSON.parse(approval.payload)).toMatchObject({
+        id: approvalId,
+        status: 'pending',
+        riskClass: 'financial_write',
+        toolName: 'create_transaction',
+        preview: {
+          action: 'create_transaction',
+          workspaceId: workspace,
+          accountId,
+          amount: '25',
+          currency: 'USD',
+          date: args.occurredAt,
+          categoryId: null,
+        },
+      });
+      expect(
+        parseEvents(
+          (
+            await request(
+              conversationId,
+              'make a proposal',
+              'owner',
+              idempotency,
+            )
+          ).payload,
+        ),
+      ).toEqual(events);
+      expect(turns).toHaveLength(3);
+      const stored = await admin.query(
+        `select
+        (select count(*)::int from public.approvals where workspace_id = $1 and channel = 'agent') as approvals,
+        (select count(*)::int from public.transactions where workspace_id in ($1, $2)) as transactions`,
+        [workspace, foreignWorkspace],
+      );
+      expect(stored.rows).toEqual([{ approvals: 1, transactions: 0 }]);
+    } finally {
+      const closed = once(fake, 'close');
+      fake.close();
+      fake.closeAllConnections();
+      await closed;
+    }
   });
 
   it('returns the SSE headers and exact event/data wire format', async () => {

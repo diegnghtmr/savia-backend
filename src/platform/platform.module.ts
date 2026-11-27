@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { AuthConfig } from './auth-config.js';
 import { JoseJwtVerifier } from './jose-jwt-verifier.js';
-import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { JwtAuthGuard, McpProposalAuthGuard } from './jwt-auth.guard.js';
 import { PgTransaction } from './pg-transaction.js';
 import { PostgresConfig } from './postgres-config.js';
 import { PostgresPool } from './postgres-pool.js';
@@ -12,6 +12,7 @@ import { ARTIFACT_STORAGE } from './artifact-storage.port.js';
 import { SupabaseStorageAdapter } from './supabase-storage.adapter.js';
 import { CredentialCrypto } from './credential-crypto.js';
 import { CliTokenVerifier } from './cli-token-verifier.js';
+import { PostgresSessionStore } from './postgres-session.store.js';
 
 @Module({
   providers: [
@@ -21,11 +22,15 @@ import { CliTokenVerifier } from './cli-token-verifier.js';
     },
     {
       provide: JoseJwtVerifier,
-      inject: [AuthConfig],
-      useFactory: (config: AuthConfig): JoseJwtVerifier =>
-        new JoseJwtVerifier(config),
+      inject: [AuthConfig, PostgresSessionStore],
+      useFactory: (
+        config: AuthConfig,
+        sessions: PostgresSessionStore,
+      ): JoseJwtVerifier => new JoseJwtVerifier(config, sessions),
     },
+    PostgresSessionStore,
     JwtAuthGuard,
+    McpProposalAuthGuard,
     {
       provide: CliTokenVerifier,
       inject: [PgTransaction],
@@ -68,7 +73,9 @@ import { CliTokenVerifier } from './cli-token-verifier.js';
   exports: [
     AuthConfig,
     JoseJwtVerifier,
+    PostgresSessionStore,
     JwtAuthGuard,
+    McpProposalAuthGuard,
     CliTokenVerifier,
     PostgresPool,
     PgTransaction,

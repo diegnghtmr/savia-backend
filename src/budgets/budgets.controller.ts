@@ -14,6 +14,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { McpRead } from '../platform/mcp-read-auth.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { parseIfMatch } from '../platform/if-match.js';
@@ -159,7 +160,9 @@ export class BudgetsController {
       });
     void reply.status(200).send(o.page);
   }
-  @Get(':budgetId') public async get(
+  @Get(':budgetId')
+  @McpRead('get_budget_status', ['budgets:read'])
+  public async get(
     @Param('budgetId') raw: string,
     @Req() req: AuthenticatedRequest,
     @Res() reply: FastifyReply,

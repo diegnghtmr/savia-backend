@@ -9,7 +9,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { MCP_TOOL_ANNOTATIONS } from '../src/mcp/mcp-tools.js';
+import { bundleOpenApi, openapiMirror } from './helpers/openapi-bundle.js';
 
 const root = process.cwd();
 const verifier = resolve(root, 'scripts/verify-openapi.mjs');
@@ -62,36 +64,64 @@ const verify = () =>
     env: { ...process.env, OPENAPI_AUTHORITY_ROOT: testRoot },
   }).toString();
 
+type SharedParameter = {
+  required?: boolean;
+  schema: { default?: number };
+};
+
+type Operation = {
+  responses: Record<string, unknown>;
+  parameters: (SharedParameter | { $ref: string })[];
+};
+
+type BundledMirror = {
+  paths: Record<string, Record<string, Operation>>;
+  components: { parameters: Record<string, SharedParameter> };
+};
+
+let bundledMirror: BundledMirror | undefined;
+function mirrorDocument(): BundledMirror {
+  bundledMirror ??= bundleOpenApi(openapiMirror) as BundledMirror;
+  return structuredClone(bundledMirror);
+}
+
+function mutateParameter(
+  path: string,
+  component: 'Cursor' | 'Limit',
+  change: (parameter: SharedParameter) => void,
+): void {
+  const document = mirrorDocument();
+  const parameters = document.paths[path].get.parameters;
+  const reference = `#/components/parameters/${component}`;
+  const index = parameters.findIndex(
+    (p) => '$ref' in p && p.$ref === reference,
+  );
+  expect(index).toBeGreaterThanOrEqual(0);
+  const override = structuredClone(document.components.parameters[component]);
+  change(override);
+  parameters.splice(index, 1, override);
+  writeFileSync(contract, JSON.stringify(document));
+}
+
 afterEach(() => {
   for (const [path, content] of originals) writeFileSync(path, content);
   rmSync(planningSnapshot, { force: true });
 });
+afterAll(() => rmSync(testRoot, { force: true, recursive: true }));
 
 describe('executable OpenAPI authority', () => {
-  it(
-    'verifies the sole published health operation',
-    { timeout: 30_000 },
-    () => {
-      expect(existsSync(resolve(root, 'openapi/savia.openapi.yaml'))).toBe(
-        true,
-      );
-      expect(existsSync(verifier)).toBe(true);
-      expect(verify()).toContain('OpenAPI authority verified.');
-    },
-  );
+  it('verifies the published executable contract', { timeout: 30_000 }, () => {
+    expect(existsSync(openapiMirror)).toBe(true);
+    expect(existsSync(verifier)).toBe(true);
+    expect(verify()).toContain('OpenAPI authority verified.');
+  });
 
   it('rejects a declared bare 500 response', { timeout: 30_000 }, () => {
-    const source = readFileSync(contract, 'utf8');
-    const healthStart = source.indexOf('      operationId: getHealth');
-    const health = source.slice(healthStart);
-    writeFileSync(
-      contract,
-      source.slice(0, healthStart) +
-        health.replace(
-          "        '503':\n          $ref: '#/components/responses/ServiceUnavailable'",
-          "        '500':\n          description: Injected bare 500.\n        '503':\n          $ref: '#/components/responses/ServiceUnavailable'",
-        ),
-    );
+    const document = mirrorDocument();
+    document.paths['/health'].get.responses['500'] = {
+      description: 'Injected bare 500.',
+    };
+    writeFileSync(contract, JSON.stringify(document));
 
     expect(verify).toThrow(/bare 500/);
   });
@@ -160,17 +190,10 @@ describe('executable OpenAPI authority', () => {
   );
 
   it('publishes the complete reconciliation transport response set', () => {
-    const source = readFileSync(contract, 'utf8');
-    const operation = source.slice(
-      source.indexOf('operationId: completeReconciliation'),
-      source.indexOf(
-        '  /v1/reconciliations/{reconciliationId}:',
-        source.indexOf('operationId: completeReconciliation'),
-      ),
-    );
-    const codes = [...operation.matchAll(/^( {8})'(\d{3})':/gm)].map(
-      (match) => match[2],
-    );
+    const { paths } = mirrorDocument();
+    const codes = Object.keys(
+      paths['/v1/reconciliations/{reconciliationId}/complete'].post.responses,
+    ).sort();
     expect(codes).toEqual([
       '200',
       '400',
@@ -184,7 +207,7 @@ describe('executable OpenAPI authority', () => {
   });
 
   it.skipIf(!authorityAvailable)(
-    'mirrors budget response schemas and MCP OAuth scopes semantically',
+    'mirrors backup, funds, notification settings, budget responses, and MCP grants, proposals, OAuth and annotations',
     () => {
       const bundle = (path: string) => {
         const directory = mkdtempSync(
@@ -207,11 +230,14 @@ describe('executable OpenAPI authority', () => {
       };
       const authority = bundle(authorityPath);
       const mirror = bundle(resolve(root, 'openapi/savia.openapi.yaml'));
-      const pick = (document: Record<string, unknown>) => {
-        const paths = document.paths as Record<
+      const pathsOf = (document: Record<string, unknown>) =>
+        document.paths as Record<
           string,
           Record<string, Record<string, unknown>>
         >;
+      const pick = (document: Record<string, unknown>) => {
+        const paths = pathsOf(document);
+        const confirm = paths['/v1/approvals/{approvalId}/confirm']?.post;
         const schemas = document.components as Record<
           string,
           Record<string, unknown>
@@ -224,15 +250,87 @@ describe('executable OpenAPI authority', () => {
               .filter(([, response]) => response.content !== undefined)
               .map(([status, response]) => [status, response.content]),
           );
+        const fundOperations = (path: string) =>
+          Object.fromEntries(
+            Object.entries(paths[path] ?? {}).map(([method, operation]) => {
+              if (method === 'parameters') return [method, operation];
+              const contract = { ...operation };
+              delete contract['x-idempotency-required'];
+              return [method, contract];
+            }),
+          );
         return {
+          funds: fundOperations('/v1/funds/{fundId}'),
+          withdrawals: fundOperations('/v1/funds/{fundId}/withdrawals'),
+          fundSchemas: [
+            'Fund',
+            'FundDetail',
+            'UpdateFundRequest',
+            'PositiveFundAmount',
+            'CreateFundWithdrawalRequest',
+          ].map((name) => schemas.schemas?.[name]),
+          fundTag: schemas.headers?.ETag,
           list: responseContent(paths['/v1/budgets']?.get?.responses),
           create: responseContent(paths['/v1/budgets']?.post?.responses),
           get: responseContent(paths['/v1/budgets/{budgetId}']?.get?.responses),
-          oauth: (schemas.securitySchemes?.mcpOAuth as Record<string, unknown>)
-            ?.flows,
+          backupCreate: paths['/v1/backup-jobs'],
+          backupPoll: paths['/v1/backup-jobs/{backupJobId}'],
+          backupSchema: schemas.schemas?.WorkspaceBackupJob,
+          notificationPreferences: paths['/v1/me/notification-preferences'],
+          pushDevices: paths['/v1/me/push-devices'],
+          pushDevice: paths['/v1/me/push-devices/{deviceId}'],
+          notificationSchemas: [
+            'NotificationPreferences',
+            'NotificationQuietHours',
+            'NotificationLocalTime',
+            'RegisterPushDeviceRequest',
+            'PushDeviceRegistration',
+          ].map((name) => schemas.schemas?.[name]),
+          proposal: paths['/v1/mcp/proposals']?.post,
+          confirmDescription: confirm?.description,
+          confirmationPrecondition: (
+            confirm?.responses as Record<string, unknown>
+          )?.['412'],
+          mcpOAuth: schemas.securitySchemes?.mcpOAuth,
+          grantSchemas: Object.fromEntries(
+            [
+              'CreateMcpGrantRequest',
+              'CreateMcpProposalRequest',
+              'McpProposalApproval',
+              'McpGrant',
+              'McpGrantSchedule',
+              'McpToolAllowlist',
+              'McpToolName',
+              'McpWeeklyWindow',
+              'SaviaScope',
+            ].map((name) => [name, schemas.schemas?.[name]]),
+          ),
         };
       };
       expect(pick(mirror)).toEqual(pick(authority));
+      const authorityPaths = pathsOf(authority);
+      const annotations: [string, Record<string, unknown>][] = [];
+      for (const [path, item] of Object.entries(pathsOf(mirror))) {
+        for (const [method, operation] of Object.entries(item)) {
+          if (typeof operation?.operationId !== 'string') continue;
+          const source = authorityPaths[path]?.[method];
+          expect(source?.operationId).toBe(operation.operationId);
+          const tool = source?.['x-savia-mcp-tool'] as
+            | ({ name: string } & Record<string, unknown>)
+            | undefined;
+          if (operation['x-savia-mcp-tool'] !== undefined) {
+            expect(operation['x-savia-mcp-tool']).toEqual(tool);
+          }
+          if (tool) {
+            const { name, ...annotation } = tool;
+            annotations.push([name, annotation]);
+          }
+        }
+      }
+      expect(annotations).toHaveLength(MCP_TOOL_ANNOTATIONS.size);
+      expect(Object.fromEntries(MCP_TOOL_ANNOTATIONS)).toEqual(
+        Object.fromEntries(annotations),
+      );
     },
     30_000,
   );
@@ -241,13 +339,9 @@ describe('executable OpenAPI authority', () => {
     'rejects shared parameter schema drift across operations',
     { timeout: 30_000 },
     () => {
-      writeFileSync(
-        contract,
-        readFileSync(contract, 'utf8').replace(
-          'schema: { type: integer, minimum: 1, maximum: 200, default: 50 }',
-          'schema: { type: integer, minimum: 1, maximum: 200 }',
-        ),
-      );
+      mutateParameter('/v1/budgets', 'Limit', (parameter) => {
+        delete parameter.schema.default;
+      });
 
       expect(verify).toThrow(
         /shared parameter "limit" in query has schema mismatch in operation "listBudgets": differing field "default"/,
@@ -259,17 +353,28 @@ describe('executable OpenAPI authority', () => {
     'rejects shared parameter required drift across operations',
     { timeout: 30_000 },
     () => {
-      writeFileSync(
-        contract,
-        readFileSync(contract, 'utf8').replace(
-          '        - name: cursor\n          in: query\n          required: false\n          schema:',
-          '        - name: cursor\n          in: query\n          schema:',
-        ),
-      );
+      mutateParameter('/v1/workspaces', 'Cursor', (parameter) => {
+        delete parameter.required;
+      });
 
       expect(verify).toThrow(
         /shared parameter "cursor" in query has required mismatch in operation "listWorkspaces": differing field "required"/,
       );
     },
   );
+
+  it('mirrors the read-only debt projection MCP tool from the pinned authority', () => {
+    const section = (path: string) =>
+      readFileSync(path, 'utf8').match(
+        /^ {2}\/v1\/debts\/\{debtId\}\/projection:\n([\s\S]*?)(?=^ {2}\/|^components:)/m,
+      )?.[1];
+    const annotation = (path: string) =>
+      section(path)
+        ?.match(/^ {6}x-savia-mcp-tool:\n((?:^ {8}[^\n]+\n)+)/m)?.[1]
+        .replaceAll(/^\s+/gm, '');
+    const expected =
+      'name: get_debt_projection\nriskClass: read\nrequiresApproval: false\nrequiredScopes:\n- budgets:read\n';
+    if (authorityAvailable) expect(annotation(authorityPath)).toBe(expected);
+    expect(annotation(contract)).toBe(expected);
+  });
 });

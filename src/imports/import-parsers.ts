@@ -1,9 +1,18 @@
 import ExcelJS from 'exceljs';
 import { inflateRawSync } from 'node:zlib';
 import type { ImportFormat, ParsedImportRow } from './import.port.js';
+import { parseOfx } from './ofx-parser.js';
+import { parseQif, previewQifDate } from './qif-parser.js';
+import {
+  MAX_IMPORT_ROWS,
+  OFX_COLUMNS,
+  QIF_PREVIEW_CURRENCY_DIGITS,
+  STATEMENT_COLUMNS,
+  statementAmount,
+  statementDate,
+} from './statement-fields.js';
 
-export const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;
-export const MAX_IMPORT_ROWS = 10_000;
+export { MAX_IMPORT_FILE_BYTES, MAX_IMPORT_ROWS } from './statement-fields.js';
 export const MAX_XLSX_DECOMPRESSED_BYTES = 16 * 1024 * 1024;
 export const MAX_XLSX_SHARED_STRINGS = 100_000;
 export const MAX_XLSX_SHARED_STRING_LENGTH = 100_000;
@@ -21,6 +30,7 @@ function fieldIndex(
 }
 function parseRows(
   values: readonly (readonly unknown[])[],
+  statement?: 'qif' | 'ofx',
 ): readonly ParsedImportRow[] {
   const headers = (values[0] ?? []).map((v) => String(v ?? ''));
   const dateAt = fieldIndex(headers, ['date', 'fecha', 'occurred_at']);
@@ -38,23 +48,33 @@ function parseRows(
   ]);
   return values.slice(1).map((raw, index) => {
     const widthError = raw.length !== headers.length;
-    const date = dateAt < 0 ? '' : String(raw[dateAt] ?? '').trim();
-    const amountText =
-      amountAt < 0
-        ? ''
-        : String(raw[amountAt] ?? '')
-            .trim()
-            .replace(',', '.');
+    const dateText = dateAt < 0 ? '' : String(raw[dateAt] ?? '').trim();
+    const date = statement === 'qif' ? previewQifDate(dateText) : dateText;
+    const rawAmount = raw[amountAt];
+    const statementValue = typeof rawAmount === 'string' ? rawAmount : null;
+    const amount =
+      statement === 'qif'
+        ? statementValue === null
+          ? null
+          : statementAmount(statementValue, QIF_PREVIEW_CURRENCY_DIGITS)
+        : statement === 'ofx'
+          ? statementValue
+          : Number(
+              String(rawAmount ?? '')
+                .trim()
+                .replace(',', '.'),
+            );
     const description =
       descriptionAt < 0 ? '' : String(raw[descriptionAt] ?? '').trim();
-    const amount = Number(amountText);
     const errors: string[] = [];
-    if (
-      !/^\d{4}-\d{2}-\d{2}$/u.test(date) ||
-      Number.isNaN(new Date(`${date}T00:00:00Z`).getTime())
-    )
+    const iso = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(date);
+    if (!iso || !statementDate(iso[1], iso[2], iso[3]))
       errors.push('date must be YYYY-MM-DD');
-    if (!Number.isSafeInteger(amount) || !Number.isFinite(amount))
+    if (statement && statementValue === null)
+      errors.push(
+        'amount must be valid for the statement format and ledger range',
+      );
+    else if (!statement && !Number.isSafeInteger(amount))
       errors.push('amount must be a safe integer minor-unit amount');
     if (!description) errors.push('description is required');
     if (widthError)
@@ -303,7 +323,7 @@ export async function parseImport(
 ): Promise<readonly ParsedImportRow[]> {
   if (format === 'csv') return parseCsv(bytes);
   if (format === 'xlsx') return parseXlsx(bytes);
-  throw new Error(
-    `The declared ${format.toUpperCase()} format is not yet supported.`,
-  );
+  if (format === 'qif')
+    return parseRows([STATEMENT_COLUMNS, ...parseQif(bytes)], 'qif');
+  return parseRows([OFX_COLUMNS, ...parseOfx(bytes)], 'ofx');
 }

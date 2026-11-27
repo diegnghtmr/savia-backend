@@ -26,6 +26,6 @@ import { PostgresIdempotencyAdapter } from '../platform/postgres-idempotency.ada
     },
     { provide: BUDGETS_PORT, useExisting: BudgetService },
   ],
-  exports: [BUDGETS_PORT],
+  exports: [BUDGETS_PORT, BudgetService],
 })
 export class BudgetsModule {}

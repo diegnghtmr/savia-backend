@@ -405,6 +405,24 @@ describe('Jobs schema, CHECK constraints, RLS, and grants (202608310001_jobs.sql
 
       expect(res.rows).toEqual([
         {
+          polname: 'application_backup_jobs_owner_insert',
+          polcmd: 'a',
+          polpermissive: false,
+          roles: ['savia_application'],
+          polqual: null,
+          polwithcheck:
+            "((type <> 'workspace_backup'::text) OR (workspace_actor_active_role(workspace_id) = 'owner'::text))",
+        },
+        {
+          polname: 'application_backup_jobs_requester_read',
+          polcmd: 'r',
+          polpermissive: false,
+          roles: ['savia_application'],
+          polqual:
+            "((type <> 'workspace_backup'::text) OR ((workspace_actor_active_role(workspace_id) = 'owner'::text) AND (created_by = (NULLIF(current_setting('app.subject_id'::text, true), ''::text))::uuid)))",
+          polwithcheck: null,
+        },
+        {
           polname: 'application_inserts_workspace_jobs',
           polcmd: 'a',
           polpermissive: true,

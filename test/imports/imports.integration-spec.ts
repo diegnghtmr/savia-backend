@@ -1,5 +1,7 @@
 // Migrations under test: 202608310005_import_jobs.sql, 202608310006_import_commit_rollback.sql
+import { randomUUID } from 'node:crypto';
 import multipart from '@fastify/multipart';
+import { Logger } from '@nestjs/common';
 import ExcelJS from 'exceljs';
 import { Pool } from 'pg';
 import {
@@ -7,10 +9,11 @@ import {
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import type { NotificationPage } from '../../src/notifications/notification.port.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
@@ -178,20 +181,31 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       validRows: 1,
     });
   });
-  it.each(['qif', 'ofx', 'qfx'] as const)(
-    'rejects unsupported %s with actionable detail',
+  it.each(['ofx', 'qfx'] as const)(
+    'rejects malformed %s without creating a job',
     async (format) => {
+      const before = await admin.query(
+        'select count(*)::int as count from public.import_jobs where workspace_id=$1',
+        [workspace],
+      );
       const response = await upload(
         app,
-        Buffer.from('unsupported'),
+        Buffer.from('<OFX><BANKTRANLIST>'),
         `statement.${format}`,
         `00000000-0000-4000-8000-00000000552${format.length}`,
         format,
       );
       expect(response.statusCode).toBe(422);
-      expect(JSON.parse(response.payload).detail).toContain(
-        'not yet supported',
+      expect(response.json()).toMatchObject({
+        title: 'Import analysis failed',
+        status: 422,
+        detail: 'OFX statement is invalid or unsupported.',
+      });
+      const after = await admin.query(
+        'select count(*)::int as count from public.import_jobs where workspace_id=$1',
+        [workspace],
       );
+      expect(after.rows).toEqual(before.rows);
     },
   );
   it('rejects a file over the configured multipart size limit', async () => {
@@ -326,25 +340,508 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
     );
     expect(count.rows[0].count).toBe(10_000);
   });
-  it('rejects an invalid upload without creating a job', async () => {
-    const before = await admin.query(
-      'select count(*)::int as count from public.import_jobs where workspace_id=$1',
-      [workspace],
-    );
-    const response = await upload(
+  it('rejects malformed QIF without reserving its key, then analyzes corrected QIF', async () => {
+    const key = '00000000-0000-4000-8000-000000005523';
+    const bad = await upload(
       app,
-      Buffer.from('not supported'),
-      'rejected.csv',
-      '00000000-0000-4000-8000-000000005523',
-      'qif',
+      Buffer.from('!Type:Bank\nD2/9/2026'),
+      'checks.qif',
+      key,
     );
-    expect(response.statusCode).toBe(422);
-    const after = await admin.query(
-      'select count(*)::int as count from public.import_jobs where workspace_id=$1',
-      [workspace],
+    expect(bad.statusCode).toBe(422);
+    expect(bad.json()).toMatchObject({
+      title: 'Import analysis failed',
+      status: 422,
+      detail: 'QIF statement is invalid or unsupported.',
+    });
+    const check = (reference: string) =>
+      `D2/9/2026\nT-1.25\nPCheck\nN${reference}\n^\n`;
+    const good = await upload(
+      app,
+      Buffer.from(`!Type:Bank\n${check('1')}${check('2')}${check('1')}`),
+      'checks.QIF',
+      key,
     );
-    expect(after.rows[0].count).toBe(before.rows[0].count);
+    expect(good.statusCode).toBe(202);
+    expect(good.json()).toMatchObject({
+      detectedFormat: 'qif',
+      status: 'awaiting_confirmation',
+      totalRows: 3,
+      validRows: 2,
+      duplicateRows: 1,
+      errorRows: 0,
+    });
   });
+  it.each([
+    {
+      format: 'qif',
+      statement:
+        '!Type:Bank\nD2026-04-01\nU-90,071,992,547,409.93\nPStatement debit\nN1\n^\n' +
+        'D4/2/2026\nT+1.25\nMStatement credit\nN2\n^\n' +
+        "D4/ 1'26\nT-90071992547409.930\nPStatement debit\nN1\n^\n",
+      month: '04',
+      key: '1',
+    },
+    {
+      format: 'ofx',
+      statement:
+        'OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\n\n<OFX><STMTRS><CURDEF>USD<BANKTRANLIST>' +
+        '<STMTTRN><DTPOSTED>20260501<TRNAMT>-90071992547409.93<NAME>Statement debit<FITID>1</STMTTRN>' +
+        '<STMTTRN><DTPOSTED>20260502<TRNAMT>+1.25<MEMO>Statement credit<FITID>2</STMTTRN>' +
+        '<STMTTRN><DTPOSTED>20260503<TRNAMT>-14.00<NAME>Changed description<FITID>1</STMTTRN>' +
+        '</BANKTRANLIST></STMTRS></OFX>',
+      month: '05',
+      key: '2',
+    },
+  ])(
+    'uploads, previews and commits $format using fixed fields',
+    async ({ format, statement, month, key }) => {
+      const headers = {
+        authorization: 'Bearer accepted-token',
+        'x-workspace-id': workspace,
+      };
+      const uploadKey = `00000000-0000-4000-8000-00000000556${key}`;
+      const commitKey = `00000000-0000-4000-8000-00000000557${key}`;
+      const fileName = `fixed.${format}`;
+      const uploaded = await upload(
+        app,
+        Buffer.from(statement),
+        fileName,
+        uploadKey,
+      );
+      expect(uploaded.statusCode).toBe(202);
+      const { id, createdAt } = uploaded.json();
+      const route = `/v1/import-jobs/${id}`;
+      const preview = {
+        id,
+        fileName,
+        createdAt,
+        accountId: null,
+        detectedFormat: format,
+        status: 'awaiting_confirmation',
+        totalRows: 3,
+        validRows: 2,
+        duplicateRows: 1,
+        errorRows: 0,
+      };
+      expect(uploaded.json()).toMatchObject(preview);
+      const analyzed = await app.inject({ method: 'GET', url: route, headers });
+      expect(analyzed.statusCode).toBe(200);
+      expect(analyzed.json()).toMatchObject(preview);
+      const committed = await app.inject({
+        method: 'POST',
+        url: `${route}/commit`,
+        headers: { ...headers, 'idempotency-key': commitKey },
+        payload: { accountId, columnMapping: {} },
+      });
+      expect(committed.statusCode).toBe(202);
+      expect(committed.json()).toMatchObject({
+        type: 'import_commit',
+        status: 'completed',
+      });
+      const completed = await app.inject({
+        method: 'GET',
+        url: route,
+        headers,
+      });
+      expect(completed.statusCode).toBe(200);
+      expect(completed.json()).toMatchObject({
+        ...preview,
+        accountId,
+        status: 'completed',
+      });
+      const transactions = await admin.query(
+        `select amount_minor::text, currency, description, occurred_at
+       from public.transactions where import_job_id=$1 order by occurred_at`,
+        [id],
+      );
+      expect(transactions.rows).toEqual([
+        {
+          amount_minor: '-9007199254740993',
+          currency: 'USD',
+          description: 'Statement debit',
+          occurred_at: new Date(`2026-${month}-01T00:00:00.000Z`),
+        },
+        {
+          amount_minor: '125',
+          currency: 'USD',
+          description: 'Statement credit',
+          occurred_at: new Date(`2026-${month}-02T00:00:00.000Z`),
+        },
+      ]);
+    },
+  );
+  it.each(['USD', 'JPY'])(
+    'analyzes QFX FITIDs and checks %s at commit',
+    async (currency) => {
+      const record = (fitid: string, amount: number) =>
+        `<STMTTRN><DTPOSTED>20260309</DTPOSTED><TRNAMT>${amount}</TRNAMT><FITID>${fitid}</FITID><NAME>QFX test</NAME></STMTTRN>`;
+      const data = `<OFX><CCSTMTRS><CURDEF>${currency}</CURDEF><BANKTRANLIST>${record('a', -12)}${record('b', -12)}${record('a', -13)}</BANKTRANLIST></CCSTMTRS></OFX>`;
+      const suffix = currency === 'USD' ? '1' : '2';
+      const uploaded = await upload(
+        app,
+        Buffer.from(data),
+        'statement.dat',
+        `00000000-0000-4000-8000-00000000554${suffix}`,
+        'qfx',
+      );
+      expect(uploaded.statusCode).toBe(202);
+      const body = uploaded.json();
+      expect(body).toMatchObject({
+        detectedFormat: 'qfx',
+        totalRows: 3,
+        validRows: 2,
+        duplicateRows: 1,
+        errorRows: 0,
+      });
+      const committed = await app.inject({
+        method: 'POST',
+        url: `/v1/import-jobs/${body.id}/commit`,
+        headers: {
+          authorization: 'Bearer accepted-token',
+          'x-workspace-id': workspace,
+          'idempotency-key': `00000000-0000-4000-8000-00000000555${suffix}`,
+        },
+        payload: {
+          accountId,
+          columnMapping: {
+            date: 'date',
+            amount: 'amount',
+            description: 'description',
+          },
+        },
+      });
+      const status = await app.inject({
+        method: 'GET',
+        url: `/v1/import-jobs/${body.id}`,
+        headers: {
+          authorization: 'Bearer accepted-token',
+          'x-workspace-id': workspace,
+        },
+      });
+      expect(status.statusCode).toBe(200);
+      if (currency === 'USD') {
+        expect(committed.statusCode).toBe(202);
+        expect(status.json()).toMatchObject({ status: 'completed', accountId });
+      } else {
+        expect(committed.statusCode).toBe(422);
+        expect(committed.json()).toMatchObject({
+          detail:
+            'Statement currency must match the selected account currency.',
+        });
+        expect(status.json()).toMatchObject({
+          status: 'awaiting_confirmation',
+          validRows: 2,
+          duplicateRows: 1,
+          errorRows: 0,
+        });
+      }
+      const transactions = await admin.query(
+        'select amount_minor::text, currency from public.transactions where import_job_id = $1',
+        [body.id],
+      );
+      expect(transactions.rows).toEqual(
+        currency === 'USD'
+          ? Array.from({ length: 2 }, () => ({
+              amount_minor: '-1200',
+              currency: 'USD',
+            }))
+          : [],
+      );
+    },
+  );
+  it('B8 regression: confirms a pre-upgrade OFX job with empty mapping', async () => {
+    const id = '00000000-0000-4000-8000-000000005590';
+    await admin.query(
+      `insert into public.import_jobs
+       (id,workspace_id,file_name,status,detected_format,total_rows,valid_rows,duplicate_rows,error_rows,created_by,source_columns)
+       values ($1,$2,'prior.ofx','awaiting_mapping','ofx',1,1,0,0,$3,
+               array['date','amount','description','reference','currency','fitid'])`,
+      [id, workspace, subject],
+    );
+    await admin.query(
+      `insert into public.import_job_rows
+       (id,workspace_id,import_job_id,row_number,raw_values,parsed_date,parsed_amount_minor,parsed_description,classification)
+       values ($1,$2,$3,2,$4::jsonb,'2026-06-01',-219,'Prior deployment','valid')`,
+      [
+        '00000000-0000-4000-8000-000000005591',
+        workspace,
+        id,
+        JSON.stringify([
+          '2026-06-01',
+          -219,
+          'Prior deployment',
+          'legacy1',
+          'USD',
+          'legacy1',
+        ]),
+      ],
+    );
+    const commit = await app.inject({
+      method: 'POST',
+      url: `/v1/import-jobs/${id}/commit`,
+      headers: {
+        authorization: 'Bearer accepted-token',
+        'x-workspace-id': workspace,
+        'idempotency-key': '00000000-0000-4000-8000-000000005592',
+      },
+      payload: { accountId, columnMapping: {} },
+    });
+    expect(commit.statusCode, commit.payload).toBe(202);
+    const booked = await admin.query(
+      `select amount_minor::text from public.transactions where import_job_id=$1`,
+      [id],
+    );
+    expect(booked.rows).toEqual([{ amount_minor: '-219' }]);
+  });
+
+  it('B8 regression: does not drop QIF entries that differ after resolving dateFormat', async () => {
+    const up = await upload(
+      app,
+      Buffer.from(
+        '!Type:Bank\nD02/03/2026\nT-17.50\nPTaxi\n^\nD2026-02-03\nT-17.50\nPTaxi\n^\n',
+      ),
+      'mixed-dates.qif',
+      '00000000-0000-4000-8000-000000005593',
+    );
+    expect(up.statusCode).toBe(202);
+    const { id } = up.json();
+    const commit = await app.inject({
+      method: 'POST',
+      url: `/v1/import-jobs/${id}/commit`,
+      headers: {
+        authorization: 'Bearer accepted-token',
+        'x-workspace-id': workspace,
+        'idempotency-key': '00000000-0000-4000-8000-000000005594',
+      },
+      payload: { accountId, columnMapping: {}, dateFormat: 'DD/MM/YYYY' },
+    });
+    expect(commit.statusCode, commit.payload).toBe(202);
+    const booked = await admin.query(
+      `select occurred_at::date::text as date from public.transactions
+       where import_job_id=$1 order by occurred_at`,
+      [id],
+    );
+    expect(booked.rows).toEqual([
+      { date: '2026-02-03' },
+      { date: '2026-03-02' },
+    ]);
+  });
+
+  it.each([true, false])(
+    'reviewer B8: deduplicates resolved dates only when selected (%s)',
+    async (skipDuplicateCandidates) => {
+      const record = (date: string, ref: string) =>
+        `D${date}\nT-37.81\nPBookshop\nN${ref}\n^\n`;
+      const up = await upload(
+        app,
+        Buffer.from(
+          `!Type:Bank\n${record("4/5'26", 'one')}${record('2026-05-04', 'one')}${record('2026-05-04', 'two')}`,
+        ),
+        'reviewer-date-collision.qif',
+        randomUUID(),
+      );
+      expect(up.statusCode, up.payload).toBe(202);
+      expect(up.json()).toMatchObject({
+        totalRows: 3,
+        validRows: 3,
+        duplicateRows: 0,
+      });
+      const { id } = up.json<{ id: string }>();
+      const committed = await app.inject({
+        method: 'POST',
+        url: `/v1/import-jobs/${id}/commit`,
+        headers: {
+          authorization: 'Bearer accepted-token',
+          'x-workspace-id': workspace,
+          'idempotency-key': randomUUID(),
+        },
+        payload: {
+          accountId,
+          columnMapping: {},
+          dateFormat: 'DD/MM/YYYY',
+          skipDuplicateCandidates,
+        },
+      });
+      expect(committed.statusCode, committed.payload).toBe(202);
+      const booked = await admin.query(
+        `select occurred_at::date::text as date from public.transactions where import_job_id=$1`,
+        [id],
+      );
+      expect(booked.rows).toEqual(
+        Array.from({ length: skipDuplicateCandidates ? 2 : 3 }, () => ({
+          date: '2026-05-04',
+        })),
+      );
+    },
+  );
+
+  it.each(['csv', 'xlsx'] as const)(
+    '%s debit keeps its sign until conversion and rollback cancels spend',
+    async (format) => {
+      const date = '2090-01-15';
+      const columns = ['date', 'amount', 'description', 'type'];
+      let content = Buffer.from(
+        `${columns.join(',')}\n${date},-900,Debit,expense\n`,
+      );
+      if (format === 'xlsx') {
+        const workbook = new ExcelJS.Workbook();
+        workbook
+          .addWorksheet('statement')
+          .addRows([columns, [date, -900, 'Debit', 'expense']]);
+        content = Buffer.from(await workbook.xlsx.writeBuffer());
+      }
+      const uploaded = await upload(
+        app,
+        content,
+        `expense.${format}`,
+        randomUUID(),
+        format,
+      );
+      expect(uploaded.statusCode, uploaded.payload).toBe(202);
+      const job = uploaded.json<{ id: string }>().id;
+      const headers = {
+        authorization: 'Bearer accepted-token',
+        'x-workspace-id': workspace,
+      };
+      const post = (url: string, payload?: object) =>
+        app.inject({
+          method: 'POST',
+          url,
+          headers: { ...headers, 'idempotency-key': randomUUID() },
+          ...(payload === undefined ? {} : { payload }),
+        });
+      const committed = await post(`/v1/import-jobs/${job}/commit`, {
+        accountId,
+        columnMapping: {
+          date: 'date',
+          amount: 'amount',
+          description: 'description',
+        },
+        debitSign: 'negative',
+        skipDuplicateCandidates: false,
+      });
+      expect(committed.statusCode, committed.payload).toBe(202);
+      const postings = async () =>
+        (
+          await admin.query<{
+            id: string;
+            type: string;
+            header: string;
+            posting: string;
+          }>(
+            `select t.id::text,t.type,t.amount_minor::text as header,p.amount_minor::text as posting
+             from public.transactions t join public.ledger_postings p
+               on p.workspace_id=t.workspace_id and p.transaction_id=t.id
+            where t.workspace_id=$1 and t.import_job_id=$2 and p.leg_kind='account'
+            order by p.amount_minor`,
+            [workspace, job],
+          )
+        ).rows;
+      const initial = await postings();
+      expect(initial).toEqual([
+        {
+          id: expect.any(String),
+          type: 'adjustment',
+          header: '-900',
+          posting: '-900',
+        },
+      ]);
+      const id = initial[0].id;
+      const importedCategory = randomUUID();
+      const nativeCategory = randomUUID();
+      const budgetId = randomUUID();
+      await admin.query(
+        `insert into public.categories(id,workspace_id,name,kind,created_by)
+         values ($1,$3,$5,'expense',$4),($2,$3,$6,'expense',$4)`,
+        [
+          importedCategory,
+          nativeCategory,
+          workspace,
+          subject,
+          `${format} imported`,
+          `${format} native`,
+        ],
+      );
+      const nativePayload = {
+        accountId,
+        type: 'expense',
+        amount: { amountMinor: '900', currency: 'USD' },
+        occurredAt: `${date}T00:00:00.000Z`,
+        categoryId: nativeCategory,
+        status: 'confirmed',
+      };
+      const forbidden = await post('/v1/transactions', {
+        ...nativePayload,
+        importJobId: job,
+      });
+      expect(forbidden.statusCode, forbidden.payload).toBe(422);
+      const native = await post('/v1/transactions', nativePayload);
+      expect(native.statusCode, native.payload).toBe(201);
+      const bulk = (expectedVersion: number, action: object) =>
+        post('/v1/transactions/bulk', {
+          targets: [{ id, expectedVersion }],
+          action,
+        });
+      const categorized = await bulk(1, {
+        type: 'categorize',
+        categoryId: importedCategory,
+      });
+      expect(categorized.statusCode, categorized.payload).toBe(200);
+      await admin.query(
+        `insert into public.budgets(id,workspace_id,name,method,period_start,period_end,currency,created_by)
+         values ($1,$2,$4,'envelope','2090-01-01','2090-01-31','USD',$3)`,
+        [budgetId, workspace, subject, `${format} debit parity`],
+      );
+      try {
+        await admin.query(
+          `insert into public.budget_allocations
+             (workspace_id,budget_id,category_id,planned_minor,rollover_policy)
+           values ($1,$2,$3,1500,'none'),($1,$2,$4,1500,'none')`,
+          [workspace, budgetId, importedCategory, nativeCategory],
+        );
+        const actuals = async () => {
+          const result = await app.inject({
+            method: 'GET',
+            url: `/v1/budgets/${budgetId}`,
+            headers,
+          });
+          expect(result.statusCode, result.payload).toBe(200);
+          const rows = result.json<{
+            allocations: {
+              categoryId: string;
+              actual: { amountMinor: string };
+            }[];
+          }>().allocations;
+          return [importedCategory, nativeCategory].map(
+            (categoryId) =>
+              rows.find((row) => row.categoryId === categoryId)?.actual
+                .amountMinor,
+          );
+        };
+        expect(await actuals()).toEqual(['-900', '900']);
+        const converted = await bulk(2, {
+          type: 'convertImported',
+          targetType: 'expense',
+        });
+        expect(converted.statusCode, converted.payload).toBe(200);
+        expect(await postings()).toEqual([
+          { id, type: 'expense', header: '900', posting: '-900' },
+        ]);
+        expect.soft(await actuals()).toEqual(['900', '900']);
+        const rolledBack = await post(`/v1/import-jobs/${job}/rollback`);
+        expect(rolledBack.statusCode, rolledBack.payload).toBe(202);
+        expect(await actuals()).toEqual(['0', '900']);
+        expect((await postings()).map(({ posting }) => posting)).toEqual([
+          '-900',
+          '900',
+        ]);
+      } finally {
+        await admin.query('delete from public.budgets where id=$1', [budgetId]);
+      }
+    },
+  );
+
   it('counts malformed rows without failing the job', async () => {
     const response = await upload(
       app,
@@ -363,6 +860,62 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       errorRows: 1,
     });
   });
+  it.each(['csv', 'xlsx'] as const)(
+    'counts an impossible %s date as a row error without logging the input',
+    async (format) => {
+      const invalidDate = '2026-04-31';
+      const columns = ['date', 'amount', 'description'];
+      const rows = [
+        [invalidDate, 42, 'Private file marker'],
+        ['2024-02-29', 10, 'Valid leap day'],
+      ];
+      let bytes = Buffer.from(
+        [columns, ...rows].map((row) => row.join(',')).join('\n'),
+      );
+      if (format === 'xlsx') {
+        const workbook = new ExcelJS.Workbook();
+        workbook.addWorksheet('dates').addRows([columns, ...rows]);
+        bytes = Buffer.from(await workbook.xlsx.writeBuffer());
+      }
+      const logger = vi
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => {});
+      try {
+        const response = await upload(
+          app,
+          bytes,
+          `calendar.${format}`,
+          `00000000-0000-4000-8000-00000000559${format === 'csv' ? '5' : '6'}`,
+        );
+        expect(JSON.stringify(logger.mock.calls)).not.toContain(invalidDate);
+        expect(JSON.stringify(logger.mock.calls)).not.toContain(
+          'Private file marker',
+        );
+        expect(response.statusCode, response.payload).toBe(202);
+        const analysis = {
+          status: 'awaiting_mapping',
+          detectedFormat: format,
+          totalRows: 2,
+          validRows: 1,
+          duplicateRows: 0,
+          errorRows: 1,
+        };
+        expect(response.json()).toMatchObject(analysis);
+        const preview = await app.inject({
+          method: 'GET',
+          url: `/v1/import-jobs/${response.json().id}`,
+          headers: {
+            authorization: 'Bearer accepted-token',
+            'x-workspace-id': workspace,
+          },
+        });
+        expect(preview.statusCode).toBe(200);
+        expect(preview.json()).toMatchObject(analysis);
+      } finally {
+        logger.mockRestore();
+      }
+    },
+  );
   it('counts normalized within-file duplicates', async () => {
     const response = await upload(
       app,
@@ -422,6 +975,20 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       },
       skipDuplicateCandidates: false,
     };
+    const inbox = async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/notifications',
+        headers: { authorization: headers.authorization },
+      });
+      expect(response.statusCode).toBe(200);
+      const page = response.json<NotificationPage>();
+      expect(page.pageInfo).toEqual({ hasNextPage: false, nextCursor: null });
+      return page.items;
+    };
+    // Earlier imports use the same requester and can already have notified them.
+    const before = await inbox();
+    const existingIds = new Set(before.map(({ id }) => id));
     const committed = await app.inject({
       method: 'POST',
       url: `/v1/import-jobs/${id}/commit`,
@@ -429,6 +996,23 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       payload: command,
     });
     expect(committed.statusCode).toBe(202);
+    const after = await inbox();
+    expect(after.filter(({ id }) => existingIds.has(id))).toEqual(before);
+    expect(after.filter(({ id }) => !existingIds.has(id))).toEqual([
+      expect.objectContaining({
+        type: 'import_completed',
+        title: 'Import completed',
+        read: false,
+      }),
+    ]);
+    const replay = await app.inject({
+      method: 'POST',
+      url: `/v1/import-jobs/${id}/commit`,
+      headers,
+      payload: command,
+    });
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json()).toEqual(committed.json());
     const conflict = await app.inject({
       method: 'POST',
       url: `/v1/import-jobs/${id}/commit`,
@@ -470,7 +1054,55 @@ describe('import analysis over the real HTTP and PostgreSQL boundaries', () => {
       payload: command,
     });
     expect(missing.statusCode).toBe(404);
+    expect(await inbox()).toEqual(after);
   });
+  it('commits an import promptly when notification insertion is blocked', async () => {
+    const uploaded = await upload(
+      app,
+      Buffer.from(
+        'date,amount,description\n2026-02-03,10,Locked notification\n',
+      ),
+      'lock-notification.csv',
+      '00000000-0000-4000-8000-000000005533',
+      'csv',
+    );
+    expect(uploaded.statusCode).toBe(202);
+    const { id } = uploaded.json<{ id: string }>();
+    const locker = await admin.connect();
+    try {
+      await locker.query('begin');
+      await locker.query('lock table public.notifications in share mode');
+      const start = performance.now();
+      const committed = await app.inject({
+        method: 'POST',
+        url: `/v1/import-jobs/${id}/commit`,
+        headers: {
+          authorization: 'Bearer accepted-token',
+          'x-workspace-id': workspace,
+          'idempotency-key': '00000000-0000-4000-8000-000000005534',
+        },
+        payload: {
+          accountId,
+          columnMapping: {
+            date: 'date',
+            amount: 'amount',
+            description: 'description',
+          },
+        },
+      });
+      expect(committed.statusCode).toBe(202);
+      expect(performance.now() - start).toBeLessThan(850);
+      const result = await admin.query(
+        `select status, (select count(*)::int from public.notifications where workspace_id = $1 and resource_id = $2) as notifications
+           from public.import_jobs where workspace_id = $1 and id = $2`,
+        [workspace, id],
+      );
+      expect(result.rows).toEqual([{ status: 'completed', notifications: 0 }]);
+    } finally {
+      await locker.query('rollback').finally(() => locker.release());
+    }
+  });
+
   it('replays idempotently with exactly one job and one row set', async () => {
     const key = '00000000-0000-4000-8000-000000005517';
     const first = await upload(

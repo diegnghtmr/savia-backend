@@ -23,11 +23,21 @@ import { WORKSPACE_INVITATION_PORT } from './workspace-invitation.port.js';
 import { WorkspaceInvitationService } from './workspace-invitation.service.js';
 import { PgTransaction } from '../platform/pg-transaction.js';
 import { PlatformModule } from '../platform/platform.module.js';
+import { SessionsController } from './sessions.controller.js';
+import { DashboardPreferencesController } from './dashboard-preferences.controller.js';
+import { DashboardPreferencesService } from './dashboard-preferences.service.js';
 
 @Module({
   imports: [PlatformModule],
-  controllers: [OnboardingController, ProfileController, WorkspaceController],
+  controllers: [
+    OnboardingController,
+    ProfileController,
+    WorkspaceController,
+    SessionsController,
+    DashboardPreferencesController,
+  ],
   providers: [
+    DashboardPreferencesService,
     PostgresBootstrapAdapter,
     {
       provide: BootstrapService,

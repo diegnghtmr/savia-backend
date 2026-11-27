@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Inject,
+  Optional,
   Post,
   Query,
   Req,
@@ -27,10 +28,36 @@ import {
   ExchangeRateQueryValidationError,
 } from './exchange-rate-query.js';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
+import { FRANKFURTER_RATE_MAX_AGE_HOURS } from '../platform/currency-conversion.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
 import { PROBLEM_TYPES, sendProblem } from '../platform/problem-details.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
+
+function withFreshness(body: unknown, responseTimeMs: number): unknown {
+  // Replayed response bodies are read from idempotency storage as unknown.
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    !('effectiveAt' in body) ||
+    typeof body.effectiveAt !== 'string' ||
+    !('source' in body) ||
+    typeof body.source !== 'string'
+  ) {
+    return body;
+  }
+
+  const ageHours = (responseTimeMs - Date.parse(body.effectiveAt)) / 3_600_000;
+  if (!Number.isFinite(ageHours)) return body;
+
+  return {
+    ...body,
+    isStale:
+      body.source === 'frankfurter' &&
+      ageHours >= FRANKFURTER_RATE_MAX_AGE_HOURS,
+    ageHours,
+  };
+}
 
 @Controller('v1/exchange-rates')
 @UseGuards(JwtAuthGuard)
@@ -38,6 +65,7 @@ export class ExchangeRateController {
   public constructor(
     @Inject(EXCHANGE_RATE_PORT)
     private readonly exchangeRatePort: ExchangeRatePort,
+    @Optional() private readonly clock: () => Date = () => new Date(),
   ) {}
 
   @Post()
@@ -125,12 +153,14 @@ export class ExchangeRateController {
       if (outcome.etag) {
         r = r.header('etag', outcome.etag);
       }
-      void r.send(outcome.body);
+      void r.send(withFreshness(outcome.body, this.clock().getTime()));
       return;
     }
 
     // createManualExchangeRate has NO ETag response header
-    void reply.status(201).send(outcome.exchangeRate);
+    void reply
+      .status(201)
+      .send(withFreshness(outcome.exchangeRate, this.clock().getTime()));
   }
 
   @Get()
@@ -188,6 +218,10 @@ export class ExchangeRateController {
       return;
     }
 
-    void reply.status(200).send(outcome.exchangeRates);
+    const responseTimeMs = this.clock().getTime();
+    const exchangeRates = outcome.exchangeRates.map((rate) =>
+      withFreshness(rate, responseTimeMs),
+    );
+    void reply.status(200).send(exchangeRates);
   }
 }

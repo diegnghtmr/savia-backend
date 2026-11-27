@@ -227,8 +227,10 @@ describe('Recurring rules schema, composite account FK, CHECK constraints, RLS, 
         'name',
         'next_occurrence_at',
         'rrule',
+        'series_changes',
         'starts_at',
         'template',
+        'version',
         'workspace_id',
       ]);
     });
@@ -284,8 +286,10 @@ describe('Recurring rules schema, composite account FK, CHECK constraints, RLS, 
         'name',
         'next_occurrence_at',
         'rrule',
+        'series_changes',
         'starts_at',
         'template',
+        'version',
         'workspace_id',
       ]);
 
@@ -321,8 +325,10 @@ describe('Recurring rules schema, composite account FK, CHECK constraints, RLS, 
         'name',
         'next_occurrence_at',
         'rrule',
+        'series_changes',
         'starts_at',
         'template',
+        'version',
       ]);
 
       const referenceable = result.rows
@@ -405,9 +411,19 @@ describe('Recurring rules schema, composite account FK, CHECK constraints, RLS, 
           polpermissive: true,
           roles: ['savia_application'],
           polqual:
-            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text]))",
+            "((workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text])) AND (created_by = (NULLIF(current_setting('app.subject_id'::text, true), ''::text))::uuid))",
           polwithcheck:
-            "(workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text]))",
+            "((workspace_actor_active_role(workspace_id) = ANY (ARRAY['owner'::text, 'administrator'::text, 'editor'::text])) AND (created_by = (NULLIF(current_setting('app.subject_id'::text, true), ''::text))::uuid))",
+        },
+        {
+          polname: 'elevated_reads_due_recurring_rules',
+          polcmd: 'r',
+          polpermissive: true,
+          roles: ['savia_elevated'],
+          polqual: `(active OR (EXISTS ( SELECT 1
+   FROM recurring_occurrences o
+  WHERE ((o.workspace_id = recurring_rules.workspace_id) AND (o.rule_id = recurring_rules.id) AND (NOT o.materialized) AND (o.effective_at IS NOT NULL)))))`,
+          polwithcheck: null,
         },
       ]);
     });

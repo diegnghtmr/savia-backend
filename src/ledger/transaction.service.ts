@@ -6,6 +6,8 @@ import type {
   AdjustmentTransactionCommand,
   ImportedTransactionCommand,
   LedgerWriter,
+  OccurrenceBooking,
+  OccurrenceLedgerWriter,
 } from '../platform/ledger-writer.port.js';
 import {
   TRANSACTION_CREATE_OUTCOMES,
@@ -53,6 +55,8 @@ export class TransactionPayeeNotFoundError extends Error {
   }
 }
 
+export class FundContributionVoidConflict extends Error {}
+
 export interface LedgerAccountRecord {
   readonly status: string;
   readonly currency: string;
@@ -82,6 +86,11 @@ export interface LedgerStore {
     workspaceId: string,
     accountId: string,
   ): Promise<LedgerAccountRecord | undefined>;
+  readCreateFieldValidity?(
+    client: TransactionClient,
+    workspaceId: string,
+    command: TransactionWriteFields,
+  ): Promise<CreateFieldValidity>;
   createTransaction(
     client: TransactionClient,
     workspaceId: string,
@@ -114,7 +123,20 @@ export interface LedgerStore {
     accountId: string,
     postingStatus: string,
     expectedVersions?: number | readonly number[],
+    expectedOccurrenceState?: OccurrenceBooking['status'],
   ): Promise<Transaction | undefined>;
+  voidFundContribution: LedgerStore['voidTransaction'];
+  rescheduleOccurrencePostings?(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+    occurredAt: string,
+  ): Promise<void>;
+  confirmOccurrencePostings?(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+  ): Promise<void>;
   createAdjustmentTransaction?(
     client: TransactionClient,
     workspaceId: string,
@@ -135,7 +157,28 @@ export interface LedgerStore {
   ): Promise<void>;
 }
 
-export class TransactionService implements LedgerPort, LedgerWriter {
+export type TransactionWriteFields = Partial<
+  Pick<
+    CreateTransactionCommand,
+    'occurredAt' | 'categoryId' | 'payeeId' | 'receiptId'
+  >
+>;
+
+export interface CreateFieldValidity {
+  readonly validDate: boolean;
+  readonly validCategory: boolean;
+  readonly validPayee: boolean;
+  readonly receiptAvailable: boolean;
+}
+
+type CreateAccountFailure =
+  | 'account_unresolved'
+  | 'account_closed'
+  | 'currency_mismatch';
+
+export class TransactionService
+  implements LedgerPort, LedgerWriter, OccurrenceLedgerWriter
+{
   public constructor(
     private readonly transaction: LedgerTransaction,
     private readonly store: LedgerStore,
@@ -157,6 +200,43 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         idempotencyKey,
       );
     });
+  }
+
+  private async checkCreateAccount(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateTransactionCommand,
+  ): Promise<CreateAccountFailure | undefined> {
+    const account = await this.store.lockAndReadAccount(
+      client,
+      workspaceId,
+      command.accountId,
+    );
+    if (!account) return TRANSACTION_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED;
+    if (account.status === 'closed')
+      return TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED;
+    if (account.currency !== command.amount.currency)
+      return TRANSACTION_CREATE_OUTCOMES.CURRENCY_MISMATCH;
+    return undefined;
+  }
+
+  public async preflightCreateWithin(
+    client: TransactionClient,
+    workspaceId: string,
+    command: CreateTransactionCommand,
+  ): Promise<'ok' | 'invalid' | 'conflict'> {
+    if (await this.checkCreateAccount(client, workspaceId, command))
+      return 'invalid';
+    const fields = await this.store.readCreateFieldValidity?.(
+      client,
+      workspaceId,
+      command,
+    );
+    if (!fields)
+      throw new Error('Transaction field validation is unavailable.');
+    if (!fields.validDate || !fields.validCategory || !fields.validPayee)
+      return 'invalid';
+    return fields.receiptAvailable ? 'ok' : 'conflict';
   }
 
   public async createWithin(
@@ -199,20 +279,8 @@ export class TransactionService implements LedgerPort, LedgerWriter {
     }
 
     // 3. Lock and read account in workspace
-    const account = await this.store.lockAndReadAccount(
-      client,
-      workspaceId,
-      command.accountId,
-    );
-    if (account === undefined) {
-      return { kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_UNRESOLVED };
-    }
-    if (account.status === 'closed') {
-      return { kind: TRANSACTION_CREATE_OUTCOMES.ACCOUNT_CLOSED };
-    }
-    if (command.amount.currency !== account.currency) {
-      return { kind: TRANSACTION_CREATE_OUTCOMES.CURRENCY_MISMATCH };
-    }
+    const failure = await this.checkCreateAccount(client, workspaceId, command);
+    if (failure) return { kind: failure };
 
     // 4. Create transaction via store
     let transaction: Transaction;
@@ -365,6 +433,73 @@ export class TransactionService implements LedgerPort, LedgerWriter {
     );
   }
 
+  public async confirmOccurrenceBooking(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+  ): Promise<'confirmed' | 'conflict' | 'invalid'> {
+    const account = await this.store.lockAndReadAccount(
+      client,
+      workspaceId,
+      booking.accountId,
+    );
+    if (!account || account.status === 'closed') return 'invalid';
+    const updated = await this.store.updateTransaction(
+      client,
+      workspaceId,
+      booking.id,
+      { status: 'confirmed' },
+      booking.version,
+    );
+    if (!updated) return 'conflict';
+    if (!this.store.confirmOccurrencePostings)
+      throw new Error('Store cannot confirm occurrence postings.');
+    await this.store.confirmOccurrencePostings(client, workspaceId, booking);
+    return 'confirmed';
+  }
+
+  public async rescheduleOccurrenceBooking(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+    occurredAt: string,
+  ): Promise<boolean> {
+    const updated = await this.store.updateTransaction(
+      client,
+      workspaceId,
+      booking.id,
+      { occurredAt },
+      booking.version,
+    );
+    if (!updated) return false;
+    if (!this.store.rescheduleOccurrencePostings)
+      throw new Error('Store cannot reschedule occurrence postings.');
+    await this.store.rescheduleOccurrencePostings(
+      client,
+      workspaceId,
+      booking,
+      occurredAt,
+    );
+    return true;
+  }
+
+  public async voidOccurrenceBooking(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: OccurrenceBooking,
+  ): Promise<boolean> {
+    const voided = await this.store.voidTransaction(
+      client,
+      workspaceId,
+      booking.id,
+      booking.accountId,
+      booking.status,
+      booking.version,
+      booking.status,
+    );
+    return voided !== undefined;
+  }
+
   public read(
     subject: string,
     workspaceId: string,
@@ -375,7 +510,7 @@ export class TransactionService implements LedgerPort, LedgerWriter {
       if (role === undefined) {
         return { kind: TRANSACTION_READ_OUTCOMES.FORBIDDEN };
       }
-      const transaction = await this.store.readTransaction(
+      const transaction = await this.readWithin(
         client,
         workspaceId,
         transactionId,
@@ -388,6 +523,29 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         transaction,
       };
     });
+  }
+
+  public readWithin(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+  ): Promise<Transaction | undefined> {
+    return this.store.readTransaction(client, workspaceId, transactionId);
+  }
+
+  public async preflightUpdateFields(
+    client: TransactionClient,
+    workspaceId: string,
+    command: UpdateTransactionCommand,
+  ): Promise<boolean> {
+    const fields = await this.store.readCreateFieldValidity?.(
+      client,
+      workspaceId,
+      command,
+    );
+    return (
+      fields?.validDate === true && fields.validCategory && fields.validPayee
+    );
   }
 
   public list(
@@ -444,6 +602,7 @@ export class TransactionService implements LedgerPort, LedgerWriter {
     command: UpdateTransactionCommand,
     idempotencyKey: string,
     expectedVersions?: number | readonly number[],
+    boundClient?: TransactionClient,
   ): Promise<TransactionUpdateOutcome> {
     const route = 'PATCH /v1/transactions/{transactionId}';
     const fingerprint = computeRequestFingerprint({
@@ -451,7 +610,9 @@ export class TransactionService implements LedgerPort, LedgerWriter {
       ...command,
     });
 
-    return this.transaction.run(subject, async (client) => {
+    const apply = async (
+      client: TransactionClient,
+    ): Promise<TransactionUpdateOutcome> => {
       // 1. Role check: only owner, administrator, editor may update transactions
       const role = await this.store.readActiveRole(client, workspaceId);
       if (
@@ -589,7 +750,10 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         kind: TRANSACTION_UPDATE_OUTCOMES.OK,
         transaction: updated,
       };
-    });
+    };
+    return boundClient
+      ? apply(boundClient)
+      : this.transaction.run(subject, apply);
   }
 
   public async void(
@@ -599,6 +763,7 @@ export class TransactionService implements LedgerPort, LedgerWriter {
     command: VoidTransactionCommand,
     idempotencyKey: string,
     expectedVersions?: number | readonly number[],
+    boundClient?: TransactionClient,
   ): Promise<TransactionVoidOutcome> {
     const route = 'POST /v1/transactions/{transactionId}/void';
     const fingerprint = computeRequestFingerprint({
@@ -606,7 +771,9 @@ export class TransactionService implements LedgerPort, LedgerWriter {
       ...command,
     });
 
-    return this.transaction.run(subject, async (client) => {
+    const apply = async (
+      client: TransactionClient,
+    ): Promise<TransactionVoidOutcome> => {
       // 1. Role check: only owner, administrator, editor may void transactions
       const role = await this.store.readActiveRole(client, workspaceId);
       if (
@@ -664,8 +831,12 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         }
       }
 
-      // 4. Void transaction in store (advisory lock, status flip, reversal postings, enforceDeferredConstraints)
-      const voided = await this.store.voidTransaction(
+      // Fund-linked contributions also serialize on the fund before the account.
+      const voidMethod =
+        existingTxn.type === 'fund_contribution'
+          ? 'voidFundContribution'
+          : 'voidTransaction';
+      const voided = await this.store[voidMethod](
         client,
         workspaceId,
         transactionId,
@@ -737,7 +908,17 @@ export class TransactionService implements LedgerPort, LedgerWriter {
         kind: TRANSACTION_VOID_OUTCOMES.OK,
         transaction: voided,
       };
-    });
+    };
+    // A bound caller owns rollback; never swallow an overdraw after applying a void.
+    if (boundClient) return apply(boundClient);
+    try {
+      return await this.transaction.run(subject, apply);
+    } catch (error) {
+      if (error instanceof FundContributionVoidConflict) {
+        return { kind: TRANSACTION_VOID_OUTCOMES.FUND_OVERDRAW };
+      }
+      throw error;
+    }
   }
 }
 

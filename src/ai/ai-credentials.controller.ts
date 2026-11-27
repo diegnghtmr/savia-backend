@@ -15,6 +15,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import type { AuthenticatedRequest } from '../platform/authenticated-request.js';
 import { JwtAuthGuard } from '../platform/jwt-auth.guard.js';
+import { McpRead } from '../platform/mcp-read-auth.js';
 import { parseIfMatch } from '../platform/if-match.js';
 import { parseWorkspaceHeader } from '../platform/workspace-header.js';
 import { validateIdempotencyKey } from '../platform/idempotency-key.js';
@@ -37,10 +38,9 @@ export class AICredentialsController {
   public constructor(
     @Inject(AI_CREDENTIALS_PORT) private readonly service: AIServicePort,
   ) {}
-  @Get('providers') public providers(
-    @Req() q: AuthenticatedRequest,
-    @Res() r: FastifyReply,
-  ) {
+  @Get('providers')
+  @McpRead('list_ai_providers', ['workspace:admin'])
+  public providers(@Req() q: AuthenticatedRequest, @Res() r: FastifyReply) {
     if (parseWorkspaceHeader(q.headers['x-workspace-id']).kind !== 'ok')
       return sendProblem(r, {
         type: PROBLEM_TYPES.FORBIDDEN,

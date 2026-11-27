@@ -142,7 +142,31 @@ export interface Subscription {
   readonly frequency: string;
   readonly nextExpectedAt: string | null;
   readonly status: SubscriptionStatus;
+  readonly etag?: string;
+  readonly recurringRuleId?: string;
 }
+
+export type SubscriptionDecision = 'confirm' | 'discard';
+
+export interface SubscriptionDecisionCommand {
+  readonly action: SubscriptionDecision;
+  readonly workspaceId: string;
+  readonly subscriptionId: string;
+  readonly idempotencyKey: string;
+  readonly ifMatch?: '*' | readonly number[];
+}
+
+export type SubscriptionDecisionOutcome =
+  | { readonly kind: 'ok'; readonly etag: string; readonly body: unknown }
+  | {
+      readonly kind:
+        | 'forbidden'
+        | 'idempotency_conflict'
+        | 'not_found'
+        | 'resolved'
+        | 'stale'
+        | 'unprocessable';
+    };
 
 export interface SubscriptionListQuery {
   readonly workspaceId: string;

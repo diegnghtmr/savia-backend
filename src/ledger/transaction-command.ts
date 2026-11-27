@@ -376,6 +376,7 @@ const UPDATE_ALLOWED_FIELDS = [
   'tagIds',
   'splits',
   'status',
+  'extraordinary',
 ] as const;
 
 const UPDATE_STATUSES = ['draft', 'pending', 'confirmed'] as const;
@@ -429,7 +430,16 @@ export function createUpdateTransactionCommand(
     notes?: string | null;
     tagIds?: readonly string[];
     status?: 'draft' | 'pending' | 'confirmed';
+    extraordinary?: boolean;
   } = {};
+
+  if ('extraordinary' in body) {
+    if (typeof body.extraordinary === 'boolean') {
+      command.extraordinary = body.extraordinary;
+    } else {
+      add(violations, 'extraordinary', 'invalid-type', 'must be a boolean');
+    }
+  }
 
   if ('occurredAt' in body) {
     if (body.occurredAt === undefined || typeof body.occurredAt !== 'string') {

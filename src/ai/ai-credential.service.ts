@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
+import { assertBearerToken } from './ai-credential-validation.js';
 import type { CredentialCrypto } from '../platform/credential-crypto.js';
 import type { PgTransaction } from '../platform/pg-transaction.js';
 import {
   AI_OUTCOMES,
+  isUsableBearerToken,
   type AIServicePort,
   type CreateCredentialCommand,
   type Outcome,
@@ -11,6 +13,7 @@ import {
   type UpdateCredentialCommand,
   type AIIdempotencyStore,
 } from './ai-credential.port.js';
+const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 export const PROVIDERS: readonly ProviderDescriptor[] = Object.freeze([
   {
     providerId: 'openai',
@@ -90,6 +93,7 @@ export class AICredentialService implements AIServicePort {
     command: CreateCredentialCommand,
     key: string,
   ): Promise<Outcome> {
+    assertBearerToken(command.credentialType, command.secret, 'secret');
     const provider = PROVIDERS.find(
       (item) => item.providerId === command.providerId,
     );
@@ -175,6 +179,16 @@ export class AICredentialService implements AIServicePort {
                 credential: existing.responseBody as never,
               }
             : { kind: AI_OUTCOMES.CONFLICT };
+        const replacement = command.replacementSecret;
+        if (replacement !== undefined) {
+          const current = await this.store.find(c, workspaceId, id);
+          if (!current) return { kind: AI_OUTCOMES.NOT_FOUND };
+          assertBearerToken(
+            current.credentialType,
+            replacement,
+            'replacementSecret',
+          );
+        }
         let credential: Awaited<ReturnType<Store['update']>>;
         try {
           credential = await this.store.update(
@@ -266,6 +280,40 @@ export class AICredentialService implements AIServicePort {
         if (error instanceof AIRollbackError) return { kind: error.outcome };
         throw error;
       });
+  }
+  /** Backend-only runtime read; the HTTP service port never exposes this result. */
+  public async resolveAgentCredential(subject: string, workspaceId: string) {
+    const row = await this.tx.runRead(subject, (c) =>
+      this.store.readDefault(c, workspaceId),
+    );
+    if (!row) return null;
+    const { credentialType, encryptedSecret } = row;
+    const separator = row.modelRef.indexOf(':');
+    const providerId = row.modelRef.slice(0, separator);
+    const model = row.modelRef.slice(separator + 1);
+    const provider = PROVIDERS.find((item) => item.providerId === providerId);
+    if (
+      !model ||
+      !provider ||
+      !isProviderPolicyAllowed(provider) ||
+      !encryptedSecret ||
+      (credentialType !== 'api_key' &&
+        credentialType !== 'gateway_token' &&
+        credentialType !== 'local_endpoint') ||
+      !provider.credentialTypes.includes(credentialType)
+    )
+      throw new Error('Workspace AI credential unavailable');
+    const secret = this.crypto.decrypt(encryptedSecret);
+    const local = credentialType === 'local_endpoint';
+    if (!local && !isUsableBearerToken(secret))
+      throw new Error('Workspace AI credential unavailable');
+    const configured = providerId === 'openai' ? OPENAI_BASE_URL : '';
+    return {
+      model,
+      credentialType,
+      baseUrl: local ? secret : (row.baseUrl ?? configured),
+      secret: local ? null : secret,
+    };
   }
   public async setDefaultModel(
     subject: string,

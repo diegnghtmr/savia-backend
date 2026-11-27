@@ -26,6 +26,9 @@ const authEnvironment = {
 const authEnvironmentKeys = Object.keys(authEnvironment);
 let originalEnvironment: Record<string, string | undefined>;
 let server: JwksServer | undefined;
+const sessions = { isActive: () => Promise.resolve(true) };
+const subject = '00000000-0000-0000-0000-000000000123';
+const sessionId = '00000000-0000-0000-0000-000000000456';
 
 @Controller('test')
 class IdentityHarnessController {
@@ -87,12 +90,14 @@ describe('identity HTTP boundary', () => {
     });
     const verifier = new JoseJwtVerifier(
       AuthConfig.fromEnvironment(authEnvironment),
+      sessions,
       { fetch: (_input, init) => fetch(server?.uri ?? '', init) },
     );
     const token = await new SignJWT({
       iss: authEnvironment.JWT_ISSUER,
       aud: authEnvironment.JWT_AUDIENCE,
-      sub: 'subject-123',
+      sub: subject,
+      session_id: sessionId,
       exp: Math.floor(Date.now() / 1000) + 60,
     })
       .setProtectedHeader({ alg: 'RS256', kid: 'key-1' })
@@ -107,7 +112,8 @@ describe('identity HTTP boundary', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.payload)).toEqual({
-      subject: 'subject-123',
+      subject,
+      sessionId,
       authMethod: 'session',
     });
     await app.close();
@@ -117,7 +123,10 @@ describe('identity HTTP boundary', () => {
     'returns a sanitized 401 for an invalid authorization header: %s',
     async (authorization) => {
       const app = await createApplication(
-        new JoseJwtVerifier(AuthConfig.fromEnvironment(authEnvironment)),
+        new JoseJwtVerifier(
+          AuthConfig.fromEnvironment(authEnvironment),
+          sessions,
+        ),
       );
 
       const response = await app.inject({

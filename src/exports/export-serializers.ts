@@ -38,15 +38,33 @@ export function serializeCsv(
   const cols = columns(rows);
   const neutralize = (value: string): string => {
     if (/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value)) return value;
-    return /^[=+\-@]|^[\t\r]/.test(value) ? `'${value}` : value;
+    return /^[=+\-@]|^[\t\r\n]/.test(value) ? `'${value}` : value;
   };
-  const esc = (v: unknown) => escapeCsvField(v, neutralize);
+  const esc = (column: string, value: unknown) => {
+    // Keep the amount column without losing Money to String(object).
+    if (
+      column === 'amount' &&
+      typeof value === 'object' &&
+      value !== null &&
+      'amountMinor' in value &&
+      typeof value.amountMinor === 'string' &&
+      'currency' in value &&
+      typeof value.currency === 'string'
+    ) {
+      const { amountMinor, currency } = value;
+      return escapeCsvField(
+        JSON.stringify({ amountMinor, currency }),
+        neutralize,
+      );
+    }
+    return escapeCsvField(value, neutralize);
+  };
   const lines: string[] = [cols.join(',')];
   for (let index = 0; index < rows.length; index += 1) {
     throwIfRenderBudgetExhausted(options);
     const row = rows[index];
     if (row === undefined) continue;
-    lines.push(cols.map((c) => esc(row[c])).join(','));
+    lines.push(cols.map((column) => esc(column, row[column])).join(','));
   }
   return Buffer.from(lines.join('\n'));
 }
@@ -81,7 +99,10 @@ export function serializeJsonBackup(
   const exportedAt = options?.asOf ?? new Date().toISOString();
   const accountsJson = serializeArrayBatched(rows.accounts, options);
   const transactionsJson = serializeArrayBatched(rows.transactions, options);
-  const content = `{\n  "exportedAt": ${JSON.stringify(exportedAt)},\n  "accounts": ${accountsJson},\n  "transactions": ${transactionsJson}\n}`;
+  const financialJson = rows.financial
+    ? `,\n  "${rows.financial.resource}": ${serializeArrayBatched(rows.financial.rows, options)}`
+    : '';
+  const content = `{\n  "exportedAt": ${JSON.stringify(exportedAt)},\n  "accounts": ${accountsJson},\n  "transactions": ${transactionsJson}${financialJson}\n}`;
   return Buffer.from(content);
 }
 
@@ -108,23 +129,33 @@ export async function serialize(
   rows: ExportRows,
   options?: SerializeExportOptions,
 ): Promise<{ content: Buffer; contentType: string; extension: string }> {
-  if (format === 'csv')
-    return {
-      content: serializeCsv([...rows.accounts, ...rows.transactions], options),
-      contentType: 'text/csv',
-      extension: 'csv',
-    };
   if (format === 'json_backup')
     return {
       content: serializeJsonBackup(rows, options),
       contentType: 'application/json',
       extension: 'json',
     };
+  const tabular = rows.financial
+    ? rows.financial.rows.map((row) => {
+        throwIfRenderBudgetExhausted(options);
+        return Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [
+            key,
+            value !== null && typeof value === 'object'
+              ? JSON.stringify(value)
+              : value,
+          ]),
+        );
+      })
+    : [...rows.accounts, ...rows.transactions];
+  if (format === 'csv')
+    return {
+      content: serializeCsv(tabular, options),
+      contentType: 'text/csv',
+      extension: 'csv',
+    };
   return {
-    content: await serializeXlsx(
-      [...rows.accounts, ...rows.transactions],
-      options,
-    ),
+    content: await serializeXlsx(tabular, options),
     contentType:
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     extension: 'xlsx',

@@ -1,7 +1,15 @@
 import { SAVIA_SCOPES, type SaviaScope } from './savia-scopes.js';
 
+// Workspace backup routes are session-only and must not appear in this allowlist.
+// Notification preferences and push-device routes are session-only: leave
+// GET/PUT /v1/me/notification-preferences and POST/DELETE /v1/me/push-devices unmapped.
+// POST /v1/mcp/proposals uses its own grant-bound OAuth guard, not CLI scopes.
 export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
   new Map([
+    [
+      routeKey('DELETE', '/v1/mcp/grants/:grantId'),
+      [SAVIA_SCOPES.WORKSPACE_ADMIN],
+    ],
     [
       routeKey('DELETE', '/v1/workspaces/:workspaceId/members/:memberId'),
       [SAVIA_SCOPES.WORKSPACE_ADMIN],
@@ -12,6 +20,7 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
       routeKey('GET', '/v1/accounts/:accountId/balance'),
       [SAVIA_SCOPES.ACCOUNTS_READ],
     ],
+    [routeKey('GET', '/v1/agent/conversations'), [SAVIA_SCOPES.REPORTS_READ]],
     [routeKey('GET', '/v1/ai/providers'), [SAVIA_SCOPES.WORKSPACE_ADMIN]],
     [routeKey('GET', '/v1/analytics/advanced'), [SAVIA_SCOPES.REPORTS_READ]],
     [routeKey('GET', '/v1/analytics/cash-flow'), [SAVIA_SCOPES.REPORTS_READ]],
@@ -20,6 +29,10 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     [routeKey('GET', '/v1/budgets/:budgetId'), [SAVIA_SCOPES.BUDGETS_READ]],
     [routeKey('GET', '/v1/categories'), [SAVIA_SCOPES.TRANSACTIONS_READ]],
     [routeKey('GET', '/v1/debts'), [SAVIA_SCOPES.BUDGETS_READ]],
+    [
+      routeKey('GET', '/v1/debts/:debtId/projection'),
+      [SAVIA_SCOPES.BUDGETS_READ],
+    ],
     [routeKey('GET', '/v1/exchange-rates'), [SAVIA_SCOPES.TRANSACTIONS_READ]],
     [
       routeKey('GET', '/v1/export-jobs/:exportJobId'),
@@ -27,11 +40,13 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     ],
     [routeKey('GET', '/v1/forecasts/:forecastId'), [SAVIA_SCOPES.REPORTS_READ]],
     [routeKey('GET', '/v1/funds'), [SAVIA_SCOPES.BUDGETS_READ]],
+    [routeKey('GET', '/v1/funds/:fundId'), [SAVIA_SCOPES.BUDGETS_READ]],
     [
       routeKey('GET', '/v1/import-jobs/:importJobId'),
       [SAVIA_SCOPES.TRANSACTIONS_READ],
     ],
     [routeKey('GET', '/v1/jobs/:jobId'), []],
+    [routeKey('GET', '/v1/mcp/grants'), [SAVIA_SCOPES.WORKSPACE_ADMIN]],
     [routeKey('GET', '/v1/me'), []],
     [routeKey('GET', '/v1/notifications'), []],
     [routeKey('GET', '/v1/payees'), [SAVIA_SCOPES.TRANSACTIONS_READ]],
@@ -44,6 +59,10 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
       [SAVIA_SCOPES.TRANSACTIONS_READ],
     ],
     [routeKey('GET', '/v1/recurring-rules'), [SAVIA_SCOPES.TRANSACTIONS_READ]],
+    [
+      routeKey('GET', '/v1/recurring-rules/:ruleId/occurrences'),
+      [SAVIA_SCOPES.TRANSACTIONS_READ],
+    ],
     [routeKey('GET', '/v1/report-definitions'), [SAVIA_SCOPES.REPORTS_READ]],
     [
       routeKey('GET', '/v1/report-runs/:reportRunId'),
@@ -72,6 +91,7 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
       [SAVIA_SCOPES.ACCOUNTS_WRITE],
     ],
     [routeKey('PATCH', '/v1/budgets/:budgetId'), [SAVIA_SCOPES.BUDGETS_WRITE]],
+    [routeKey('PATCH', '/v1/funds/:fundId'), [SAVIA_SCOPES.BUDGETS_WRITE]],
     [
       routeKey('PATCH', '/v1/transactions/:transactionId'),
       [SAVIA_SCOPES.TRANSACTIONS_WRITE],
@@ -86,8 +106,17 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     ],
     [routeKey('POST', '/v1/accounts'), [SAVIA_SCOPES.ACCOUNTS_WRITE]],
     [
+      routeKey('POST', '/v1/transactions/bulk'),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
       routeKey('POST', '/v1/accounts/:accountId/close'),
       [SAVIA_SCOPES.ACCOUNTS_WRITE],
+    ],
+    [routeKey('POST', '/v1/agent/conversations'), [SAVIA_SCOPES.REPORTS_READ]],
+    [
+      routeKey('POST', '/v1/agent/conversations/:conversationId/messages'),
+      [SAVIA_SCOPES.REPORTS_READ],
     ],
     [routeKey('POST', '/v1/budgets'), [SAVIA_SCOPES.BUDGETS_WRITE]],
     [routeKey('POST', '/v1/categories'), [SAVIA_SCOPES.TRANSACTIONS_WRITE]],
@@ -106,6 +135,10 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     [routeKey('POST', '/v1/funds'), [SAVIA_SCOPES.BUDGETS_WRITE]],
     [
       routeKey('POST', '/v1/funds/:fundId/contributions'),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE, SAVIA_SCOPES.BUDGETS_WRITE],
+    ],
+    [
+      routeKey('POST', '/v1/funds/:fundId/withdrawals'),
       [SAVIA_SCOPES.TRANSACTIONS_WRITE, SAVIA_SCOPES.BUDGETS_WRITE],
     ],
     [routeKey('POST', '/v1/import-jobs'), [SAVIA_SCOPES.TRANSACTIONS_WRITE]],
@@ -134,6 +167,38 @@ export const CLI_SCOPE_POLICY: ReadonlyMap<string, readonly SaviaScope[]> =
     ],
     [
       routeKey('POST', '/v1/recurring-rules'),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'POST',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId/confirm',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'POST',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId/skip',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'POST',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId/reschedule',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey(
+        'PATCH',
+        '/v1/recurring-rules/:ruleId/occurrences/:occurrenceId',
+      ),
+      [SAVIA_SCOPES.TRANSACTIONS_WRITE],
+    ],
+    [
+      routeKey('POST', '/v1/recurring-rules/:ruleId/edit-series'),
       [SAVIA_SCOPES.TRANSACTIONS_WRITE],
     ],
     [routeKey('POST', '/v1/report-definitions'), [SAVIA_SCOPES.REPORTS_WRITE]],

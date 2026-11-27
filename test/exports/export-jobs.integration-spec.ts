@@ -1,19 +1,33 @@
 // Migrations under test: 202608310003_export_jobs.sql, 202608310004_export_storage.sql, 202609060012_export_completion_rls.sql, 202609160001_export_jobs_async.sql
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { crc32 } from 'node:zlib';
 import { Pool } from 'pg';
+import { Logger } from '@nestjs/common';
 import {
   FastifyAdapter,
   type NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import * as tesseractAdapter from '../../src/platform/system-tesseract.adapter.js';
 import { AppModule } from '../../src/app.module.js';
 import { registerProblemFilter } from '../../src/identity/onboarding-problem.filter.js';
+import { CliTokenVerifier } from '../../src/platform/cli-token-verifier.js';
 import { JoseJwtVerifier } from '../../src/platform/jose-jwt-verifier.js';
 import { JobRunner } from '../../src/platform/job-runner.js';
 import {
   ARTIFACT_STORAGE,
+  ArtifactStorageClientError,
   type ArtifactStorage,
+  type ArtifactStorageListOptions,
 } from '../../src/platform/artifact-storage.port.js';
 import {
   JOB_HANDLERS,
@@ -21,8 +35,19 @@ import {
   type JobHandler,
   type RenderingJobHandler,
 } from '../../src/platform/job-handler.port.js';
-import type { TransactionClient } from '../../src/platform/pg-transaction.js';
+import {
+  PgTransaction,
+  type TransactionClient,
+} from '../../src/platform/pg-transaction.js';
+import { PostgresConfig } from '../../src/platform/postgres-config.js';
+import { PostgresPool } from '../../src/platform/postgres-pool.js';
+import { WorkerConfig } from '../../src/platform/worker-config.js';
 import { WorkerModule } from '../../src/worker.module.js';
+import {
+  BACKUP_RETENTION_BATCH_SIZE,
+  BackupRetentionTask,
+} from '../../src/exports/backup-retention.task.js';
+import { SupabaseStorageAdapter } from '../../src/platform/supabase-storage.adapter.js';
 import {
   ExportJobHandler,
   type ExportJobComputed,
@@ -33,15 +58,45 @@ import { PostgresExportAdapter } from '../../src/exports/postgres-export.adapter
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is required for integration tests.');
 
+function readStoredZip(zip: Buffer): Map<string, Buffer> {
+  const files = new Map<string, Buffer>();
+  const end = zip.length - 22;
+  expect(zip.readUInt32LE(end)).toBe(0x06054b50);
+  const count = zip.readUInt16LE(end + 10);
+  let cursor = zip.readUInt32LE(end + 16);
+  for (let index = 0; index < count; index++) {
+    expect(zip.readUInt32LE(cursor)).toBe(0x02014b50);
+    const nameLength = zip.readUInt16LE(cursor + 28);
+    const name = zip.toString('utf8', cursor + 46, cursor + 46 + nameLength);
+    const local = zip.readUInt32LE(cursor + 42);
+    expect(zip.readUInt32LE(local)).toBe(0x04034b50);
+    expect(zip.readUInt16LE(local + 8)).toBe(0);
+    const start =
+      local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+    const bytes = zip.subarray(start, start + zip.readUInt32LE(cursor + 24));
+    expect(crc32(bytes)).toBe(zip.readUInt32LE(cursor + 16));
+    expect(files.has(name)).toBe(false);
+    files.set(name, bytes);
+    cursor +=
+      46 +
+      nameLength +
+      zip.readUInt16LE(cursor + 30) +
+      zip.readUInt16LE(cursor + 32);
+  }
+  expect(cursor).toBe(end);
+  return files;
+}
+
 class InMemoryArtifactStorage implements ArtifactStorage {
   public readonly uploaded = new Map<
     string,
-    { content: Buffer; contentType: string }
+    { content: Buffer; contentType: string; createdAt: Date }
   >();
   public uploadCallCount = 0;
   public signCallCount = 0;
   public removeCallCount = 0;
   public failSigning = false;
+  public beforeSign?: () => Promise<void>;
 
   public async upload(
     path: string,
@@ -49,7 +104,7 @@ class InMemoryArtifactStorage implements ArtifactStorage {
     contentType: string,
   ): Promise<void> {
     this.uploadCallCount++;
-    this.uploaded.set(path, { content, contentType });
+    this.uploaded.set(path, { content, contentType, createdAt: new Date() });
   }
 
   public async sign(
@@ -57,10 +112,15 @@ class InMemoryArtifactStorage implements ArtifactStorage {
     expiresAt: Date,
   ): Promise<{ url: string; expiresAt: Date }> {
     this.signCallCount++;
+    await this.beforeSign?.();
     if (this.failSigning) {
-      throw new Error('Signing failed for storage artifact.');
+      throw new ArtifactStorageClientError(
+        403,
+        'Signing failed for storage artifact.',
+      );
     }
-    return { url: `https://storage.example.test/${path}`, expiresAt };
+    const query = path.startsWith('backups/') ? '?token=fake-signature' : '';
+    return { url: `https://storage.example.test/${path}${query}`, expiresAt };
   }
 
   public async download(path: string): Promise<Buffer> {
@@ -71,9 +131,22 @@ class InMemoryArtifactStorage implements ArtifactStorage {
     return item.content;
   }
 
-  public async remove(path: string): Promise<void> {
+  public async remove(path: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     this.removeCallCount++;
     this.uploaded.delete(path);
+  }
+
+  public async list(prefix: string, options: ArtifactStorageListOptions) {
+    options.signal.throwIfAborted();
+    return [...this.uploaded]
+      .map(([path, { createdAt }]) => ({ path, createdAt }))
+      .filter(
+        ({ path }) => path.startsWith(prefix) && path > (options.after ?? ''),
+      )
+      .sort((left, right) => (left.path < right.path ? -1 : 1))
+      .filter(({ createdAt }) => createdAt < options.before)
+      .slice(0, options.limit);
   }
 }
 
@@ -186,6 +259,30 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       [workspace1Id, tx1Id, acct1Usd],
     );
 
+    await admin.query(
+      `insert into public.budgets (workspace_id, name, method, period_start, period_end, currency, created_by) values
+       ($1, '=June', 'cash_flow', '2026-06-01', '2026-06-30', 'USD', $2),
+       ($1, 'Overlaps June', 'cash_flow', '2026-05-31', '2026-06-30', 'USD', $2),
+       ($1, 'Ends later', 'cash_flow', '2026-06-01', '2026-07-01', 'USD', $2),
+       ($3, 'Foreign budget', 'cash_flow', '2026-06-01', '2026-06-30', 'USD', $4)`,
+      [workspace1Id, ownerId, workspace2Id, otherOwnerId],
+    );
+    await admin.query(
+      `insert into public.budget_allocations (workspace_id, budget_id, category_id, planned_minor)
+       select workspace_id, id, $2::uuid, 6000 from public.budgets where workspace_id = $1 and name = '=June'`,
+      [workspace1Id, catExpenseId],
+    );
+    await admin.query(
+      `insert into public.debts (workspace_id, name, currency, principal_minor, annual_rate, rate_type, start_date) values
+       ($1, 'June start', 'USD', 9007199254740993, 0, 'fixed', '2026-06-01'),
+       ($1, 'June end', 'USD', 42, 0, 'fixed', '2026-06-30'),
+       ($1, 'Earlier', 'USD', 42, 0, 'fixed', '2026-05-31'),
+       ($1, 'Later', 'USD', 42, 0, 'fixed', '2026-07-01'),
+       ($1, 'Undated', 'USD', 42, 0, 'fixed', null),
+       ($2, 'Foreign debt', 'USD', 42, 0, 'fixed', '2026-06-01')`,
+      [workspace1Id, workspace2Id],
+    );
+
     // 7. Bootstrap Fastify API application
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -193,12 +290,28 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       .overrideProvider(JoseJwtVerifier)
       .useValue({
         verify: async (token: string) => {
-          if (token === 'owner-token') return { subject: ownerId };
-          if (token === 'editor-token') return { subject: editorId };
-          if (token === 'viewer-token') return { subject: viewerId };
-          if (token === 'other-owner-token') return { subject: otherOwnerId };
+          if (token === 'owner-token') {
+            return { subject: ownerId, authMethod: 'session' };
+          }
+          if (token === 'editor-token') {
+            return { subject: editorId, authMethod: 'session' };
+          }
+          if (token === 'viewer-token') {
+            return { subject: viewerId, authMethod: 'session' };
+          }
+          if (token === 'other-owner-token') {
+            return { subject: otherOwnerId, authMethod: 'session' };
+          }
           throw new Error('token rejected');
         },
+      })
+      .overrideProvider(CliTokenVerifier)
+      .useValue({
+        verify: async () => ({
+          subject: ownerId,
+          authMethod: 'cli_token',
+          scopes: ['reports:read', 'reports:write'],
+        }),
       })
       .overrideProvider(ARTIFACT_STORAGE)
       .useValue(inMemoryStorage)
@@ -218,12 +331,17 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       .overrideProvider(ARTIFACT_STORAGE)
       .useValue(inMemoryStorage)
       .compile();
-    await workerModule.init();
+    // Export jobs do not use the OCR engine; its startup is tested separately.
+    const preflight = vi
+      .spyOn(tesseractAdapter, 'runOcrStartupPreflight')
+      .mockResolvedValue(undefined);
+    await workerModule.init().finally(() => preflight.mockRestore());
     runner = workerModule.get(JobRunner);
   });
 
   afterEach(async () => {
     inMemoryStorage.failSigning = false;
+    inMemoryStorage.beforeSign = undefined;
     await admin.query(
       `update public.workspace_memberships
           set role = 'editor'
@@ -273,6 +391,10 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
   afterAll(async () => {
     await workerModule?.close();
     await application?.close();
+    await admin?.query(
+      'delete from public.budget_allocations where workspace_id = $1',
+      [workspace1Id],
+    );
     await admin?.query('delete from public.workspaces where id in ($1, $2)', [
       workspace1Id,
       workspace2Id,
@@ -284,6 +406,1267 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       otherOwnerId,
     ]);
     await admin?.end();
+  });
+
+  describe('Workspace backup (202609170023_full_backup.sql)', () => {
+    const endpoint = '/v1/backup-jobs';
+    const ownerHeaders = (): Record<string, string> => ({
+      authorization: 'Bearer owner-token',
+      'x-workspace-id': workspace1Id,
+      'idempotency-key': randomUUID(),
+    });
+    const noLink = { downloadUrl: null, expiresAt: null };
+    type Job = { id: string; createdAt: string };
+    type SignedLink = { downloadUrl: string; expiresAt: string };
+
+    async function create(headers = ownerHeaders()) {
+      return application.inject({ method: 'POST', url: endpoint, headers });
+    }
+
+    async function poll(id: string, headers = ownerHeaders()) {
+      return application.inject({
+        method: 'GET',
+        url: `${endpoint}/${id}`,
+        headers,
+      });
+    }
+
+    function expectProblem(
+      response: Awaited<ReturnType<typeof create>>,
+      status: number,
+      code: string,
+    ) {
+      expect(response.statusCode).toBe(status);
+      const mediaType = response.headers['content-type'];
+      expect(mediaType).toContain('application/problem+json');
+      expect(response.json()).toMatchObject({ status, code });
+    }
+
+    async function setRole(subject: string, role: string) {
+      await admin.query(
+        `update public.workspace_memberships set role = $3
+          where workspace_id = $1 and profile_id = $2`,
+        [workspace1Id, subject, role],
+      );
+    }
+
+    it('requires owner session and replays one job', async () => {
+      const headers = ownerHeaders();
+      const invalid = { ...headers, authorization: 'Bearer invalid' };
+      const cli = { ...headers, authorization: 'Bearer svt_owner' };
+      const editor = { ...headers, authorization: 'Bearer editor-token' };
+      const viewer = { ...headers, authorization: 'Bearer viewer-token' };
+      const foreign = {
+        ...headers,
+        authorization: 'Bearer other-owner-token',
+        'x-workspace-id': workspace2Id,
+      };
+      expectProblem(await create(invalid), 401, 'unauthorized');
+      expectProblem(await create(cli), 401, 'unauthorized');
+      expectProblem(await create(editor), 403, 'forbidden');
+      const invalidWorkspace = await create({
+        ...headers,
+        'x-workspace-id': '-',
+      });
+      const invalidKey = await create({ ...headers, 'idempotency-key': '-' });
+      expectProblem(invalidWorkspace, 400, 'bad-request');
+      expectProblem(invalidKey, 400, 'bad-request');
+      const filtered = await application.inject({
+        method: 'POST',
+        url: endpoint,
+        headers,
+        payload: { resource: 'accounts' },
+      });
+      expectProblem(filtered, 400, 'bad-request');
+
+      const responses = await Promise.all([create(headers), create(headers)]);
+      for (const response of responses) expect(response.statusCode).toBe(202);
+      expect(responses[0].json()).toEqual(responses[1].json());
+      const body = responses[0].json<Job>();
+      expect(body).toEqual({
+        id: expect.any(String),
+        status: 'queued',
+        createdAt: expect.any(String),
+        ...noLink,
+      });
+      expectProblem(await poll('-', headers), 400, 'bad-request');
+      expectProblem(await poll(body.id, cli), 401, 'unauthorized');
+      expectProblem(await poll(body.id, viewer), 403, 'forbidden');
+      expectProblem(await poll(body.id, foreign), 404, 'not-found');
+      await setRole(editorId, 'owner');
+      expectProblem(await poll(body.id, editor), 404, 'not-found');
+      await setRole(ownerId, 'editor');
+      try {
+        expectProblem(await poll(body.id, headers), 403, 'forbidden');
+        expectProblem(await create(headers), 403, 'forbidden');
+      } finally {
+        await setRole(ownerId, 'owner');
+      }
+
+      const status = await poll(body.id);
+      expect(status.statusCode).toBe(200);
+      expect(status.headers['cache-control']).toBe('no-store');
+      expect(status.json()).toEqual(body);
+      expect(await runner.drainOnce()).toBe(1);
+      expect(await runner.drainOnce()).toBe(0);
+    });
+
+    function receiptStoragePath(workspace: string, id: string) {
+      return `workspaces/${workspace}/receipts/${id}/invoice.png`;
+    }
+
+    async function seedReceipt(id: string, path: string) {
+      await admin.query(
+        `insert into public.receipts
+          (id,workspace_id,status,file_name,processing_location,storage_path,created_by)
+          values ($1,$2,'uploaded','invoice.png','device',$3,$4)`,
+        [id, workspace1Id, path, ownerId],
+      );
+    }
+
+    it('publishes a portable ZIP via an unexpired link only', async () => {
+      const created = await create();
+      expect(created.statusCode).toBe(202);
+      const { id, createdAt } = created.json<Job>();
+      const receipt = randomUUID();
+      const receiptPath = receiptStoragePath(workspace1Id, receipt);
+      const bytes = Buffer.from('portable receipt bytes');
+      await inMemoryStorage.upload(receiptPath, bytes, 'image/png');
+      await seedReceipt(receipt, receiptPath);
+      await admin.query(
+        `insert into public.exchange_rates
+          (workspace_id,base_currency,quote_currency,rate,effective_at,source,created_by)
+          values ($1,'USD','EUR',0.900000000000000001,now(),'manual',$2)`,
+        [workspace1Id, ownerId],
+      );
+      await admin.query(
+        `insert into public.report_definitions
+          (workspace_id,name,dimensions,measures,visualization,created_by)
+          values ($1,'Portable report','[]','["sum"]','table',$2)`,
+        [workspace1Id, ownerId],
+      );
+      try {
+        const baseline = inMemoryStorage.signCallCount;
+        const before = await poll(id);
+        expect(before.json()).toEqual({
+          id,
+          status: 'queued',
+          createdAt,
+          ...noLink,
+        });
+        inMemoryStorage.beforeSign = async () => {
+          const processing = await poll(id);
+          expect(processing.statusCode).toBe(200);
+          expect(processing.json()).toEqual({
+            id,
+            status: 'processing',
+            createdAt,
+            ...noLink,
+          });
+        };
+        expect(await runner.drainOnce()).toBe(1);
+        const result = await poll(id);
+        expect(result.statusCode).toBe(200);
+        expect(result.headers['cache-control']).toBe('no-store');
+        const complete = result.json<SignedLink>();
+        expect(complete).toEqual({
+          id,
+          status: 'completed',
+          createdAt,
+          downloadUrl: expect.stringMatching(/^https:\/\//),
+          expiresAt: expect.any(String),
+        });
+        const link = new URL(complete.downloadUrl);
+        expect(link.searchParams.get('token')).toBe('fake-signature');
+        const expiry = Date.parse(complete.expiresAt);
+        expect(expiry - Date.now()).toBeLessThanOrEqual(15 * 60_000);
+        const key = link.pathname.slice(1);
+        const prefix = `backups/${workspace1Id}/${id}/`;
+        expect(key.startsWith(prefix)).toBe(true);
+        expect(key.slice(prefix.length)).toMatch(/^[a-f0-9-]+\.zip$/);
+        const artifact = inMemoryStorage.uploaded.get(key);
+        expect(artifact?.contentType).toBe('application/zip');
+        const files = readStoredZip(await inMemoryStorage.download(key));
+        const snapshotText = files.get('workspace.json')!.toString();
+        const manifestText = files.get('manifest.json')!.toString();
+        const manifest = JSON.parse(manifestText) as {
+          schemaVersion: number;
+          snapshotAt: string;
+          workspaceId: string;
+          files: { path: string; count: number; sha256: string }[];
+        };
+        expect(manifest).toMatchObject({
+          schemaVersion: 1,
+          snapshotAt: expect.any(String),
+          workspaceId: workspace1Id,
+        });
+        const paths = manifest.files.map((file) => file.path).sort();
+        expect(paths).toEqual(
+          [...files.keys()].filter((name) => name !== 'manifest.json').sort(),
+        );
+        for (const file of manifest.files) {
+          const content = files.get(file.path)!;
+          const sha256 = createHash('sha256').update(content).digest('hex');
+          expect(file.sha256).toBe(sha256);
+        }
+        const { datasets, schemaVersion } = JSON.parse(snapshotText) as {
+          datasets: Record<string, unknown[]>;
+          schemaVersion: number;
+        };
+        expect(schemaVersion).toBe(1);
+        expect(datasets.workspaces).toEqual([
+          expect.objectContaining({ id: workspace1Id, name: 'Workspace 1' }),
+        ]);
+        expect(datasets.accounts).toEqual([
+          expect.objectContaining({ id: acct1Usd }),
+        ]);
+        expect(datasets.transactions).toEqual([
+          expect.objectContaining({ id: tx1Id }),
+        ]);
+        expect(datasets.exchange_rates).toEqual([
+          expect.objectContaining({ rate: '0.900000000000000001' }),
+        ]);
+        expect(datasets.report_definitions).toEqual([
+          expect.objectContaining({ name: 'Portable report' }),
+        ]);
+        expect(datasets.job_transitions.length).toBeGreaterThan(0);
+        expect(datasets.debts).toContainEqual(
+          expect.objectContaining({ principal_minor: '9007199254740993' }),
+        );
+        expect(datasets.budgets).toHaveLength(3);
+        const excluded = [
+          'Foreign budget',
+          'Foreign debt',
+          'Workspace 2',
+          'storage_path',
+          'cli_device_tokens',
+          'credential_ciphertext',
+        ];
+        for (const marker of excluded) {
+          expect(snapshotText).not.toContain(marker);
+        }
+        expect(files.get('csv/budgets.csv')!.toString()).toContain("'=June");
+        expect(manifest.files).toContainEqual(
+          expect.objectContaining({ path: 'csv/budgets.csv', count: 3 }),
+        );
+        expect(files.get(`attachments/${receipt}.png`)).toEqual(bytes);
+        expect(inMemoryStorage.signCallCount).toBe(baseline + 1);
+
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(expiry);
+        try {
+          expect((await poll(id)).json()).toEqual({
+            id,
+            status: 'completed',
+            createdAt,
+            ...noLink,
+          });
+        } finally {
+          clock.mockRestore();
+        }
+        expect(inMemoryStorage.signCallCount).toBe(baseline + 1);
+      } finally {
+        await admin.query('delete from public.receipts where id = $1', [
+          receipt,
+        ]);
+      }
+    });
+
+    it('preserves CLI create and poll for legacy exports', async () => {
+      const headers = { ...ownerHeaders(), authorization: 'Bearer svt_owner' };
+      const created = await application.inject({
+        method: 'POST',
+        url: '/v1/export-jobs',
+        headers,
+        payload: { format: 'json_backup', resource: 'transactions' },
+      });
+      expect(created.statusCode).toBe(202);
+      const body = created.json<{ id: string }>();
+      expect(body).toEqual({
+        id: expect.any(String),
+        format: 'json_backup',
+        status: 'queued',
+        createdAt: expect.any(String),
+        ...noLink,
+      });
+      const read = await application.inject({
+        method: 'GET',
+        url: `/v1/export-jobs/${body.id}`,
+        headers,
+      });
+      expect(read.statusCode).toBe(200);
+      expect(read.json()).toEqual(body);
+      expect(read.headers['cache-control']).toBeUndefined();
+    });
+
+    it('rejects foreign receipt paths before storage access', async () => {
+      const receipt = randomUUID();
+      const foreign = receiptStoragePath(workspace2Id, receipt);
+      await seedReceipt(receipt, foreign);
+      const download = vi.spyOn(inMemoryStorage, 'download');
+      try {
+        const result = await create();
+        expect(result.statusCode).toBe(202);
+        const { id, createdAt } = result.json<Job>();
+        expect(await runner.drainOnce()).toBe(1);
+        const after = await poll(id);
+        expect(after.statusCode).toBe(200);
+        expect(after.json()).toEqual({
+          id,
+          status: 'failed',
+          createdAt,
+          ...noLink,
+        });
+        expect(download).not.toHaveBeenCalled();
+      } finally {
+        download.mockRestore();
+        await admin.query('delete from public.receipts where id = $1', [
+          receipt,
+        ]);
+      }
+    });
+
+    it('cleans up the ZIP when signing fails without publishing a link', async () => {
+      const before = [...inMemoryStorage.uploaded.keys()];
+      const removals = inMemoryStorage.removeCallCount;
+      inMemoryStorage.failSigning = true;
+      const result = await create();
+      expect(result.statusCode).toBe(202);
+      const { id, createdAt } = result.json<Job>();
+      expect(await runner.drainOnce()).toBe(1);
+      const after = await poll(id);
+      expect(after.statusCode).toBe(200);
+      expect(after.headers['cache-control']).toBe('no-store');
+      expect(after.json()).toEqual({
+        id,
+        status: 'failed',
+        createdAt,
+        ...noLink,
+      });
+      expect([...inMemoryStorage.uploaded.keys()]).toEqual(before);
+      expect(inMemoryStorage.removeCallCount).toBe(removals + 1);
+    });
+
+    it('records signing failure independently of deletion and sanitizes cleanup logs', async () => {
+      inMemoryStorage.failSigning = true;
+      const deletion = Promise.withResolvers<void>();
+      const remove = vi
+        .spyOn(inMemoryStorage, 'remove')
+        .mockReturnValue(deletion.promise);
+      const warn = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      try {
+        const created = await create();
+        expect(created.statusCode).toBe(202);
+        const { id, createdAt } = created.json<Job>();
+        expect(await runner.drainOnce()).toBe(1);
+        const response = await poll(id);
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+          id,
+          createdAt,
+          status: 'failed',
+          ...noLink,
+        });
+        expect(remove).toHaveBeenCalledOnce();
+        expect(warn).not.toHaveBeenCalled();
+
+        deletion.reject(
+          new Error('simulated storage error with private details'),
+        );
+        await vi.waitFor(() => {
+          expect(warn.mock.calls).toEqual([
+            [
+              expect.stringMatching(
+                /^Workspace backup cleanup failed for job [0-9a-f-]+\.$/,
+              ),
+            ],
+          ]);
+        });
+      } finally {
+        deletion.resolve();
+        remove.mockRestore();
+        warn.mockRestore();
+      }
+    });
+
+    it('preserves the winning ZIP and leaves the superseded ZIP for retention', async () => {
+      const before = [...inMemoryStorage.uploaded.keys()];
+      const removals = inMemoryStorage.removeCallCount;
+      const created = await create();
+      expect(created.statusCode).toBe(202);
+      const { id, createdAt } = created.json<Job>();
+      let superseded: string | undefined;
+      inMemoryStorage.beforeSign = async () => {
+        inMemoryStorage.beforeSign = undefined;
+        superseded = [...inMemoryStorage.uploaded.keys()].at(-1);
+        // Redeliver while the original attempt is between upload and completion.
+        await admin.query(
+          `update pgmq.q_savia_jobs set vt = clock_timestamp()
+            where message->>'job_id' = (
+              select job_id::text from public.workspace_backups where id = $1
+            )`,
+          [id],
+        );
+        expect(await runner.drainOnce()).toBe(1);
+      };
+
+      expect(await runner.drainOnce()).toBe(1);
+      const completed = await poll(id);
+      expect(completed.statusCode).toBe(200);
+      const link = completed.json<SignedLink>();
+      expect(link).toEqual({
+        id,
+        status: 'completed',
+        createdAt,
+        downloadUrl: expect.stringMatching(/^https:\/\//),
+        expiresAt: expect.any(String),
+      });
+      const winner = new URL(link.downloadUrl).pathname.slice(1);
+      expect([...inMemoryStorage.uploaded.keys()]).toEqual([
+        ...before,
+        superseded,
+        winner,
+      ]);
+      expect(inMemoryStorage.removeCallCount).toBe(removals);
+      expect(await runner.drainOnce()).toBe(0);
+    });
+
+    it.each(['ok', 'rejected', 'stalled'] as const)(
+      'preserves a definitive completion failure with ZIP deletion %s',
+      async (mode) => {
+        const { id, createdAt } = (await create()).json<Job>();
+        const config = workerModule.get(WorkerConfig);
+        const originalTimeout = config.persistTimeoutMs;
+        if (mode === 'stalled')
+          Object.defineProperty(config, 'persistTimeoutMs', { value: 1_000 });
+        const before = [...inMemoryStorage.uploaded.keys()];
+        const remove = vi.spyOn(inMemoryStorage, 'remove');
+        if (mode === 'rejected')
+          remove.mockRejectedValue(new Error('Private storage rejection'));
+        if (mode === 'stalled')
+          remove.mockImplementation(() => new Promise<void>(() => undefined));
+
+        const connect = PostgresPool.prototype.connect;
+        let rejected = 0;
+        const fault = vi
+          .spyOn(PostgresPool.prototype, 'connect')
+          .mockImplementation(async function (this: PostgresPool) {
+            const client = await connect.call(this);
+            return {
+              release: client.release.bind(client),
+              async query<Row extends Record<string, unknown>>(
+                sql: string,
+                args?: readonly unknown[],
+              ) {
+                if (
+                  sql.includes(
+                    'update public.workspace_backups b set download_url',
+                  ) &&
+                  args?.[0] === id
+                ) {
+                  rejected++;
+                  return client.query<Row>('select 1 / 0');
+                }
+                return client.query<Row>(sql, args);
+              },
+            };
+          });
+
+        try {
+          await runner.drainOnce();
+          expect(rejected).toBe(1);
+          const response = await poll(id);
+          expect(response.statusCode).toBe(200);
+          expect(response.json()).toEqual({
+            id,
+            createdAt,
+            status: 'failed',
+            ...noLink,
+          });
+          // Completion is database-only; retention handles unlinked archives.
+          expect(remove).not.toHaveBeenCalled();
+          expect([...inMemoryStorage.uploaded.keys()]).toEqual([
+            ...before,
+            expect.stringMatching(
+              new RegExp(`^backups/${workspace1Id}/${id}/`),
+            ),
+          ]);
+        } finally {
+          fault.mockRestore();
+          remove.mockRestore();
+          if (mode === 'stalled') {
+            Object.defineProperty(config, 'persistTimeoutMs', {
+              value: originalTimeout,
+            });
+          }
+        }
+      },
+    );
+
+    // Reviewer regressions (verify mwreiolm, PASS).
+    it('preserves a readable ZIP when PostgreSQL commits but the acknowledgement is lost', async () => {
+      const { id } = (await create()).json<Job>();
+      const remove = vi.spyOn(inMemoryStorage, 'remove');
+      const connect = PostgresPool.prototype.connect;
+      let lostAcks = 0;
+      const fault = vi
+        .spyOn(PostgresPool.prototype, 'connect')
+        .mockImplementation(async function (this: PostgresPool) {
+          const client = await connect.call(this);
+          let completingBackup = false;
+          return {
+            release: client.release.bind(client),
+            async query<Row extends Record<string, unknown>>(
+              sql: string,
+              args?: readonly unknown[],
+            ) {
+              const result = await client.query<Row>(sql, args);
+              if (
+                sql.includes(
+                  'update public.workspace_backups b set download_url',
+                ) &&
+                args?.[0] === id
+              ) {
+                completingBackup = true;
+              }
+              if (sql === 'COMMIT' && completingBackup) {
+                lostAcks++;
+                throw Object.assign(
+                  new Error('simulated lost COMMIT acknowledgement'),
+                  { code: 'ECONNRESET' },
+                );
+              }
+              return result;
+            },
+          };
+        });
+
+      try {
+        await runner.drainOnce();
+        expect(lostAcks).toBe(1);
+        const response = await poll(id);
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({ status: 'completed' });
+        const key = new URL(
+          response.json<SignedLink>().downloadUrl,
+        ).pathname.slice(1);
+        expect(
+          readStoredZip(await inMemoryStorage.download(key)).has(
+            'manifest.json',
+          ),
+        ).toBe(true);
+        expect(remove).not.toHaveBeenCalled();
+      } finally {
+        fault.mockRestore();
+        remove.mockRestore();
+      }
+    });
+
+    it('publishes the terminal signing failure before stalled cleanup times out', async () => {
+      inMemoryStorage.failSigning = true;
+      const pending = Promise.withResolvers<void>();
+      const upload = vi.spyOn(inMemoryStorage, 'upload');
+      const remove = vi
+        .spyOn(inMemoryStorage, 'remove')
+        .mockReturnValue(pending.promise);
+      const warn = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+
+      try {
+        const response = await create();
+        expect(response.statusCode).toBe(202);
+        const { id, createdAt } = response.json<Job>();
+        const { rows } = await admin.query<{ job_id: string }>(
+          'select job_id from public.workspace_backups where id = $1',
+          [id],
+        );
+
+        await runner.drainOnce();
+        const before = await poll(id);
+        expect(before.statusCode).toBe(200);
+        expect(before.json()).toEqual({
+          id,
+          createdAt,
+          status: 'failed',
+          ...noLink,
+        });
+        expect(warn).not.toHaveBeenCalled();
+
+        const [key] = upload.mock.calls[0];
+        expect(key.startsWith(`backups/${workspace1Id}/${id}/`)).toBe(true);
+        expect(remove.mock.calls).toEqual([[key]]);
+        await vi.waitFor(
+          () => {
+            expect(warn.mock.calls).toEqual([
+              [`Workspace backup cleanup failed for job ${rows[0].job_id}.`],
+            ]);
+          },
+          { timeout: 2_000 },
+        );
+
+        const after = await poll(id);
+        expect(after.statusCode).toBe(200);
+        expect(after.json()).toEqual(before.json());
+      } finally {
+        pending.resolve();
+        warn.mockRestore();
+        remove.mockRestore();
+        upload.mockRestore();
+      }
+    });
+
+    describe('Backup object retention (202609170029_backup_retention.sql)', () => {
+      const old = new Date(Date.now() - 25 * 60 * 60_000);
+      const recent = new Date(Date.now() - 23 * 60 * 60_000);
+      const orphanKey = (id: string) =>
+        `backups/${workspace1Id}/${id}/${randomUUID()}.zip`;
+      const publishedKey = (link: SignedLink) =>
+        new URL(link.downloadUrl).pathname.slice(1);
+
+      function task(storage: ArtifactStorage, env: NodeJS.ProcessEnv = {}) {
+        return new BackupRetentionTask(
+          workerModule.get(PgTransaction),
+          storage,
+          env,
+        );
+      }
+
+      async function put(
+        storage: InMemoryArtifactStorage,
+        key: string,
+        createdAt = old,
+      ) {
+        await storage.upload(key, Buffer.from('ZIP'), 'application/zip');
+        storage.uploaded.get(key)!.createdAt = createdAt;
+      }
+
+      async function complete() {
+        const { id } = (await create()).json<Job>();
+        expect(await runner.drainOnce()).toBe(1);
+        const response = await poll(id);
+        expect(response.json()).toMatchObject({ status: 'completed' });
+        return { id, key: publishedKey(response.json<SignedLink>()) };
+      }
+
+      it('removes aged failed, superseded and expired ZIPs but never recent, live or in-flight ZIPs', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const sweep = task(storage);
+        const failed = (await create()).json<Job>();
+        inMemoryStorage.failSigning = true;
+        const remove = vi.spyOn(inMemoryStorage, 'remove');
+        remove.mockResolvedValueOnce(undefined);
+        try {
+          expect(await runner.drainOnce()).toBe(1);
+          expect((await poll(failed.id)).json()).toEqual({
+            ...failed,
+            status: 'failed',
+            ...noLink,
+          });
+          expect(remove).toHaveBeenCalledOnce();
+          await put(storage, remove.mock.calls[0][0]);
+        } finally {
+          remove.mockRestore();
+          inMemoryStorage.failSigning = false;
+        }
+
+        const live = await complete();
+        await put(storage, orphanKey(live.id));
+        await put(storage, live.key);
+        const young = orphanKey(failed.id);
+        await put(storage, young, recent);
+        const expired = await complete();
+        await put(storage, expired.key);
+        await admin.query(
+          "update public.workspace_backups set expires_at = now() - interval '1 minute' where id = $1",
+          [expired.id],
+        );
+        const queued = (await create()).json<Job>();
+        const inFlight = orphanKey(queued.id);
+        await put(storage, inFlight);
+        const legacy = `${workspace1Id}/leave-this-export.zip`;
+        await put(storage, legacy);
+
+        await sweep.runOnce();
+        expect([...storage.uploaded.keys()]).toEqual([
+          live.key,
+          young,
+          inFlight,
+          legacy,
+        ]);
+        expect(storage.removeCallCount).toBe(3);
+        expect((await poll(live.id)).json()).toMatchObject({
+          status: 'completed',
+          downloadUrl: expect.stringContaining(live.key),
+        });
+        expect((await poll(expired.id)).json()).toMatchObject({
+          status: 'completed',
+          ...noLink,
+        });
+        await sweep.runOnce();
+        expect(storage.removeCallCount).toBe(3);
+      });
+
+      it('bounds each pass and advances past preserved objects', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const sweep = task(storage);
+        const { id, key } = await complete();
+        const paths = Array.from(
+          { length: BACKUP_RETENTION_BATCH_SIZE + 2 },
+          () => orphanKey(id),
+        ).sort();
+        const protectedPath = `backups/${workspace1Id}/${id}/00000000-0000-4000-8000-000000000000.zip`;
+        await put(storage, protectedPath);
+        await admin.query(
+          'update public.workspace_backups set download_url = replace(download_url, $2, $3) where id = $1',
+          [id, key, protectedPath],
+        );
+        for (const path of paths) await put(storage, path);
+        const list = vi.spyOn(storage, 'list');
+
+        await sweep.runOnce();
+        expect(list).toHaveBeenCalledExactlyOnceWith('backups/', {
+          after: undefined,
+          before: expect.any(Date),
+          limit: BACKUP_RETENTION_BATCH_SIZE,
+          signal: expect.any(AbortSignal),
+        });
+        expect(storage.removeCallCount).toBe(BACKUP_RETENTION_BATCH_SIZE - 1);
+        expect([...storage.uploaded.keys()]).toEqual([
+          protectedPath,
+          ...paths.slice(BACKUP_RETENTION_BATCH_SIZE - 1),
+        ]);
+
+        await sweep.runOnce();
+        expect([...storage.uploaded.keys()]).toEqual([protectedPath]);
+        expect(storage.removeCallCount).toBe(paths.length);
+      });
+
+      it('excludes a concurrent sweep and checks publication after listing', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const first = task(storage);
+        const second = task(storage);
+        const { id } = (await create()).json<Job>();
+        const entered = Promise.withResolvers<void>();
+        const proceed = Promise.withResolvers<void>();
+        const listObjects = storage.list.bind(storage);
+        const list = vi
+          .spyOn(storage, 'list')
+          .mockImplementationOnce(async (prefix, options) => {
+            entered.resolve();
+            await proceed.promise;
+            expect(await runner.drainOnce()).toBe(1);
+            await put(
+              storage,
+              publishedKey((await poll(id)).json<SignedLink>()),
+            );
+            return listObjects(prefix, options);
+          });
+        const orphan = orphanKey(id);
+        await put(storage, orphan);
+
+        const running = first.runOnce();
+        try {
+          await vi.waitFor(() => expect(list).toHaveBeenCalledOnce(), {
+            timeout: 1_000,
+          });
+          await entered.promise;
+          await second.runOnce();
+          expect(list).toHaveBeenCalledOnce();
+          expect([...storage.uploaded.keys()]).toEqual([orphan]);
+        } finally {
+          proceed.resolve();
+          await running;
+        }
+        const winner = publishedKey((await poll(id)).json<SignedLink>());
+        expect([...storage.uploaded.keys()]).toEqual([winner]);
+        await second.runOnce();
+        expect(list).toHaveBeenCalledTimes(2);
+        expect([...storage.uploaded.keys()]).toEqual([winner]);
+        expect(storage.removeCallCount).toBe(1);
+      });
+
+      it('stops scheduling on shutdown and releases the lock once listing settles', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const pending = Promise.withResolvers<[]>();
+        const list = vi
+          .spyOn(storage, 'list')
+          .mockReturnValueOnce(pending.promise);
+        const sweep = task(storage, {
+          SAVIA_BACKUP_RETENTION_INTERVAL_SECONDS: '1',
+        });
+        sweep.onApplicationBootstrap();
+        try {
+          await vi.waitFor(() => expect(list).toHaveBeenCalledOnce(), {
+            timeout: 2_000,
+          });
+          const signal = list.mock.calls[0][1].signal;
+          const started = performance.now();
+          await sweep.beforeApplicationShutdown();
+          expect(performance.now() - started).toBeLessThan(1_500);
+          expect(signal.aborted).toBe(true);
+          await sweep.runOnce();
+          expect(list).toHaveBeenCalledOnce();
+          const replacement = task(storage);
+          await replacement.runOnce();
+          expect(list).toHaveBeenCalledOnce();
+          pending.resolve([]);
+          await vi.waitFor(async () => {
+            await replacement.runOnce();
+            expect(list).toHaveBeenCalledTimes(2);
+          });
+        } finally {
+          pending.resolve([]);
+          await sweep.beforeApplicationShutdown();
+        }
+      });
+
+      // Reviewer draft (verify mwtpt0ri).
+      it('keeps one checkout and the advisory lock after the LIST budget expires', async () => {
+        const pool = new Pool({
+          connectionString: url,
+          max: 2,
+          connectionTimeoutMillis: 1_000,
+        });
+        const tx = new PgTransaction(
+          { connect: () => pool.connect(), end: () => pool.end() },
+          { idleTransactionTimeoutMs: 250 },
+        );
+        const storage = new InMemoryArtifactStorage();
+        const key = orphanKey(randomUUID());
+        await put(storage, key);
+        const page =
+          Promise.withResolvers<Array<{ path: string; createdAt: Date }>>();
+        const list = vi
+          .spyOn(storage, 'list')
+          .mockReturnValueOnce(page.promise);
+        const first = new BackupRetentionTask(tx, storage, {});
+        const contender = new BackupRetentionTask(tx, storage, {});
+        const active = first.runOnce();
+
+        try {
+          await vi.waitFor(() => expect(list).toHaveBeenCalledOnce(), {
+            timeout: 2_000,
+          });
+          for (let i = 0; i < 20; i++) {
+            expect(first.runOnce()).toBe(active);
+          }
+
+          await vi.waitFor(
+            () => expect(list.mock.calls[0][1].signal.aborted).toBe(true),
+            { timeout: 12_000 },
+          );
+
+          // An ordinary transaction can still get a connection, but not the lock.
+          await expect(
+            tx.runAsQueueConsumer((client) =>
+              client.query(
+                'select pg_try_advisory_xact_lock(1935767145, 1) as acquired',
+              ),
+            ),
+          ).resolves.toMatchObject({ rows: [{ acquired: false }] });
+          await contender.runOnce();
+          expect(list).toHaveBeenCalledOnce();
+          expect(storage.uploaded.get(key)?.content).toEqual(
+            Buffer.from('ZIP'),
+          );
+
+          page.resolve([{ path: key, createdAt: old }]);
+          await active;
+          expect(storage.removeCallCount).toBe(0);
+          expect(storage.uploaded.get(key)?.content).toEqual(
+            Buffer.from('ZIP'),
+          );
+
+          await contender.runOnce();
+          expect(list).toHaveBeenCalledTimes(2);
+          expect(storage.removeCallCount).toBe(1);
+          expect(storage.uploaded.has(key)).toBe(false);
+        } finally {
+          page.resolve([]);
+          await active;
+          await tx.close();
+        }
+      }, 17_000);
+
+      // Reviewer regressions (verify mwtl2dsf).
+      it('grants the worker only a boolean retention decision, not backup columns', async () => {
+        const signature =
+          'public.can_remove_workspace_backup_object(uuid,uuid,uuid)';
+        const { rows } = await admin.query(
+          `select r.role,
+                  has_function_privilege(r.role, $1, 'EXECUTE') as execute,
+                  has_column_privilege(
+                    r.role, 'public.workspace_backups', 'download_url', 'SELECT'
+                  ) as can_read_url
+             from unnest(array['anon','authenticated','savia_application','savia_worker']) as r(role)
+             order by r.role`,
+          [signature],
+        );
+        expect(rows.map(({ role, execute }) => ({ role, execute }))).toEqual([
+          { role: 'anon', execute: false },
+          { role: 'authenticated', execute: false },
+          { role: 'savia_application', execute: false },
+          { role: 'savia_worker', execute: true },
+        ]);
+        expect(
+          rows.find(({ role }) => role === 'savia_worker')?.can_read_url,
+        ).toBe(false);
+
+        const { rows: type } = await admin.query(
+          'select pg_get_function_result($1::regprocedure) as type',
+          [signature],
+        );
+        expect(type).toEqual([{ type: 'boolean' }]);
+
+        const { id, key } = await complete();
+        const check = (client: TransactionClient) =>
+          client.query(
+            'select public.can_remove_workspace_backup_object($1, $2, $3) as allowed',
+            [workspace1Id, id, key.split('/').at(-1)!.slice(0, -4)],
+          );
+        const tx = workerModule.get(PgTransaction);
+        expect((await tx.runAsQueueConsumer(check)).rows).toEqual([
+          { allowed: false },
+        ]);
+        await expect(tx.run(ownerId, check)).rejects.toMatchObject({
+          code: '42501',
+        });
+      });
+
+      it('protects a ZIP which completes after listing while an earlier DELETE is pending', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const sweep = task(storage);
+        const { id } = (await create()).json<Job>();
+        const reachedSign = Promise.withResolvers<string>();
+        const finishSign = Promise.withResolvers<void>();
+        inMemoryStorage.beforeSign = async () => {
+          reachedSign.resolve(
+            [...inMemoryStorage.uploaded.keys()].find((key) =>
+              key.startsWith(`backups/${workspace1Id}/${id}/`),
+            )!,
+          );
+          await finishSign.promise;
+        };
+        const finishing = runner.drainOnce();
+
+        try {
+          const winner = await reachedSign.promise;
+          expect((await poll(id)).json()).toMatchObject({
+            status: 'processing',
+            ...noLink,
+          });
+          const earlier = orphanKey('00000000-0000-4000-8000-000000000000');
+          await put(storage, earlier);
+          await put(storage, winner);
+
+          const realRemove = storage.remove.bind(storage);
+          const remove = vi
+            .spyOn(storage, 'remove')
+            .mockImplementationOnce(async (key, signal) => {
+              expect(key).toBe(earlier);
+              finishSign.resolve();
+              await finishing;
+              expect((await poll(id)).json()).toMatchObject({
+                status: 'completed',
+                downloadUrl: expect.stringContaining(winner),
+              });
+              return realRemove(key, signal);
+            });
+          await sweep.runOnce();
+          expect(remove.mock.calls.map(([key]) => key)).toEqual([earlier]);
+          expect([...storage.uploaded.keys()]).toEqual([winner]);
+        } finally {
+          finishSign.resolve();
+          await finishing;
+          await sweep.beforeApplicationShutdown();
+        }
+      });
+
+      it('keeps the sweep lock until an in-progress DELETE settles after shutdown', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const first = task(storage);
+        const second = task(storage);
+        const path = orphanKey(randomUUID());
+        await put(storage, path);
+
+        const entered = Promise.withResolvers<AbortSignal>();
+        const finishDelete = Promise.withResolvers<void>();
+        const realRemove = storage.remove.bind(storage);
+        const remove = vi
+          .spyOn(storage, 'remove')
+          .mockImplementationOnce(async (key, signal) => {
+            expect(key).toBe(path);
+            entered.resolve(signal!);
+            // An already-issued DELETE can still be pending when abort is signalled.
+            await finishDelete.promise;
+            await realRemove(key);
+          });
+        const active = first.runOnce();
+
+        try {
+          const signal = await entered.promise;
+          await second.runOnce();
+          expect(remove).toHaveBeenCalledTimes(1);
+
+          const start = performance.now();
+          await first.beforeApplicationShutdown();
+          expect(performance.now() - start).toBeLessThan(1_500);
+          expect(signal.aborted).toBe(true);
+
+          await second.runOnce();
+          expect(remove).toHaveBeenCalledTimes(1);
+          expect(storage.uploaded.has(path)).toBe(true);
+        } finally {
+          finishDelete.resolve();
+          await active;
+          await remove.mock.results[0]?.value;
+        }
+      });
+
+      it('keeps the retention lock through pool shutdown while DELETE is pending', async () => {
+        const pool = new PostgresPool(PostgresConfig.fromUrl(url));
+        const tx = new PgTransaction(
+          pool,
+          {},
+          {
+            workerMode: true,
+            poolCloseGraceMs: 100,
+          },
+        );
+        const storage = new InMemoryArtifactStorage();
+        const first = new BackupRetentionTask(tx, storage, {});
+        const contender = task(storage);
+        const path = orphanKey(randomUUID());
+        await put(storage, path);
+        const entered = Promise.withResolvers<AbortSignal>();
+        const settle = Promise.withResolvers<void>();
+        const removeObject = storage.remove.bind(storage);
+        const remove = vi
+          .spyOn(storage, 'remove')
+          .mockImplementationOnce(async (key, signal) => {
+            entered.resolve(signal!);
+            await settle.promise;
+            await removeObject(key);
+          });
+        const active = first.runOnce();
+        try {
+          const signal = await entered.promise;
+          const started = performance.now();
+          await first.beforeApplicationShutdown();
+          expect(performance.now() - started).toBeLessThan(1_500);
+          expect(signal.aborted).toBe(true);
+
+          await tx.onApplicationShutdown();
+          const { rows } = await workerModule
+            .get(PgTransaction)
+            .runAsQueueConsumer((client) =>
+              client.query(
+                'select pg_try_advisory_xact_lock(1935767145, 1) as acquired',
+              ),
+            );
+          expect(rows).toEqual([{ acquired: false }]);
+          await contender.runOnce();
+          expect(remove.mock.calls.map(([key]) => key)).toEqual([path]);
+
+          settle.resolve();
+          await active;
+          await contender.runOnce();
+          expect(storage.uploaded.has(path)).toBe(false);
+          expect(remove.mock.calls.map(([key]) => key)).toEqual([path]);
+        } finally {
+          settle.resolve();
+          await active;
+          await remove.mock.results[0]?.value;
+          await pool.end();
+        }
+      });
+
+      it('keeps removal failures retryable and logs only the backup ID', async () => {
+        const storage = new InMemoryArtifactStorage();
+        const sweep = task(storage);
+        const { id, key } = await complete();
+        const orphan = orphanKey(id);
+        await put(storage, orphan);
+        await put(storage, key);
+        vi.spyOn(storage, 'remove').mockRejectedValueOnce(
+          new Error('private storage data must not appear in logs'),
+        );
+        const warn = vi
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => undefined);
+        try {
+          await sweep.runOnce();
+          expect(warn.mock.calls).toEqual([
+            [`Workspace backup retention removal failed for backup ${id}.`],
+          ]);
+          expect([...storage.uploaded.keys()]).toEqual([orphan, key]);
+          await sweep.runOnce();
+          expect([...storage.uploaded.keys()]).toEqual([key]);
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('validates retention environment and stays inactive without listing', async () => {
+        const storage = new InMemoryArtifactStorage();
+        expect(() =>
+          task(storage, { SAVIA_BACKUP_RETENTION_INTERVAL_SECONDS: '0' }),
+        ).toThrow(/SAVIA_BACKUP_RETENTION_INTERVAL_SECONDS/);
+        expect(() =>
+          task(storage, {
+            SAVIA_BACKUP_RETENTION_SAFETY_WINDOW_SECONDS: '3599',
+          }),
+        ).toThrow(/SAVIA_BACKUP_RETENTION_SAFETY_WINDOW_SECONDS/);
+        const tx = workerModule.get(PgTransaction);
+        const run = vi.spyOn(tx, 'runAsQueueConsumer');
+        const disabled = task(new SupabaseStorageAdapter({}));
+        disabled.onApplicationBootstrap();
+        try {
+          await disabled.runOnce();
+          expect(run).not.toHaveBeenCalled();
+        } finally {
+          await disabled.beforeApplicationShutdown();
+          run.mockRestore();
+        }
+      });
+    });
+
+    // Reviewer regressions (verify mwr85oza, PASS WITH FINDINGS).
+    it('denies administrators and nonmembers without changing queued data', async () => {
+      const created = await create();
+      expect(created.statusCode).toBe(202);
+      const { id } = created.json<Job>();
+      const state = async () =>
+        (
+          await admin.query(
+            `select md5(jsonb_agg(to_jsonb(b) order by b.id)::text) as hash,
+                    (select count(*) from public.jobs where type = $1) as jobs
+               from public.workspace_backups b`,
+            ['workspace_backup'],
+          )
+        ).rows[0];
+
+      const before = await state();
+      await setRole(editorId, 'administrator');
+      for (const credential of [
+        'editor-token',
+        'viewer-token',
+        'other-owner-token',
+      ]) {
+        const headers = {
+          ...ownerHeaders(),
+          authorization: `Bearer ${credential}`,
+        };
+        expectProblem(await create(headers), 403, 'forbidden');
+        expectProblem(await poll(id, headers), 403, 'forbidden');
+      }
+      expect(await state()).toEqual(before);
+      expect(await runner.drainOnce()).toBe(1);
+      expect(await runner.drainOnce()).toBe(0);
+    });
+
+    it('excludes seeded source secrets and fails oversized ZIPs without publishing', async () => {
+      const raw = 'b19-local-raw-import-marker';
+      const secret = 'b19-local-encrypted-credential-marker';
+      const agent = 'b19-local-agent-text-marker';
+      const importId = randomUUID();
+      const credentialId = randomUUID();
+      const conversationId = randomUUID();
+      const receipt = randomUUID();
+      const path = receiptStoragePath(workspace1Id, receipt);
+
+      try {
+        await admin.query(
+          `insert into public.import_jobs
+         (id, workspace_id, file_name, status, created_by)
+       values ($1, $2, $3, $4, $5)`,
+          [importId, workspace1Id, 'local.csv', 'uploaded', ownerId],
+        );
+        await admin.query(
+          `insert into public.import_job_rows
+         (workspace_id, import_job_id, row_number, raw_values, classification)
+       values ($1, $2, 2, $3, $4)`,
+          [workspace1Id, importId, JSON.stringify([raw]), 'valid'],
+        );
+        await admin.query(
+          `insert into public.ai_credentials
+         (id, workspace_id, owner_type, provider_id, credential_type,
+          encrypted_secret, masked_identifier, created_by_subject_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            credentialId,
+            workspace1Id,
+            'workspace',
+            'test-provider',
+            'api_key',
+            secret,
+            'test-mask',
+            ownerId,
+          ],
+        );
+        await admin.query(
+          `insert into public.agent_conversations
+         (id, workspace_id, created_by_subject_id, title)
+       values ($1, $2, $3, $4)`,
+          [conversationId, workspace1Id, ownerId, agent],
+        );
+
+        const { id } = (await create()).json<Job>();
+        expect(await runner.drainOnce()).toBe(1);
+        const complete = await poll(id);
+        expect(complete.statusCode).toBe(200);
+        expect(complete.json()).toMatchObject({ status: 'completed' });
+        const key = new URL(
+          complete.json<SignedLink>().downloadUrl,
+        ).pathname.slice(1);
+        const contents = readStoredZip(await inMemoryStorage.download(key));
+        expect(contents.get('workspace.json')!.toString()).toContain(importId);
+        for (const bytes of contents.values()) {
+          for (const marker of [raw, secret, agent]) {
+            expect(bytes.includes(marker)).toBe(false);
+          }
+        }
+
+        await seedReceipt(receipt, path);
+        await inMemoryStorage.upload(
+          path,
+          Buffer.alloc(50_000_001),
+          'image/png',
+        );
+        const { id: oversized, createdAt } = (await create()).json<Job>();
+        const before = [...inMemoryStorage.uploaded.keys()];
+        const signs = inMemoryStorage.signCallCount;
+
+        expect(await runner.drainOnce()).toBe(1);
+        const failed = await poll(oversized);
+        expect(failed.statusCode).toBe(200);
+        expect(failed.json()).toEqual({
+          id: oversized,
+          status: 'failed',
+          createdAt,
+          ...noLink,
+        });
+        expect([...inMemoryStorage.uploaded.keys()]).toEqual(before);
+        expect(inMemoryStorage.signCallCount).toBe(signs);
+      } finally {
+        await admin.query('delete from public.receipts where id = $1', [
+          receipt,
+        ]);
+        await admin.query(
+          'delete from public.agent_conversations where id = $1',
+          [conversationId],
+        );
+        await admin.query('delete from public.ai_credentials where id = $1', [
+          credentialId,
+        ]);
+        await admin.query('delete from public.import_jobs where id = $1', [
+          importId,
+        ]);
+        inMemoryStorage.uploaded.delete(path);
+      }
+    });
   });
 
   describe('Policy recreate and grant pin', () => {
@@ -585,6 +1968,12 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       expect(inMemoryStorage.uploadCallCount).toBe(1);
       const expectedKey = `${workspace1Id}/${body.id}.csv`;
       expect(inMemoryStorage.uploaded.has(expectedKey)).toBe(true);
+      const legacyCsv = (
+        await inMemoryStorage.download(expectedKey)
+      ).toString();
+      expect(legacyCsv).toContain(acct1Usd);
+      expect(legacyCsv).toContain(tx1Id);
+      expect(legacyCsv).not.toMatch(/June|Undated/);
 
       // Check DB completed state
       const completedExport = await admin.query<{
@@ -822,7 +2211,138 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       expect(Number(jobCount.rows[0]?.count)).toBe(1);
     });
 
-    it('synchronously rejects unsupported resources with 422', async () => {
+    async function financialArtifact(
+      payload: Record<string, unknown>,
+      extension: string,
+    ) {
+      const headers = {
+        authorization: 'Bearer editor-token',
+        'x-workspace-id': workspace1Id,
+      };
+      const queued = await application.inject({
+        method: 'POST',
+        url: '/v1/export-jobs',
+        payload,
+        headers: { ...headers, 'idempotency-key': randomUUID() },
+      });
+      expect(queued.statusCode).toBe(202);
+      const { id } = queued.json<{ id: string }>();
+      expect(queued.json()).toMatchObject({
+        status: 'queued',
+        downloadUrl: null,
+      });
+      const key = `${workspace1Id}/${id}.${extension}`;
+      expect(inMemoryStorage.uploaded.has(key)).toBe(false);
+      await runner.drainOnce();
+      const completed = await application.inject({
+        method: 'GET',
+        url: `/v1/export-jobs/${id}`,
+        headers,
+      });
+      expect(completed.statusCode).toBe(200);
+      expect(completed.json()).toMatchObject({
+        status: 'completed',
+        downloadUrl: `https://storage.example.test/${key}`,
+      });
+      return (await inMemoryStorage.download(key)).toString();
+    }
+
+    it('exports only contained workspace budgets with allocated amounts and safe CSV names', async () => {
+      const csv = await financialArtifact(
+        {
+          format: 'csv',
+          resource: 'budgets',
+          from: '2026-06-01',
+          to: '2026-06-30',
+        },
+        'csv',
+      );
+      expect(csv.split('\n')).toHaveLength(2);
+      expect(csv).toContain(`"'=June"`);
+      expect(csv).toContain(catExpenseId);
+      expect(csv).toContain('""amountMinor"":""6000""');
+      expect(csv).not.toMatch(
+        /Overlaps June|Ends later|Foreign budget|Operating Account/,
+      );
+    });
+
+    it.each([
+      {
+        from: '2026-06-01',
+        to: '2026-06-30',
+        names: ['June end', 'June start'],
+      },
+      {
+        from: '2026-06-01',
+        to: null,
+        names: ['June end', 'June start', 'Later'],
+      },
+      {
+        from: null,
+        to: '2026-06-30',
+        names: ['Earlier', 'June end', 'June start'],
+      },
+      {
+        from: null,
+        to: null,
+        names: ['Earlier', 'June end', 'June start', 'Later', 'Undated'],
+      },
+    ])(
+      'exports workspace debts with from=$from and to=$to',
+      async ({ from, to, names }) => {
+        const artifact = JSON.parse(
+          await financialArtifact(
+            { format: 'json_backup', resource: 'debts', from, to },
+            'json',
+          ),
+        ) as {
+          accounts: unknown[];
+          transactions: unknown[];
+          debts: { name: string }[];
+        };
+        expect(artifact.accounts).toEqual([]);
+        expect(artifact.transactions).toEqual([]);
+        expect(artifact.debts.map(({ name }) => name).sort()).toEqual(names);
+        expect(
+          artifact.debts.find(({ name }) => name === 'June start'),
+        ).toMatchObject({
+          startDate: '2026-06-01',
+          principal: { amountMinor: '9007199254740993', currency: 'USD' },
+          outstandingBalance: {
+            amountMinor: '9007199254740993',
+            currency: 'USD',
+          },
+        });
+      },
+    );
+
+    it('preserves the unfiltered debt list when export-only date bounds are supplied', async () => {
+      const headers = {
+        authorization: 'Bearer editor-token',
+        'x-workspace-id': workspace1Id,
+      };
+      const base = await application.inject({
+        method: 'GET',
+        url: '/v1/debts',
+        headers,
+      });
+      const withBounds = await application.inject({
+        method: 'GET',
+        url: '/v1/debts?from=2026-06-01&to=2026-06-30',
+        headers,
+      });
+      expect(base.statusCode).toBe(200);
+      expect(withBounds.statusCode).toBe(200);
+      expect(withBounds.body).toBe(base.body);
+      expect(
+        base
+          .json<{ items: { name: string }[] }>()
+          .items.map(({ name }) => name)
+          .sort(),
+      ).toEqual(['Earlier', 'June end', 'June start', 'Later', 'Undated']);
+    });
+
+    it('synchronously rejects unsupported reports with 422', async () => {
       const response = await application.inject({
         method: 'POST',
         url: '/v1/export-jobs',
@@ -831,7 +2351,7 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
           'x-workspace-id': workspace1Id,
           'idempotency-key': randomUUID(),
         },
-        payload: { format: 'csv', resource: 'budgets' },
+        payload: { format: 'csv', resource: 'report' },
       });
       expect(response.statusCode).toBe(422);
       const body = JSON.parse(response.body) as {
@@ -1093,6 +2613,117 @@ describe('Asynchronous export jobs integration contract and worker suite', () =>
       } finally {
         runner.registerHandler(original);
       }
+    });
+
+    it('exports one exact fee expense row without turning transfer legs into transactions', async () => {
+      const destination = randomUUID();
+      await admin.query(
+        `insert into public.accounts (id, workspace_id, name, type, currency, created_by)
+         values ($1, $2, 'Transfer destination', 'checking', 'USD', $3)`,
+        [destination, workspace1Id, ownerId],
+      );
+      const headers = {
+        authorization: 'Bearer owner-token',
+        'x-workspace-id': workspace1Id,
+      };
+      const day = '2026-10-06';
+      const occurredAt = `${day}T14:00:00.000Z`;
+      const post = (route: string, payload: Record<string, unknown>) =>
+        application.inject({
+          method: 'POST',
+          url: route,
+          headers: { ...headers, 'idempotency-key': randomUUID() },
+          payload,
+        });
+      const balances = () =>
+        Promise.all(
+          [acct1Usd, destination].map(async (id) => {
+            const response = await application.inject({
+              method: 'GET',
+              url: `/v1/accounts/${id}/balance?asOf=${encodeURIComponent(occurredAt)}`,
+              headers,
+            });
+            expect(response.statusCode, response.payload).toBe(200);
+            const body = response.json<{
+              nativeBalance: { amountMinor: string };
+            }>();
+            return body.nativeBalance.amountMinor;
+          }),
+        );
+      const exportTransactions = async () => {
+        const queued = await post('/v1/export-jobs', {
+          resource: 'transactions',
+          format: 'csv',
+          from: day,
+          to: day,
+        });
+        expect(queued.statusCode, queued.payload).toBe(202);
+        const { id } = queued.json<{ id: string }>();
+        const { rows } = await admin.query<{ job_id: string }>(
+          `select job_id from public.export_jobs where workspace_id = $1 and id = $2`,
+          [workspace1Id, id],
+        );
+        expect(await drainUntilJobTerminal(rows[0].job_id)).toEqual({
+          status: 'completed',
+          error: null,
+        });
+        const artifact = inMemoryStorage.uploaded.get(
+          `${workspace1Id}/${id}.csv`,
+        );
+        expect(artifact?.contentType).toBe('text/csv');
+        return artifact?.content.toString('utf8');
+      };
+      const transfer = {
+        sourceAccountId: acct1Usd,
+        destinationAccountId: destination,
+        amount: { amountMinor: '130', currency: 'USD' },
+        occurredAt,
+      };
+      expect(await balances()).toEqual(['5000', '0']);
+      const noFee = await post('/v1/transfers', transfer);
+      expect(noFee.statusCode, noFee.payload).toBe(201);
+      expect(await balances()).toEqual(['4870', '130']);
+      expect(await exportTransactions()).toBe('');
+
+      const withFee = await post('/v1/transfers', {
+        ...transfer,
+        fee: { amountMinor: '13', currency: 'USD' },
+        description: 'Transfer fee, "October"',
+      });
+      expect(withFee.statusCode, withFee.payload).toBe(201);
+      expect(await balances()).toEqual(['4727', '260']);
+      const { transactionId } = withFee.json<{ transactionId: string }>();
+      const fee = await application.inject({
+        method: 'GET',
+        url: `/v1/transactions/${transactionId}`,
+        headers,
+      });
+      expect(fee.statusCode, fee.payload).toBe(200);
+      const { createdAt, updatedAt } = fee.json<{
+        createdAt: string;
+        updatedAt: string;
+      }>();
+      expect(await exportTransactions()).toBe(
+        'id,accountId,type,status,amount,occurredAt,categoryId,payeeId,description,notes,tagIds,receiptId,reconciliationId,createdAt,updatedAt,version\n' +
+          [
+            `"${transactionId}"`,
+            `"${acct1Usd}"`,
+            '"expense"',
+            '"confirmed"',
+            '"{""amountMinor"":""-13"",""currency"":""USD""}"',
+            `"${occurredAt}"`,
+            '""',
+            '""',
+            '"Transfer fee, ""October"""',
+            '""',
+            '""',
+            '""',
+            '""',
+            `"${createdAt}"`,
+            `"${updatedAt}"`,
+            '"1"',
+          ].join(','),
+      );
     });
 
     it('keeps job_id predicate on resource transitions so mismatched job_id updates zero rows', async () => {

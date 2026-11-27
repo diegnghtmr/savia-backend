@@ -41,7 +41,13 @@ export class McpGrantService implements McpGrantPort {
     key: string,
   ): Promise<McpGrantOutcome> {
     const route = 'POST /v1/mcp/grants';
-    const fingerprint = computeRequestFingerprint(command);
+    const { toolAllowlist, schedule, ...previousFields } = command;
+    // Omitting the two default-empty fields preserves existing idempotency keys.
+    const fingerprint = computeRequestFingerprint({
+      ...previousFields,
+      ...(toolAllowlist.length ? { toolAllowlist } : {}),
+      ...(schedule.length ? { schedule } : {}),
+    });
     try {
       return await this.tx.run(subject, async (client) => {
         if (
@@ -69,13 +75,29 @@ export class McpGrantService implements McpGrantPort {
           key,
           null,
         );
-        if (existing)
-          return existing.requestFingerprint === fingerprint
+        if (existing) {
+          if (existing.requestFingerprint !== fingerprint)
+            return { kind: MCP_GRANT_OUTCOMES.CONFLICT };
+          const response = existing.responseBody as McpGrant;
+          if (
+            response.toolAllowlist !== undefined &&
+            response.schedule !== undefined
+          )
+            return { kind: MCP_GRANT_OUTCOMES.CREATED, grant: response };
+          // Preserve the original response (including its status), but use the
+          // migrated row to add the fields absent in pre-U2 snapshots.
+          const migrated = await this.store.find(client, subject, response.id);
+          return migrated
             ? {
                 kind: MCP_GRANT_OUTCOMES.CREATED,
-                grant: existing.responseBody as McpGrant,
+                grant: {
+                  ...response,
+                  toolAllowlist: migrated.toolAllowlist,
+                  schedule: migrated.schedule,
+                },
               }
             : { kind: MCP_GRANT_OUTCOMES.CONFLICT };
+        }
         const grant = await this.store.create(
           client,
           subject,

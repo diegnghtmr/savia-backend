@@ -1,4 +1,6 @@
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
+import { AgentMessagesController } from '../../src/agent/agent-messages.controller.js';
 import { AgentMessageService } from '../../src/agent/agent-message.service.js';
 import type {
   AgentMessageStore,
@@ -98,7 +100,293 @@ it('does not emit after a provider terminal event', async () => {
   ]);
 });
 
+describe('tool rounds', () => {
+  async function run(
+    name: string,
+    args: Record<string, unknown>,
+    repeat = false,
+    result: unknown = ['account'],
+  ) {
+    const events: Array<{ type: string; data: Record<string, unknown> }> = [];
+    const listAccounts = vi.fn(async () => result);
+    const validateTransaction = vi.fn(() => null);
+    const validateTransfer = vi.fn(() => ({
+      sourceAccountId: workspace,
+      destinationAccountId: conversation,
+      amount: { amountMinor: '25', currency: 'USD' },
+      occurredAt: '2026-01-02T00:00:00.000Z',
+    }));
+    const canUseAccount = vi.fn(async () => true);
+    const createApproval = vi.fn(async () => 'approval');
+    let turns = 0;
+    const stream = vi.fn<AgentProviderPort['stream']>(async function* () {
+      if (turns++ === 0 || repeat) {
+        yield {
+          type: 'tool_calls',
+          data: { calls: [{ id: 'call_1', name, arguments: args }] },
+        };
+      } else {
+        yield { type: 'text_delta', data: { text: 'Done' } };
+      }
+    });
+    await new AgentMessageService(
+      new Tx(),
+      store(),
+      { stream },
+      {
+        listAccounts,
+        listRecentTransactions: vi.fn(),
+        validateTransaction,
+        validateTransfer,
+        canUseAccount,
+        createApproval,
+      },
+    ).execute(
+      subject,
+      workspace,
+      conversation,
+      'key',
+      conversation,
+      { message: 'x', modelRef: null, credentialId: null },
+      new AbortController().signal,
+      ({ type, data }) => events.push({ type, data }),
+    );
+    return {
+      stream,
+      listAccounts,
+      validateTransaction,
+      validateTransfer,
+      canUseAccount,
+      createApproval,
+      events,
+    };
+  }
+
+  it('uses the run context and sends the read result as a tool message', async () => {
+    const { stream, listAccounts, events } = await run('list_accounts', {});
+    expect(listAccounts).toHaveBeenCalledExactlyOnceWith({
+      subject,
+      workspaceId: workspace,
+    });
+    expect(stream.mock.calls[0]?.[3]?.tools.map(({ name }) => name)).toEqual([
+      'list_accounts',
+      'list_recent_transactions',
+      'create_transaction',
+      'create_transfer',
+    ]);
+    expect(stream.mock.calls[1]?.[3]?.history?.at(-1)).toEqual({
+      role: 'tool',
+      callId: 'call_1',
+      content: '["account"]',
+    });
+    expect(events).toEqual([
+      { type: 'run_started', data: {} },
+      {
+        type: 'tool_proposed',
+        data: {
+          toolName: 'list_accounts',
+          callId: 'call_1',
+          requiresApproval: false,
+        },
+      },
+      {
+        type: 'tool_completed',
+        data: { toolName: 'list_accounts', callId: 'call_1', ok: true },
+      },
+      { type: 'text_delta', data: { text: 'Done' } },
+      { type: 'run_completed', data: {} },
+    ]);
+  });
+
+  it.each([
+    ['list_accounts', { workspaceId: conversation, subject: conversation }],
+    [
+      'create_transaction',
+      {
+        type: 'expense',
+        accountId: workspace,
+        amount: { amountMinor: 'invalid', currency: 'USD' },
+        occurredAt: '2026-01-02T00:00:00Z',
+      },
+    ],
+  ] as const)(
+    'returns a tool error for invalid %s arguments without side effects',
+    async (name, args) => {
+      const {
+        stream,
+        listAccounts,
+        validateTransaction,
+        createApproval,
+        events,
+      } = await run(name, args);
+      expect(stream.mock.calls[1]?.[3]?.history?.at(-1)).toEqual({
+        role: 'tool',
+        callId: 'call_1',
+        content: '{"error":"Invalid tool arguments"}',
+      });
+      if (name === 'create_transaction')
+        expect(validateTransaction).toHaveBeenCalledExactlyOnceWith(args);
+      expect(listAccounts).not.toHaveBeenCalled();
+      expect(createApproval).not.toHaveBeenCalled();
+      expect(events.map(({ type }) => type)).toEqual([
+        'run_started',
+        'tool_proposed',
+        'tool_completed',
+        'text_delta',
+        'run_completed',
+      ]);
+      expect(events[2]?.data).toEqual({
+        toolName: name,
+        callId: 'call_1',
+        ok: false,
+      });
+    },
+  );
+
+  // The ledger does not record a transfer fee or description, so the tool must not accept them.
+  it.each([
+    'valid',
+    'wrong type',
+    'missing field',
+    'extra field',
+    'fee field',
+    'description field',
+  ] as const)('handles a %s transfer proposal', async (mode) => {
+    const input = {
+      sourceAccountId: workspace,
+      ...(mode !== 'missing field' && { destinationAccountId: conversation }),
+      amount: {
+        amountMinor: mode === 'wrong type' ? 25 : '25',
+        currency: 'USD',
+      },
+      occurredAt: '2026-01-02T00:00:00Z',
+      ...(mode === 'extra field' && { workspaceId: conversation }),
+      ...(mode === 'fee field' && {
+        fee: { amountMinor: '5', currency: 'USD' },
+      }),
+      ...(mode === 'description field' && { description: 'Rent' }),
+    };
+    const { stream, validateTransfer, canUseAccount, createApproval, events } =
+      await run('create_transfer', input);
+    if (mode !== 'valid') {
+      expect(stream.mock.calls[1]?.[3]?.history?.at(-1)).toMatchObject({
+        role: 'tool',
+        content: '{"error":"Invalid tool arguments"}',
+      });
+      expect(validateTransfer).not.toHaveBeenCalled();
+      expect(canUseAccount).not.toHaveBeenCalled();
+      expect(createApproval).not.toHaveBeenCalled();
+      return;
+    }
+    expect(validateTransfer).toHaveBeenCalledExactlyOnceWith(input);
+    expect(canUseAccount.mock.calls).toEqual([
+      [{ subject, workspaceId: workspace }, workspace],
+      [{ subject, workspaceId: workspace }, conversation],
+    ]);
+    expect(createApproval).toHaveBeenCalledExactlyOnceWith(
+      { subject, workspaceId: workspace },
+      expect.objectContaining({
+        toolName: 'create_transfer',
+        channel: 'agent',
+        riskClass: 'financial_write',
+        preview: expect.objectContaining({
+          sourceAccountId: workspace,
+          destinationAccountId: conversation,
+          amount: '25',
+          currency: 'USD',
+        }),
+      }),
+    );
+    expect(stream).toHaveBeenCalledOnce();
+    expect(events.at(-2)).toEqual({
+      type: 'approval_required',
+      data: {
+        toolName: 'create_transfer',
+        callId: 'call_1',
+        approvalId: 'approval',
+      },
+    });
+  });
+
+  it('refuses to dispatch a fifth round', async () => {
+    const { stream, listAccounts, events } = await run(
+      'list_accounts',
+      {},
+      true,
+    );
+    expect(stream).toHaveBeenCalledTimes(5);
+    expect(listAccounts).toHaveBeenCalledTimes(4);
+    expect(events.at(-1)).toEqual({
+      type: 'run_failed',
+      data: { message: 'Tool round limit reached' },
+    });
+  });
+
+  it('does not send an over-budget result back to the provider', async () => {
+    const { stream, listAccounts, events } = await run(
+      'list_accounts',
+      {},
+      false,
+      'é'.repeat(32768),
+    );
+    expect(stream).toHaveBeenCalledOnce();
+    expect(listAccounts).toHaveBeenCalledOnce();
+    expect(events.at(-1)).toEqual({
+      type: 'run_failed',
+      data: { message: 'Tool result size limit reached' },
+    });
+  });
+});
+
 describe('in-flight idempotency', () => {
+  it('does not start the provider or write SSE when the client closes during prepare', async () => {
+    const reserved = Promise.withResolvers<void>();
+    const finishPrepare = Promise.withResolvers<boolean>();
+    const repository = store({
+      reserveIdempotency: vi.fn(() => {
+        reserved.resolve();
+        return finishPrepare.promise;
+      }),
+    });
+    const stream = vi.fn(async function* () {});
+    const service = new AgentMessageService(new Tx(), repository, { stream });
+    const controller = new AgentMessagesController(service);
+    const raw = Object.assign(new EventEmitter(), {
+      writableEnded: false,
+      writeHead: vi.fn(),
+      write: vi.fn(),
+      end: vi.fn(),
+    });
+    const hijack = vi.fn();
+    const key = '99999999-9999-4999-8999-999999999999';
+    const request = controller.send(
+      {
+        headers: { 'x-workspace-id': workspace, 'idempotency-key': key },
+        identity: { subject },
+      } as never,
+      conversation,
+      { message: 'synthetic prompt' },
+      { hijack, raw } as never,
+    );
+    await reserved.promise;
+    raw.emit('close');
+    finishPrepare.resolve(true);
+    await request;
+    expect(stream).not.toHaveBeenCalled();
+    expect(hijack).not.toHaveBeenCalled();
+    expect(raw.writeHead).not.toHaveBeenCalled();
+    expect(raw.write).not.toHaveBeenCalled();
+    expect(raw.end).not.toHaveBeenCalled();
+    expect(repository.saveRun).not.toHaveBeenCalled();
+    expect(repository.finalizeIdempotency).not.toHaveBeenCalled();
+    expect(repository.releaseIdempotency).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      subject,
+      workspace,
+      conversation,
+      key,
+    );
+  });
   it('allows only one overlapping request for the same key', async () => {
     let releaseProvider!: () => void;
     const providerStarted = new Promise<void>((resolve) => {
@@ -187,7 +475,7 @@ describe('in-flight idempotency', () => {
           await new Promise<void>((resolve) =>
             signal.addEventListener('abort', () => resolve(), { once: true }),
           );
-          yield { type: 'text_delta', data: { text: 'never emitted' } };
+          signal.throwIfAborted();
         } finally {
           closed = true;
         }
@@ -217,6 +505,6 @@ describe('in-flight idempotency', () => {
     await execution;
     expect(closed).toBe(true);
     expect(releaseIdempotency).toHaveBeenCalledOnce();
-    expect(events).not.toContain('run_completed');
+    expect(events).toEqual(['run_started', 'text_delta']);
   });
 });

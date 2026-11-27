@@ -9,6 +9,7 @@ import { AICredentialService } from './ai-credential.service.js';
 import { PostgresAICredentialAdapter } from './postgres-ai-credential.adapter.js';
 @Module({
   imports: [PlatformModule],
+  exports: [AICredentialService],
   controllers: [AICredentialsController],
   providers: [
     PostgresAICredentialAdapter,

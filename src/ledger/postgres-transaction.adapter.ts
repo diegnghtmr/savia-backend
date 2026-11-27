@@ -6,6 +6,7 @@ import type {
 } from '../platform/ledger-writer.port.js';
 import { enforceDeferredConstraints } from '../platform/deferred-constraints.js';
 import { negateAmountMinor } from '../platform/amount-minor.js';
+import { fundSavedAmountSql, lockFund } from '../platform/fund-savings.js';
 import type {
   CreateTransactionCommand,
   Transaction,
@@ -14,12 +15,15 @@ import type {
 } from './ledger.port.js';
 import { IMPORT_COMMIT_BATCH_SIZE } from '../platform/import-batch-policy.js';
 import {
+  FundContributionVoidConflict,
   TransactionCategoryNotFoundError,
   TransactionPayeeNotFoundError,
+  type CreateFieldValidity,
   type LedgerAccountRecord,
   type LedgerStore,
   type TransactionFilterOptions,
   type TransactionItem,
+  type TransactionWriteFields,
 } from './transaction.service.js';
 
 interface TransactionRow extends Record<string, unknown> {
@@ -37,6 +41,9 @@ interface TransactionRow extends Record<string, unknown> {
   readonly receiptId: string | null;
   readonly reconciliationId: string | null;
   readonly tagIds: string[] | null;
+  readonly archived?: boolean;
+  readonly excludedFromReports?: boolean;
+  readonly extraordinary?: boolean;
   readonly createdAt: Date;
   readonly updatedAt: Date;
   readonly version: number;
@@ -53,6 +60,16 @@ export function toIso(value: unknown): string {
   throw new TypeError(
     `Expected Date instance from database timestamp column, got ${typeof value}`,
   );
+}
+
+function classification(row: TransactionRow): Partial<Transaction> {
+  // OpenAPI defaults absent flags to false; preserve existing payloads for
+  // transactions that have not opted into a classification.
+  return {
+    ...(row.archived === true ? { archived: true } : {}),
+    ...(row.excludedFromReports === true ? { excludedFromReports: true } : {}),
+    ...(row.extraordinary === true ? { extraordinary: true } : {}),
+  };
 }
 
 export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
@@ -184,6 +201,37 @@ export class PostgresTransactionAdapter implements LedgerStore, LedgerWriter {
       return undefined;
     }
     return { status: accountRow.status, currency: accountRow.currency };
+  }
+
+  public async readCreateFieldValidity(
+    client: TransactionClient,
+    workspaceId: string,
+    command: TransactionWriteFields,
+  ): Promise<CreateFieldValidity> {
+    // Match the insert's timestamp cast, composite FK targets and receipt index,
+    // without issuing a ledger write. Execution still relies on the constraints.
+    const result = await client.query<
+      CreateFieldValidity & Record<string, unknown>
+    >(
+      `select ($2::text is null or pg_input_is_valid($2::text, 'timestamp with time zone')) as "validDate",
+         ($3::uuid is null or exists (select 1 from public.categories
+           where workspace_id = $1::uuid and id = $3::uuid)) as "validCategory",
+         ($4::uuid is null or exists (select 1 from public.payees
+           where workspace_id = $1::uuid and id = $4::uuid)) as "validPayee",
+         not exists (select 1 from public.transactions
+           where workspace_id = $1::uuid and receipt_id = $5::uuid) as "receiptAvailable"`,
+      [
+        workspaceId,
+        command.occurredAt ?? null,
+        command.categoryId ?? null,
+        command.payeeId ?? null,
+        command.receiptId ?? null,
+      ],
+    );
+    const fields = result.rows[0];
+    if (!fields)
+      throw new Error('Transaction field validation returned no row.');
+    return fields;
   }
 
   public async createTransaction(
@@ -369,6 +417,9 @@ select t.id::text,
        t.receipt_id::text as "receiptId",
        t.reconciliation_id::text as "reconciliationId",
        t.tag_ids as "tagIds",
+       t.archived,
+       t.excluded_from_reports as "excludedFromReports",
+       t.extraordinary,
        t.created_at as "createdAt",
        t.updated_at as "updatedAt",
        t.version
@@ -384,6 +435,7 @@ select t.id::text,
       return undefined;
     }
     return {
+      ...classification(row),
       id: row.id,
       accountId: row.accountId,
       type: row.type,
@@ -473,6 +525,9 @@ select t.id::text,
        t.receipt_id::text as "receiptId",
        t.reconciliation_id::text as "reconciliationId",
        t.tag_ids as "tagIds",
+       t.archived,
+       t.excluded_from_reports as "excludedFromReports",
+       t.extraordinary,
        t.created_at as "createdAt",
        t.updated_at as "updatedAt",
        t.version,
@@ -485,6 +540,7 @@ select t.id::text,
     const result = await client.query<TransactionListRow>(sql, values);
     return result.rows.map((row) => ({
       transaction: {
+        ...classification(row),
         id: row.id,
         accountId: row.accountId,
         type: row.type,
@@ -558,6 +614,10 @@ select t.id::text,
       values.push(command.status);
       assignments.push(`status = $${values.length}`);
     }
+    if (command.extraordinary !== undefined) {
+      values.push(command.extraordinary);
+      assignments.push(`extraordinary = $${values.length}`);
+    }
 
     const versionParam =
       expectedVersions === undefined
@@ -589,6 +649,9 @@ returning
    receipt_id::text as "receiptId",
    reconciliation_id::text as "reconciliationId",
    tag_ids as "tagIds",
+   archived,
+   excluded_from_reports as "excludedFromReports",
+   extraordinary,
    created_at as "createdAt",
    updated_at as "updatedAt",
    version`;
@@ -639,7 +702,85 @@ returning
       createdAt: toIso(row.createdAt),
       updatedAt: toIso(row.updatedAt),
       version: row.version,
+      ...classification(row),
+      ...(command.extraordinary === undefined
+        ? {}
+        : { extraordinary: command.extraordinary }),
     };
+  }
+
+  public async voidFundContribution(
+    client: TransactionClient,
+    workspaceId: string,
+    transactionId: string,
+    accountId: string,
+    postingStatus: string,
+    expectedVersions?: number | readonly number[],
+  ): Promise<Transaction | undefined> {
+    const linked = await client.query<{ fundId: string }>(
+      `select fund_id::text as "fundId" from public.fund_contributions
+       where workspace_id = $1::uuid and transaction_id = $2::uuid`,
+      [workspaceId, transactionId],
+    );
+    const fundId = linked.rows[0]?.fundId;
+    if (fundId) await lockFund(client, workspaceId, fundId);
+
+    const voided = await this.voidTransaction(
+      client,
+      workspaceId,
+      transactionId,
+      accountId,
+      postingStatus,
+      expectedVersions,
+    );
+    if (voided && fundId) {
+      // Check the actual projection including our uncommitted reversal. Throw
+      // before writing idempotency so the runner rolls back the whole void.
+      const savings = await client.query<{ balance: string }>(
+        `select ${fundSavedAmountSql(true)} as balance
+         from public.funds f where f.workspace_id = $1::uuid and f.id = $2::uuid`,
+        [workspaceId, fundId],
+      );
+      const balance = savings.rows[0]?.balance;
+      if (balance === undefined || BigInt(balance) < 0n) {
+        throw new FundContributionVoidConflict();
+      }
+    }
+    return voided;
+  }
+
+  public async rescheduleOccurrencePostings(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: { readonly id: string; readonly status: 'draft' | 'pending' },
+    occurredAt: string,
+  ): Promise<void> {
+    // A standalone PATCH may have changed the booking status, not the pair.
+    const updated = await client.query(
+      `update public.ledger_postings set status = $3, occurred_at = $4::timestamptz
+        where workspace_id = $1::uuid and transaction_id = $2::uuid
+          and status in ('draft', 'pending', 'confirmed')`,
+      [workspaceId, booking.id, booking.status, occurredAt],
+    );
+    if (updated.rowCount !== 2)
+      throw new Error('Occurrence posting pair was not rescheduled.');
+    await enforceDeferredConstraints(client);
+  }
+
+  public async confirmOccurrencePostings(
+    client: TransactionClient,
+    workspaceId: string,
+    booking: { readonly id: string },
+  ): Promise<void> {
+    const updated = await client.query(
+      `update public.ledger_postings set status = 'confirmed'
+        where workspace_id = $1::uuid and transaction_id = $2::uuid
+          and status in ('draft', 'pending', 'confirmed')`,
+      [workspaceId, booking.id],
+    );
+    if (updated.rowCount !== 2)
+      throw new Error('Occurrence posting pair was not confirmed.');
+    await enforceDeferredConstraints(client);
   }
 
   public async voidTransaction(
@@ -649,6 +790,7 @@ returning
     accountId: string,
     postingStatus: string,
     expectedVersions?: number | readonly number[],
+    expectedOccurrenceState?: 'draft' | 'pending',
   ): Promise<Transaction | undefined> {
     // 1. Mandatory per-account advisory lock (serialized against closeAccount and createTransaction)
     await client.query(
@@ -672,7 +814,7 @@ update public.transactions
        version = version + 1
  where workspace_id = $1::uuid
    and id = $2::uuid
-   and status in ('pending', 'confirmed')
+   and ${expectedOccurrenceState === undefined ? "status in ('pending', 'confirmed')" : 'status = $4'}
    and ($3::integer[] is null or version = any($3::integer[]))
 returning
    id::text,
@@ -689,22 +831,70 @@ returning
    receipt_id::text as "receiptId",
    reconciliation_id::text as "reconciliationId",
    tag_ids as "tagIds",
+   archived,
+   excluded_from_reports as "excludedFromReports",
+   extraordinary,
    voided_at as "voidedAt",
+   import_job_id::text as "importJobId",
    created_at as "createdAt",
    updated_at as "updatedAt",
    version`;
 
-    const result = await client.query<TransactionRow & { voidedAt: Date }>(
-      sql,
-      [workspaceId, transactionId, versionParam],
-    );
+    const result = await client.query<
+      TransactionRow & { voidedAt: Date; importJobId: string | null }
+    >(sql, [
+      workspaceId,
+      transactionId,
+      versionParam,
+      ...(expectedOccurrenceState === undefined
+        ? []
+        : [expectedOccurrenceState]),
+    ]);
     const row = result.rows[0];
     if (!row) {
       return undefined;
     }
 
-    // 3. Append compensating posting set (negated amounts, same currency, void instant occurred_at)
-    const postingsSql = `
+    if (expectedOccurrenceState !== undefined) {
+      // Skip neutralizes the actual pair at its original balance cutoff. A
+      // standalone PATCH may have changed the booking but not its postings.
+      const compensated = await client.query(
+        `insert into public.ledger_postings (
+           workspace_id, transaction_id, account_id, leg_kind, amount_minor,
+           currency, status, occurred_at
+         )
+         select workspace_id, transaction_id, account_id, leg_kind, -amount_minor,
+                currency, status, occurred_at
+           from public.ledger_postings
+          where workspace_id = $1::uuid and transaction_id = $2::uuid`,
+        [workspaceId, row.id],
+      );
+      if (compensated.rowCount !== 2)
+        throw new Error('Occurrence posting pair was not compensated.');
+    } else {
+      // Keep the void instant for past postings, but never reverse future
+      // postings before they take effect. Linked headers can have a different
+      // date from their legs, so use the actual posting cutoff.
+      let bookedAmount = String(row.amountMinor);
+      if (row.type === 'expense' && row.importJobId) {
+        // Conversion normalizes the header but leaves the signed legs intact.
+        const booked = await client.query<{ amount: string | null }>(
+          `select sum(amount_minor)::text as amount from public.ledger_postings
+            where workspace_id = $1::uuid and transaction_id = $2::uuid
+              and account_id = $3::uuid and leg_kind = 'account'`,
+          [workspaceId, row.id, row.accountId],
+        );
+        const amount = booked.rows[0]?.amount;
+        if (amount == null)
+          throw new Error('Imported expense account posting is missing.');
+        bookedAmount = amount;
+      }
+      const postingsSql = `
+with reversal_cutoff as (
+  select greatest($7::timestamptz, max(p.occurred_at)) as occurred_at
+    from public.ledger_postings p
+   where p.workspace_id = $1::uuid and p.transaction_id = $2::uuid
+)
 insert into public.ledger_postings (
   workspace_id,
   transaction_id,
@@ -715,22 +905,24 @@ insert into public.ledger_postings (
   status,
   occurred_at
 )
-values
-  ($1::uuid, $2::uuid, $3::uuid, 'account', $4, $5, $6, $7),
-  ($1::uuid, $2::uuid, null, 'external', $8, $5, $6, $7)`;
+select $1::uuid, $2::uuid, leg.account_id, leg.kind, leg.amount, $5, $6, cutoff.occurred_at
+  from (values ($3::uuid, 'account', $4::bigint), (null, 'external', $8::bigint))
+    as leg(account_id, kind, amount)
+ cross join reversal_cutoff cutoff`;
 
-    const postingsValues = [
-      workspaceId,
-      row.id,
-      row.accountId,
-      negateAmountMinor(String(row.amountMinor)),
-      row.currency,
-      postingStatus,
-      row.voidedAt,
-      String(row.amountMinor),
-    ];
+      const postingsValues = [
+        workspaceId,
+        row.id,
+        row.accountId,
+        negateAmountMinor(bookedAmount),
+        row.currency,
+        postingStatus,
+        row.voidedAt,
+        bookedAmount,
+      ];
 
-    await client.query(postingsSql, postingsValues);
+      await client.query(postingsSql, postingsValues);
+    }
 
     // 4. Enforce deferred constraints (balanced postings check) before commit
     await enforceDeferredConstraints(client);
@@ -755,6 +947,7 @@ values
       createdAt: toIso(row.createdAt),
       updatedAt: toIso(row.updatedAt),
       version: row.version,
+      ...classification(row),
     };
   }
 }
