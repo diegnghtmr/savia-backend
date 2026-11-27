@@ -166,7 +166,8 @@ fail_disposable_start() {
 }
 
 start_disposable_database() {
-  local source_config_hash config start_log start_status attempt policy
+  local mode="${1:-}" source_config_hash config start_log start_status policy delay
+  local port_attempt=1 registry_attempt=1
   source_config_hash="$(sha256sum supabase/config.toml)"
   mkdir -p "$workdir/supabase/migrations"
   cp supabase/config.toml "$workdir/supabase/config.toml"
@@ -179,11 +180,23 @@ start_disposable_database() {
   start_log="$workdir/start.log"
   policy="$(dirname "${BASH_SOURCE[0]}")/supabase-start-policy.mjs"
   node "$policy" wait "$config" > "$start_log" 2>&1 || fail_disposable_start "$?" "$start_log"
-  for attempt in 1 2; do
+  while :; do
     pnpm exec supabase --workdir "$workdir" start > "$start_log" 2>&1 && break
     start_status=$?
-    node "$policy" should-retry "$start_log" "$attempt" || fail_disposable_start "$start_status" "$start_log"
+    delay=0
+    if node "$policy" should-retry "$start_log" "$port_attempt"; then
+      port_attempt=2
+    elif [[ "$mode" == ci ]] && (( registry_attempt < 5 )) &&
+      grep -Eiq 'HTTP (status code )?429|429 Too Many Requests|TOOMANYREQUESTS|Data limit exceeded' "$start_log"; then
+      # CI pulls images while starting the real stack, not in a second stack.
+      delay=$((registry_attempt * 45 + RANDOM % 30))
+      printf 'Supabase image pull rate-limited (attempt %s); retrying in %ss\n' "$registry_attempt" "$delay" >&2
+      registry_attempt=$((registry_attempt + 1))
+    else
+      fail_disposable_start "$start_status" "$start_log"
+    fi
     stop_disposable_stack >/dev/null 2>&1
+    if (( delay > 0 )); then sleep "$delay"; fi
     node "$policy" wait "$config" >> "$start_log" 2>&1 || fail_disposable_start "$start_status" "$start_log"
   done
   rm -f "$start_log"

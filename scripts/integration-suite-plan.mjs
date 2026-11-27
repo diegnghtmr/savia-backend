@@ -11,13 +11,21 @@ function fail(message, status = 64) {
   process.exit(status);
 }
 
-if (!wrappers.has(mode)) fail('Expected integration mode: all or ocr');
+const ci = mode === 'ci';
+if (!ci && !wrappers.has(mode))
+  fail('Expected integration mode: all, ocr or ci');
 if (selection.length === 1 && selection[0] === '--help') {
   process.stdout.write(
-    `Usage: pnpm test:integration:${mode} [--list | <suite> ...]\n` +
-      'Without arguments, run every suite in this group. Use --list to see the suite names.\n',
+    ci
+      ? 'Usage: bash scripts/run-integration-suites.sh ci <suite> ...\n' +
+          'Run the selected suites on the host. Use --list to see the suite names.\n'
+      : `Usage: pnpm test:integration:${mode} [--list | <suite> ...]\n` +
+          'Without arguments, run every suite in this group. Use --list to see the suite names.\n',
   );
   process.exit(0);
+}
+if (ci && selection.length === 0) {
+  fail('CI integration mode requires an explicit suite selection');
 }
 
 const suites = new Map();
@@ -36,7 +44,7 @@ for (const [script, command] of Object.entries(collectPackageScripts('.'))) {
     fail(`Unsupported integration script: ${script}`, 70);
   }
   if (mode === 'ocr' && !ocr.has(name)) continue;
-  const kind = `${ocr.has(name) ? 'container' : 'host'}-${spec ? 'db' : 'standalone'}`;
+  const kind = `${!ci && ocr.has(name) ? 'container' : 'host'}-${spec ? 'db' : 'standalone'}`;
   suites.set(name, [name, kind, spec ?? script]);
 }
 

@@ -28,17 +28,16 @@ export const COVERAGE_ALLOWLIST = [
   {
     script: 'test:integration:all',
     reason:
-      'Local convenience wrapper; CI still invokes every constituent suite separately',
+      'Local convenience wrapper; CI selects suites with the shared runner in host mode',
   },
   {
     script: 'test:integration:ocr',
     reason:
-      'Local Docker wrapper; CI uses distro OCR packages and calls the same suites directly',
+      'Local Docker wrapper; CI uses distro OCR packages and runs these suites on the host',
   },
   {
     script: 'test:runner-isolation',
-    reason:
-      'Local Docker probe for Storage isolation between suites in the shared runner, which CI does not use',
+    reason: 'Local Docker probe for the shared runner’s Storage isolation',
   },
   {
     script: 'test:docker-context',
@@ -103,6 +102,134 @@ export function extractRunBlocks(workflowSource) {
   return runBlocks;
 }
 
+// Keep the CI batch syntax intentionally literal: it is both the command that
+// executes and the source of truth for suite assignment and reachability.
+const INTEGRATION_PREFIX = 'test:integration:';
+const CI_BATCH = 'bash scripts/run-integration-suites.sh ci';
+
+function extractCiBatchSuites(run) {
+  const command = run.trim().replace(/\s+/g, ' ');
+  const prefix = CI_BATCH + ' ';
+  if (!command.startsWith(prefix)) return null;
+  const names = command.slice(prefix.length).split(' ');
+  if (!names.every((name) => /^[a-z0-9-]+$/.test(name))) return null;
+  return names.map((name) => INTEGRATION_PREFIX + name);
+}
+
+const INLINE_SQL_SUITES = new Map([
+  ['identity_rls.test.sql', 'test:database'],
+  ['identity_bootstrap_rls.test.sql', 'test:database:bootstrap'],
+]);
+const separateSuites = [
+  ...INLINE_SQL_SUITES.values(),
+  'test:schema-contract',
+  'test:mutation:transaction',
+];
+
+export function analyzeIntegrationShardAssignments(scripts, workflowSource) {
+  // This guard intentionally checks the workflow's fixed, simple matrix shape.
+  // A format change must update the guard rather than silently skip validation.
+  const job = stripHashComments(workflowSource)
+    .split(/^ {2}integration:[ \t]*$/m)[1]
+    ?.split(/^ {2}[\w-]+:/m)[0];
+  const matrix = job
+    ?.split(/^ {6}matrix:[ \t]*$/m)[1]
+    ?.split(/^ {4}steps:[ \t]*$/m)[0];
+  const row = /^\s*shard:[ \t]*\[([1-9]\d*(?:,[ \t]*[1-9]\d*)*)\]\s*$/.exec(
+    matrix ?? '',
+  );
+  const shards = row?.[1].split(',').map((id) => Number(id));
+  if (!shards || new Set(shards).size !== shards.length) {
+    return [
+      'CI integration must have a single matrix of unique positive shard IDs',
+    ];
+  }
+
+  const batched = new Set(
+    Object.keys(scripts).filter(
+      (name) =>
+        name.startsWith(INTEGRATION_PREFIX) &&
+        name !== 'test:integration:all' &&
+        name !== 'test:integration:ocr',
+    ),
+  );
+  const assignments = new Map(
+    [...batched, ...separateSuites].map((name) => [name, []]),
+  );
+  const batches = new Map(shards.map((id) => [id, 0]));
+  const violations = [];
+  for (const step of job.split(/^ {6}- /m).slice(1)) {
+    const run = extractRunBlocks(step)[0] ?? '';
+    const isBatch = run.includes('scripts/run-integration-suites.sh');
+    const direct = [
+      ...run.matchAll(/(?:^|[^\w:./-])pnpm\s+(?:run\s+)?(test:[\w:.-]+)/gm),
+    ].map((match) => match[1]);
+    const inlineSql = [
+      ...run.matchAll(/\btest db --local\b([^\n\\]*(?:\\\n[^\n]*)?)/g),
+    ].map(
+      (match) =>
+        [...INLINE_SQL_SUITES].find(([file]) =>
+          match[1].includes('/' + file + '"'),
+        )?.[1],
+    );
+    if (!isBatch && direct.length === 0 && inlineSql.length === 0) continue;
+    const title = step.split('\n', 1)[0];
+    const conditions = [...step.matchAll(/^ {8}if:[ \t]*(.*)$/gm)];
+    const shard = Number(
+      /^matrix\.shard == ([1-9]\d*)$/.exec(conditions[0]?.[1] ?? '')?.[1],
+    );
+    if (conditions.length !== 1 || !batches.has(shard)) {
+      violations.push(
+        'Integration step must select exactly one matrix shard: ' + title,
+      );
+      continue;
+    }
+    if (isBatch) {
+      batches.set(shard, batches.get(shard) + 1);
+      const names = extractCiBatchSuites(run);
+      const foldsIntoOneCommand =
+        /^ {8}run: >-$/m.test(step) &&
+        run
+          .trimEnd()
+          .split('\n')
+          .every((line) => /^ {10}\S/.test(line));
+      if (!names || !foldsIntoOneCommand) {
+        violations.push('Expected a literal folded CI suite list: ' + title);
+      } else {
+        for (const name of names) {
+          if (batched.has(name)) assignments.get(name).push(shard);
+          else violations.push('Unknown CI batch suite: ' + name);
+        }
+      }
+    }
+    for (const name of [...direct, ...inlineSql]) {
+      if (separateSuites.includes(name)) assignments.get(name).push(shard);
+      else
+        violations.push(
+          'Unexpected standalone integration suite: ' + (name ?? title),
+        );
+    }
+  }
+
+  for (const [id, count] of batches) {
+    if (count !== 1)
+      violations.push(
+        'Shard ' + id + ' must run exactly one CI batch; found ' + count,
+      );
+  }
+  for (const [name, ids] of assignments) {
+    if (ids.length !== 1) {
+      violations.push(
+        name +
+          ' must run exactly once across CI shards; found ' +
+          ids.length +
+          (ids.length ? ' (shards ' + ids.join(', ') + ')' : ''),
+      );
+    }
+  }
+  return violations;
+}
+
 export function analyzeTestScriptReachability(
   scripts,
   workflowSources,
@@ -122,8 +249,10 @@ export function analyzeTestScriptReachability(
     extractRunBlocks(wf.source),
   );
 
-  // Directly invoked scripts from workflows
-  const directlyInvoked = new Set();
+  // Directly invoked scripts and the literal selections handed to the CI runner.
+  const directlyInvoked = new Set(
+    workflowRunBlocks.flatMap((block) => extractCiBatchSuites(block) ?? []),
+  );
   for (const name of allScriptNames) {
     const isDirect = workflowRunBlocks.some((block) =>
       matchScriptInvocation(block, name),
@@ -313,7 +442,16 @@ if (isMain) {
     scripts,
     collectDisposableSuiteSource(root),
   );
-  const allViolations = [...violations, ...suite.violations];
+  const shardViolations = analyzeIntegrationShardAssignments(
+    scripts,
+    workflowSources.find(({ path }) => path === '.github/workflows/ci.yml')
+      ?.source ?? '',
+  );
+  const allViolations = [
+    ...violations,
+    ...suite.violations,
+    ...shardViolations,
+  ];
 
   if (allViolations.length > 0) {
     throw new Error(
