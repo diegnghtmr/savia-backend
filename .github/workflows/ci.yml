@@ -34,6 +34,29 @@ jobs:
           sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa util-linux
           dpkg-query -W tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa util-linux
       - run: pnpm check
+      # A suite step without a shard condition would run in all ten shards.
+      - name: every integration step names one shard
+        shell: bash
+        run: |
+          node -e '
+          const lines = require("fs").readFileSync(".github/workflows/ci.yml", "utf8").split("\n");
+          const start = lines.indexOf("  integration:");
+          const end = lines.findIndex((l, i) => i > start && /^  [a-z]/.test(l));
+          const steps = [];
+          for (const l of lines.slice(start, end)) {
+            if (/^      - /.test(l)) steps.push([l]);
+            else if (steps.length) steps.at(-1).push(l);
+          }
+          const missing = steps
+            .filter((s) => /pnpm test:|test db --local/.test(s.join("\n")))
+            .filter((s) => !s.some((l) => /^        if: matrix\.shard == \d+$/.test(l)))
+            .map((s) => s[0].trim());
+          if (missing.length) {
+            console.error("Integration steps without a shard:\n" + missing.join("\n"));
+            process.exit(1);
+          }
+          console.log(`All ${steps.length} integration steps checked.`);
+          '
 
   # Every database suite starts its own disposable Supabase stack, so the suites
   # are independent. They are split across parallel shards instead of running
@@ -330,6 +353,7 @@ jobs:
         shell: bash
         run: pnpm test:integration:recurring-rules-list
       - name: recurring occurrences integration
+        if: matrix.shard == 4
         shell: bash
         run: pnpm test:integration:recurring-occurrences
       - name: subscriptions schema integration
