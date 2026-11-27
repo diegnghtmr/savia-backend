@@ -106,7 +106,7 @@ pnpm openapi:verify
 pnpm check
 ```
 
-`pnpm check` includes formatting, lint, architecture checks, type checks, tests, build, and OpenAPI verification and lint. CI also runs PostgreSQL/Supabase row-level security and schema checks and the integration suites. The full job installs Tesseract with English and Spanish language data, and provisions Chromium for PDF renderer integration. See [package.json](package.json) for the `test:database*` and `test:integration:*` entry points, and [Integration tests](#integration-tests) for the one-stack and containerized OCR runners.
+`pnpm check` includes formatting, lint, architecture checks, type checks, tests, build, and OpenAPI verification and lint. CI also runs PostgreSQL/Supabase row-level security and schema checks and the integration suites, split across ten parallel shards; the required `check` status passes only when `pnpm check` and every shard pass. Each shard installs Tesseract with English and Spanish language data, and the shard with the PDF renderer suite provisions Chromium. See [package.json](package.json) for the `test:database*` and `test:integration:*` entry points, and [Integration tests](#integration-tests) for the one-stack and containerized OCR runners.
 
 ## Integration tests
 
