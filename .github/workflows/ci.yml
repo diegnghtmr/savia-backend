@@ -134,6 +134,26 @@ jobs:
           bash scripts/run-integration-suites.sh ci
           profile list-accounts get-account accounts-close transactions-get
           transfers-schema catalogs-list export-jobs budgets-update funds
+      # The shard's stack can still hold its host ports for a few seconds
+      # after `supabase stop` returns. The checks below start their own stacks
+      # on the same fixed ports from supabase/config.toml, so wait until every
+      # project container is gone and the ports are free.
+      - name: wait for the shard stack to release its ports
+        shell: bash
+        run: |
+          ports="$(sed -n 's/^port = \([0-9]*\)$/\1/p' supabase/config.toml | tr '\n' ' ')"
+          for _ in $(seq 1 90); do
+            busy=""
+            for port in $ports; do
+              if ss -Hltn "sport = :$port" | grep -q .; then busy="$busy $port"; fi
+            done
+            containers="$(docker ps -q --filter label=com.supabase.cli.project)"
+            if [ -z "$busy" ] && [ -z "$containers" ]; then exit 0; fi
+            sleep 2
+          done
+          echo "Ports still in use:$busy"
+          docker ps --filter label=com.supabase.cli.project
+          exit 1
       - name: database RLS contract
         if: matrix.shard == 4
         shell: bash
