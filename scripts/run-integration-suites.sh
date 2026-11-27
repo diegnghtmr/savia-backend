@@ -109,7 +109,7 @@ for index in "${!suites[@]}"; do
   if [[ "$kind" == *-db ]]; then
     if [[ -z "$workdir" ]]; then
       init_disposable_database "$project_id"
-      start_disposable_database
+      start_disposable_database "${1:-}"
     fi
     if ! reset_disposable_database >/dev/null; then
       # No test may run against a failed or partially applied reset.

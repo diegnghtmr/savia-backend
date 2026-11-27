@@ -34,36 +34,10 @@ jobs:
           sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa util-linux
           dpkg-query -W tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa util-linux
       - run: pnpm check
-      # A suite step without a shard condition would run in all ten shards.
-      - name: every integration step names one shard
-        shell: bash
-        run: |
-          node -e '
-          const lines = require("fs").readFileSync(".github/workflows/ci.yml", "utf8").split("\n");
-          const start = lines.indexOf("  integration:");
-          const end = lines.findIndex((l, i) => i > start && /^  [a-z]/.test(l));
-          const steps = [];
-          for (const l of lines.slice(start, end)) {
-            if (/^      - /.test(l)) steps.push([l]);
-            else if (steps.length) steps.at(-1).push(l);
-          }
-          const missing = steps
-            .filter((s) => /pnpm test:|test db --local/.test(s.join("\n")))
-            .filter((s) => !s.some((l) => /^        if: matrix\.shard == \d+$/.test(l)))
-            .map((s) => s[0].trim());
-          if (missing.length) {
-            console.error("Integration steps without a shard:\n" + missing.join("\n"));
-            process.exit(1);
-          }
-          console.log(`All ${steps.length} integration steps checked.`);
-          '
 
-  # Every database suite starts its own disposable Supabase stack, so the suites
-  # are independent. They are split across parallel shards instead of running
-  # back to back in one job. Each step keeps its literal `pnpm test:*` call so
-  # scripts/verify-test-script-reachability.mjs still sees every script; the
-  # `if` only chooses which shard runs it. Shards are balanced by measured
-  # duration: give a new suite the shard with the least work.
+  # Keep the measured-duration assignment below when adding suites. Each shard
+  # uses one disposable stack for its DB suites; the SQL contracts and mutation
+  # proof still need their own setups. pnpm check validates exact coverage.
   integration:
     name: integration (${{ matrix.shard }}/10)
     runs-on: ubuntu-latest
@@ -87,32 +61,79 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa util-linux
           dpkg-query -W tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa util-linux
-      # Ten shards starting Supabase at once can hit the public image
-      # registry's rate limit (HTTP 429 / "Data limit exceeded"). Pull the
-      # images once per shard, staggered and with retries, so every suite
-      # below starts from the local Docker cache.
-      - name: pull Supabase images
+      # Stagger the real stack starts to avoid simultaneous public image pulls.
+      - name: stagger Supabase image pulls
+        run: sleep $(( (${{ matrix.shard }} - 1) * 15 ))
+      - name: install Playwright Chromium for PDF renderer
+        if: matrix.shard == 5
         shell: bash
-        run: |
-          workdir="$(mktemp -d)"
-          project_id="savia-images-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.shard }}"
-          cleanup() {
-            pnpm exec supabase --workdir "$workdir" stop --no-backup || true
-            rm -rf "$workdir"
-          }
-          trap cleanup EXIT
-          mkdir -p "$workdir/supabase"
-          cp supabase/config.toml "$workdir/supabase/config.toml"
-          sed -i "s/^project_id = .*/project_id = \"$project_id\"/" "$workdir/supabase/config.toml"
-          sleep $(( (${{ matrix.shard }} - 1) * 15 ))
-          for attempt in 1 2 3 4 5; do
-            if pnpm exec supabase --workdir "$workdir" start; then exit 0; fi
-            pnpm exec supabase --workdir "$workdir" stop --no-backup || true
-            delay=$(( attempt * 45 + RANDOM % 30 ))
-            echo "Supabase image pull failed (attempt $attempt); retrying in ${delay}s"
-            sleep "$delay"
-          done
-          exit 1
+        run: pnpm exec playwright-core install --with-deps chromium
+      - name: run shard 1 suites
+        if: matrix.shard == 1
+        run: >-
+          bash scripts/run-integration-suites.sh ci
+          remove-workspace-member accounts-balance transactions-create
+          reconciliations-get exports-completion agent-conversations
+      - name: run shard 2 suites
+        if: matrix.shard == 2
+        run: >-
+          bash scripts/run-integration-suites.sh ci
+          bootstrap workspace-invitations accounts-schema recurring-rules-list
+          reconciliations-schema exports-security receipt-foundation
+      - name: run shard 3 suites
+        if: matrix.shard == 3
+        run: >-
+          bash scripts/run-integration-suites.sh ci
+          transaction-resilience workspace-invitations-schema command-idempotency
+          recurring-rules-schema jobs-schema job-queue report-definitions
+          receipt-ocr-engine
+      - name: run shard 4 suites
+        if: matrix.shard == 4
+        run: >-
+          bash scripts/run-integration-suites.sh ci
+          transaction last-owner-guard revoke-workspace-invitation create-account
+          recurring-occurrences reconciliations-create reconciliations-complete imports
+          receipt-ocr
+      - name: run shard 5 suites
+        if: matrix.shard == 5
+        run: >-
+          bash scripts/run-integration-suites.sh ci
+          postgres-pool update-workspace-member currency-exchanges-create
+          subscriptions-list jobs-read forecasts report-runs pdf-renderer ai-credentials
+          cli-scope
+      - name: run shard 6 suites
+        if: matrix.shard == 6
+        run: >-
+          bash scripts/run-integration-suites.sh ci
+          workspace-members transactions-update exchange-rates-create
+          subscriptions-schema job-transitions import-commit-rollback debts analytics
+          agent-messages cli-token
+      - name: run shard 7 suites
+        if: matrix.shard == 7
+        run: >-
+          bash scripts/run-integration-suites.sh ci
+          workspace-write-rls account-currency-invariant transfers-create
+          exchange-rates-list catalog-tables budgets-schema budgets-list
+          report-runs-schema notifications receipts
+      - name: run shard 8 suites
+        if: matrix.shard == 8
+        run: >-
+          bash scripts/run-integration-suites.sh ci
+          membership-write-rls ledger-postings-schema exchange-rates-schema
+          catalogs-create recurring-rules-create budgets-create budgets-allocations
+          receipt-enqueue mcp-grants cli-device
+      - name: run shard 9 suites
+        if: matrix.shard == 9
+        run: >-
+          bash scripts/run-integration-suites.sh ci
+          workspace update-account transactions-schema posting-currency-invariant
+          transactions-list transactions-void job-worker budgets-get scenarios approvals
+      - name: run shard 10 suites
+        if: matrix.shard == 10
+        run: >-
+          bash scripts/run-integration-suites.sh ci
+          profile list-accounts get-account accounts-close transactions-get
+          transfers-schema catalogs-list export-jobs budgets-update funds
       - name: database RLS contract
         if: matrix.shard == 4
         shell: bash
@@ -176,370 +197,6 @@ jobs:
         shell: bash
         timeout-minutes: 15
         run: pnpm test:schema-contract
-      - name: postgres pool integration
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm test:integration:postgres-pool
-      - name: transaction integration
-        if: matrix.shard == 4
-        shell: bash
-        run: pnpm test:integration:transaction
-      - name: transaction resilience integration
-        if: matrix.shard == 3
-        shell: bash
-        run: pnpm test:integration:transaction-resilience
-      - name: bootstrap integration
-        if: matrix.shard == 2
-        shell: bash
-        run: pnpm test:integration:bootstrap
-      - name: profile integration
-        if: matrix.shard == 10
-        shell: bash
-        run: pnpm test:integration:profile
-      - name: workspace integration
-        if: matrix.shard == 9
-        shell: bash
-        run: pnpm test:integration:workspace
-      - name: workspace write rls integration
-        if: matrix.shard == 7
-        shell: bash
-        run: pnpm test:integration:workspace-write-rls
-      - name: membership write rls integration
-        if: matrix.shard == 8
-        shell: bash
-        run: pnpm test:integration:membership-write-rls
-      - name: last owner guard integration
-        if: matrix.shard == 4
-        shell: bash
-        run: pnpm test:integration:last-owner-guard
-      - name: workspace members integration
-        if: matrix.shard == 6
-        shell: bash
-        run: pnpm test:integration:workspace-members
-      - name: update workspace member integration
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm test:integration:update-workspace-member
-      - name: remove workspace member integration
-        if: matrix.shard == 1
-        shell: bash
-        run: pnpm test:integration:remove-workspace-member
-      - name: workspace invitations schema integration
-        if: matrix.shard == 3
-        shell: bash
-        run: pnpm test:integration:workspace-invitations-schema
-      - name: workspace invitations integration
-        if: matrix.shard == 2
-        shell: bash
-        run: pnpm test:integration:workspace-invitations
-      - name: revoke workspace invitation integration
-        if: matrix.shard == 4
-        shell: bash
-        run: pnpm test:integration:revoke-workspace-invitation
-      - name: command idempotency integration
-        if: matrix.shard == 3
-        shell: bash
-        run: pnpm test:integration:command-idempotency
-      - name: accounts schema integration
-        if: matrix.shard == 2
-        shell: bash
-        run: pnpm test:integration:accounts-schema
-      - name: list accounts integration
-        if: matrix.shard == 10
-        shell: bash
-        run: pnpm test:integration:list-accounts
-      - name: get account integration
-        if: matrix.shard == 10
-        shell: bash
-        run: pnpm test:integration:get-account
-      - name: create account integration
-        if: matrix.shard == 4
-        shell: bash
-        run: pnpm test:integration:create-account
-      - name: update account integration
-        if: matrix.shard == 9
-        shell: bash
-        run: pnpm test:integration:update-account
-      - name: accounts balance integration
-        if: matrix.shard == 1
-        shell: bash
-        run: pnpm test:integration:accounts-balance
-      - name: accounts close integration
-        if: matrix.shard == 10
-        shell: bash
-        run: pnpm test:integration:accounts-close
-      - name: account currency invariant integration
-        if: matrix.shard == 7
-        shell: bash
-        run: pnpm test:integration:account-currency-invariant
-      - name: transactions schema integration
-        if: matrix.shard == 9
-        shell: bash
-        run: pnpm test:integration:transactions-schema
-      - name: ledger postings schema integration
-        if: matrix.shard == 8
-        shell: bash
-        run: pnpm test:integration:ledger-postings-schema
-      - name: posting currency invariant integration
-        if: matrix.shard == 9
-        shell: bash
-        run: pnpm test:integration:posting-currency-invariant
-      - name: transactions create integration
-        if: matrix.shard == 1
-        shell: bash
-        run: pnpm test:integration:transactions-create
-      - name: transactions get integration
-        if: matrix.shard == 10
-        shell: bash
-        run: pnpm test:integration:transactions-get
-      - name: transactions list integration
-        if: matrix.shard == 9
-        shell: bash
-        run: pnpm test:integration:transactions-list
-      - name: transactions update integration
-        if: matrix.shard == 6
-        shell: bash
-        run: pnpm test:integration:transactions-update
-      - name: transactions void integration
-        if: matrix.shard == 9
-        shell: bash
-        run: pnpm test:integration:transactions-void
-      - name: transfers schema integration
-        if: matrix.shard == 10
-        shell: bash
-        run: pnpm test:integration:transfers-schema
-      - name: transfers create integration
-        if: matrix.shard == 7
-        shell: bash
-        run: pnpm test:integration:transfers-create
-      - name: currency exchanges create integration
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm test:integration:currency-exchanges-create
-      - name: exchange rates schema integration
-        if: matrix.shard == 8
-        shell: bash
-        run: pnpm test:integration:exchange-rates-schema
-      - name: exchange rates create integration
-        if: matrix.shard == 6
-        shell: bash
-        run: pnpm test:integration:exchange-rates-create
-      - name: exchange rates list integration
-        if: matrix.shard == 7
-        shell: bash
-        run: pnpm test:integration:exchange-rates-list
-      - name: catalog tables integration
-        if: matrix.shard == 7
-        shell: bash
-        run: pnpm test:integration:catalog-tables
-      - name: catalogs create integration
-        if: matrix.shard == 8
-        shell: bash
-        run: pnpm test:integration:catalogs-create
-      - name: catalogs list integration
-        if: matrix.shard == 10
-        shell: bash
-        run: pnpm test:integration:catalogs-list
-      - name: recurring rules schema integration
-        if: matrix.shard == 3
-        shell: bash
-        run: pnpm test:integration:recurring-rules-schema
-      - name: recurring rules create integration
-        if: matrix.shard == 8
-        shell: bash
-        run: pnpm test:integration:recurring-rules-create
-      - name: recurring rules list integration
-        if: matrix.shard == 2
-        shell: bash
-        run: pnpm test:integration:recurring-rules-list
-      - name: recurring occurrences integration
-        if: matrix.shard == 4
-        shell: bash
-        run: pnpm test:integration:recurring-occurrences
-      - name: subscriptions schema integration
-        if: matrix.shard == 6
-        shell: bash
-        run: pnpm test:integration:subscriptions-schema
-      - name: subscriptions list integration
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm test:integration:subscriptions-list
-      - name: jobs schema integration
-        if: matrix.shard == 3
-        shell: bash
-        run: pnpm test:integration:jobs-schema
-      - name: jobs read integration
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm test:integration:jobs-read
-      - name: job queue integration
-        if: matrix.shard == 3
-        shell: bash
-        run: pnpm test:integration:job-queue
-      - name: job worker integration
-        if: matrix.shard == 9
-        shell: bash
-        run: pnpm test:integration:job-worker
-      - name: job transitions integration
-        if: matrix.shard == 6
-        shell: bash
-        run: pnpm test:integration:job-transitions
-      - name: reconciliations schema integration
-        if: matrix.shard == 2
-        shell: bash
-        run: pnpm test:integration:reconciliations-schema
-      - name: reconciliations create integration
-        if: matrix.shard == 4
-        shell: bash
-        run: pnpm test:integration:reconciliations-create
-      - name: reconciliations get integration
-        if: matrix.shard == 1
-        shell: bash
-        run: pnpm test:integration:reconciliations-get
-      - name: reconciliations complete integration
-        if: matrix.shard == 4
-        shell: bash
-        run: pnpm test:integration:reconciliations-complete
-      - name: exports security integration
-        if: matrix.shard == 2
-        shell: bash
-        run: pnpm test:integration:exports-security
-      - name: exports completion integration
-        if: matrix.shard == 1
-        shell: bash
-        run: pnpm test:integration:exports-completion
-      - name: export jobs integration
-        if: matrix.shard == 10
-        shell: bash
-        run: pnpm test:integration:export-jobs
-      - name: imports integration
-        if: matrix.shard == 4
-        shell: bash
-        run: pnpm test:integration:imports
-      - name: import commit rollback integration
-        if: matrix.shard == 6
-        shell: bash
-        run: pnpm test:integration:import-commit-rollback
-      - name: budgets schema integration
-        if: matrix.shard == 7
-        shell: bash
-        run: pnpm test:integration:budgets-schema
-      - name: budgets create integration
-        if: matrix.shard == 8
-        shell: bash
-        run: pnpm test:integration:budgets-create
-      - name: budgets get integration
-        if: matrix.shard == 9
-        shell: bash
-        run: pnpm test:integration:budgets-get
-      - name: budgets list integration
-        if: matrix.shard == 7
-        shell: bash
-        run: pnpm test:integration:budgets-list
-      - name: budgets update integration
-        if: matrix.shard == 10
-        shell: bash
-        run: pnpm test:integration:budgets-update
-      - name: budgets allocations integration
-        if: matrix.shard == 8
-        shell: bash
-        run: pnpm test:integration:budgets-allocations
-      - name: funds integration
-        if: matrix.shard == 10
-        shell: bash
-        run: pnpm test:integration:funds
-      - name: debts integration
-        if: matrix.shard == 6
-        shell: bash
-        run: pnpm test:integration:debts
-      - name: analytics integration
-        if: matrix.shard == 6
-        shell: bash
-        run: pnpm test:integration:analytics
-      - name: scenarios integration
-        if: matrix.shard == 9
-        shell: bash
-        run: pnpm test:integration:scenarios
-      - name: forecasts integration
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm test:integration:forecasts
-      - name: report definitions integration
-        if: matrix.shard == 3
-        shell: bash
-        run: pnpm test:integration:report-definitions
-      - name: report runs integration
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm test:integration:report-runs
-      - name: install Playwright Chromium for PDF renderer
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm exec playwright-core install --with-deps chromium
-      - name: PDF renderer integration
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm test:integration:pdf-renderer
-      - name: report runs schema integration
-        if: matrix.shard == 7
-        shell: bash
-        run: pnpm test:integration:report-runs-schema
-      - name: approvals integration
-        if: matrix.shard == 9
-        shell: bash
-        run: pnpm test:integration:approvals
-      - name: notifications integration
-        if: matrix.shard == 7
-        shell: bash
-        run: pnpm test:integration:notifications
-      - name: receipts integration
-        if: matrix.shard == 7
-        shell: bash
-        run: pnpm test:integration:receipts
-      - name: receipt foundation integration
-        if: matrix.shard == 2
-        shell: bash
-        run: pnpm test:integration:receipt-foundation
-      - name: receipt enqueue integration
-        if: matrix.shard == 8
-        shell: bash
-        run: pnpm test:integration:receipt-enqueue
-      - name: receipt OCR integration
-        if: matrix.shard == 4
-        shell: bash
-        run: pnpm test:integration:receipt-ocr
-      - name: receipt OCR engine proof integration
-        if: matrix.shard == 3
-        shell: bash
-        run: pnpm test:integration:receipt-ocr-engine
-      - name: MCP grants integration
-        if: matrix.shard == 8
-        shell: bash
-        run: pnpm test:integration:mcp-grants
-      - name: AI credentials integration
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm test:integration:ai-credentials
-      - name: Agent conversations integration
-        if: matrix.shard == 1
-        shell: bash
-        run: pnpm test:integration:agent-conversations
-      - name: Agent messages integration
-        if: matrix.shard == 6
-        shell: bash
-        run: pnpm test:integration:agent-messages
-      - name: CLI device integration
-        if: matrix.shard == 8
-        shell: bash
-        run: pnpm test:integration:cli-device
-      - name: CLI device token integration
-        if: matrix.shard == 6
-        shell: bash
-        run: pnpm test:integration:cli-token
-      - name: CLI scope integration
-        if: matrix.shard == 5
-        shell: bash
-        run: pnpm test:integration:cli-scope
       - name: transaction mutation
         if: matrix.shard == 1
         shell: bash

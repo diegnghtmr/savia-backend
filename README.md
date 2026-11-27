@@ -106,7 +106,7 @@ pnpm openapi:verify
 pnpm check
 ```
 
-`pnpm check` includes formatting, lint, architecture checks, type checks, tests, build, and OpenAPI verification and lint. CI also runs PostgreSQL/Supabase row-level security and schema checks and the integration suites, split across ten parallel shards; the required `check` status passes only when `pnpm check` and every shard pass. Each shard installs Tesseract with English and Spanish language data, and the shard with the PDF renderer suite provisions Chromium. See [package.json](package.json) for the `test:database*` and `test:integration:*` entry points, and [Integration tests](#integration-tests) for the one-stack and containerized OCR runners.
+`pnpm check` includes formatting, lint, architecture checks, type checks, tests, build, and OpenAPI verification and lint. CI also runs PostgreSQL/Supabase row-level security and schema checks and the integration suites, split across ten parallel shards; the required `check` status passes only when `pnpm check` and every shard pass. Each shard runs its database suites serially on one disposable Supabase stack, resetting the database and wiping Storage before each suite. The SQL contracts and transaction mutation proof retain separate setups. `pnpm check` verifies that each suite is assigned to exactly one shard. CI installs Tesseract with English and Spanish language data on the host, and the PDF renderer shard provisions Chromium. See [package.json](package.json) for the `test:database*` and `test:integration:*` entry points, and [Integration tests](#integration-tests) for the one-stack and containerized OCR runners.
 
 ## Integration tests
 
@@ -153,16 +153,18 @@ the shared runner's lock.
 All disposable DB runners wait up to 30 seconds for the host ports declared in
 `supabase/config.toml` to become free before starting Supabase. If Docker reports
 a port allocation error, the runner stops the partial stack, checks the ports
-again, and retries once if they become free. Other startup errors are not retried;
-failed starts still retain sanitized diagnostics when safe.
+again, and retries once if they become free. CI also staggers stack startups and
+retries public registry rate limits. Failed starts retain sanitized diagnostics
+when safe.
 
 On one Linux Docker host, five DB suites (pool, transaction resilience,
 workspace, transaction creation and receipt foundation; 85 tests) took 7m25s
 with separate stacks and 4m09s with the shared stack. Based on the four warm
 resets, the 88 DB suites project to about 55 minutes, plus the OCR image build
 and standalone suite runtime. This is a projection, not a full-run measurement.
-CI still uses its existing per-suite steps and provisions OCR and Chromium
-separately.
+To reproduce a subset of a CI shard with host OCR dependencies, run
+`bash scripts/run-integration-suites.sh ci postgres-pool workspace`. The
+workflow lists the complete suite selection for each shard.
 
 ## Project structure
 
